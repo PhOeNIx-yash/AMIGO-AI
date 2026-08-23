@@ -1,0 +1,32 @@
+# ── Python & Bytecode ──────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# ── Large AI Models (Auto-downloaded by setup.py) ──────────────
+models/
+*.gguf
+*.onnx
+*.bin
+
+# ── User Data & Local Caches ───────────────────────────────────
+amigo_reminders.json
+*.log
+.DS_Store
+Thumbs.db
+
+# ── Node.js & React Frontend ───────────────────────────────────
+ui_app/node_modules/
+ui_app/.turbo
+ui_app/.next/
+ui_app/npm-debug.log*
+
+# ── IDE & Editor Caches ────────────────────────────────────────
+.vscode/
+.idea/
+*.swp

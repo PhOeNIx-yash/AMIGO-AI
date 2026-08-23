@@ -1,0 +1,7 @@
+{
+  "name": "Windows 11 Voice Assistant",
+  "description": "A native Windows 11 Fluent voice assistant featuring acrylic blurred backgrounds, fluid glow animations, speech recognition, and adaptive color schemes.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
