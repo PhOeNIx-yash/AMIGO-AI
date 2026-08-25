@@ -15,7 +15,7 @@ export type PluginMode = "floating" | "docked_right" | "docked_bottom" | "fullsc
 
 export interface ActionCardItem {
   id: string;
-  type: "message" | "restaurant" | "map" | "calendar" | "general" | "link" | "device" | "code" | "confirmation" | "weather" | "timer" | "stopwatch";
+  type: "message" | "restaurant" | "map" | "calendar" | "general" | "link" | "device" | "code" | "confirmation" | "weather" | "timer" | "stopwatch" | "media" | "file";
   title: string;
   subtitle?: string;
   selected: boolean;
@@ -49,6 +49,7 @@ export interface AssistantResponse {
     secondaryDetails?: string;
     rawOutput?: any;
   };
+  url?: string;
   metadata?: Record<string, any>;
 }
 
@@ -71,10 +72,3 @@ export interface BackendConfig {
   transcriptionUrl?: string;
 }
 
-export interface PluginConfig {
-  mode: PluginMode;
-  autoListenOnOpen: boolean;
-  transcriptionEngine: "amigo-speech" | "web-speech";
-  backendUrl: string;
-  opacity: number;
-}

@@ -292,6 +292,7 @@ export function normalizeBackendResponse(raw: any, originalPrompt: string): Assi
         secondaryDetails: raw.executionSummary?.secondaryDetails,
         rawOutput: raw.executionSummary?.rawOutput || raw,
       },
+      url: raw.url || raw.executionSummary?.rawOutput?.url,
       metadata: raw.metadata,
     };
   }
@@ -301,7 +302,9 @@ export function normalizeBackendResponse(raw: any, originalPrompt: string): Assi
   const actionsList: ActionCardItem[] = [];
 
   if (Array.isArray(raw.actions) || Array.isArray(raw.tools) || Array.isArray(raw.intent_actions)) {
-    const list = raw.actions || raw.tools || raw.intent_actions;
+    const list = (raw.actions || raw.tools || raw.intent_actions).filter(
+      (item: any) => item.type !== "web_search" && item.tool !== "web_search" && item.name !== "web_search"
+    );
     list.forEach((item: any, idx: number) => {
       actionsList.push({
         id: item.id || `act-${idx}`,
@@ -332,6 +335,7 @@ export function normalizeBackendResponse(raw: any, originalPrompt: string): Assi
       secondaryDetails: raw.secondaryDetails || (raw.data ? JSON.stringify(raw.data, null, 2) : undefined),
       rawOutput: raw,
     },
+    url: raw.url,
     metadata: raw,
   };
 }
@@ -341,22 +345,44 @@ function parseSecondsFromPrompt(prompt: string): number {
   const wordMap: Record<string, number> = {
     zero: 0, a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5,
     six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
-    fifteen: 15, twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60,
-    half: 0.5,
+    thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17,
+    eighteen: 18, nineteen: 19, twenty: 20, thirty: 30, forty: 40, fifty: 50,
+    sixty: 60, seventy: 70, eighty: 80, ninety: 90, hundred: 100,
+    half: 0.5, quarter: 0.25,
   };
+
+  p = p.replace(/\bhalf\s+(?:an?\s+)?hours?\b/g, "30 minutes");
+  p = p.replace(/\bquarter\s+(?:of\s+an?\s+)?hours?\b/g, "15 minutes");
+  p = p.replace(/\bhalf\s+(?:a\s+)?minutes?\b/g, "30 seconds");
 
   for (const [w, n] of Object.entries(wordMap)) {
     p = p.replace(new RegExp(`\\b${w}\\b`, "g"), String(n));
   }
 
-  const hrMatch = p.match(/(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\b/);
-  if (hrMatch) return Math.round(parseFloat(hrMatch[1]) * 3600);
+  let total = 0;
+  let matched = false;
 
-  const minMatch = p.match(/(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)\b/);
-  if (minMatch) return Math.round(parseFloat(minMatch[1]) * 60);
+  const patterns: [RegExp, number][] = [
+    [/(\d+(?:\.\d+)?)\s*(?:days?|d)\b/g, 86400],
+    [/(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|hr|h)\b/g, 3600],
+    [/(\d+(?:\.\d+)?)\s*(?:minutes?|mins?|min|m)\b/g, 60],
+    [/(\d+(?:\.\d+)?)\s*(?:seconds?|secs?|sec|s)\b/g, 1],
+  ];
 
-  const secMatch = p.match(/(\d+(?:\.\d+)?)\s*(?:s|sec|secs|second|seconds)\b/);
-  if (secMatch) return Math.round(parseFloat(secMatch[1]));
+  for (const [regex, multiplier] of patterns) {
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(p)) !== null) {
+      total += parseFloat(match[1]) * multiplier;
+      matched = true;
+    }
+  }
+
+  if (matched && total > 0) return Math.round(total);
+
+  const cleanNum = p.replace(/[^\d.]/g, "");
+  if (cleanNum && !isNaN(Number(cleanNum))) {
+    return Math.round(Number(cleanNum));
+  }
 
   return 60;
 }

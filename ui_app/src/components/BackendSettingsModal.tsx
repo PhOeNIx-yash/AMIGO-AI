@@ -98,7 +98,7 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
     setActionWebhookUrl("");
     setApiKey("");
     setCustomHeaders("");
-    setTranscriptionEngine("gemini-3.5-flash");
+    setTranscriptionEngine("web-speech");
     setAutoSpeech(true);
     setTestResult(null);
   };
@@ -257,8 +257,12 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
                       isDark ? "bg-[#181829] border-white/10 text-white" : "bg-white border-black/10 text-slate-900"
                     }`}
                   >
-                    <option value="amigo-speech">Amigo Local Audio STT</option>
-                    <option value="web-speech">Browser Web Speech API</option>
+                    <option value="amigo-speech" className={isDark ? "bg-[#181829] text-white" : "bg-white text-slate-900"}>
+                      Amigo Local Audio STT
+                    </option>
+                    <option value="web-speech" className={isDark ? "bg-[#181829] text-white" : "bg-white text-slate-900"}>
+                      Browser Web Speech API
+                    </option>
                   </select>
                 </div>
 

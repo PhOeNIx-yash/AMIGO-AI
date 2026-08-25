@@ -1,4 +1,4 @@
-﻿"""
+"""
 Windows Settings URI Resolver for Amigo.
 Single source of truth for all ms-settings: URI mappings.
 Dynamic keyword + alias matching - no hardcoding at call sites.

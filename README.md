@@ -2,44 +2,46 @@
 
 A private, intelligent, and agentic personal voice assistant powered locally by the **Qwen 2.5 3B Instruct** GGUF model and **Kokoro ONNX** neural speech synthesis. 
 
-Amigo provides desktop automation, live interactive action widgets (countdown timers, stopwatches, weather telemetry), deep web browsing, app management, and an adaptive three-layer memory system — completely offline, with **zero API keys and zero cloud dependencies**.
+Amigo provides desktop automation, live interactive action widgets (countdown timers, stopwatches, weather telemetry), deep web browsing, app management, and an adaptive RAG-powered vector memory system — completely offline, with **zero API keys and zero cloud dependencies**.
 
 ---
 
 ## 🌟 Key Capabilities & Features
 
 - **100% Offline Local AI** — Powered by `Qwen 2.5 3B Instruct` via `llama-cpp-python` with optional CUDA GPU acceleration for near-instant inference.
-- **Neural Text-to-Speech** — `Kokoro ONNX` delivers natural, expressive, human-like voice synthesis locally, with automatic fallback to native Windows SAPI.
+- **Neural Text-to-Speech (TTS)** — `Kokoro ONNX` delivers expressive, human-like voice synthesis locally with asynchronous streaming, with automatic fallback to native Windows SAPI.
 - **Fluid Web & Desktop Dashboard** — Built with React, TypeScript, Tailwind CSS, and Framer Motion, served via high-performance Flask SSE streaming at `http://localhost:5000`.
 - **Interactive Action Cards & Widgets**:
-  - **Live Countdown Timer & Stopwatch** — Interactive SVG circular progress ring, real-time countdown/countup, play/pause, reset, and `+1m`/`+5m` quick extension buttons with desktop chime notifications.
+  - **Live Countdown Timer & Stopwatch** — Interactive SVG circular progress ring, real-time countdown/countup, play/pause, reset, and `+1m`/`+5m` quick extension buttons with desktop notifications.
   - **Atmospheric Weather Telemetry** — Dynamic condition palettes, live temperatures (°C / °F toggle), humidity, wind velocity, UV index, feels-like temperature, and multi-period diurnal forecasts fetched dynamically (zero hardcoding).
-  - **Multi-Action Confirmation Cards** — Clean interactive pills for multi-step tasks.
+  - **Multi-Action Confirmation Cards** — Clean interactive cards for multi-step tasks.
 - **Intent Bridge HUD** — Streamlined single-pill intent router showing live agentic tool execution status (e.g. YouTube playback, application launching, system volume adjustments).
 - **Audio Visualizer Engine**:
   - **Smooth Ribbon Waveform** during voice listening.
   - **3D Particle Orb** during cognitive processing and tool execution.
 - **Desktop & OS Automation** — Native app launcher, system sleep/restart, window management, screen brightness, volume master control, screenshot capture, and clipboard intelligence.
-- **Three-Layer Memory Architecture** — Remembers past conversational context, long-term personal facts, and passively mirrors user interaction styles.
+- **RAG Vector Memory & Document Intelligence** — ChromaDB vector store with sentence-transformers embeddings for unlimited semantic conversation history, user profiling, and local document Q&A (PDF, Word, PowerPoint, Code, Text).
+- **Background File Indexer** — Automatically crawls and indexes user documents in the background with hash-based incremental delta updates.
+- **Outlook Mail & Calendar Integration** — Local read-only access to Outlook emails and upcoming calendar schedules.
+- **Context-Aware Screen Vision** — Windows native OCR for reading and answering questions about active windows and on-screen content.
 
 ---
 
-## 🧠 Three-Layer Adaptive Memory System
+## 🧠 RAG & Adaptive Memory Architecture
 
-Amigo stores context locally in `amigo_memory.json`:
+Amigo features a modular vector-embedded long-term memory system powered by **ChromaDB** and **sentence-transformers**:
 
-### 1. Sliding Window Context (Short-Term)
-Preserves the last **15 conversational turns** in memory so you can ask follow-ups, refer back to previous answers, and chat naturally without losing context.
+### 1. Vector Memory Collections
+- **`conversations`** — Every conversation turn is embedded and semantically retrievable across sessions.
+- **`user_facts`** — Dedicated collection storing facts learned about the user (*"I'm a software developer"*, *"my favorite artist is Hans Zimmer"*).
+- **`documents`** — Locally indexed files (PDF, DOCX, TXT, MD, PPTX, Code) for contextual Q&A.
+- **`emails` & `calendar`** — Local Outlook emails and schedule events.
 
-### 2. Persistent Facts Store (Long-Term)
-When you tell Amigo facts about yourself (*"I'm a software developer"*, *"my favorite artist is Hans Zimmer"*), the agent identifies and persists these facts to `user_facts[]`. These facts persist across application restarts and are injected into all future session prompts.
+### 2. User Profile & Settings
+Lightweight profile and active state configurations are maintained in `amigo_profile.json` (user identity, preferences, interaction style metrics, and UI configurations).
 
-### 3. Mirror Memory (Interaction Profiling)
-Amigo automatically analyzes interaction habits with zero extra LLM overhead:
-- Query length preference (concise vs. detailed answers)
-- Most frequent tools & commands
-- Typical active hours
-- Clipboard & screen OCR usage patterns
+### 3. Sliding Window Context
+Maintains recent conversational turns in memory for natural multi-turn follow-ups and conversational context.
 
 ---
 
@@ -47,28 +49,35 @@ Amigo automatically analyzes interaction habits with zero extra LLM overhead:
 
 ```
 amigo-main/
-├── setup.py             # Automated one-click installer & model downloader
-├── setup.bat            # Windows one-click batch setup
-├── start_amigo.bat      # Windows one-click dashboard launcher
-├── requirements.txt     # Python backend dependencies
-├── ui_server.py         # Flask REST API, WebSocket/SSE & UI server
-├── local_llm.py         # Qwen 2.5 3B GGUF engine & zero-latency dispatcher
-├── reminder_timer.py    # Background timer & reminder scheduling engine
-├── ai.py                # Three-layer memory & conversational logic
-├── weather.py           # Keyless dynamic weather telemetry
-├── app_opener.py        # Dynamic Windows application resolver & launcher
-├── os_automation.py     # System volume, brightness, screenshots & shortcuts
-├── screen_vision.py     # Local Windows OCR & screen capture
-├── Searchnow.py         # DuckDuckGo search & YouTube integration
-├── Calculatenumbers.py  # Fast arithmetic & mathematical evaluator
-├── amigo main.py        # Terminal CLI voice & keyboard interface
-└── ui_app/              # Modern React + Vite frontend source code
+├── setup.py                # Automated one-click installer & model downloader
+├── setup.bat               # Windows one-click batch setup script
+├── start_amigo.bat         # Windows one-click dashboard launcher
+├── requirements.txt        # Python backend dependencies
+├── ui_server.py            # Flask REST API, SSE event streaming & UI server
+├── tts.py                  # Neural TTS engine (Kokoro ONNX / SAPI fallback)
+├── tool_registry.py        # Central tool registry, dispatcher & action cards
+├── rag_engine.py           # ChromaDB vector store, semantic search & prompt injection
+├── rag_indexer.py          # Background file crawling & incremental hash indexer
+├── mail_integration.py     # Outlook email integration & RAG indexing
+├── calendar_integration.py    # Outlook calendar events & schedule RAG
+├── local_llm.py            # Qwen 2.5 3B GGUF engine & zero-latency dispatcher
+├── reminder_timer.py       # Background timer & reminder scheduling engine
+├── ai.py                   # RAG memory bridge & voice prompt constructor
+├── weather.py              # Keyless dynamic weather telemetry
+├── app_opener.py           # Dynamic Windows application resolver & launcher
+├── os_automation.py        # System volume, brightness, screenshots & shortcuts
+├── screen_vision.py        # Local Windows OCR & screen capture
+├── Searchnow.py            # Web search & YouTube playback integration
+├── Calculatenumbers.py     # Fast arithmetic & mathematical evaluator
+├── settings_resolver.py    # Windows Settings ms-settings: URI resolver
+├── amigo main.py           # Terminal CLI voice & keyboard interface
+└── ui_app/                 # Modern React + Vite frontend source code
     ├── src/
-    │   ├── components/  # ActionCard, CanvasVisualizer, IntentBridgeHUD, etc.
-    │   ├── services/    # assistantApi.ts (REST & fallback parsing)
-    │   ├── utils/       # audio.ts, theme tokens, etc.
-    │   └── types.ts     # TypeScript schemas
-    └── dist/            # Compiled production bundle
+    │   ├── components/     # ActionCard, CanvasVisualizer, IntentBridgeHUD, etc.
+    │   ├── services/       # assistantApi.ts (REST & fallback parsing)
+    │   ├── utils/          # audio.ts, theme tokens, etc.
+    │   └── types.ts        # TypeScript schemas
+    └── dist/               # Compiled production bundle
 ```
 
 ---
@@ -81,7 +90,8 @@ This automatically:
 1. Installs all Python dependencies via `pip`.
 2. Downloads the `Kokoro ONNX` neural voice models (`kokoro-v1.0.onnx` & `voices-v1.0.bin`).
 3. Downloads the `Qwen 2.5 3B Instruct` quantized GGUF model (~2.05 GB).
-4. Verifies the React Web Dashboard build.
+4. Sets up RAG vector data storage directories.
+5. Verifies the React Web Dashboard build.
 
 ### Option 2: Command Line Setup
 ```bash
@@ -132,7 +142,8 @@ Choose your preferred interaction mode:
 | **Information & Web** | *"Search DuckDuckGo for quantum computing"*, *"Who was Alan Turing on Wikipedia?"* |
 | **Calculations** | *"What is 45 times 18?"*, *"Calculate the square root of 144"* |
 | **Date & Time** | *"What time is it?"*, *"What is today's date?"* |
-| **Memory** | *"Remember that my favorite color is teal"*, *"What is my name?"* |
+| **Memory & Facts** | *"Remember that my favorite color is teal"*, *"What is my name?"* |
+| **Email & Calendar** | *"Check my unread emails"*, *"What is on my calendar today?"* |
 
 ---
 
@@ -141,5 +152,6 @@ Choose your preferred interaction mode:
 Amigo is designed from the ground up for privacy:
 - All LLM reasoning runs locally on your machine via `llama-cpp-python`.
 - All neural TTS speech generation runs locally on your CPU/GPU via `kokoro-onnx`.
-- Conversation memory and user profile facts remain entirely in `amigo_memory.json` on your local filesystem.
+- Memory vector embeddings and user profiles remain entirely on your local filesystem.
 - Zero analytics, zero data harvesting, zero tracking.
+

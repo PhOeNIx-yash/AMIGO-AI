@@ -6,7 +6,6 @@ and answers contextual visual questions about open windows, errors, code, or doc
 
 import asyncio
 import ctypes
-import os
 import re
 from PIL import Image
 
@@ -199,7 +198,6 @@ def answer_screen_question(question: str) -> str:
     system_prompt = (
         "You are Amigo, a helpful voice assistant with screen vision capabilities. "
         "You are given text extracted from the user's active computer screen. "
-        "Answer the user's question directly, clearly, and concisely in 1-3 spoken sentences. "
         "Do not use markdown, bullet points, or code formatting. Speak in natural plain English."
     )
 

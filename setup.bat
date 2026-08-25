@@ -1,12 +1,25 @@
 @echo off
 title Amigo Voice Assistant - Setup
 cd /d "%~dp0"
-echo ===================================================
-echo    AMIGO VOICE ASSISTANT - ONE-CLICK INSTALLER
-echo ===================================================
+echo ======================================================
+echo    Setting up Amigo Voice Assistant
+echo ======================================================
 echo.
-python setup.py
+
+where py >nul 2>&1
+if %errorlevel% equ 0 (
+    py setup.py
+) else (
+    python setup.py
+)
+
+if %errorlevel% neq 0 (
+    echo.
+    echo [ERROR] Setup encountered an issue. Please check the logs above.
+    pause
+    exit /b %errorlevel%
+)
+
 echo.
-echo Setup finished. Press any key to start Amigo Dashboard...
-pause >nul
-start "" "start_amigo.bat"
+echo [OK] Setup completed successfully!
+pause

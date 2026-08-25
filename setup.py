@@ -32,7 +32,11 @@ def main():
             else:
                 print("\n[!] Node.js/npm not found. Pre-built UI or dev server can be used.")
 
-    # 3. Download AI Models
+    # 3. Create RAG Data Directories
+    rag_dir = os.path.join(base_dir, "rag_data", "chroma")
+    os.makedirs(rag_dir, exist_ok=True)
+
+    # 4. Download AI Models
     print("\n[+] Downloading AI Models...")
     try:
         from huggingface_hub import hf_hub_download
@@ -66,6 +70,10 @@ def main():
         model_path = local_llm.get_model_path()
         if os.path.exists(model_path):
             print(f"    {model_info['name']} is ready at {model_path}.")
+        else:
+            print(" -> Downloading Qwen 2.5 3B Instruct GGUF model...")
+            local_llm.ensure_model_downloaded()
+            print("    LLM model downloaded successfully.")
     except Exception as e:
         print(f"    LLM model check note: {e}")
 
@@ -84,3 +92,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -1,0 +1,904 @@
+"""
+Tool Registry & Action Dispatcher for Amigo Voice Assistant.
+Executes agentic tool calls and generates structured UI action cards.
+"""
+
+import datetime
+import logging
+import os
+import re
+import urllib.parse
+import webbrowser
+
+from ai import get_ai_response, update_active_state, get_active_state
+from app_opener import find_files, open_folder, open_windows_app, execute_file_action
+from Calculatenumbers import Calc
+import os_automation
+import rag_engine
+from reminder_timer import (
+    handle_set_timer,
+    handle_set_reminder,
+    handle_list_reminders,
+    handle_cancel_reminder,
+    parse_relative_seconds,
+)
+from Searchnow import searchGoogle, searchYoutube, scrape_web_info, resolve_youtube_video, search_wikipedia
+from settings_resolver import open_setting
+from weather import weather_command, get_weather_data
+
+logger = logging.getLogger("amigo.tool_registry")
+
+# Callback to broadcast media state updates to UI
+_media_update_cb = None
+
+
+def set_media_update_callback(cb):
+    """Set callback to broadcast media updates to UI."""
+    global _media_update_cb
+    _media_update_cb = cb
+
+
+def extract_and_open_urls(text: str) -> bool:
+    """Finds URLs in text and opens top matches in default browser."""
+    urls = re.findall(r'https?://[^\s<>"{}|\\^`\[\]]*[^\s<>"{}|\\^`\[\].,;:!?]', text)
+    opened = False
+    for url in urls[:2]:
+        webbrowser.open(url)
+        opened = True
+    return opened
+
+
+# ---------------------------------------------------------------------------
+# Individual Tool Handlers
+# ---------------------------------------------------------------------------
+
+def _tool_web_search(params, query, spoken):
+    q = params.get("query", query).strip() or query
+    try:
+        update_active_state("last_search", {"query": q})
+    except Exception:
+        pass
+    snippets = scrape_web_info(q)
+    if snippets:
+        response = get_ai_response(query, web_context=snippets)
+        if any(kw in query.lower() for kw in ("google", "browser", "open google", "search google", "show in browser")):
+            searchGoogle(q)
+        return response, "https://www.google.com/search?q=" + urllib.parse.quote(q)
+    searchGoogle(q)
+    return spoken or get_ai_response(query), "https://www.google.com/search?q=" + urllib.parse.quote(q)
+
+
+def _tool_open_website(params, query, spoken):
+    raw_url = params.get("url", "")
+    if raw_url:
+        url = raw_url if raw_url.startswith("http") else f"https://{raw_url}"
+        webbrowser.open(url)
+        try:
+            update_active_state("active_subject", {"name": url, "category": "website"})
+        except Exception:
+            pass
+        return spoken, url
+    searchGoogle(query)
+    return spoken, None
+
+
+def _tool_play_youtube(params, query, spoken):
+    q = params.get("query", query) or query
+    media_info = resolve_youtube_video(q)
+    clean_q = media_info.get("query") or q
+
+    media_payload = {
+        "title": media_info.get("title", clean_q.title()),
+        "artist": media_info.get("channel", "YouTube Music"),
+        "video_id": media_info.get("video_id", ""),
+        "url": media_info.get("url", ""),
+        "status": "playing",
+        "volume": 75,
+    }
+    if _media_update_cb:
+        _media_update_cb(media_payload)
+
+    try:
+        update_active_state("current_media", {
+            "title": media_payload["title"],
+            "artist": media_payload["artist"],
+            "platform": "YouTube",
+            "query": clean_q,
+        })
+    except Exception:
+        pass
+
+    if media_info.get("url"):
+        webbrowser.open(media_info["url"])
+
+    return spoken or f"Playing {clean_q} on YouTube.", media_info.get("url")
+
+
+def _tool_get_current_media(params, query, spoken):
+    try:
+        state = get_active_state(clean_expired=False)
+        media_state = state.get("current_media") or {}
+        title = media_state.get("title") or media_state.get("query")
+        artist = media_state.get("artist") or ""
+        if title:
+            clean_title = re.sub(r"^(?:play|playing)\s*:\s*", "", title, flags=re.I).strip()
+            by_artist = f" by {artist}" if artist and artist not in ("YouTube Music", "YouTube", "") else ""
+            return f"Currently playing '{clean_title}'{by_artist} on YouTube.", media_state.get("url")
+    except Exception:
+        pass
+    return "No song or video is currently playing. Would you like me to play something?", None
+
+
+def _tool_get_time(params, query, spoken):
+    return f"It is currently {datetime.datetime.now().strftime('%I:%M %p').lstrip('0')}.", None
+
+
+def _tool_get_date(params, query, spoken):
+    return f"Today is {datetime.datetime.now().strftime('%A, %B %d, %Y')}.", None
+
+
+def _tool_get_weather(params, query, spoken):
+    city = params.get("city", "").strip()
+    return weather_command(city if city else query) or spoken, None
+
+
+def is_app_already_running(app_name: str) -> bool:
+    """Checks if an app is already open and running on the PC."""
+    target = (app_name or "").lower().strip()
+    if not target or target in ("app", "window", "folder", "file"):
+        return False
+    try:
+        import psutil
+        for p in psutil.process_iter(["name"]):
+            name = (p.info.get("name") or "").lower().replace(".exe", "")
+            if target == name or (len(target) >= 4 and target in name):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _tool_open_app(params, query, spoken):
+    app_name = (
+        params.get("name")
+        or params.get("app")
+        or params.get("app_name")
+        or params.get("target")
+        or params.get("query")
+        or ""
+    ).strip()
+    if not app_name:
+        app_name = re.sub(r"^(?:please\s+)?(?:open|launch|start|run|show)\s+(?:the\s+|my\s+|an?\s+)?", "", query, flags=re.I).strip()
+    if not app_name:
+        return spoken or "Which application would you like to open?", None
+
+    clean_target = re.sub(r"^(?:the|that|my|an?)\s+", "", app_name, flags=re.I).strip()
+
+    # 1. Is it an installed Windows application / System tool?
+    if open_windows_app(clean_target):
+        try:
+            update_active_state("active_app", {"name": clean_target})
+        except Exception:
+            pass
+        return f"Opening {clean_target.title()}.", None
+
+    # 2. Is it an already running application?
+    if is_app_already_running(clean_target):
+        try:
+            update_active_state("active_app", {"name": clean_target})
+        except Exception:
+            pass
+        return f"{clean_target.title()} is already open.", None
+
+    return f"I couldn't find {clean_target.title()} installed on your PC.", None
+
+
+
+
+
+def _tool_open_folder(params, query, spoken):
+    folder_name = params.get("name", "downloads")
+    ok, msg = open_folder(folder_name)
+    return msg or spoken, None
+
+
+def _tool_find_file(params, query, spoken):
+    q = params.get("query", query)
+    matches, summary = find_files(q)
+    file_results = []
+    for path in matches:
+        try:
+            stat = os.stat(path)
+            file_results.append({
+                "path": path,
+                "name": os.path.basename(path),
+                "extension": os.path.splitext(path)[1].lower() or "file",
+                "folder": os.path.dirname(path),
+                "modified": datetime.datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            })
+        except (OSError, TypeError):
+            continue
+    if file_results:
+        try:
+            update_active_state("active_file", {"path": file_results[0]["path"], "name": file_results[0]["name"]})
+            update_active_state("found_files", [f["path"] for f in file_results[:5]])
+        except Exception:
+            pass
+        lines = [f"I found {len(file_results)} matching file{'s' if len(file_results) != 1 else ''}:"]
+        for i, f in enumerate(file_results[:5], 1):
+            clean_t = os.path.splitext(f["name"])[0].replace("_", " ").replace("-", " ").title()
+            lines.append(f"{i}. {clean_t} ({f['extension']})")
+        lines.append("Say 'Open number 1' or 'Open [name]' to choose.")
+        summary = "\n".join(lines)
+    return summary or spoken, None, {"file_results": file_results}
+
+
+
+
+
+def _tool_take_screenshot(params, query, spoken):
+    try:
+        from screen_vision import capture_screen_image
+        capture_screen_image("amigo_screenshot.png")
+        return "Screenshot saved.", None
+    except Exception as e:
+        logger.error(f"[Screenshot] Error: {e}")
+        return spoken or "Screenshot captured.", None
+
+
+def _tool_read_screen(params, query, spoken):
+    try:
+        from screen_vision import answer_screen_question
+        return answer_screen_question(params.get("question", query)), None
+    except Exception as e:
+        logger.error(f"[Read Screen] Error: {e}")
+        return "Could not read the screen.", None
+
+
+def _tool_type_text(params, query, spoken):
+    if app := params.get("app", "").strip():
+        open_windows_app(app)
+    if text := params.get("text", "").strip():
+        os_automation.type_text(text)
+    return spoken, None
+
+
+def _tool_press_key(params, query, spoken):
+    if keys := params.get("keys", ""):
+        os_automation.press_shortcut(keys)
+    return spoken, None
+
+
+def _is_system_audio_playing() -> bool:
+    """Checks if any application on the PC is actively outputting sound."""
+    try:
+        from pycaw.pycaw import AudioUtilities, IAudioMeterInformation
+        for s in AudioUtilities.GetAllSessions():
+            if s.Process:
+                try:
+                    meter = s._ctl.QueryInterface(IAudioMeterInformation)
+                    if meter.GetPeakValue() > 0.0005:
+                        return True
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return False
+
+
+def _tool_stop(params, query, spoken):
+    """General stop handler: halts active speech and pauses background playback."""
+    try:
+        from tts import stop_speaking
+        stop_speaking()
+    except Exception:
+        pass
+    if _is_system_audio_playing():
+        try:
+            os_automation.play_pause_media()
+        except Exception:
+            pass
+    return "Stopped.", None
+
+
+def _tool_pause_media(params, query, spoken):
+    try:
+        from tts import stop_speaking
+        stop_speaking()
+    except Exception:
+        pass
+    state = get_active_state(clean_expired=True)
+    media = state.get("current_media")
+    has_tracked_media = bool(media and isinstance(media, dict) and media.get("status") == "playing")
+    has_audio = _is_system_audio_playing()
+
+    if not has_tracked_media and not has_audio:
+        return "No music or audio is currently playing.", None
+
+    os_automation.play_pause_media()
+    if _media_update_cb:
+        _media_update_cb({"status": "paused"})
+    if has_tracked_media and isinstance(media, dict):
+        update_active_state("current_media", {**media, "status": "paused"})
+    return spoken or "Media paused.", None
+
+
+
+def _tool_play_media(params, query, spoken):
+    state = get_active_state(clean_expired=False)
+    media = state.get("current_media")
+    has_tracked_media = bool(media and isinstance(media, dict))
+    has_audio = _is_system_audio_playing()
+
+    if not has_tracked_media and not has_audio:
+        return _tool_play_youtube({"query": "music"}, query, spoken)
+
+    os_automation.play_pause_media()
+    if _media_update_cb:
+        _media_update_cb({"status": "playing"})
+    if has_tracked_media and isinstance(media, dict):
+        update_active_state("current_media", {**media, "status": "playing"})
+    return spoken or "Media resumed.", None
+
+
+def _tool_next_track(params, query, spoken):
+    state = get_active_state(clean_expired=True)
+    media = state.get("current_media")
+    if not media and not _is_system_audio_playing():
+        return "No music or playlist is currently active.", None
+    os_automation.next_track()
+    return spoken or "Next track.", None
+
+
+def _tool_prev_track(params, query, spoken):
+    state = get_active_state(clean_expired=True)
+    media = state.get("current_media")
+    if not media and not _is_system_audio_playing():
+        return "No music or playlist is currently active.", None
+    os_automation.prev_track()
+    return spoken or "Previous track.", None
+
+
+def _tool_close_app(params, query, spoken):
+    name = params.get("app_name") or params.get("name") or params.get("app") or ""
+    closed = os_automation.close_app(name)
+    if not name or name.lower() in ("current", "active", "this", "window", "app", "application", "it"):
+        return spoken or "Window closed.", None
+    if closed:
+        return spoken or f"Closed {name.title()}.", None
+    return f"{name.title()} is not currently running.", None
+
+
+def _tool_window_management(params, query, spoken):
+    action = params.get("action", "")
+    app_name = params.get("app_name", "") or params.get("name", "")
+    if action in ("close_window", "close_app") or app_name:
+        return _tool_close_app({"app_name": app_name}, query, spoken)
+    elif action:
+        os_automation.window_action(action)
+    return spoken or "Done.", None
+
+
+def _tool_calculate(params, query, spoken):
+    expr = params.get("expression", query).strip()
+    if expr:
+        res = Calc(expr)
+        if res:
+            return f"The answer is {res}.", None
+    return spoken or "Calculation completed.", None
+
+
+def _tool_chat(params, query, spoken):
+    response = get_ai_response(query)
+    extract_and_open_urls(response)
+    return response, None
+
+
+# ---------------------------------------------------------------------------
+# Simple Automation Action Map
+# (Function to call, default spoken message)
+# ---------------------------------------------------------------------------
+_SIMPLE_OS_ACTIONS = {
+    "scroll_down":        (os_automation.scroll_down, ""),
+    "scroll_up":          (os_automation.scroll_up, ""),
+    "close_tab":          (os_automation.close_tab, "Closing tab."),
+    "next_tab":           (os_automation.next_tab, ""),
+    "prev_tab":           (os_automation.prev_tab, ""),
+    "volume_up":          (os_automation.volume_up, "Volume increased."),
+    "volume_down":        (os_automation.volume_down, "Volume decreased."),
+    "mute":               (os_automation.mute, "Audio muted."),
+    "lock_pc":            (os_automation.lock_pc, "Locking your PC."),
+    "sleep_pc":           (os_automation.sleep_pc, "Putting system to sleep."),
+    "empty_recycle_bin":  (os_automation.empty_recycle_bin, "Recycle bin emptied."),
+    "cancel_shutdown":    (os_automation.cancel_shutdown, "Shutdown cancelled."),
+}
+
+
+def _make_simple_handler(func, default_msg):
+    def _handler(params, query, spoken):
+        func()
+        return spoken or default_msg, None
+    return _handler
+
+
+# ---------------------------------------------------------------------------
+# Dynamic Document Resolver & File Actions
+# ---------------------------------------------------------------------------
+
+def resolve_document_path(query_or_target: str) -> str | None:
+    """
+    Dynamically resolves a local file path from a user query or filename.
+    1. Checks direct filesystem path.
+    2. Resolves pronoun/follow-up references ('that', 'it', 'this', 'the file') from active memory state.
+    3. Searches local filesystem by name.
+    4. Searches ChromaDB vector store by semantic meaning.
+    """
+    state = get_active_state(clean_expired=False)
+    active_f = state.get("active_file")
+    active_path = active_f.get("path") if isinstance(active_f, dict) else None
+
+    if not query_or_target or not isinstance(query_or_target, str):
+        return active_path if (active_path and os.path.exists(active_path)) else None
+
+    raw = query_or_target.strip()
+    if os.path.exists(raw) and os.path.isfile(raw):
+        return raw
+
+    # Check for pronoun / follow-up references ('open that', 'open it', 'open this', 'open those', 'open the file')
+    clean = re.sub(r"^(?:open|show|read|summarize|tell me about|what is in|what does|find|locate|can you open)\s+", "", raw, flags=re.I)
+    clean = re.sub(r"\b(?:the|that|those|these|my|a|an|file|files|document|documents|doc|pdf)\b", "", clean, flags=re.I).strip()
+
+    # Check for ordinal / numbered references ("open number 1", "open number 2", "open first", "open second", "open 3rd")
+    found_list = state.get("found_files", [])
+    if isinstance(found_list, list) and found_list:
+        if m := re.search(r"\b(?:number\s+(\d+)|(\d+)(?:st|nd|rd|th)?|first|second|third|fourth|fifth)\b", raw, flags=re.I):
+            matched_text = m.group(0).lower()
+            idx = 0
+            if "1" in matched_text or "first" in matched_text:
+                idx = 0
+            elif "2" in matched_text or "second" in matched_text:
+                idx = 1
+            elif "3" in matched_text or "third" in matched_text:
+                idx = 2
+            elif "4" in matched_text or "fourth" in matched_text:
+                idx = 3
+            elif "5" in matched_text or "fifth" in matched_text:
+                idx = 4
+            if idx < len(found_list) and os.path.exists(found_list[idx]):
+                return found_list[idx]
+
+    # If the user is referring to a previous file ("that", "it", "those", "the file", "the first one", etc.)
+    if not clean or clean.lower() in ("that", "it", "this", "those", "them", "these", "first", "one", "the first one", "selected", "file", "files", "document", "documents"):
+        if active_path and os.path.exists(active_path):
+            return active_path
+
+
+    search_terms = [clean, raw] if clean and clean != raw else [raw]
+
+    # 1. Filename lookup
+    for term in search_terms:
+        if len(term) >= 2:
+            matches, _ = find_files(term)
+            if matches:
+                return matches[0]
+
+    # 2. Semantic vector lookup in ChromaDB (only for real meaningful terms, never stopwords/pronouns!)
+    for term in search_terms:
+        if len(term) >= 3 and term.lower() not in ("that", "this", "those", "them", "file", "files", "document", "documents", "open", "show"):
+            results = rag_engine.search_files_by_context(term, top_k=1)
+            if results and results[0].get("score", 0) > 0.30:
+                return results[0].get("filepath")
+
+    # 3. Contextual fallback: most recently referenced active file
+    if active_path and os.path.exists(active_path):
+        return active_path
+
+    return None
+
+
+
+def _tool_file_action(params, query, spoken):
+    """Open or execute an action on a local document."""
+    target = (params.get("path") or params.get("name") or query) if isinstance(params, dict) else query
+    action = params.get("action", "open") if isinstance(params, dict) else "open"
+    target_path = resolve_document_path(str(target))
+
+    if target_path and os.path.exists(target_path):
+        try:
+            update_active_state("active_file", {"path": target_path, "name": os.path.basename(target_path)})
+        except Exception:
+            pass
+        ok, msg = execute_file_action(target_path, action)
+        clean_name = os.path.splitext(os.path.basename(target_path))[0].replace("_", " ").replace("-", " ").title()
+        return f"Opening {clean_name}.", None
+    return "I couldn't find that file on your computer.", None
+
+
+
+# ---------------------------------------------------------------------------
+# Unified Tool Handlers Dictionary
+# ---------------------------------------------------------------------------
+UI_TOOL_HANDLERS = {
+    "web_search":        _tool_web_search,
+    "open_website":      _tool_open_website,
+    "show_images":       lambda p, q, s: (s or "Showing images.", "https://www.google.com/search?q=" + urllib.parse.quote(p.get("query", q))),
+    "play_youtube":      _tool_play_youtube,
+    "get_time":          _tool_get_time,
+    "get_date":          _tool_get_date,
+    "get_weather":       _tool_get_weather,
+    "open_app":          _tool_open_app,
+    "take_screenshot":   _tool_take_screenshot,
+    "read_screen":       _tool_read_screen,
+    "ask_about_screen":  _tool_read_screen,
+    "type_text":         _tool_type_text,
+    "search_and_type":   lambda p, q, s: (os_automation.search_and_type(p.get("text", "")), s)[1] and (s, None) or (s, None),
+    "press_key":         _tool_press_key,
+    "new_tab":           lambda p, q, s: (os_automation.new_tab(p.get("url", "")), None)[1] and (s, None) or (s, None),
+    "close_app":         _tool_close_app,
+    "window_management": _tool_window_management,
+    "wikipedia":         lambda p, q, s: (search_wikipedia(p.get("query", q)), None),
+    "calculate":         _tool_calculate,
+    "set_volume":        lambda p, q, s: (os_automation.set_volume(p.get("level", "50"))[1], None),
+    "set_brightness":    lambda p, q, s: (os_automation.set_brightness(p.get("level", "50"))[1], None),
+    "open_settings":     lambda p, q, s: (open_setting(p.get("setting", "")), None),
+    "system_status":     lambda p, q, s: (os_automation.get_system_status().get("summary", "System status checked."), None),
+    "hardware_metrics":  lambda p, q, s: (os_automation.get_system_status().get("summary", "System status checked."), None),
+    "restart_pc":        lambda p, q, s: (os_automation.restart_pc(30), None) and (s or "Restarting in 30 seconds.", None),
+    "pause_media":       _tool_pause_media,
+    "play_media":        _tool_play_media,
+    "stop":              _tool_stop,
+    "stop_speaking":     _tool_stop,
+    "next_track":        _tool_next_track,
+    "prev_track":        _tool_prev_track,
+    "set_timer":         lambda p, q, s: (handle_set_timer(p, q), None),
+
+    "stopwatch":         lambda p, q, s: (handle_set_timer(p, q), None),
+    "set_reminder":      lambda p, q, s: (handle_set_reminder(p, q), None),
+    "list_reminders":    lambda p, q, s: (handle_list_reminders(), None),
+    "cancel_reminder":   lambda p, q, s: (handle_cancel_reminder(p), None),
+    "open_folder":       _tool_open_folder,
+    "find_file":         _tool_find_file,
+    "open_file":         _tool_file_action,
+    "reveal_file":       _tool_file_action,
+    "copy_file_path":    _tool_file_action,
+    "get_current_media": _tool_get_current_media,
+    "exit":              lambda p, q, s: (s or "Goodbye!", None),
+    "chat":              _tool_chat,
+}
+
+
+# ---------------------------------------------------------------------------
+# Dynamic Document Resolver & RAG Handlers
+# ---------------------------------------------------------------------------
+
+
+def _tool_ask_document(params, query, spoken):
+    """RAG Q&A on documents or knowledge base."""
+    filepath = params.get("filepath", "") if isinstance(params, dict) else ""
+    question = (params.get("question", query) if isinstance(params, dict) else query).strip() or query
+
+    target_path = resolve_document_path(filepath) or resolve_document_path(question)
+    if target_path:
+        try:
+            update_active_state("active_file", {"path": target_path, "name": os.path.basename(target_path)})
+        except Exception:
+            pass
+        ctx = rag_engine.build_file_context(target_path, question)
+    else:
+        ctx = rag_engine.build_rag_context(question, top_k=6)
+
+    if ctx:
+        return get_ai_response(f"Answer accurately based on the document:\nQuestion: {question}", doc_context=ctx), None
+    return get_ai_response(question), None
+
+
+
+def _tool_summarize_document(params, query, spoken):
+    """Summarize a document using RAG + LLM."""
+    filepath = params.get("filepath", "") if isinstance(params, dict) else ""
+    target_path = resolve_document_path(filepath) or resolve_document_path(query)
+
+    if target_path:
+        try:
+            update_active_state("active_file", {"path": target_path, "name": os.path.basename(target_path)})
+        except Exception:
+            pass
+        ctx = rag_engine.get_file_summary_context(target_path)
+    else:
+        ctx = rag_engine.build_rag_context(query, top_k=6)
+
+    if ctx:
+        return get_ai_response(f"Summarize this document concisely:\n{query}", doc_context=ctx), None
+    return "I couldn't find that document to summarize.", None
+
+
+def _tool_find_document(params, query, spoken):
+    """Semantic file discovery — find files by meaning, not just name."""
+    q = params.get("query", query).strip()
+    results = rag_engine.search_files_by_context(q, top_k=10)
+    if results:
+        file_results = []
+        for r in results:
+            try:
+                stat = os.stat(r["filepath"])
+                file_results.append({
+                    "path": r["filepath"],
+                    "name": r["filename"],
+                    "extension": os.path.splitext(r["filepath"])[1].lower() or "file",
+                    "folder": os.path.dirname(r["filepath"]),
+                    "modified": datetime.datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                    "score": r["score"],
+                    "preview": r["preview"][:100],
+                })
+            except (OSError, TypeError):
+                continue
+        if file_results:
+            try:
+                update_active_state("active_file", {"path": file_results[0]["path"], "name": file_results[0]["name"]})
+                update_active_state("found_files", [f["path"] for f in file_results[:5]])
+            except Exception:
+                pass
+            count = len(file_results)
+            lines = [f"I found {count} matching file{'s' if count != 1 else ''}:"]
+            for i, f in enumerate(file_results[:5], 1):
+                clean_t = os.path.splitext(f["name"])[0].replace("_", " ").replace("-", " ").title()
+                lines.append(f"{i}. {clean_t} ({f['extension']})")
+            lines.append("Say 'Open number 1' or 'Open [name]' to choose.")
+            summary = "\n".join(lines)
+            return summary, None, {"file_results": file_results}
+
+    return f"No files found matching '{q}'. Try re-indexing with 'reindex my files'.", None
+
+
+
+def _tool_search_knowledge(params, query, spoken):
+    """Search across ALL indexed knowledge (docs, memory, email, calendar)."""
+    q = params.get("query", query).strip()
+    ctx = rag_engine.build_rag_context(q, top_k=5)
+    if ctx:
+        return get_ai_response(q, doc_context=ctx), None
+    return get_ai_response(q), None
+
+
+def _tool_reindex_files(params, query, spoken):
+    """Trigger manual re-indexing of local files."""
+    try:
+        from rag_indexer import get_indexer
+        indexer = get_indexer(rag_engine)
+        import threading
+        threading.Thread(target=indexer.full_index, daemon=True).start()
+        return "Re-indexing your files in the background. This may take a few minutes.", None
+    except Exception as e:
+        logger.error("[Reindex] %s", e)
+        return "Could not start re-indexing.", None
+
+
+def _tool_rag_status(params, query, spoken):
+    """Show RAG index statistics."""
+    stats = rag_engine.get_index_stats()
+    parts = []
+    if stats.get("conversations", 0):
+        parts.append(f"{stats['conversations']} conversations")
+    if stats.get("user_facts", 0):
+        parts.append(f"{stats['user_facts']} user facts")
+    if stats.get("documents", 0):
+        parts.append(f"{stats['documents']} document chunks")
+    if stats.get("emails", 0):
+        parts.append(f"{stats['emails']} emails")
+    if stats.get("calendar", 0):
+        parts.append(f"{stats['calendar']} calendar events")
+    if parts:
+        return f"My knowledge base contains: {', '.join(parts)}. Total: {stats.get('total', 0)} indexed items.", None
+    return "My knowledge base is empty. Say 'reindex my files' to start indexing.", None
+
+
+def _tool_read_emails(params, query, spoken):
+    """Read recent emails from Outlook."""
+    try:
+        from mail_integration import get_email_summary_text, is_outlook_available
+        if not is_outlook_available():
+            return "Outlook is not available. Please make sure Microsoft Outlook is installed and running.", None
+        count = int(params.get("count", 5))
+        summary = get_email_summary_text(count)
+        return get_ai_response(f"Summarize these emails naturally:\n{summary}", use_memory=False), None
+    except Exception as e:
+        logger.error("[Email] %s", e)
+        return "Could not read emails. Make sure Outlook is running.", None
+
+
+def _tool_search_emails(params, query, spoken):
+    """Search emails by keyword."""
+    try:
+        from mail_integration import search_emails, is_outlook_available
+        if not is_outlook_available():
+            return "Outlook is not available.", None
+        q = params.get("query", query).strip()
+        results = search_emails(q, max_results=5)
+        if results:
+            lines = []
+            for i, e in enumerate(results, 1):
+                lines.append(f"{i}. From: {e['sender']} | Subject: {e['subject']}")
+            return f"Found {len(results)} email{'s' if len(results)>1 else ''} matching '{q}':\n" + "\n".join(lines), None
+        return f"No emails found matching '{q}'.", None
+    except Exception as e:
+        logger.error("[Email Search] %s", e)
+        return "Could not search emails.", None
+
+
+def _tool_unread_emails(params, query, spoken):
+    """Get unread email count and previews."""
+    try:
+        from mail_integration import get_unread_count, get_unread_emails, is_outlook_available
+        if not is_outlook_available():
+            return "Outlook is not available.", None
+        count = get_unread_count()
+        if count <= 0:
+            return "You have no unread emails.", None
+        emails = get_unread_emails(min(count, 5))
+        lines = [f"You have {count} unread email{'s' if count > 1 else ''}."]
+        for i, e in enumerate(emails, 1):
+            lines.append(f"  {i}. From {e['sender']}: {e['subject']}")
+        return "\n".join(lines), None
+    except Exception as e:
+        logger.error("[Unread] %s", e)
+        return "Could not check unread emails.", None
+
+
+def _tool_draft_email(params, query, spoken):
+    """Draft an email using LLM to generate content."""
+    try:
+        from mail_integration import draft_email
+        to = params.get("to", "").strip()
+        subject = params.get("subject", "").strip()
+        prompt = params.get("prompt", query).strip()
+        # Generate email body using LLM
+        body = get_ai_response(
+            f"Write a professional email. Context: {prompt}. "
+            f"To: {to or 'recipient'}. Subject: {subject or 'as appropriate'}. "
+            f"Write ONLY the email body, no subject line or greeting prefix.",
+            use_memory=False,
+        )
+        result = draft_email(to=to, subject=subject, body=body)
+        return result, None
+    except Exception as e:
+        logger.error("[Draft] %s", e)
+        return "Could not create email draft.", None
+
+
+def _tool_get_calendar(params, query, spoken):
+    """Get today's or upcoming calendar events."""
+    try:
+        from calendar_integration import get_calendar_summary_text, get_upcoming_summary_text, is_outlook_available
+        if not is_outlook_available():
+            return "Outlook Calendar is not available.", None
+        days = int(params.get("days", 1))
+        if days <= 1:
+            summary = get_calendar_summary_text()
+        else:
+            summary = get_upcoming_summary_text(days=days)
+        return summary, None
+    except Exception as e:
+        logger.error("[Calendar] %s", e)
+        return "Could not read calendar.", None
+
+
+def _tool_search_calendar(params, query, spoken):
+    """Search calendar events by keyword."""
+    try:
+        from calendar_integration import search_events, is_outlook_available
+        if not is_outlook_available():
+            return "Outlook Calendar is not available.", None
+        q = params.get("query", query).strip()
+        results = search_events(q, days=30)
+        if results:
+            lines = [f"Found {len(results)} event{'s' if len(results)>1 else ''} matching '{q}':"]
+            for i, e in enumerate(results, 1):
+                loc = f" at {e['location']}" if e.get('location') else ""
+                lines.append(f"  {i}. {e['subject']}{loc} — {e['start']}")
+            return "\n".join(lines), None
+        return f"No calendar events found matching '{q}'.", None
+    except Exception as e:
+        logger.error("[Calendar Search] %s", e)
+        return "Could not search calendar.", None
+
+
+# Register RAG/Email/Calendar tools
+UI_TOOL_HANDLERS.update({
+    "ask_document":       _tool_ask_document,
+    "summarize_document": _tool_summarize_document,
+    "find_document":      _tool_find_document,
+    "search_knowledge":   _tool_search_knowledge,
+    "reindex_files":      _tool_reindex_files,
+    "rag_status":         _tool_rag_status,
+    "read_emails":        _tool_read_emails,
+    "search_emails":      _tool_search_emails,
+    "unread_emails":      _tool_unread_emails,
+    "draft_email":        _tool_draft_email,
+    "get_calendar":       _tool_get_calendar,
+    "search_calendar":    _tool_search_calendar,
+})
+
+# Bind simple OS automation actions
+for _key, (_func, _msg) in _SIMPLE_OS_ACTIONS.items():
+    UI_TOOL_HANDLERS[_key] = _make_simple_handler(_func, _msg)
+
+
+def execute_tool(tool: str, params: dict, query: str = "", spoken: str = "") -> tuple[str, str | None, dict]:
+    """
+    Unified entry point to execute any assistant tool.
+    Returns: (spoken_text, optional_url, optional_metadata)
+    """
+    handler = UI_TOOL_HANDLERS.get(tool, _tool_chat)
+    try:
+        result = handler(params, query, spoken)
+        if isinstance(result, tuple):
+            if len(result) == 3:
+                return result[0] or "", result[1], result[2]
+            return result[0] or "", result[1], {}
+        return result or "", None, {}
+    except Exception as e:
+        logger.error(f"Error executing tool '{tool}': {e}")
+        return spoken or f"An error occurred while executing {tool}.", None, {}
+
+
+# ---------------------------------------------------------------------------
+# Action Card Generator for React UI
+# ---------------------------------------------------------------------------
+
+def build_action_cards(tool: str, params: dict, result_metadata: dict, url: str | None, response_text: str, prompt: str) -> list[dict]:
+    """Generates structured Action Cards ONLY for tools that require interactive visual widgets."""
+    cards = []
+
+    # 1. Multi-file Disambiguation / Selection
+    if tool in ("find_file", "find_document"):
+        for index, file_item in enumerate(result_metadata.get("file_results", [])):
+            cards.append({
+                "id": f"act-file-{index}",
+                "type": "general",
+                "title": file_item.get("name", "Document"),
+                "subtitle": file_item.get("folder", "") or file_item.get("path", ""),
+                "selected": False,
+                "badge": file_item.get("extension", "file"),
+                "payload": {"tool": "open_file", "path": file_item.get("path", ""), "file": file_item},
+            })
+
+    # 2. Weather Visual Widget
+    elif tool == "get_weather":
+        city = params.get("city", "").strip()
+        w_data = get_weather_data(city) if city else get_weather_data("")
+        resolved_city = w_data.get("city", city.title() if city else "Local Area")
+        cards.append({
+            "id": "act-weather",
+            "type": "weather",
+            "title": f"Weather in {resolved_city}",
+            "subtitle": response_text,
+            "selected": True,
+            "badge": "Weather",
+            "payload": {"tool": "get_weather", "city": resolved_city, **w_data},
+        })
+
+    # 3. Live Countdown Timer & Stopwatch Widget
+    elif tool in ("set_timer", "timer", "stopwatch") or re.search(r"\b(timer|countdown|stopwatch)\b", prompt, re.IGNORECASE):
+        parsed_secs = parse_relative_seconds(prompt) or parse_relative_seconds(str(params.get("duration") or params.get("seconds") or 60)) or 60
+        is_stopwatch = tool == "stopwatch" or "stopwatch" in prompt.lower()
+        label = params.get("label") or ("Stopwatch" if is_stopwatch else "Timer")
+        mins, secs = int(parsed_secs // 60), int(parsed_secs % 60)
+
+        cards.append({
+            "id": "act-timer",
+            "type": "stopwatch" if is_stopwatch else "timer",
+            "title": "Stopwatch" if is_stopwatch else f"Timer: {label}",
+            "subtitle": "Live Active Stopwatch" if is_stopwatch else f"{mins}m {secs}s countdown",
+            "selected": True,
+            "badge": "Stopwatch" if is_stopwatch else "Timer",
+            "payload": {
+                "tool": "stopwatch" if is_stopwatch else "set_timer",
+                "duration_seconds": parsed_secs,
+                "seconds": parsed_secs,
+                "label": label,
+                "mode": "stopwatch" if is_stopwatch else "timer",
+            },
+        })
+
+    return cards
+

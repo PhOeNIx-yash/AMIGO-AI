@@ -127,6 +127,34 @@
 /* Dynamic Glowing Text Caret */
 .text-input-glowing-cursor {
   caret-color: var(--theme-caret-color, currentColor);
+  text-shadow: 0 0 7px var(--theme-caret-glow, transparent);
+  filter: drop-shadow(0 0 3px var(--theme-caret-glow, transparent));
+  transition: filter 180ms ease, text-shadow 180ms ease;
+}
+
+.text-input-glowing-cursor:focus {
+  text-shadow: 0 0 9px var(--theme-caret-glow, transparent);
+  filter: drop-shadow(0 0 6px var(--theme-caret-glow, transparent));
+}
+
+.voice-input-shell {
+  position: relative;
+  isolation: isolate;
+  animation: voice-shell-breathe 5s ease-in-out infinite;
+}
+
+.voice-input-shell:focus-within {
+  animation-duration: 2.8s;
+  filter: drop-shadow(0 0 7px var(--voice-glow, transparent));
+}
+
+@keyframes voice-shell-breathe {
+  0%, 100% {
+    filter: drop-shadow(0 0 2px var(--voice-glow, transparent));
+  }
+  50% {
+    filter: drop-shadow(0 0 7px var(--voice-glow, transparent));
+  }
 }
 
 /* Prevent browser autofill background color overrides and forced white styling */

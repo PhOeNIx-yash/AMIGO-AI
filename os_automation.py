@@ -1,5 +1,7 @@
 import ctypes
 import os
+import re
+import subprocess
 import time
 
 import pyautogui
@@ -149,6 +151,72 @@ def window_action(action):
         return False
 
 
+def close_app(app_name: str = "") -> bool:
+    """Closes an application by process or window title, or closes active window only if no target was named."""
+    raw = (app_name or "").strip().rstrip(".!?,;:")
+    clean = re.sub(r"[^\w\s-]", "", raw.lower()).strip()
+
+    # If the user explicitly asks to close the current window/this app without naming a specific app
+    if not clean or clean in (
+        "current", "active", "this", "window", "app", "application",
+        "current app", "current application", "active window", "this app",
+        "the app", "this window", "it",
+    ):
+        return window_action("close_window")
+
+    closed = False
+
+    # 1. Close via matching running process names (e.g. systemsettings, valorant, chrome, notepad)
+    try:
+        import psutil
+        for proc in psutil.process_iter(['pid', 'name']):
+            try:
+                pname = (proc.info['name'] or '').lower()
+                stem = pname.replace(".exe", "")
+                if clean == stem or clean == pname or clean in stem or (len(clean) >= 4 and stem in clean):
+                    proc.terminate()
+                    closed = True
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                pass
+        if closed:
+            print(f"[OS Automation] Closed process matching '{clean}'")
+    except Exception as e:
+        print(f"[OS Automation] psutil close note: {e}")
+
+    # 2. Close via matching top-level window titles (e.g. "Settings", "VALORANT", "Notepad")
+    try:
+        import win32gui, win32con
+        def _close_win_enum(hwnd, _):
+            nonlocal closed
+            if win32gui.IsWindowVisible(hwnd):
+                title = (win32gui.GetWindowText(hwnd) or "").lower()
+                if clean in title:
+                    win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+                    closed = True
+        win32gui.EnumWindows(_close_win_enum, None)
+    except Exception:
+        pass
+
+    # 3. Taskkill fallback for stubborn games / applications
+    if not closed:
+        try:
+            import subprocess
+            target = f"{clean}.exe" if not clean.endswith(".exe") else clean
+            r = subprocess.run(
+                ["taskkill", "/IM", target, "/T", "/F"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2
+            )
+            if r.returncode == 0:
+                closed = True
+                print(f"[OS Automation] Taskkill closed '{target}'")
+        except Exception:
+            pass
+
+    # IMPORTANT: Never send Alt+F4 when a specific app name was requested,
+    # to avoid closing Amigo itself or the user's currently focused window!
+    return closed
+
+
 def lock_pc():
     """Locks the Windows desktop workstation."""
     try:
@@ -269,3 +337,81 @@ def mute():
     except Exception as e:
         print(f"[OS Automation] Error toggling mute: {e}")
         return False
+
+
+def set_volume(level: int | str) -> tuple[bool, str]:
+    """Sets master system volume to a precise percentage (0-100) using Windows Core Audio API."""
+    try:
+        level_int = max(0, min(100, int(level)))
+        import pythoncom
+        from pycaw.pycaw import AudioUtilities
+        pythoncom.CoInitialize()
+        try:
+            devices = AudioUtilities.GetSpeakers()
+            if hasattr(devices, "EndpointVolume"):
+                devices.EndpointVolume.SetMasterVolumeLevelScalar(level_int / 100.0, None)
+            else:
+                from ctypes import POINTER, cast
+                from comtypes import CLSCTX_ALL
+                from pycaw.pycaw import IAudioEndpointVolume
+                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                volume = cast(interface, POINTER(IAudioEndpointVolume))
+                volume.SetMasterVolumeLevelScalar(level_int / 100.0, None)
+            return True, f"Volume set to {level_int} percent."
+        finally:
+            pythoncom.CoUninitialize()
+    except Exception as e:
+        print(f"[OS Automation] Volume Error: {e}")
+        return False, f"Could not adjust volume to {level} percent."
+
+
+def set_brightness(level: int | str) -> tuple[bool, str]:
+    """Sets monitor screen brightness (0-100) via screen_brightness_control or WMI."""
+    try:
+        level_int = max(0, min(100, int(level)))
+        success = False
+        try:
+            import screen_brightness_control as sbc
+            sbc.set_brightness(level_int)
+            success = True
+        except Exception:
+            pass
+
+        if not success:
+            ps_cmd = f"(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1, {level_int})"
+            subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], capture_output=True, timeout=4)
+            success = True
+
+        return True, f"Screen brightness set to {level_int} percent."
+    except Exception as e:
+        print(f"[OS Automation] Brightness Error: {e}")
+        return False, f"Could not adjust brightness to {level}."
+
+
+def get_system_status() -> dict:
+    """Returns real-time system hardware metrics (CPU, RAM, Battery, Plugged status)."""
+    import psutil
+    try:
+        cpu = psutil.cpu_percent(interval=0.1)
+        mem = psutil.virtual_memory()
+        battery = psutil.sensors_battery()
+        bat_percent = round(battery.percent, 1) if battery else None
+        bat_status = f"{bat_percent:.0f} percent" if bat_percent is not None else "unknown"
+        status_msg = f"CPU is at {cpu:.0f} percent, RAM usage is {mem.percent:.0f} percent, and Battery is at {bat_status}."
+        return {
+            "cpu": round(cpu, 1),
+            "ram": round(mem.percent, 1),
+            "battery": bat_percent,
+            "plugged": battery.power_plugged if battery else None,
+            "summary": status_msg,
+        }
+    except Exception as e:
+        print(f"[OS Automation] System Status Error: {e}")
+        return {
+            "cpu": 0,
+            "ram": 0,
+            "battery": None,
+            "plugged": None,
+            "summary": "Could not read system hardware status.",
+        }
+

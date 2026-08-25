@@ -9,9 +9,6 @@ import {
   Zap,
   Code2,
   ExternalLink,
-  Sliders,
-  CheckCircle2,
-  ChevronRight,
   CloudSun,
   Sun,
   CloudRain,
@@ -30,7 +27,19 @@ import {
   Timer,
   AlarmClock,
   Clock,
-  Plus,
+  FolderOpen,
+  FileText,
+  Copy,
+  Music,
+  SkipForward,
+  SkipBack,
+  Volume2,
+  VolumeX,
+  Sparkles,
+  Globe,
+  Settings,
+  Cpu,
+  X,
 } from "lucide-react";
 import { ActionCardItem, ColorTheme } from "../types";
 import { COLOR_THEMES } from "../data/presets";
@@ -42,6 +51,7 @@ interface ActionCardProps {
   onExecuteSingleItem?: (item: ActionCardItem) => void;
   onConfirm: () => void;
   onCancel: () => void;
+  onRetry?: () => void;
   isDark: boolean;
   colorTheme?: ColorTheme;
 }
@@ -211,6 +221,15 @@ const WeatherCardPalette: React.FC<{
   const city = weatherData.city || initialCity || "Local Area";
   const iconType = weatherData.icon_type || "sunny";
 
+  const morningC = weatherData.morning_c ?? weatherData.morningC ?? tempC;
+  const middayC = weatherData.midday_c ?? weatherData.middayC ?? tempC;
+  const eveningC = weatherData.evening_c ?? weatherData.eveningC ?? tempC;
+
+  const formatTemp = (val: any) => {
+    if (val === "" || val === undefined || isNaN(Number(val))) return "--";
+    return unit === "C" ? `${Math.round(Number(val))}°C` : `${Math.round((Number(val) * 9) / 5 + 32)}°F`;
+  };
+
   const displayTemp = tempC === "" && loading
     ? "..."
     : unit === "C"
@@ -225,13 +244,11 @@ const WeatherCardPalette: React.FC<{
         isDark ? "text-white" : "text-slate-900"
       }`}
     >
-      {/* Ambient Cloud / Sun Glow Aura */}
       <div
         className="absolute -right-6 -top-6 w-32 h-32 rounded-full blur-2xl pointer-events-none opacity-40 transition-colors duration-700"
         style={{ background: `radial-gradient(circle, ${palette.glowColor} 0%, transparent 70%)` }}
       />
 
-      {/* Header: Location, Live Status & Controls */}
       <div className="flex items-center justify-between mb-3 relative z-10">
         <div className="flex items-center space-x-2 min-w-0">
           <span className="relative flex h-2 w-2 flex-shrink-0">
@@ -246,101 +263,78 @@ const WeatherCardPalette: React.FC<{
           </span>
         </div>
 
-        {/* Action Controls: Search, Refresh, C/F Toggle */}
         <div className="flex items-center space-x-1.5">
           <button
             type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              setShowSearch(!showSearch);
-            }}
-            className="p-1 rounded-lg opacity-70 hover:opacity-100 hover:bg-white/10 transition-all text-xs"
-            title="Search City Weather"
+            onClick={() => setShowSearch(!showSearch)}
+            className="p-1 rounded-lg bg-white/10 hover:bg-white/20 transition-all border border-white/10"
+            title="Search another city"
           >
             <Search className="w-3.5 h-3.5" />
           </button>
 
           <button
             type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              sfx.playClick();
-              fetchLiveWeather(city);
-            }}
-            className={`p-1 rounded-lg opacity-70 hover:opacity-100 hover:bg-white/10 transition-all text-xs ${
+            onClick={() => fetchLiveWeather(city)}
+            className={`p-1 rounded-lg bg-white/10 hover:bg-white/20 transition-all border border-white/10 ${
               loading ? "animate-spin text-sky-400" : ""
             }`}
-            title="Refresh Live Meteorological Radar"
+            title="Refresh live telemetry"
           >
             <RotateCw className="w-3.5 h-3.5" />
           </button>
 
-          {/* C/F Unit Toggle */}
-          <div className="flex items-center space-x-0.5 p-0.5 rounded-lg bg-black/15 dark:bg-white/10 text-xs font-semibold">
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setUnit("C");
-              }}
-              className={`px-1.5 py-0.5 rounded-md transition-all ${
-                unit === "C" ? "bg-sky-500 text-white shadow-sm" : "opacity-60 hover:opacity-100"
-              }`}
-            >
-              °C
-            </button>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setUnit("F");
-              }}
-              className={`px-1.5 py-0.5 rounded-md transition-all ${
-                unit === "F" ? "bg-sky-500 text-white shadow-sm" : "opacity-60 hover:opacity-100"
-              }`}
-            >
-              °F
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => setUnit(unit === "C" ? "F" : "C")}
+            className="px-2 py-0.5 rounded-lg text-xs font-mono font-semibold bg-white/10 hover:bg-white/20 transition-all border border-white/10"
+            title="Toggle Celsius / Fahrenheit"
+          >
+            °{unit}
+          </button>
         </div>
       </div>
 
-      {/* City Search Form (Expandable) */}
       {showSearch && (
-        <form onSubmit={handleSearchSubmit} className="mb-3 relative z-10 flex space-x-1.5">
-          <input
-            type="text"
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            placeholder="Type city name (e.g. Tokyo, Paris)..."
-            className="flex-1 px-3 py-1 text-xs rounded-xl bg-black/20 dark:bg-white/10 border border-white/20 focus:outline-none focus:border-sky-400"
-            autoFocus
-            onClick={(e) => e.stopPropagation()}
-          />
-          <button
-            type="submit"
-            className="px-3 py-1 rounded-xl text-xs font-semibold bg-sky-500 text-white shadow-sm"
-          >
-            Search
-          </button>
+        <form onSubmit={handleSearchSubmit} className="mb-3 relative z-10">
+          <div className="flex items-center space-x-1.5">
+            <input
+              type="text"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder="Enter city (e.g. Tokyo, London, Paris)..."
+              autoFocus
+              className={`w-full px-3 py-1.5 rounded-xl text-xs border outline-none transition-all ${
+                isDark
+                  ? "bg-black/40 border-white/20 text-white placeholder:text-white/40 focus:border-sky-400"
+                  : "bg-white/80 border-black/20 text-slate-900 placeholder:text-black/40 focus:border-sky-600"
+              }`}
+            />
+            <button
+              type="submit"
+              className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-sky-500 text-white hover:bg-sky-600 transition-colors shadow-sm flex-shrink-0"
+            >
+              Go
+            </button>
+          </div>
         </form>
       )}
 
-      {/* Main Hero: Animated Weather Icon + Giant Temperature & Condition */}
       <div className="flex items-center justify-between my-2 relative z-10">
-        <div className="flex items-center space-x-4">
+        <div className="flex items-center space-x-3.5">
           <AnimatedWeatherIcon iconType={iconType} isDark={isDark} />
           <div>
             <div className={`text-3xl sm:text-4xl font-bold tracking-tight bg-gradient-to-r ${palette.tempGradient} bg-clip-text text-transparent`}>
               {displayTemp}
             </div>
-            <div className="text-sm font-medium opacity-90 mt-0.5">{condition}</div>
+            <div className="text-xs sm:text-sm font-medium opacity-80 mt-0.5">
+              {condition}
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Weather Stats Grid */}
-      <div className="grid grid-cols-4 gap-2 mt-4 pt-3 border-t border-sky-500/20 text-center relative z-10">
+      <div className="grid grid-cols-4 gap-2 mt-3.5 pt-3 border-t border-sky-500/15 relative z-10">
         <div className="flex flex-col items-center p-1.5 rounded-xl bg-sky-500/10 border border-sky-500/15">
           <Droplets className="w-3.5 h-3.5 text-sky-400 mb-1" />
           <span className="text-[10px] opacity-60">Humidity</span>
@@ -366,20 +360,19 @@ const WeatherCardPalette: React.FC<{
         </div>
       </div>
 
-      {/* 3-Period Dynamic Meteorological Outlook */}
-      {tempC !== "" && !isNaN(Number(tempC)) && (
+      {tempC !== "" && (
         <div className="flex items-center justify-between mt-3 pt-2.5 border-t border-sky-500/15 text-[11px] opacity-85 relative z-10 px-1">
           <div className="flex items-center space-x-1">
             <span>🌅 Morning</span>
-            <span className="font-semibold">{unit === "C" ? `${Math.max(0, Number(tempC) - 3)}°C` : `${Math.round((Number(tempC) - 3) * 1.8 + 32)}°F`}</span>
+            <span className="font-semibold">{formatTemp(morningC)}</span>
           </div>
           <div className="flex items-center space-x-1">
             <span>☀️ Midday</span>
-            <span className="font-semibold">{unit === "C" ? `${Number(tempC)}°C` : `${tempF}°F`}</span>
+            <span className="font-semibold">{formatTemp(middayC)}</span>
           </div>
           <div className="flex items-center space-x-1">
             <span>🌙 Evening</span>
-            <span className="font-semibold">{unit === "C" ? `${Math.max(0, Number(tempC) - 2)}°C` : `${Math.round((Number(tempC) - 2) * 1.8 + 32)}°F`}</span>
+            <span className="font-semibold">{formatTemp(eveningC)}</span>
           </div>
         </div>
       )}
@@ -644,69 +637,152 @@ export const ActionCard: React.FC<ActionCardProps> = ({
   onExecuteSingleItem,
   onConfirm,
   onCancel,
+  onRetry,
   isDark,
   colorTheme = "violet",
 }) => {
   const theme = COLOR_THEMES[colorTheme] || COLOR_THEMES.violet;
-  const getIcon = (type: string) => {
-    switch (type) {
-      case "timer":
-      case "stopwatch":
-        return (
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-amber-500 via-orange-500 to-rose-500 flex items-center justify-center shadow-md shadow-amber-500/20 text-white flex-shrink-0">
-            <Timer className="w-4 h-4" />
-          </div>
-        );
-      case "weather":
-        return (
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-sky-500 via-cyan-500 to-amber-400 flex items-center justify-center shadow-md shadow-sky-500/20 text-white flex-shrink-0">
-            <CloudSun className="w-4 h-4" />
-          </div>
-        );
-      case "message":
-        return (
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-emerald-500 to-green-400 flex items-center justify-center shadow-md shadow-emerald-500/20 text-white flex-shrink-0">
-            <MessageSquare className="w-4 h-4" />
-          </div>
-        );
-      case "restaurant":
-        return (
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-rose-500 to-orange-400 flex items-center justify-center shadow-md shadow-rose-500/20 text-white flex-shrink-0">
-            <Utensils className="w-4 h-4" />
-          </div>
-        );
-      case "map":
-        return (
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-blue-500 to-cyan-400 flex items-center justify-center shadow-md shadow-blue-500/20 text-white flex-shrink-0">
-            <MapPin className="w-4 h-4" />
-          </div>
-        );
-      case "device":
-        return (
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-amber-500 to-yellow-400 flex items-center justify-center shadow-md shadow-amber-500/20 text-white flex-shrink-0">
-            <Zap className="w-4 h-4" />
-          </div>
-        );
-      case "code":
-        return (
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-purple-600 to-indigo-500 flex items-center justify-center shadow-md shadow-purple-600/20 text-white flex-shrink-0">
-            <Code2 className="w-4 h-4" />
-          </div>
-        );
-      case "link":
-        return (
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-sky-500 to-blue-500 flex items-center justify-center shadow-md shadow-sky-500/20 text-white flex-shrink-0">
-            <ExternalLink className="w-4 h-4" />
-          </div>
-        );
-      case "calendar":
-      default:
-        return (
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-purple-500 to-indigo-400 flex items-center justify-center shadow-md shadow-purple-500/20 text-white flex-shrink-0">
-            <Calendar className="w-4 h-4" />
-          </div>
-        );
+  const getIcon = (item: ActionCardItem) => {
+    const type = (item.type || "").toLowerCase();
+    const badge = (item.badge || "").toLowerCase();
+    const tool = (item.payload?.tool || "").toLowerCase();
+    const title = (item.title || "").toLowerCase();
+
+    // Media, Music & YouTube Audio/Video
+    if (
+      type === "media" ||
+      badge === "media" ||
+      badge === "youtube" ||
+      badge === "music" ||
+      tool.includes("youtube") ||
+      tool.includes("media") ||
+      title.startsWith("play:") ||
+      title.startsWith("playing")
+    ) {
+      return (
+        <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-rose-500 via-pink-500 to-purple-600 flex items-center justify-center shadow-md shadow-rose-500/25 text-white flex-shrink-0">
+          <Music className="w-4 h-4" />
+        </div>
+      );
     }
+
+    // Weather & Meteorology
+    if (type === "weather" || badge === "weather" || tool.includes("weather") || title.includes("weather")) {
+      return (
+        <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-sky-500 via-cyan-500 to-amber-400 flex items-center justify-center shadow-md shadow-sky-500/25 text-white flex-shrink-0">
+          <CloudSun className="w-4 h-4" />
+        </div>
+      );
+    }
+
+    // Timer & Stopwatch
+    if (type === "timer" || type === "stopwatch" || badge === "timer" || badge === "stopwatch" || tool.includes("timer")) {
+      return (
+        <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-amber-500 via-orange-500 to-rose-500 flex items-center justify-center shadow-md shadow-amber-500/25 text-white flex-shrink-0">
+          <Timer className="w-4 h-4" />
+        </div>
+      );
+    }
+
+    // Reminders & Clock
+    if (badge === "reminder" || tool.includes("reminder") || badge === "clock" || tool.includes("time")) {
+      return (
+        <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-orange-500 to-rose-500 flex items-center justify-center shadow-md shadow-orange-500/25 text-white flex-shrink-0">
+          <Clock className="w-4 h-4" />
+        </div>
+      );
+    }
+
+    // File Operations & Folders
+    if (type === "file" || badge === "file" || badge === "folder" || tool.includes("file") || tool.includes("folder") || title.includes("file")) {
+      return (
+        <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-blue-500 via-indigo-500 to-cyan-500 flex items-center justify-center shadow-md shadow-indigo-500/25 text-white flex-shrink-0">
+          <FolderOpen className="w-4 h-4" />
+        </div>
+      );
+    }
+
+    // Web Search, Google, Browser & Links
+    if (type === "link" || badge === "web" || badge === "google" || tool.includes("search") || tool.includes("google") || item.url) {
+      return (
+        <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-sky-500 via-blue-600 to-indigo-600 flex items-center justify-center shadow-md shadow-sky-500/25 text-white flex-shrink-0">
+          <Search className="w-4 h-4" />
+        </div>
+      );
+    }
+
+    // System Settings
+    if (badge === "settings" || tool.includes("settings") || title.includes("settings")) {
+      return (
+        <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-slate-600 via-slate-700 to-indigo-600 flex items-center justify-center shadow-md shadow-slate-600/25 text-white flex-shrink-0">
+          <Settings className="w-4 h-4" />
+        </div>
+      );
+    }
+
+    // System Status, CPU & Hardware
+    if (type === "device" || badge === "system" || badge === "hardware" || tool.includes("system") || tool.includes("brightness") || tool.includes("volume")) {
+      return (
+        <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-amber-500 via-yellow-500 to-orange-500 flex items-center justify-center shadow-md shadow-amber-500/25 text-white flex-shrink-0">
+          <Cpu className="w-4 h-4" />
+        </div>
+      );
+    }
+
+    // Message & Conversational Notes
+    if (type === "message" || badge === "message" || tool.includes("chat")) {
+      return (
+        <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-emerald-500 to-green-400 flex items-center justify-center shadow-md shadow-emerald-500/25 text-white flex-shrink-0">
+          <MessageSquare className="w-4 h-4" />
+        </div>
+      );
+    }
+
+    // Restaurants & Food
+    if (type === "restaurant" || badge === "food") {
+      return (
+        <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-rose-500 to-orange-400 flex items-center justify-center shadow-md shadow-rose-500/25 text-white flex-shrink-0">
+          <Utensils className="w-4 h-4" />
+        </div>
+      );
+    }
+
+    // Maps & Location
+    if (type === "map" || badge === "map" || badge === "location") {
+      return (
+        <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-blue-500 to-cyan-400 flex items-center justify-center shadow-md shadow-blue-500/25 text-white flex-shrink-0">
+          <MapPin className="w-4 h-4" />
+        </div>
+      );
+    }
+
+    // Code & Scripts
+    if (type === "code" || badge === "code" || tool.includes("code")) {
+      return (
+        <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-purple-600 to-indigo-500 flex items-center justify-center shadow-md shadow-purple-600/25 text-white flex-shrink-0">
+          <Code2 className="w-4 h-4" />
+        </div>
+      );
+    }
+
+    // Calendar
+    if (type === "calendar" || badge === "calendar" || tool.includes("calendar")) {
+      return (
+        <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-purple-500 to-indigo-400 flex items-center justify-center shadow-md shadow-purple-500/25 text-white flex-shrink-0">
+          <Calendar className="w-4 h-4" />
+        </div>
+      );
+    }
+
+    // Default: Dynamic Theme Accent Sparkles
+    return (
+      <div
+        className="w-8 h-8 rounded-xl flex items-center justify-center shadow-md text-white flex-shrink-0"
+        style={{ background: theme.gradient }}
+      >
+        <Sparkles className="w-4 h-4" />
+      </div>
+    );
   };
 
   return (
@@ -736,36 +812,62 @@ export const ActionCard: React.FC<ActionCardProps> = ({
             : "acrylic-glass-light text-slate-900 border-black/10 shadow-indigo-200/50"
         }`}
       >
-        {/* Interactive Connected Subsystem Header */}
+        {/* Clean Header with Quick Actions Title & Close Button */}
         <div className="flex items-center justify-between mb-3.5 pb-2.5 border-b border-white/10 dark:border-white/10 text-xs">
           <div className="flex items-center space-x-2">
             <div
               className="w-5 h-5 rounded-lg flex items-center justify-center text-white text-[10px]"
               style={{ background: theme.gradient }}
             >
-              <Zap className="w-3 h-3" />
+              <Sparkles className="w-3 h-3" />
             </div>
-            <span className="font-semibold text-[11px] uppercase tracking-wider opacity-80">
-              Intent Bridge Connected
+            <span className="font-semibold text-xs tracking-wide opacity-90">
+              Quick Actions
             </span>
           </div>
 
-          <div
-            className="flex items-center space-x-1.5 px-2 py-0.5 rounded-full text-[10px] font-mono border"
-            style={{
-              backgroundColor: `${theme.primary}18`,
-              borderColor: `${theme.primary}35`,
-              color: theme.accent,
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              sfx.playClick();
+              onCancel();
             }}
+            className="p-1 rounded-lg opacity-60 hover:opacity-100 hover:bg-white/10 transition-all border border-transparent hover:border-white/10"
+            title="Close"
           >
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-            <span>Action Ready</span>
-          </div>
+            <X className="w-3.5 h-3.5" />
+          </button>
         </div>
 
         {/* Action Items List */}
         <div className="space-y-3 mb-5 max-h-80 overflow-y-auto custom-scrollbar pr-0.5">
           {items.map((item, idx) => {
+            if (item.payload?.file) {
+              const file = item.payload.file;
+              const actionItem = (action: string): ActionCardItem => ({
+                ...item,
+                id: `${item.id}-${action}`,
+                payload: { tool: action === "open" ? "open_file" : action === "reveal" ? "reveal_file" : "copy_file_path", action, path: file.path },
+              });
+              return (
+                <motion.div key={item.id} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: idx * 0.06 + 0.05, duration: 0.3 }} className={`rounded-xl border p-3 ${isDark ? "border-white/10 bg-white/[0.04]" : "border-black/10 bg-white/80"}`}>
+                  <div className="flex min-w-0 items-start gap-3">
+                    <FileText className="mt-0.5 h-4 w-4 flex-shrink-0" style={{ color: theme.accent }} />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-semibold" title={file.name}>{file.name}</p>
+                      <p className="truncate text-[11px] opacity-60" title={file.folder}>{file.folder}</p>
+                      <p className="mt-1 text-[10px] opacity-50">{file.extension} · {new Date(file.modified).toLocaleString()}</p>
+                    </div>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    <button type="button" onClick={() => onExecuteSingleItem?.(actionItem("open"))} className="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-semibold text-white" style={{ background: theme.gradient }}><FileText className="h-3 w-3" />Open</button>
+                    <button type="button" onClick={() => onExecuteSingleItem?.(actionItem("reveal"))} className="flex items-center gap-1 rounded-md border border-white/15 px-2 py-1 text-[10px] font-semibold"><FolderOpen className="h-3 w-3" />Reveal</button>
+                    <button type="button" onClick={() => onExecuteSingleItem?.(actionItem("copy"))} className="flex items-center gap-1 rounded-md border border-white/15 px-2 py-1 text-[10px] font-semibold"><Copy className="h-3 w-3" />Copy Path</button>
+                  </div>
+                </motion.div>
+              );
+            }
             if (
               item.type === "timer" ||
               item.type === "stopwatch" ||
@@ -801,6 +903,10 @@ export const ActionCard: React.FC<ActionCardProps> = ({
               );
             }
 
+
+
+
+
             return (
               <motion.div
                 key={item.id}
@@ -828,7 +934,7 @@ export const ActionCard: React.FC<ActionCardProps> = ({
                 }`}
               >
                 <div className="flex items-center space-x-3.5 min-w-0 pr-2 flex-1">
-                  {getIcon(item.type)}
+                  {getIcon(item)}
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center space-x-2">
                       <span className="text-sm font-medium leading-snug truncate">{item.title}</span>
@@ -890,57 +996,23 @@ export const ActionCard: React.FC<ActionCardProps> = ({
 
         {/* Buttons Footer */}
         <div className="pt-2">
-          {items.every(
-            (i) =>
-              i.type === "weather" ||
-              i.type === "timer" ||
-              i.type === "stopwatch" ||
-              i.payload?.tool === "get_weather" ||
-              i.payload?.tool === "set_timer" ||
-              i.payload?.tool === "stopwatch"
-          ) ? (
-            <button
-              id="action-cancel-button"
-              type="button"
-              onClick={onCancel}
-              className={`w-full py-2 px-4 rounded-xl text-xs font-semibold transition-all duration-200 border active:scale-95 ${
-                isDark
-                  ? "bg-white/5 hover:bg-white/10 text-slate-300 border-white/10 hover:border-white/20"
-                  : "bg-black/5 hover:bg-black/10 text-slate-700 border-black/10 hover:border-black/20"
-              }`}
-            >
-              Close Widget
+          {onRetry && (
+            <button type="button" onClick={onRetry} className="mb-2 flex w-full items-center justify-center gap-1.5 rounded-xl border border-white/10 px-4 py-2 text-xs font-semibold transition-colors hover:bg-white/10">
+              <RotateCcw className="h-3.5 w-3.5" />Retry search
             </button>
-          ) : (
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                id="action-cancel-button"
-                type="button"
-                onClick={onCancel}
-                className={`w-full py-2.5 px-4 rounded-xl text-sm font-medium transition-all duration-200 border active:scale-95 ${
-                  isDark
-                    ? "bg-white/5 hover:bg-white/10 text-slate-300 border-white/10 hover:border-white/20"
-                    : "bg-black/5 hover:bg-black/10 text-slate-700 border-black/10 hover:border-black/20"
-                }`}
-              >
-                Dismiss
-              </button>
-
-              <button
-                id="action-confirm-button"
-                type="button"
-                onClick={onConfirm}
-                className="w-full py-2.5 px-4 rounded-xl text-sm font-semibold text-white shadow-lg transition-all duration-200 active:scale-[0.98] hover:scale-[1.02] flex items-center justify-center space-x-1.5"
-                style={{
-                  background: theme.gradient,
-                  boxShadow: `0 8px 20px ${theme.glow}`,
-                }}
-              >
-                <span>Proceed</span>
-                <ChevronRight className="w-4 h-4" />
-              </button>
-            </div>
           )}
+          <button
+            id="action-cancel-button"
+            type="button"
+            onClick={onCancel}
+            className={`w-full py-2 px-4 rounded-xl text-xs font-semibold transition-all duration-200 border active:scale-95 flex items-center justify-center space-x-1.5 ${
+              isDark
+                ? "bg-white/5 hover:bg-white/10 text-slate-300 border-white/10 hover:border-white/20"
+                : "bg-black/5 hover:bg-black/10 text-slate-700 border-black/10 hover:border-black/20"
+            }`}
+          >
+            <span>Close</span>
+          </button>
         </div>
       </div>
     </motion.div>

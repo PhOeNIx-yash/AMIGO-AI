@@ -1,20 +1,21 @@
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   History as HistoryIcon,
   Play,
-  RotateCcw,
   Trash2,
   Search,
   Clock,
   ChevronRight,
+  ChevronDown,
+  Check,
   MessageSquare,
   Utensils,
   MapPin,
   Calendar,
   Sparkles,
   X,
-  CornerDownLeft,
+  Pin,
 } from "lucide-react";
 import { HistoryEntry, ColorTheme } from "../types";
 import { COLOR_THEMES } from "../data/presets";
@@ -43,18 +44,40 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
 }) => {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [intentFilter, setIntentFilter] = useState("all");
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());
+  const dropdownRef = useRef<HTMLDivElement>(null);
   const theme = COLOR_THEMES[colorTheme] || COLOR_THEMES.violet;
+
+  // Close dropdown on click outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsDropdownOpen(false);
+      }
+    };
+    if (isDropdownOpen) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [isDropdownOpen]);
 
   const toggleExpand = (id: string) => {
     sfx.playClick();
     setExpandedId((prev) => (prev === id ? null : id));
   };
 
-  const filteredHistory = history.filter((item) =>
-    item.prompt.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    item.response.displayTitle?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    item.response.intent?.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const intentOptions = Array.from(new Set(history.map((item) => item.response.intent).filter(Boolean)));
+  const filteredHistory = history.filter((item) => {
+    const matchesSearch =
+      item.prompt.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      item.response.displayTitle?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      item.response.intent?.toLowerCase().includes(searchQuery.toLowerCase());
+    return matchesSearch && (intentFilter === "all" || item.response.intent === intentFilter);
+  }).sort((a, b) => Number(pinnedIds.has(b.id)) - Number(pinnedIds.has(a.id)));
 
   const formatTime = (timestamp: number | string | undefined) => {
     if (!timestamp) return "Just now";
@@ -173,6 +196,94 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
                 </button>
               )}
             </div>
+            {/* Custom Fluent Filter Dropdown */}
+            <div className="relative mt-2" ref={dropdownRef}>
+              <button
+                type="button"
+                id="history-intent-filter-btn"
+                onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+                className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium border transition-all duration-200 ${
+                  isDark
+                    ? "bg-white/[0.04] hover:bg-white/[0.08] border-white/10 text-slate-200"
+                    : "bg-black/[0.04] hover:bg-black/[0.07] border-black/10 text-slate-800"
+                } ${isDropdownOpen ? (isDark ? "border-indigo-500/60 ring-2 ring-indigo-500/25 bg-white/[0.07]" : "border-indigo-500 ring-2 ring-indigo-500/20 bg-black/[0.06]") : ""}`}
+              >
+                <div className="flex items-center space-x-2 truncate">
+                  <span className="opacity-50 text-[11px]">Filter:</span>
+                  <span className="capitalize font-semibold text-xs">
+                    {intentFilter === "all" ? "All activity" : intentFilter.replaceAll("_", " ")}
+                  </span>
+                </div>
+                <ChevronDown
+                  className={`w-3.5 h-3.5 opacity-60 transition-transform duration-200 flex-shrink-0 ${
+                    isDropdownOpen ? "rotate-180" : ""
+                  }`}
+                />
+              </button>
+
+              {/* Floating Glassmorphic Dropdown Menu */}
+              <AnimatePresence>
+                {isDropdownOpen && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -6, scale: 0.97 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: -6, scale: 0.97 }}
+                    transition={{ duration: 0.15, ease: "easeOut" }}
+                    className={`absolute left-0 right-0 top-full mt-1.5 z-50 rounded-xl p-1.5 shadow-2xl border backdrop-blur-2xl max-h-56 overflow-y-auto ${
+                      isDark
+                        ? "bg-[#111022]/98 border-white/15 text-slate-200 shadow-black/80 ring-1 ring-white/10"
+                        : "bg-white/98 border-black/10 text-slate-800 shadow-slate-400/40 ring-1 ring-black/5"
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIntentFilter("all");
+                        setIsDropdownOpen(false);
+                      }}
+                      className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs transition-colors ${
+                        intentFilter === "all"
+                          ? isDark
+                            ? "bg-indigo-500/20 text-indigo-300 font-semibold"
+                            : "bg-indigo-50 text-indigo-700 font-semibold"
+                          : isDark
+                          ? "hover:bg-white/10 text-slate-300"
+                          : "hover:bg-black/5 text-slate-700"
+                      }`}
+                    >
+                      <span>All activity</span>
+                      {intentFilter === "all" && <Check className="w-3.5 h-3.5 text-indigo-400 flex-shrink-0" />}
+                    </button>
+
+                    {intentOptions.map((intent) => {
+                      const isSelected = intentFilter === intent;
+                      return (
+                        <button
+                          key={intent}
+                          type="button"
+                          onClick={() => {
+                            setIntentFilter(intent);
+                            setIsDropdownOpen(false);
+                          }}
+                          className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs capitalize transition-colors ${
+                            isSelected
+                              ? isDark
+                                ? "bg-indigo-500/20 text-indigo-300 font-semibold"
+                                : "bg-indigo-50 text-indigo-700 font-semibold"
+                              : isDark
+                              ? "hover:bg-white/10 text-slate-300"
+                              : "hover:bg-black/5 text-slate-700"
+                          }`}
+                        >
+                          <span className="truncate">{intent.replaceAll("_", " ")}</span>
+                          {isSelected && <Check className="w-3.5 h-3.5 text-indigo-400 flex-shrink-0" />}
+                        </button>
+                      );
+                    })}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
           </div>
         )}
 
@@ -226,13 +337,33 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
                         {item.response.intent?.replace("_", " ") || "Command"}
                       </span>
                     </div>
-                    <span className="opacity-50 text-[10px]">{formatTime(item.timestamp)}</span>
+                    <div className="flex items-center gap-1.5">
+                      {item.response.metadata?.status && <span className={`text-[10px] ${item.response.metadata.status === "completed" ? "text-emerald-400" : "text-rose-400"}`}>{item.response.metadata.status}</span>}
+                      {typeof item.response.metadata?.duration_ms === "number" && <span className="text-[10px] opacity-50">{Math.round(item.response.metadata.duration_ms)}ms</span>}
+                      <span className="opacity-50 text-[10px]">{formatTime(item.timestamp)}</span>
+                    </div>
                   </div>
 
                   {/* Prompt Text */}
                   <p className="text-xs font-semibold leading-snug">
                     "{item.prompt}"
                   </p>
+                  <button
+                    type="button"
+                    aria-label={pinnedIds.has(item.id) ? "Unpin result" : "Pin result"}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setPinnedIds((current) => {
+                        const next = new Set(current);
+                        if (next.has(item.id)) next.delete(item.id); else next.add(item.id);
+                        return next;
+                      });
+                    }}
+                    className={`absolute right-2 top-8 rounded-md p-1 transition-colors ${pinnedIds.has(item.id) ? "text-amber-400" : "opacity-30 hover:opacity-80"}`}
+                    title={pinnedIds.has(item.id) ? "Unpin result" : "Pin result"}
+                  >
+                    <Pin className="h-3 w-3" />
+                  </button>
 
                   {/* Brief snippet when collapsed */}
                   {!isExpanded && detailsText && (

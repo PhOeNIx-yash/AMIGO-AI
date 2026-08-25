@@ -1,9 +1,8 @@
 import React, { useState, useEffect, useMemo } from "react";
+import { motion, AnimatePresence } from "motion/react";
 import {
   Settings,
   Palette,
-  Mic,
-  Volume2,
   Server,
   CheckCircle2,
   AlertCircle,
@@ -14,10 +13,7 @@ import {
   RotateCcw,
   Trash2,
   Activity,
-  Play,
-  Waves,
   Check,
-  Radio,
   Sliders,
   Type,
   LayoutTemplate,
@@ -25,6 +21,7 @@ import {
   Minimize2,
   Maximize2,
   Clock,
+  Waves,
 } from "lucide-react";
 import {
   BackendConfig,
@@ -64,7 +61,7 @@ interface SettingsPageProps {
   onResetAssistant: () => void;
 }
 
-type TabType = "appearance" | "voice" | "backend" | "data";
+type TabType = "appearance" | "backend" | "data";
 
 export const SettingsPage: React.FC<SettingsPageProps> = ({
   isOpen,
@@ -103,11 +100,6 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const [transcriptionEngine, setTranscriptionEngine] = useState(backendConfig.transcriptionEngine || "web-speech");
   const [autoSpeech, setAutoSpeech] = useState(backendConfig.autoSpeech !== false);
 
-  // TTS Voice
-  const [ttsVoices, setTtsVoices] = useState<SpeechSynthesisVoice[]>([]);
-  const [selectedVoiceUri, setSelectedVoiceUri] = useState<string>("");
-  const [isSpeakingTest, setIsSpeakingTest] = useState<boolean>(false);
-
   // Diagnostics
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{
@@ -126,29 +118,6 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     setTranscriptionEngine(backendConfig.transcriptionEngine || "web-speech");
     setAutoSpeech(backendConfig.autoSpeech !== false);
   }, [backendConfig]);
-
-  // Load browser speech voices cleanly without continuous listeners
-  useEffect(() => {
-    if (typeof window !== "undefined" && "speechSynthesis" in window) {
-      const loadVoices = () => {
-        const voices = window.speechSynthesis.getVoices();
-        if (voices && voices.length > 0) {
-          setTtsVoices(voices);
-          if (!selectedVoiceUri) {
-            const defaultVoice = voices.find((v) => v.lang.startsWith("en")) || voices[0];
-            setSelectedVoiceUri(defaultVoice.voiceURI);
-          }
-        }
-      };
-
-      loadVoices();
-      if (window.speechSynthesis.onvoiceschanged !== undefined) {
-        window.speechSynthesis.onvoiceschanged = loadVoices;
-      }
-    }
-  }, [selectedVoiceUri]);
-
-  if (!isOpen) return null;
 
   const handleSave = () => {
     const updated: BackendConfig = {
@@ -183,29 +152,12 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     setTesting(false);
   };
 
-  const handleTestSpeech = () => {
-    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
-    window.speechSynthesis.cancel();
-
-    const utterance = new SpeechSynthesisUtterance("Hello! Amigo Voice Assistant is configured.");
-    if (selectedVoiceUri) {
-      const voice = ttsVoices.find((v) => v.voiceURI === selectedVoiceUri);
-      if (voice) utterance.voice = voice;
-    }
-
-    utterance.onstart = () => setIsSpeakingTest(true);
-    utterance.onend = () => setIsSpeakingTest(false);
-    utterance.onerror = () => setIsSpeakingTest(false);
-
-    window.speechSynthesis.speak(utterance);
-  };
-
   const handleResetToDefaults = () => {
     onChangeColorTheme("violet");
     onChangeVisualizerMode("ribbon");
     onChangeTextAnimationStyle("amazing_fluid");
-    onChangePluginMode("floating");
-    setTranscriptionEngine("gemini-3.5-flash");
+    onChangePluginMode("fullscreen");
+    setTranscriptionEngine("web-speech");
     setAutoSpeech(true);
     setEndpointUrl("/api/assistant/process");
     setActionWebhookUrl("");
@@ -217,103 +169,116 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
 
   const tabs = [
     { id: "appearance", label: "Appearance", icon: Palette },
-    { id: "voice", label: "Voice & Audio", icon: Mic },
     { id: "backend", label: "AI & Endpoint", icon: Server },
     { id: "data", label: "Data & Reset", icon: Sliders },
   ] as const;
 
   return (
-    <div
-      className={`absolute inset-0 z-50 flex flex-col transition-opacity duration-150 ${
-        isDark ? "bg-[#0c0b18] text-white" : "bg-[#f8f9fc] text-slate-900"
-      }`}
-      style={{ transform: "translateZ(0)" }}
-    >
-      {/* Header */}
-      <div
-        className={`flex items-center justify-between px-4 sm:px-6 py-3 border-b ${
-          isDark ? "border-white/10 bg-black/40" : "border-black/10 bg-white/90"
-        }`}
-      >
-        <div className="flex items-center space-x-3">
-          <button
-            id="settings-back-btn"
-            onClick={onClose}
-            className={`p-2 rounded-xl border transition-colors flex items-center justify-center ${
-              isDark
-                ? "bg-white/5 border-white/10 hover:bg-white/10 text-slate-200"
-                : "bg-black/5 border-black/10 hover:bg-black/10 text-slate-800"
-            }`}
-            title="Done & Close Settings"
-          >
-            <ArrowLeft className="w-4 h-4" />
-          </button>
-          <div>
-            <div className="flex items-center space-x-2">
-              <Settings className="w-4 h-4" style={{ color: theme.accent }} />
-              <h2 className="text-base sm:text-lg font-semibold tracking-tight">Settings</h2>
-            </div>
-            <p className="text-xs opacity-60">Personalize themes, voice synthesis, and API settings</p>
-          </div>
-        </div>
-
-        <div className="flex items-center space-x-2">
-          {savedBanner && (
-            <span className="text-xs font-semibold text-emerald-400 flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 animate-fade-in">
-              <Check className="w-3.5 h-3.5" />
-              <span>Saved</span>
-            </span>
-          )}
-
-          <button
-            id="settings-save-btn"
-            onClick={handleSave}
-            className="px-4 py-1.5 rounded-xl text-xs font-semibold text-white shadow-sm transition-transform active:scale-95"
-            style={{
-              background: theme.gradient,
-            }}
-          >
-            Save
-          </button>
-        </div>
-      </div>
-
-      {/* Main Layout */}
-      <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
-        {/* Simple Tabs Sidebar */}
-        <div
-          className={`w-full md:w-52 flex-shrink-0 p-2 sm:p-3 border-b md:border-b-0 md:border-r flex md:flex-col space-x-1 md:space-x-0 md:space-y-1 ${
-            isDark ? "border-white/10 bg-black/20" : "border-black/10 bg-slate-50"
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          initial={{ opacity: 0, scale: 0.96, y: 16 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.96, y: 16 }}
+          transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+          className={`absolute inset-0 z-50 flex flex-col backdrop-blur-2xl shadow-2xl overflow-hidden ${
+            isDark ? "bg-[#0b0a17]/98 text-white" : "bg-[#f8f9fc]/98 text-slate-900"
           }`}
+          style={{ transform: "translateZ(0)" }}
         >
-          {tabs.map((tab) => {
-            const Icon = tab.icon;
-            const isActive = activeTab === tab.id;
-            return (
+          {/* Header */}
+          <div
+            className={`flex items-center justify-between px-4 sm:px-6 py-3 border-b ${
+              isDark ? "border-white/10 bg-black/40" : "border-black/10 bg-white/90"
+            }`}
+          >
+            <div className="flex items-center space-x-3">
               <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center space-x-2 px-3 py-2.5 rounded-xl text-xs font-medium transition-all ${
-                  isActive
-                    ? isDark
-                      ? "bg-white/10 text-white font-semibold"
-                      : "bg-black/10 text-slate-900 font-semibold"
-                    : isDark
-                    ? "text-slate-400 hover:text-white hover:bg-white/5"
-                    : "text-slate-600 hover:text-slate-900 hover:bg-black/5"
+                id="settings-back-btn"
+                onClick={onClose}
+                className={`p-2 rounded-xl border transition-colors flex items-center justify-center ${
+                  isDark
+                    ? "bg-white/5 border-white/10 hover:bg-white/10 text-slate-200"
+                    : "bg-black/5 border-black/10 hover:bg-black/10 text-slate-800"
                 }`}
-                style={isActive ? { borderLeft: `3px solid ${theme.primary}` } : {}}
+                title="Done & Close Settings"
               >
-                <Icon className="w-4 h-4 flex-shrink-0" />
-                <span>{tab.label}</span>
+                <ArrowLeft className="w-4 h-4" />
               </button>
-            );
-          })}
-        </div>
+              <div>
+                <div className="flex items-center space-x-2">
+                  <Settings className="w-4 h-4" style={{ color: theme.accent }} />
+                  <h2 className="text-base sm:text-lg font-semibold tracking-tight">Settings</h2>
+                </div>
+                <p className="text-xs opacity-60">Personalize themes, visualizers, and API settings</p>
+              </div>
+            </div>
 
-        {/* Content Area */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6 smooth-scroll-container">
-          <div className="max-w-xl mx-auto space-y-6">
+            <div className="flex items-center space-x-2">
+              {savedBanner && (
+                <span className="text-xs font-semibold text-emerald-400 flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 animate-fade-in">
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Saved</span>
+                </span>
+              )}
+
+              <button
+                id="settings-save-btn"
+                onClick={handleSave}
+                className="px-4 py-1.5 rounded-xl text-xs font-semibold text-white shadow-sm transition-transform active:scale-95"
+                style={{
+                  background: theme.gradient,
+                }}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+
+          {/* Main Layout */}
+          <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+            {/* Simple Tabs Sidebar */}
+            <div
+              className={`w-full md:w-52 flex-shrink-0 p-2 sm:p-3 border-b md:border-b-0 md:border-r flex md:flex-col space-x-1 md:space-x-0 md:space-y-1 ${
+                isDark ? "border-white/10 bg-black/20" : "border-black/10 bg-slate-50"
+              }`}
+            >
+              {tabs.map((tab) => {
+                const Icon = tab.icon;
+                const isActive = activeTab === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActiveTab(tab.id)}
+                    className={`flex items-center space-x-2 px-3 py-2.5 rounded-xl text-xs font-medium transition-all ${
+                      isActive
+                        ? isDark
+                          ? "bg-white/10 text-white font-semibold"
+                          : "bg-black/10 text-slate-900 font-semibold"
+                        : isDark
+                        ? "text-slate-400 hover:text-white hover:bg-white/5"
+                        : "text-slate-600 hover:text-slate-900 hover:bg-black/5"
+                    }`}
+                    style={isActive ? { borderLeft: `3px solid ${theme.primary}` } : {}}
+                  >
+                    <Icon className="w-4 h-4 flex-shrink-0" />
+                    <span>{tab.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Content Area with smooth tab transition physics */}
+            <div className="flex-1 overflow-y-auto p-4 sm:p-6 smooth-scroll-container">
+              <AnimatePresence mode="wait">
+                <motion.div
+                  key={activeTab}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  transition={{ duration: 0.2, ease: "easeOut" }}
+                  className="max-w-xl mx-auto space-y-6"
+                >
             {/* 1. APPEARANCE TAB */}
             {activeTab === "appearance" && (
               <>
@@ -655,117 +620,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
               </>
             )}
 
-            {/* 2. VOICE & AUDIO TAB */}
-            {activeTab === "voice" && (
-              <>
-                {/* Speech Recognition Engine */}
-                <div
-                  className={`p-4 rounded-2xl border ${
-                    isDark ? "bg-white/[0.03] border-white/10" : "bg-white border-black/10"
-                  }`}
-                >
-                  <div className="text-xs font-semibold uppercase tracking-wider opacity-60 mb-3">Speech Recognition (STT)</div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                    <button
-                      onClick={() => setTranscriptionEngine("amigo-speech")}
-                      className={`p-3 rounded-xl border text-left transition-all ${
-                        transcriptionEngine === "amigo-speech"
-                          ? "border-emerald-500 ring-1 ring-emerald-500/40 bg-emerald-500/5 shadow-sm"
-                          : isDark
-                          ? "border-white/10 bg-white/[0.02] hover:bg-white/5"
-                          : "border-black/10 bg-white hover:bg-slate-50"
-                      }`}
-                    >
-                      <div className="flex items-center space-x-1.5 text-xs font-semibold mb-1">
-                        <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-                        <span>Amigo Local STT</span>
-                      </div>
-                      <div className="text-[10px] opacity-60">Zero-cloud local speech transcription</div>
-                    </button>
-
-                    <button
-                      onClick={() => setTranscriptionEngine("web-speech")}
-                      className={`p-3 rounded-xl border text-left transition-all ${
-                        transcriptionEngine === "web-speech"
-                          ? "border-emerald-500 ring-1 ring-emerald-500/40 bg-emerald-500/5 shadow-sm"
-                          : isDark
-                          ? "border-white/10 bg-white/[0.02] hover:bg-white/5"
-                          : "border-black/10 bg-white hover:bg-slate-50"
-                      }`}
-                    >
-                      <div className="flex items-center space-x-1.5 text-xs font-semibold mb-1">
-                        <Radio className="w-3.5 h-3.5 text-cyan-400" />
-                        <span>Browser Speech API</span>
-                      </div>
-                      <div className="text-[10px] opacity-60">Instant real-time speech transcription</div>
-                    </button>
-                  </div>
-                </div>
-
-                {/* Voice Output (TTS) Settings */}
-                <div
-                  className={`p-4 rounded-2xl border ${
-                    isDark ? "bg-white/[0.03] border-white/10" : "bg-white border-black/10"
-                  } space-y-4`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="text-xs font-semibold">Auto-Speak Spoken Replies</div>
-                      <div className="text-[11px] opacity-60">Reads assistant responses aloud via neural text-to-speech</div>
-                    </div>
-                    <button
-                      onClick={() => setAutoSpeech(!autoSpeech)}
-                      className={`w-10 h-5 rounded-full transition-colors relative p-0.5 ${
-                        autoSpeech ? "bg-emerald-500" : isDark ? "bg-white/20" : "bg-black/20"
-                      }`}
-                    >
-                      <div
-                        className={`w-4 h-4 rounded-full bg-white transition-transform ${
-                          autoSpeech ? "translate-x-5" : "translate-x-0"
-                        }`}
-                      />
-                    </button>
-                  </div>
-                </div>
-
-                {/* Text to Speech Voice Selection */}
-                {ttsVoices.length > 0 && (
-                  <div
-                    className={`p-4 rounded-2xl border ${
-                      isDark ? "bg-white/[0.03] border-white/10" : "bg-white border-black/10"
-                    } space-y-3`}
-                  >
-                    <div className="text-xs font-semibold uppercase tracking-wider opacity-60">Text-to-Speech Output Voice</div>
-                    <select
-                      value={selectedVoiceUri}
-                      onChange={(e) => setSelectedVoiceUri(e.target.value)}
-                      className={`w-full p-2.5 rounded-xl border text-xs outline-none ${
-                        isDark ? "bg-black/40 border-white/10 text-white" : "bg-slate-50 border-black/10 text-slate-900"
-                      }`}
-                    >
-                      {ttsVoices.map((v) => (
-                        <option key={v.voiceURI} value={v.voiceURI} className={isDark ? "bg-slate-900" : "bg-white"}>
-                          {v.name} ({v.lang})
-                        </option>
-                      ))}
-                    </select>
-
-                    <div className="flex justify-end pt-1">
-                      <button
-                        onClick={handleTestSpeech}
-                        disabled={isSpeakingTest}
-                        className="px-3 py-1.5 rounded-xl text-xs font-medium border border-indigo-500/30 bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500/20 transition-colors flex items-center space-x-1.5"
-                      >
-                        <Play className="w-3 h-3" />
-                        <span>{isSpeakingTest ? "Speaking test..." : "Test Voice"}</span>
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </>
-            )}
-
-            {/* 3. BACKEND & AI TAB */}
+            {/* 2. BACKEND & AI TAB */}
             {activeTab === "backend" && (
               <div
                 className={`p-4 rounded-2xl border ${
@@ -890,9 +745,12 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 </div>
               </div>
             )}
-          </div>
-        </div>
+          </motion.div>
+        </AnimatePresence>
       </div>
     </div>
+  </motion.div>
+)}
+</AnimatePresence>
   );
 };

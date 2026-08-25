@@ -5,7 +5,6 @@ import { sfx } from "../utils/audio";
 import { transcribeAudio } from "../services/assistantApi";
 import { BackendConfig, ColorTheme } from "../types";
 import { COLOR_THEMES } from "../data/presets";
-import { KineticTranscript } from "./KineticText";
 import { audioBus } from "../utils/audioBus";
 
 interface VoiceControlsProps {
@@ -297,7 +296,7 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
 
       {/* Search / Voice input fluid capsule */}
       <div
-        className={`w-full flex items-center p-1.5 sm:p-2 rounded-2xl sm:rounded-full backdrop-blur-2xl border transition-all duration-300 ${
+        className={`voice-input-shell w-full flex items-center p-1.5 sm:p-2 rounded-2xl sm:rounded-full backdrop-blur-2xl border transition-all duration-300 ${
           isListening
             ? "shadow-2xl scale-[1.01]"
             : isFocused
@@ -317,12 +316,14 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
             : isFocused
             ? `0 0 28px ${theme.glow}, 0 8px 24px rgba(0,0,0,0.25)`
             : isDark
-            ? `0 8px 30px rgba(0,0,0,0.35), 0 0 22px ${theme.glow}, inset 0 1px 0 rgba(255,255,255,0.15)`
-            : `0 8px 25px rgba(0,0,0,0.06), 0 0 18px ${theme.glow}40, inset 0 1px 0 rgba(255,255,255,0.9)`,
+            ? `0 8px 30px rgba(0,0,0,0.35), 0 0 9px ${theme.glow}, inset 0 1px 0 rgba(255,255,255,0.15)`
+            : `0 8px 25px rgba(0,0,0,0.06), 0 0 7px ${theme.glow}40, inset 0 1px 0 rgba(255,255,255,0.9)`,
           borderColor: isListening || isFocused
             ? (theme.accent || theme.primary)
             : `${theme.primary}66`,
-        }}
+          "--voice-glow": theme.glow,
+          "--voice-accent": theme.accent || theme.primary,
+        } as React.CSSProperties}
       >
         {/* Form and Text / Live transcript container */}
         <form
@@ -335,12 +336,9 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
               <div className="flex items-center justify-between py-2 px-3 sm:px-4 min-h-[44px]">
                 <div className="flex-1 min-w-0 pr-3">
                   {liveTranscript ? (
-                    <KineticTranscript
-                      text={liveTranscript}
-                      isDark={isDark}
-                      colorTheme={colorTheme}
-                      isLive={true}
-                    />
+                    <p className="min-w-0 break-words text-sm font-medium leading-relaxed text-slate-100">
+                      {liveTranscript}
+                    </p>
                   ) : (
                     <div className="flex items-center space-x-2.5">
                       <Radio className="w-4 h-4 animate-pulse flex-shrink-0" style={{ color: theme.accent }} />
@@ -386,7 +384,9 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
                   }`}
                   style={{
                     caretColor: theme.accent || theme.primary,
-                  }}
+                    "--theme-caret-color": theme.accent || theme.primary,
+                    "--theme-caret-glow": theme.glow,
+                  } as React.CSSProperties}
                 />
               </div>
             )}
@@ -418,7 +418,7 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
                 type="button"
                 onClick={handleToggleListening}
                 disabled={disabled || isTranscribing}
-                className={`relative w-9 h-9 sm:w-10 sm:h-10 rounded-full transition-all duration-300 flex items-center justify-center active:scale-95 z-10 overflow-hidden border ${
+                className={`relative w-9 h-9 sm:w-10 sm:h-10 rounded-full transition-all duration-300 flex items-center justify-center active:scale-95 hover:-translate-y-0.5 z-10 overflow-hidden border ${
                   isListening
                     ? "text-white shadow-lg border-transparent"
                     : isDark
@@ -454,7 +454,7 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
               id="send-command-button"
               type="submit"
               disabled={disabled || !inputText.trim() || isListening || isTranscribing}
-              className={`w-9 h-9 sm:w-10 sm:h-10 rounded-full transition-all duration-200 active:scale-95 flex items-center justify-center flex-shrink-0 ${
+              className={`w-9 h-9 sm:w-10 sm:h-10 rounded-full transition-all duration-200 active:scale-95 hover:-translate-y-0.5 flex items-center justify-center flex-shrink-0 ${
                 inputText.trim()
                   ? "text-white shadow-md cursor-pointer hover:brightness-110"
                   : isDark

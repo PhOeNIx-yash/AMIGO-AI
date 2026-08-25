@@ -351,7 +351,7 @@ function drawSimpleSleekWaveFast(
   if (blend <= 0.002) return;
 
   const centerX = width / 2;
-  const centerY = height * 0.46;
+  const centerY = height * 0.56;
 
   const widthCollapse = 0.25 + 0.75 * Math.min(1.0, blend / (blend + orbWeight * 0.8 + 0.001));
   const waveWidth = Math.min(width * 0.78, 560) * widthCollapse;
@@ -361,7 +361,7 @@ function drawSimpleSleekWaveFast(
   if (ambientGlowCanvas) {
     const glowDiameter = Math.min(waveWidth * 0.7, 240) * (0.85 + audio * 0.35) * blend;
     ctx.globalCompositeOperation = isDark ? "screen" : "source-over";
-    ctx.globalAlpha = blend * (1.0 - orbWeight * 0.5);
+    ctx.globalAlpha = blend * 0.55 * (1.0 - orbWeight * 0.5);
     ctx.drawImage(
       ambientGlowCanvas as CanvasImageSource,
       centerX - glowDiameter / 2,
@@ -376,9 +376,9 @@ function drawSimpleSleekWaveFast(
   ctx.globalCompositeOperation = isDark ? "screen" : "source-over";
 
   const waveConfigs = [
-    { speed: 2.2, freq: 2.5, phase: 0, ampMult: 1.0, color: isDark ? "#ffffff" : primaryColor, lineWidth: 1.8, alpha: 0.9 * blend },
-    { speed: -1.8, freq: 3.2, phase: 1.2, ampMult: 0.7, color: "#38bdf8", lineWidth: 1.4, alpha: 0.7 * blend },
-    { speed: 2.8, freq: 4.1, phase: 2.4, ampMult: 0.5, color: secondaryColor, lineWidth: 1.2, alpha: 0.6 * blend },
+    { speed: 2.2, freq: 2.5, phase: 0, ampMult: 1.0, color: isDark ? "#ffffff" : primaryColor, lineWidth: 1.8, alpha: 0.55 * blend },
+    { speed: -1.8, freq: 3.2, phase: 1.2, ampMult: 0.7, color: "#38bdf8", lineWidth: 1.4, alpha: 0.4 * blend },
+    { speed: 2.8, freq: 4.1, phase: 2.4, ampMult: 0.5, color: secondaryColor, lineWidth: 1.2, alpha: 0.32 * blend },
   ];
 
   for (let c = 0; c < waveConfigs.length; c++) {

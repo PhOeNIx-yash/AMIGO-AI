@@ -53,6 +53,15 @@ def get_weather_data(city=""):
             elif code_int in (176, 263, 266, 281, 284, 293, 296, 299, 302, 305, 308, 311, 314, 353, 356, 359):
                 icon_type = "rain"
 
+            # Extract real diurnal period forecast from weather array
+            forecast_today = data.get("weather", [{}])[0]
+            hourly = forecast_today.get("hourly", [])
+            morning_c = hourly[2].get("tempC") if len(hourly) > 2 else temp_c
+            midday_c = hourly[4].get("tempC") if len(hourly) > 4 else temp_c
+            evening_c = hourly[6].get("tempC") if len(hourly) > 6 else temp_c
+            min_c = forecast_today.get("mintempC", temp_c)
+            max_c = forecast_today.get("maxtempC", temp_c)
+
             return {
                 "success": True,
                 "city": resolved_city,
@@ -65,6 +74,11 @@ def get_weather_data(city=""):
                 "condition": weather_desc,
                 "weather_code": weather_code,
                 "icon_type": icon_type,
+                "morning_c": morning_c,
+                "midday_c": midday_c,
+                "evening_c": evening_c,
+                "min_c": min_c,
+                "max_c": max_c,
             }
     except Exception as e:
         return {

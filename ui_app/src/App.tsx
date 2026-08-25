@@ -27,10 +27,38 @@ import { processVoiceCommand, executeBackendAction } from "./services/assistantA
 import { Sparkles, ChevronUp, Shuffle } from "lucide-react";
 
 export default function App() {
-  const [isDark, setIsDark] = useState<boolean>(true);
-  const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
-  const [colorTheme, setColorTheme] = useState<ColorTheme>("violet");
-  const [visualizerMode, setVisualizerMode] = useState<VisualizerMode>("ribbon");
+  const [isDark, setIsDark] = useState<boolean>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("windows11_voice_assistant_dark");
+      if (saved !== null) return saved === "true";
+    }
+    return true;
+  });
+
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("windows11_voice_assistant_sound");
+      if (saved !== null) return saved === "true";
+    }
+    return true;
+  });
+
+  const [colorTheme, setColorTheme] = useState<ColorTheme>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("windows11_voice_assistant_color_theme");
+      if (saved && (COLOR_THEMES as any)[saved]) return saved as ColorTheme;
+    }
+    return "violet";
+  });
+
+  const [visualizerMode, setVisualizerMode] = useState<VisualizerMode>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("windows11_voice_assistant_visualizer_mode");
+      if (saved) return saved as VisualizerMode;
+    }
+    return "ribbon";
+  });
+
   const [textAnimationStyle, setTextAnimationStyle] = useState<TextAnimationStyle>(() => {
     if (typeof window !== "undefined") {
       const saved = localStorage.getItem("windows11_voice_assistant_anim_style");
@@ -38,11 +66,19 @@ export default function App() {
     }
     return "amazing_fluid";
   });
-  const [pluginMode, setPluginMode] = useState<PluginMode>("fullscreen");
+
+  const [pluginMode, setPluginMode] = useState<PluginMode>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("windows11_voice_assistant_plugin_mode");
+      if (saved) return saved as PluginMode;
+    }
+    return "fullscreen";
+  });
+
   const [isOpen, setIsOpen] = useState<boolean>(true);
   const [showHistory, setShowHistory] = useState<boolean>(false);
-  const [showBackendModal, setShowBackendModal] = useState<boolean>(false);
   const [showSettings, setShowSettings] = useState<boolean>(false);
+  const [showBackendModal, setShowBackendModal] = useState<boolean>(false);
 
   // Greeting configuration
   const [greetingText, setGreetingText] = useState<string>(() => {
@@ -53,7 +89,14 @@ export default function App() {
     return "What can I help you with ?";
   });
 
-  const [autoCycleGreetings, setAutoCycleGreetings] = useState<boolean>(true);
+  const [autoCycleGreetings, setAutoCycleGreetings] = useState<boolean>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("windows11_voice_assistant_autocycle_greeting");
+      if (saved !== null) return saved === "true";
+    }
+    return true;
+  });
+
   const [autoCycleInterval, setAutoCycleInterval] = useState<number>(() => {
     if (typeof window !== "undefined") {
       try {
@@ -68,33 +111,42 @@ export default function App() {
   });
   const [greetingIndex, setGreetingIndex] = useState<number>(0);
 
-  // Save auto cycle interval
+  // Persistent localStorage synchronization
   useEffect(() => {
-    try {
-      localStorage.setItem("windows11_voice_assistant_autocycle_interval", String(autoCycleInterval));
-    } catch (e) {}
-  }, [autoCycleInterval]);
+    try { localStorage.setItem("windows11_voice_assistant_dark", String(isDark)); } catch (e) {}
+  }, [isDark]);
 
-  // Save text animation style
   useEffect(() => {
-    try {
-      localStorage.setItem("windows11_voice_assistant_anim_style", textAnimationStyle);
-    } catch (e) {}
+    try { localStorage.setItem("windows11_voice_assistant_sound", String(soundEnabled)); } catch (e) {}
+  }, [soundEnabled]);
+
+  useEffect(() => {
+    try { localStorage.setItem("windows11_voice_assistant_color_theme", colorTheme); } catch (e) {}
+  }, [colorTheme]);
+
+  useEffect(() => {
+    try { localStorage.setItem("windows11_voice_assistant_visualizer_mode", visualizerMode); } catch (e) {}
+  }, [visualizerMode]);
+
+  useEffect(() => {
+    try { localStorage.setItem("windows11_voice_assistant_anim_style", textAnimationStyle); } catch (e) {}
   }, [textAnimationStyle]);
 
-  // Save greeting text
   useEffect(() => {
-    try {
-      localStorage.setItem("windows11_voice_assistant_greeting", greetingText);
-    } catch (e) {}
+    try { localStorage.setItem("windows11_voice_assistant_plugin_mode", pluginMode); } catch (e) {}
+  }, [pluginMode]);
+
+  useEffect(() => {
+    try { localStorage.setItem("windows11_voice_assistant_greeting", greetingText); } catch (e) {}
   }, [greetingText]);
 
-  // Save auto cycle greetings
   useEffect(() => {
-    try {
-      localStorage.setItem("windows11_voice_assistant_autocycle_greeting", String(autoCycleGreetings));
-    } catch (e) {}
+    try { localStorage.setItem("windows11_voice_assistant_autocycle_greeting", String(autoCycleGreetings)); } catch (e) {}
   }, [autoCycleGreetings]);
+
+  useEffect(() => {
+    try { localStorage.setItem("windows11_voice_assistant_autocycle_interval", String(autoCycleInterval)); } catch (e) {}
+  }, [autoCycleInterval]);
 
   // Persistent Backend configuration for plug-and-play connection
   const [backendConfig, setBackendConfig] = useState<BackendConfig>(() => {
@@ -103,13 +155,21 @@ export default function App() {
         const saved = localStorage.getItem("assistant_backend_config");
         if (saved) {
           const parsed = JSON.parse(saved);
-          if (parsed && typeof parsed === "object") return parsed;
+          if (parsed && typeof parsed === "object") {
+            if (parsed.endpointUrl && parsed.endpointUrl.includes("127.0.0.1:5000")) {
+              parsed.endpointUrl = parsed.endpointUrl.replace(/^https?:\/\/127\.0\.0\.1:5000/, "");
+            }
+            if (parsed.actionWebhookUrl && parsed.actionWebhookUrl.includes("127.0.0.1:5000")) {
+              parsed.actionWebhookUrl = parsed.actionWebhookUrl.replace(/^https?:\/\/127\.0\.0\.1:5000/, "");
+            }
+            return parsed;
+          }
         }
       } catch (e) {}
     }
     return {
-      endpointUrl: "http://127.0.0.1:5000/api/assistant/process",
-      actionWebhookUrl: "http://127.0.0.1:5000/api/action/execute",
+      endpointUrl: "/api/assistant/process",
+      actionWebhookUrl: "/api/action/execute",
       apiKey: "",
       customHeaders: "",
       protocol: "rest",
@@ -127,12 +187,23 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          isDark,
           theme: isDark ? "dark" : "light",
+          soundEnabled,
+          colorTheme,
+          visualizerMode,
+          textAnimationStyle,
+          pluginMode,
+          greetingText,
+          autoCycleGreetings,
+          autoCycleInterval,
+          backendConfig: config,
           autoSpeech: config.autoSpeech,
         }),
       });
     } catch (e) {}
   };
+
 
   const isBackendCustom = Boolean(
     backendConfig.endpointUrl && backendConfig.endpointUrl !== "/api/assistant/process"
@@ -171,9 +242,37 @@ export default function App() {
     } catch (e) {}
   };
 
+  // Fetch saved settings from Amigo backend on mount
+  const fetchBackendSettings = async () => {
+
+    try {
+      const res = await fetch("/api/settings");
+      if (res.ok) {
+        const data = await res.json();
+        const ui = data.ui_settings;
+        if (ui && typeof ui === "object") {
+          if (typeof ui.isDark === "boolean") setIsDark(ui.isDark);
+          if (typeof ui.soundEnabled === "boolean") setSoundEnabled(ui.soundEnabled);
+          if (ui.colorTheme && (COLOR_THEMES as any)[ui.colorTheme]) setColorTheme(ui.colorTheme);
+          if (ui.visualizerMode) setVisualizerMode(ui.visualizerMode);
+          if (ui.textAnimationStyle) setTextAnimationStyle(ui.textAnimationStyle);
+          if (ui.pluginMode) setPluginMode(ui.pluginMode);
+          if (ui.greetingText) setGreetingText(ui.greetingText);
+          if (typeof ui.autoCycleGreetings === "boolean") setAutoCycleGreetings(ui.autoCycleGreetings);
+          if (typeof ui.autoCycleInterval === "number") setAutoCycleInterval(ui.autoCycleInterval);
+          if (ui.backendConfig && typeof ui.backendConfig === "object") {
+            setBackendConfig((prev) => ({ ...prev, ...ui.backendConfig }));
+          }
+        }
+      }
+    } catch (e) {}
+  };
+
   useEffect(() => {
     fetchBackendHistory();
+    fetchBackendSettings();
   }, []);
+
 
   const [state, setState] = useState<AssistantState>("idle");
   const [activePrompt, setActivePrompt] = useState<string>("");
@@ -201,7 +300,7 @@ export default function App() {
                 setState("listening");
               } else if (s === "idle") {
                 setIsListening(false);
-                setState("idle");
+                setState((current) => (current === "action_card" || current === "completed") ? current : "idle");
               } else if (s === "speaking") {
                 setState("completed");
               }
@@ -232,7 +331,7 @@ export default function App() {
     return () => {
       es?.close();
     };
-  }, []);
+  }, [activePrompt]);
 
   // Dynamic auto-cycling of greeting phrases when idle
   useEffect(() => {
@@ -245,15 +344,13 @@ export default function App() {
     return () => clearInterval(interval);
   }, [autoCycleGreetings, state, autoCycleInterval]);
 
-  // Update greeting text and display text when greetingIndex or state changes
+  // Update greeting text only if currently in idle state and no active response displayed
   useEffect(() => {
     if (state === "idle") {
       if (autoCycleGreetings) {
         const activeText = GREETING_PRESETS[greetingIndex]?.text || GREETING_PRESETS[0].text;
         setGreetingText(activeText);
-        setDisplayText(activeText);
-      } else {
-        setDisplayText(greetingText);
+        setDisplayText((current) => (current === greetingText || GREETING_PRESETS.some((g) => g.text === current)) ? activeText : current);
       }
     }
   }, [greetingIndex, autoCycleGreetings, state, greetingText]);
@@ -295,6 +392,8 @@ export default function App() {
     }
   }, [greetingText]);
 
+  // Keep AI response on stage until next interaction or user reset
+
   // Process user voice or typed command
   const handleProcessCommand = async (prompt: string) => {
     if (!prompt.trim()) return;
@@ -325,16 +424,22 @@ export default function App() {
         ...prev.filter((p) => p.prompt.toLowerCase() !== prompt.trim().toLowerCase()),
       ]);
 
-      if (data.actionCards && data.actionCards.length > 0) {
-        setState("action_card");
-      } else if (data.requiresDisambiguation && data.contactMatches && data.contactMatches.length > 0) {
+      const hasActionCards = Boolean(
+        data.actionCards &&
+        data.actionCards.length > 0
+      );
+
+      if (data.requiresDisambiguation && data.contactMatches && data.contactMatches.length > 0) {
         setState("contact_picker");
         if (data.disambiguationQuestion) {
           setDisplayText(data.disambiguationQuestion);
         }
+      } else if (hasActionCards) {
+        setState("action_card");
       } else {
         setState("completed");
       }
+
     } catch (err) {
       console.warn("Assistant processing fallback:", err);
       setLoading(false);
@@ -351,14 +456,20 @@ export default function App() {
   // Inspect previous result from history
   const handleSelectHistoryEntry = (entry: HistoryEntry) => {
     setActivePrompt(entry.prompt);
-    setAssistantData(entry.response);
+    const responseData = entry.response;
+    setAssistantData(responseData);
     setSelectedContact(entry.selectedContact);
-    const fullText = entry.response.speechReply || entry.response.executionSummary?.details || entry.response.displayTitle || entry.prompt;
+    const fullText = responseData.speechReply || responseData.executionSummary?.details || responseData.displayTitle || entry.prompt;
     setDisplayText(fullText);
-    setState(entry.response.requiresDisambiguation ? "contact_picker" : "completed");
+    const hasActionCards = Boolean(
+      responseData.actionCards &&
+      responseData.actionCards.length > 0
+    );
+    setState(hasActionCards ? "action_card" : responseData.requiresDisambiguation ? "contact_picker" : "completed");
+
     setShowHistory(false);
-    if (entry.response.speechReply && backendConfig.autoSpeech !== false && soundEnabled) {
-      speakText(entry.response.speechReply);
+    if (responseData.speechReply && backendConfig.autoSpeech !== false && soundEnabled) {
+      speakText(responseData.speechReply);
     }
   };
 
@@ -393,7 +504,7 @@ export default function App() {
 
   // User confirms the action cards
   const handleConfirmActions = async () => {
-    setDisplayText("OK! Great! Working on this...");
+    setDisplayText("Working on this...");
     setState("working");
 
     // Dispatch webhook to backend for selected actions
@@ -417,11 +528,16 @@ export default function App() {
         }
       }, 1400);
     } else {
-      // Direct completion
+      // Direct completion: restore the actual result text
       setTimeout(() => {
         sfx.playSuccess();
+        const finalMsg =
+          assistantData?.speechReply ||
+          assistantData?.executionSummary?.details ||
+          "Task completed successfully.";
+        setDisplayText(finalMsg);
         setState("completed");
-      }, 1600);
+      }, 1200);
     }
   };
 
@@ -551,14 +667,16 @@ export default function App() {
               showHistory={showHistory}
               onToggleHistory={() => setShowHistory(!showHistory)}
               historyCount={history.length}
+              showSettings={showSettings}
+              onToggleSettings={() => setShowSettings(!showSettings)}
               onOpenBackendSettings={() => setShowBackendModal(true)}
               isBackendCustom={isBackendCustom}
-              onOpenSettings={() => setShowSettings(true)}
             />
 
             {/* Primary Workspace Area with Visualizer, Dynamic Content & History Sidebar */}
             <main className="relative flex-1 flex flex-col justify-between items-center z-10 w-full min-h-0 overflow-hidden">
-              {/* Settings Page View / Full Modal */}
+
+              {/* Full Settings Page */}
               <SettingsPage
                 isOpen={showSettings}
                 onClose={() => setShowSettings(false)}
@@ -641,14 +759,10 @@ export default function App() {
                   {state !== "action_card" && !(isActionIntent(activePrompt) && (state === "processing" || state === "working")) && (
                     <div className="text-center max-w-2xl mx-auto mb-4 sm:mb-6 px-4">
                       {state === "listening" && liveTranscript ? (
-                        <div className="flex flex-col items-center">
-                          <KineticHeading
-                            text={liveTranscript}
-                            isDark={isDark}
-                            colorTheme={colorTheme}
-                            animationStyle={textAnimationStyle}
-                            className="text-xl sm:text-2xl md:text-3xl font-semibold tracking-tight leading-snug"
-                          />
+                        <div className="flex min-w-0 w-full flex-col items-center px-2">
+                          <p className="w-full min-w-0 max-w-2xl break-words text-center text-xl font-semibold leading-snug text-slate-100 sm:text-2xl md:text-3xl">
+                            {liveTranscript}
+                          </p>
                         </div>
                       ) : state === "listening" ? (
                         <div className="flex flex-col items-center space-y-1">
@@ -706,6 +820,7 @@ export default function App() {
                           onToggleItem={handleToggleActionItem}
                           onExecuteSingleItem={handleExecuteSingleAction}
                           onConfirm={handleConfirmActions}
+                          onRetry={() => handleReRunHistoryCommand(activePrompt)}
                           onCancel={handleReset}
                           isDark={isDark}
                           colorTheme={colorTheme}
@@ -725,19 +840,24 @@ export default function App() {
                       )}
 
                       {/* 3. Single Unified Gemini Action Pill (From Routing to Executed in ONE Continuous Pill) */}
-                      {(state === "processing" || state === "working" || state === "completed") &&
-                        isActionIntent(activePrompt) && (
+                      {(state === "processing" || state === "working" || state === "action_card" || state === "completed") &&
+                        isActionIntent(activePrompt, assistantData?.intent) && (
                         <IntentBridgeHUD
                           key="intent-bridge-hud"
                           prompt={activePrompt}
                           isDark={isDark}
                           colorTheme={colorTheme}
+                          intent={assistantData?.intent}
+                          historyCount={history.length}
                           isCompleted={state === "completed"}
+                          onDismiss={handleReset}
                           statusText={
                             state === "completed"
                               ? (assistantData?.executionSummary?.headline || "Action Completed")
                               : state === "working"
                               ? "Executing Action..."
+                              : state === "action_card"
+                              ? "Action Ready"
                               : undefined
                           }
                         />

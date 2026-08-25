@@ -48,8 +48,8 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
         animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0, y: -6, transition: { duration: 0.15 } }}
         transition={{ duration: 0.25, ease: "easeOut" }}
-        className={`flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-center select-none ${className}`}
-        style={{ willChange: "transform, opacity" }}
+        className={`flex min-w-0 w-full max-w-full flex-wrap items-center justify-center gap-x-2 gap-y-1 text-center select-none ${className}`}
+        style={{ willChange: "transform, opacity", overflowWrap: "anywhere" }}
       >
         {words.map((word, wordIdx) => {
           const isHighlighted =
@@ -83,7 +83,7 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
                 duration: 0.35,
                 ease: [0.16, 1, 0.3, 1],
               }}
-              className={`inline-block font-medium tracking-tight ${
+              className={`inline-block min-w-0 max-w-full font-medium tracking-tight ${
                 isHighlighted
                   ? "font-bold text-transparent bg-clip-text"
                   : isDark
@@ -98,6 +98,7 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
                       filter: isDark ? `drop-shadow(0 0 12px ${theme.glow})` : "none",
                     }
                   : {}),
+                overflowWrap: "anywhere",
               }}
             >
               {word}

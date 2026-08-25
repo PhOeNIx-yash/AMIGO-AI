@@ -1,11 +1,22 @@
 @echo off
-title Amigo Voice Assistant Dashboard
+title Amigo Voice Assistant - Web Dashboard
 cd /d "%~dp0"
-echo ===================================================
-echo    AMIGO VOICE ASSISTANT - STARTING SERVER
-echo ===================================================
+echo ======================================================
+echo    Starting Amigo Voice Assistant Dashboard
+echo ======================================================
 echo.
-echo Opening Amigo Web Dashboard at http://localhost:5000...
+
 start "" "http://localhost:5000"
-python ui_server.py
-pause
+
+where py >nul 2>&1
+if %errorlevel% equ 0 (
+    py ui_server.py
+) else (
+    python ui_server.py
+)
+
+if %errorlevel% neq 0 (
+    echo.
+    echo [ERROR] Amigo UI Server exited with an error.
+    pause
+)
