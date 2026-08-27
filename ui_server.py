@@ -39,6 +39,7 @@ from ai import (
     clear_conversations_memory,
 )
 from local_llm import (
+    get_active_model_info as get_llm_model_info,
     get_agent_action,
     get_clipboard_text,
     set_active_model,
@@ -194,19 +195,29 @@ def take_command_ui(max_retries: int = 3) -> str:
 # Active Model Info Helpers
 # ---------------------------------------------------------------------------
 def get_active_model_info():
-    return {
-        "key": "qwen2.5_3b",
-        "name": "Qwen 2.5 3B Instruct",
-        "type": "local_gguf",
-        "context_length": 8192,
-        "tts_engine": get_tts_engine_name(),
-    }
+    try:
+        info = get_llm_model_info()
+        return {
+            "key": info.get("key", "qwen-3.5-2b"),
+            "name": info.get("name", "Qwen 3.5 2B Instruct"),
+            "type": "local_gguf",
+            "context_length": 8192,
+            "tts_engine": get_tts_engine_name(),
+        }
+    except Exception:
+        return {
+            "key": "qwen-3.5-2b",
+            "name": "Qwen 3.5 2B Instruct",
+            "type": "local_gguf",
+            "context_length": 8192,
+            "tts_engine": get_tts_engine_name(),
+        }
 
 
 def get_available_models():
     return [
-        {"key": "qwen2.5_3b", "name": "Qwen 2.5 3B Instruct", "status": "active", "type": "local"},
-        {"key": "llama3.2_3b", "name": "Llama 3.2 3B Instruct", "status": "available", "type": "local"},
+        {"key": "qwen-3.5-2b", "name": "Qwen 3.5 2B Instruct", "status": "active", "type": "local"},
+        {"key": "llama-3.2-3b", "name": "Llama 3.2 3B Instruct", "status": "available", "type": "local"},
     ]
 
 
@@ -214,7 +225,7 @@ def get_available_models():
 # Core Query Processor (Agentic)
 # ---------------------------------------------------------------------------
 def _process_query(query: str, is_voice: bool = True, request_id: str | None = None) -> dict:
-    """Fully agentic query processor powered by Qwen 2.5 3B Instruct."""
+    """Fully agentic query processor powered by local LLM."""
     set_assistant_state("processing")
     memory = load_memory()
     history = memory.get("conversations", [])
@@ -403,7 +414,7 @@ def index():
     return jsonify({
         "status": "online",
         "service": "Amigo AI Engine & Windows 11 Voice Assistant Backend",
-        "model": info.get("name", "Qwen 2.5 3B Instruct"),
+        "model": info.get("name", "Qwen 3.5 2B Instruct"),
         "endpoints": {
             "assistant_process": "/api/assistant/process",
             "action_execute": "/api/action/execute",
@@ -440,7 +451,7 @@ def api_assistant_process():
         return jsonify({
             "status": "online",
             "message": "Amigo AI Engine online",
-            "model": info.get("name", "Qwen 2.5 3B Instruct"),
+            "model": info.get("name", "Qwen 3.5 2B Instruct"),
             "version": "Windows 11 Voice Assistant",
         })
 
@@ -614,16 +625,22 @@ def handle_quick_action():
 @app.route("/api/history/clear", methods=["POST", "OPTIONS"])
 @app.route("/api/memory/clear", methods=["POST", "OPTIONS"])
 def clear_memory():
-    """Clear conversation history — resets conversations & active state."""
+    """Clear conversation history & RAG vector memory — resets conversations & active state."""
     if request.method == "OPTIONS":
         return jsonify({"status": "ok"})
     try:
-        clear_conversations_memory(clear_profile=False)
+        data = request.get_json(silent=True) or {}
+        clear_profile = bool(data.get("clear_profile", False))
+        clear_facts = bool(data.get("clear_facts", False))
+
+        clear_conversations_memory(clear_profile=clear_profile)
+        if clear_facts and not clear_profile:
+            rag_engine.clear_user_facts()
+
+        logger.info("[Clear Memory] Cleared RAG conversation memory and active state successfully.")
     except Exception as e:
-        logger.error(f"[Clear Memory] {e}")
-        memory = load_memory()
-        memory["conversations"] = []
-        save_memory(memory)
+        logger.error(f"[Clear Memory] Error clearing conversations: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
     broadcaster.broadcast("history_cleared", {})
     return jsonify({"success": True, "message": "Memory cleared"})
 
@@ -659,8 +676,8 @@ def handle_settings():
     return jsonify({
         "ui_settings": memory.get("ui_settings", {}),
         "user_profile": memory.get("user_profile", {}),
-        "model": info.get("key", "qwen2.5_3b"),
-        "model_name": info.get("name", "Qwen 2.5 3B Instruct"),
+        "model": info.get("key", "qwen-3.5-2b"),
+        "model_name": info.get("name", "Qwen 3.5 2B Instruct"),
         "available_models": get_available_models(),
     })
 
@@ -859,7 +876,9 @@ def rag_status_endpoint():
     try:
         from rag_indexer import get_indexer
         indexer = get_indexer(rag_engine)
-        stats["indexer"] = indexer.get_status()
+        idx_status = indexer.get_status()
+        stats["indexer"] = idx_status
+        stats["is_indexing"] = idx_status.get("is_indexing", False)
     except Exception:
         pass
     return jsonify(stats)

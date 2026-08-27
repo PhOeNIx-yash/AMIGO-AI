@@ -647,7 +647,7 @@ def _tool_find_document(params, query, spoken):
             summary = "\n".join(lines)
             return summary, None, {"file_results": file_results}
 
-    return f"No files found matching '{q}'. Try re-indexing with 'reindex my files'.", None
+    return f"No files found matching '{q}'. You can re-index your documents in Settings.", None
 
 
 
@@ -658,38 +658,6 @@ def _tool_search_knowledge(params, query, spoken):
     if ctx:
         return get_ai_response(q, doc_context=ctx), None
     return get_ai_response(q), None
-
-
-def _tool_reindex_files(params, query, spoken):
-    """Trigger manual re-indexing of local files."""
-    try:
-        from rag_indexer import get_indexer
-        indexer = get_indexer(rag_engine)
-        import threading
-        threading.Thread(target=indexer.full_index, daemon=True).start()
-        return "Re-indexing your files in the background. This may take a few minutes.", None
-    except Exception as e:
-        logger.error("[Reindex] %s", e)
-        return "Could not start re-indexing.", None
-
-
-def _tool_rag_status(params, query, spoken):
-    """Show RAG index statistics."""
-    stats = rag_engine.get_index_stats()
-    parts = []
-    if stats.get("conversations", 0):
-        parts.append(f"{stats['conversations']} conversations")
-    if stats.get("user_facts", 0):
-        parts.append(f"{stats['user_facts']} user facts")
-    if stats.get("documents", 0):
-        parts.append(f"{stats['documents']} document chunks")
-    if stats.get("emails", 0):
-        parts.append(f"{stats['emails']} emails")
-    if stats.get("calendar", 0):
-        parts.append(f"{stats['calendar']} calendar events")
-    if parts:
-        return f"My knowledge base contains: {', '.join(parts)}. Total: {stats.get('total', 0)} indexed items.", None
-    return "My knowledge base is empty. Say 'reindex my files' to start indexing.", None
 
 
 def _tool_read_emails(params, query, spoken):
@@ -707,21 +675,34 @@ def _tool_read_emails(params, query, spoken):
 
 
 def _tool_search_emails(params, query, spoken):
-    """Search emails by keyword."""
+    """Search emails by keyword, with fallback to RAG indexed knowledge."""
     try:
         from mail_integration import search_emails, is_outlook_available
-        if not is_outlook_available():
-            return "Outlook is not available.", None
         q = params.get("query", query).strip()
-        results = search_emails(q, max_results=5)
+        results = []
+        if is_outlook_available():
+            results = search_emails(q, max_results=5)
+
         if results:
             lines = []
             for i, e in enumerate(results, 1):
                 lines.append(f"{i}. From: {e['sender']} | Subject: {e['subject']}")
             return f"Found {len(results)} email{'s' if len(results)>1 else ''} matching '{q}':\n" + "\n".join(lines), None
-        return f"No emails found matching '{q}'.", None
+
+        # Fallback: search indexed RAG documents / files / knowledge
+        rag_ctx = rag_engine.build_rag_context(query or q, top_k=5)
+        if rag_ctx:
+            return get_ai_response(query or q, doc_context=rag_ctx), None
+
+        return f"No emails or documents found matching '{q}'.", None
     except Exception as e:
         logger.error("[Email Search] %s", e)
+        try:
+            rag_ctx = rag_engine.build_rag_context(query or params.get("query", ""), top_k=5)
+            if rag_ctx:
+                return get_ai_response(query or params.get("query", ""), doc_context=rag_ctx), None
+        except Exception:
+            pass
         return "Could not search emails.", None
 
 
@@ -808,8 +789,6 @@ UI_TOOL_HANDLERS.update({
     "summarize_document": _tool_summarize_document,
     "find_document":      _tool_find_document,
     "search_knowledge":   _tool_search_knowledge,
-    "reindex_files":      _tool_reindex_files,
-    "rag_status":         _tool_rag_status,
     "read_emails":        _tool_read_emails,
     "search_emails":      _tool_search_emails,
     "unread_emails":      _tool_unread_emails,

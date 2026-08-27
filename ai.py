@@ -54,12 +54,11 @@ def get_last_screen_text(consume: bool = False) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  Backward-Compatible API  (used by ui_server, tool_registry, amigo main)
+#  Memory & Profile API  (used by ui_server, tool_registry, amigo main)
 # ═══════════════════════════════════════════════════════════════
 
 def load_memory() -> dict:
-    """Returns a memory dict compatible with the old format.
-    Backed by ChromaDB conversations + amigo_profile.json."""
+    """Returns memory state backed by ChromaDB vector store + amigo_profile.json."""
     return rag_engine.load_memory()
 
 
@@ -124,13 +123,14 @@ def get_active_context_prompt() -> str:
 # ═══════════════════════════════════════════════════════════════
 
 def _build_voice_prompt(query: str = "") -> str:
-    """Assemble dynamic voice system prompt with RAG context."""
+    """Assemble dynamic voice system prompt with user profile and context."""
     now = datetime.datetime.now()
     prompt = (
-        f"You are Amigo, a smart personal voice assistant. "
+        f"You are Amigo, a private local AI voice assistant on the user's PC. "
         f"Today is {now.strftime('%A, %B %d, %Y at %I:%M %p')}.\n"
-        "Respond in natural spoken English in plain sentences. "
-        "No markdown, bullet points, or raw JSON.\n"
+        "You have authorized offline access to the user's local documents, files, and notes. "
+        "When the user asks about their files, tickets, receipts, or data, answer directly with the exact details, codes, PNRs, dates, and facts from the document context. "
+        "Respond in natural spoken English in plain sentences. No markdown, bullet points, or raw JSON. "
         "Keep answers concise and direct for voice output."
     )
 
@@ -142,16 +142,6 @@ def _build_voice_prompt(query: str = "") -> str:
         prompt += f"\n[Clipboard: '{clip[:200]}']"
     if screen := get_last_screen_text():
         prompt += f"\n[Screen OCR: '{screen[:200]}']"
-
-    # ── RAG Context Retrieval ──
-    # Pull semantically relevant past context for this query
-    if query:
-        try:
-            rag_ctx = rag_engine.build_rag_context(query, top_k=3)
-            if rag_ctx:
-                prompt += f"\n[Relevant Context from Memory]:\n{rag_ctx}"
-        except Exception:
-            pass
 
     return prompt
 
@@ -167,19 +157,27 @@ def _build_ai_messages(
     messages: list[dict] = []
 
     if use_memory:
-        recent = rag_engine.get_recent_conversations(count=6)
+        recent = rag_engine.get_recent_conversations(count=10)
         for c in recent:
             u = (c.get("user", "") or "").strip()
+            a = (c.get("assistant", "") or "").strip()
             if u:
-                messages.append({"role": "user", "content": u[:250]})
-                messages.append({"role": "assistant", "content": (c.get("assistant", "Done.") or "")[:300]})
+                messages.append({"role": "user", "content": u[:1000]})
+                messages.append({"role": "assistant", "content": (a or "Done.")[:1500]})
+
+    # Auto-fetch RAG document context if not already provided
+    if not doc_context and query:
+        try:
+            doc_context = rag_engine.build_rag_context(query, top_k=5)
+        except Exception:
+            doc_context = ""
 
     # Build user content with any injected context
     user_parts: list[str] = []
     if web_context:
-        user_parts.append(f"[Web Facts]:\n{web_context}")
+        user_parts.append(f"[Web Search Facts]:\n{web_context}")
     if doc_context:
-        user_parts.append(f"[Document Context]:\n{doc_context}")
+        user_parts.append(f"[Relevant Local Document Context]:\n{doc_context}\nAnswer the question directly using the details from these documents.")
     user_parts.append(query)
 
     messages.append({"role": "user", "content": "\n\n".join(user_parts)})

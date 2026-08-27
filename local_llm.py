@@ -1,6 +1,6 @@
 """
 Local LLM Module for Amigo Voice Assistant.
-Executes Qwen 2.5 3B Instruct locally via llama-cpp-python on Windows.
+Executes Qwen 3.5 2B Instruct locally via llama-cpp-python on Windows.
 """
 
 import datetime
@@ -36,34 +36,34 @@ def get_clipboard_text() -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Qwen 2.5 3B Model Configuration
+# Qwen 3.5 2B Model Configuration
 # ---------------------------------------------------------------------------
 MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "models"))
-MODEL_NAME = "Qwen 2.5 3B Instruct"
-MODEL_FILENAME = "qwen2.5-3b-instruct-q4_k_m.gguf"
+MODEL_NAME = "Qwen 3.5 2B Instruct"
+MODEL_FILENAME = "qwen3.5-2b-instruct-q4_k_m.gguf"
 MODEL_PATH = os.path.join(MODEL_DIR, MODEL_FILENAME)
 
 MODEL_TARGETS = [
-    ("Qwen/Qwen2.5-3B-Instruct-GGUF", "qwen2.5-3b-instruct-q4_k_m.gguf"),
-    ("bartowski/Qwen2.5-3B-Instruct-GGUF", "Qwen2.5-3B-Instruct-Q4_K_M.gguf"),
-    ("unsloth/Qwen2.5-3B-Instruct-GGUF", "Qwen2.5-3B-Instruct-Q4_K_M.gguf"),
+    ("bartowski/Qwen_Qwen3.5-2B-GGUF", "Qwen3.5-2B-Q4_K_M.gguf"),
+    ("unsloth/Qwen3.5-2B-GGUF", "Qwen3.5-2B-Q4_K_M.gguf"),
+    ("daniloreddy/Qwen3.5-2B_GGUF", "Qwen3.5-2B-Q4_K_M.gguf"),
 ]
 
 STOP_TOKENS = ["<|im_end|>", "<|endoftext|>", "<|im_start|>", "User:", "Human:"]
 
 AVAILABLE_MODELS = {
-    "qwen-2.5-3b": {
-        "key": "qwen-2.5-3b",
+    "qwen-3.5-2b": {
+        "key": "qwen-3.5-2b",
         "name": MODEL_NAME,
         "filename": MODEL_FILENAME,
         "path": MODEL_PATH,
         "targets": MODEL_TARGETS,
         "downloaded": os.path.exists(MODEL_PATH) and os.path.getsize(MODEL_PATH) > 500_000_000,
-        "size_gb": 2.05,
+        "size_gb": 1.45,
     }
 }
 
-_active_model_key = "qwen-2.5-3b"
+_active_model_key = "qwen-3.5-2b"
 _local_llm_instance = None
 _llm_lock = threading.Lock()
 _devnull = open(os.devnull, "w")
@@ -74,7 +74,7 @@ def get_available_models() -> dict:
     return AVAILABLE_MODELS
 
 
-def set_active_model(model_key: str = "qwen-2.5-3b") -> bool:
+def set_active_model(model_key: str = "qwen-3.5-2b") -> bool:
     """Sets the active model key and reloads instance if needed."""
     global _active_model_key, _local_llm_instance
     _active_model_key = model_key
@@ -86,35 +86,53 @@ def set_active_model(model_key: str = "qwen-2.5-3b") -> bool:
 
 def get_active_model_info() -> dict:
     """Return metadata for the currently active model."""
-    m_path = os.path.join(MODEL_DIR, MODEL_FILENAME)
+    m_info = AVAILABLE_MODELS.get(_active_model_key, AVAILABLE_MODELS["qwen-3.5-2b"])
+    m_path = m_info["path"]
     return {
         "key": _active_model_key,
-        "name": MODEL_NAME,
-        "filename": MODEL_FILENAME,
+        "name": m_info["name"],
+        "filename": m_info["filename"],
         "path": m_path,
         "downloaded": os.path.exists(m_path) and os.path.getsize(m_path) > 500_000_000,
-        "size_gb": 2.05,
+        "size_gb": m_info.get("size_gb", 1.45),
     }
 
 
 def get_model_path() -> str:
-    """Ensure model weights exist locally; download via huggingface_hub if needed."""
+    """Ensure active model weights exist locally; download via huggingface_hub if needed."""
     os.makedirs(MODEL_DIR, exist_ok=True)
-    if os.path.exists(MODEL_PATH) and os.path.getsize(MODEL_PATH) > 500_000_000:
-        return MODEL_PATH
+    active_info = AVAILABLE_MODELS.get(_active_model_key, AVAILABLE_MODELS["qwen-3.5-2b"])
+    target_path = active_info["path"]
+    target_name = active_info["name"]
+    target_list = active_info.get("targets", MODEL_TARGETS)
 
-    logger.info(f"Downloading {MODEL_NAME} (~2.05 GB)...")
-    for repo, fname in MODEL_TARGETS:
+    if os.path.exists(target_path) and os.path.getsize(target_path) > 500_000_000:
+        return target_path
+
+    logger.info(f"Downloading {target_name} (~{active_info.get('size_gb', 1.45)} GB)...")
+    for repo, fname in target_list:
         try:
             from huggingface_hub import hf_hub_download
             downloaded = hf_hub_download(repo_id=repo, filename=fname, local_dir=MODEL_DIR)
             if os.path.exists(downloaded) and os.path.getsize(downloaded) > 500_000_000:
-                logger.info(f"Downloaded {MODEL_NAME} to {downloaded}")
+                # Normalize filename if necessary
+                if downloaded != target_path and not os.path.exists(target_path):
+                    try:
+                        os.replace(downloaded, target_path)
+                        downloaded = target_path
+                    except Exception:
+                        pass
+                logger.info(f"Downloaded {target_name} to {downloaded}")
                 return downloaded
         except Exception as e:
             logger.warning(f"Download attempt from {repo} failed: {e}")
             time.sleep(1)
-    return MODEL_PATH
+    return target_path
+
+
+def ensure_model_downloaded() -> str:
+    """Explicit helper to trigger and verify model download."""
+    return get_model_path()
 
 
 def init_local_llm(force_reload: bool = False):
@@ -361,7 +379,7 @@ def parse_user_intent_fast(query: str) -> dict[str, Any] | None:
         return {"tool": "play_media", "params": {}, "speak": "Media resumed."}
 
 
-    # 4. Exact Hardware Metrics Status
+    # 4. Exact Hardware Metrics
     if text in ("system status", "cpu usage", "ram usage", "memory usage", "battery status", "hardware metrics"):
         return {"tool": "system_status", "params": {}, "speak": "Checking system status."}
 
@@ -415,7 +433,7 @@ def parse_user_intent_fast(query: str) -> dict[str, Any] | None:
 AGENT_TOOL_DEFINITIONS = [
     {
         "name": "chat",
-        "description": "General questions, entity lookups (e.g. 'who is...', 'what is...'), definitions, explanations, advice, and conversation.",
+        "description": "General conversation, banter, games, humor, brainstorming, open-ended talk (e.g. 'let\\'s do something fun', 'tell me a joke', 'I\\'m bored', 'what can we do?'), entity lookups ('who is...', 'what is...'), technical/conceptual questions, definitions, explanations, and advice.",
         "parameters": {"type": "object", "properties": {}},
     },
     {
@@ -424,21 +442,20 @@ AGENT_TOOL_DEFINITIONS = [
         "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Web search query"}}, "required": ["query"]},
     },
     {
-        "name": "find_document",
-        "description": "Semantic discovery to find and list local files/documents by topic or meaning (e.g. accounting, taxes, resume, minor project report).",
-        "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Search concept or keywords"}}, "required": ["query"]},
+        "name": "ask_document",
+        "description": "Answer user questions, extract information, or retrieve facts from local documents, PDFs, reports, notes, or files.",
+        "parameters": {"type": "object", "properties": {"question": {"type": "string", "description": "The question to answer based on document contents"}}, "required": ["question"]},
     },
     {
-        "name": "ask_document",
-        "description": "Ask specific questions or extract details (dates, invoice numbers, amounts, balances) from user's local documents, PDFs, or files.",
-        "parameters": {"type": "object", "properties": {"question": {"type": "string", "description": "The exact question or data point to extract"}}, "required": ["question"]},
+        "name": "find_document",
+        "description": "Discover and list file paths on disk when the user explicitly asks to locate, browse, or list files.",
+        "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Search concept or keywords"}}, "required": ["query"]},
     },
     {
         "name": "open_file",
         "description": "Open a local document, report, PDF, spreadsheet, or follow-up selection in Windows.",
         "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "Filename or document title to open"}}, "required": ["name"]},
     },
-
     {
         "name": "summarize_document",
         "description": "Summarize the contents of a local document or report.",
@@ -446,7 +463,7 @@ AGENT_TOOL_DEFINITIONS = [
     },
     {
         "name": "open_app",
-        "description": "Launch installed Windows desktop software (e.g. Chrome, Spotify, Notepad, Calculator, VS Code).",
+        "description": "Launch installed Windows desktop software ONLY when the user explicitly requests to open, launch, or start a specific named application (e.g. 'open Spotify', 'launch Chrome', 'open Notepad'). Never use for vague or conversational requests.",
         "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "Name of the application"}}, "required": ["name"]},
     },
     {
@@ -458,11 +475,6 @@ AGENT_TOOL_DEFINITIONS = [
         "name": "play_youtube",
         "description": "Play a song, artist, album, or video on YouTube.",
         "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Song title, artist, or video search term"}}, "required": ["query"]},
-    },
-    {
-        "name": "web_search",
-        "description": "Search Google for live facts, current news, sports scores, or online information.",
-        "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Web search query"}}, "required": ["query"]},
     },
     {
         "name": "open_website",
@@ -506,18 +518,8 @@ AGENT_TOOL_DEFINITIONS = [
     },
     {
         "name": "search_knowledge",
-        "description": "Search across all indexed knowledge (documents, conversation memory, emails, and calendar).",
+        "description": "Search indexed local documents, files, records, memory, and personal knowledge base for information or user-specific facts.",
         "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Search question or keywords"}}, "required": ["query"]},
-    },
-    {
-        "name": "reindex_files",
-        "description": "Re-index local files and update knowledge vector embeddings.",
-        "parameters": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "rag_status",
-        "description": "Show knowledge base indexing statistics.",
-        "parameters": {"type": "object", "properties": {}},
     },
     {
         "name": "set_timer",
@@ -570,14 +572,14 @@ def _build_tier2_system_prompt() -> str:
         f"Current Time: {date_ctx}\n\n"
         "Available Tools:\n" + "\n".join(tools_doc) + "\n\n"
         "Rules:\n"
-        "- For general questions, identities (e.g. 'who is...', 'what is...'), definitions, conversation, or advice, use 'chat'.\n"
+        "- For conversation, banter, humor, playful remarks, brainstorming, or open-ended talk (e.g. 'let\\'s do something fun', 'tell me a joke', 'I\\'m bored', 'what should we do?'), ALWAYS use 'chat'.\n"
+        "- For general questions, conceptual queries (e.g. 'what is RAG', 'how do timers work?'), definitions, explanations, or advice, ALWAYS use 'chat'.\n"
+        "- ONLY use 'open_app' when the user explicitly asks to launch/open a named application (e.g. 'open Spotify', 'launch Chrome'). Never launch an app on vague requests.\n"
         "- For real-time online lookups (e.g. stock prices, latest news, live scores), use 'web_search'.\n"
         "- When the user asks to OPEN or VIEW a specific file, document, PDF, or report, use 'open_file' with the target name.\n"
         "- When the user asks to FIND or SEARCH documents by concept/topic (e.g. 'find documents related to accounting and GST'), use 'find_document'.\n"
         "- For extracting specific numbers, dates, or data points inside user documents, use 'ask_document'.\n"
         "- Output strictly valid JSON."
-
-
     )
 
 

@@ -9,7 +9,7 @@ export type AssistantState =
   | "working" // Executing task in background
   | "completed"; // Final result card / dispatch summary
 
-export type ColorTheme = "violet" | "cobalt" | "emerald" | "sunset" | "cyan" | "weather";
+export type ColorTheme = "violet" | "cobalt" | "emerald" | "sunset" | "cyan" | "weather" | "noir";
 
 export type PluginMode = "floating" | "docked_right" | "docked_bottom" | "fullscreen";
 

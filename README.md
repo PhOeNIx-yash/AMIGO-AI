@@ -1,6 +1,6 @@
 # Amigo Voice Assistant 🎙️✨
 
-A private, intelligent, and agentic personal voice assistant powered locally by the **Qwen 2.5 3B Instruct** GGUF model and **Kokoro ONNX** neural speech synthesis. 
+A private, intelligent, and agentic personal voice assistant powered locally by the **Qwen 3.5 2B Instruct** GGUF model and **Kokoro ONNX** neural speech synthesis. 
 
 Amigo provides desktop automation, live interactive action widgets (countdown timers, stopwatches, weather telemetry), deep web browsing, app management, and an adaptive RAG-powered vector memory system — completely offline, with **zero API keys and zero cloud dependencies**.
 
@@ -8,7 +8,7 @@ Amigo provides desktop automation, live interactive action widgets (countdown ti
 
 ## 🌟 Key Capabilities & Features
 
-- **100% Offline Local AI** — Powered by `Qwen 2.5 3B Instruct` via `llama-cpp-python` with optional CUDA GPU acceleration for near-instant inference.
+- **100% Offline Local AI** — Powered by `Qwen 3.5 2B Instruct` via `llama-cpp-python` with optional CUDA GPU acceleration for near-instant inference.
 - **Neural Text-to-Speech (TTS)** — `Kokoro ONNX` delivers expressive, human-like voice synthesis locally with asynchronous streaming, with automatic fallback to native Windows SAPI.
 - **Fluid Web & Desktop Dashboard** — Built with React, TypeScript, Tailwind CSS, and Framer Motion, served via high-performance Flask SSE streaming at `http://localhost:5000`.
 - **Interactive Action Cards & Widgets**:
@@ -60,7 +60,7 @@ amigo-main/
 ├── rag_indexer.py          # Background file crawling & incremental hash indexer
 ├── mail_integration.py     # Outlook email integration & RAG indexing
 ├── calendar_integration.py    # Outlook calendar events & schedule RAG
-├── local_llm.py            # Qwen 2.5 3B GGUF engine & zero-latency dispatcher
+├── local_llm.py            # Qwen 3.5 2B GGUF engine & zero-latency dispatcher
 ├── reminder_timer.py       # Background timer & reminder scheduling engine
 ├── ai.py                   # RAG memory bridge & voice prompt constructor
 ├── weather.py              # Keyless dynamic weather telemetry
@@ -89,7 +89,7 @@ Double-click **`setup.bat`** in the repository root.
 This automatically:
 1. Installs all Python dependencies via `pip`.
 2. Downloads the `Kokoro ONNX` neural voice models (`kokoro-v1.0.onnx` & `voices-v1.0.bin`).
-3. Downloads the `Qwen 2.5 3B Instruct` quantized GGUF model (~2.05 GB).
+3. Downloads the `Qwen 3.5 2B Instruct` quantized GGUF model (~1.45 GB).
 4. Sets up RAG vector data storage directories.
 5. Verifies the React Web Dashboard build.
 

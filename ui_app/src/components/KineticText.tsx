@@ -87,15 +87,23 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
                 isHighlighted
                   ? "font-bold text-transparent bg-clip-text"
                   : isDark
-                  ? "text-slate-100"
+                  ? colorTheme === "noir"
+                    ? "text-zinc-100"
+                    : "text-slate-100"
                   : "text-slate-900"
               }`}
               style={{
                 willChange: "transform, opacity",
                 ...(isHighlighted
                   ? {
-                      backgroundImage: theme.gradient,
-                      filter: isDark ? `drop-shadow(0 0 12px ${theme.glow})` : "none",
+                      backgroundImage: colorTheme === "noir"
+                        ? "linear-gradient(135deg, #ffffff 0%, #f4f4f5 40%, #e4e4e7 70%, #d4d4d8 100%)"
+                        : theme.gradient,
+                      filter: isDark
+                        ? colorTheme === "noir"
+                          ? "drop-shadow(0 0 8px rgba(255,255,255,0.4))"
+                          : `drop-shadow(0 0 12px ${theme.glow})`
+                        : "none",
                     }
                   : {}),
                 overflowWrap: "anywhere",

@@ -17,8 +17,6 @@ models/
 # ── User Data & Local Caches ───────────────────────────────────
 amigo_profile.json
 amigo_reminders.json
-amigo_memory.json
-*.migrated
 amigo_screenshot.png
 rag_data/
 *.log

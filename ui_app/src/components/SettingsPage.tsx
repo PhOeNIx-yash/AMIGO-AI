@@ -22,6 +22,11 @@ import {
   Maximize2,
   Clock,
   Waves,
+  Database,
+  RefreshCw,
+  FileText,
+  Layers,
+  Loader2,
 } from "lucide-react";
 import {
   BackendConfig,
@@ -31,7 +36,7 @@ import {
 } from "../types";
 import { TextAnimationStyle } from "./KineticText";
 import { COLOR_THEMES, GREETING_PRESETS } from "../data/presets";
-import { testBackendConnection } from "../services/assistantApi";
+import { testBackendConnection, fetchRagStatus, triggerRagReindex, RagStatusData } from "../services/assistantApi";
 
 interface SettingsPageProps {
   isOpen: boolean;
@@ -110,6 +115,46 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
 
   const [savedBanner, setSavedBanner] = useState(false);
 
+  // RAG / Knowledge Base states
+  const [ragStatus, setRagStatus] = useState<RagStatusData | null>(null);
+  const [isReindexing, setIsReindexing] = useState(false);
+  const [reindexMsg, setReindexMsg] = useState<{ success: boolean; text: string } | null>(null);
+
+  const loadRagStatus = async () => {
+    try {
+      const stats = await fetchRagStatus();
+      setRagStatus(stats);
+      if (stats.indexer?.is_indexing) {
+        setIsReindexing(true);
+      } else if (!stats.is_indexing && !stats.indexer?.is_indexing) {
+        setIsReindexing(false);
+      }
+    } catch (e) {}
+  };
+
+  useEffect(() => {
+    if (!isOpen || activeTab !== "data") return;
+    loadRagStatus();
+    const isBusy = isReindexing || ragStatus?.is_indexing || ragStatus?.indexer?.is_indexing;
+    const interval = setInterval(() => {
+      loadRagStatus();
+    }, isBusy ? 1000 : 4000);
+    return () => clearInterval(interval);
+  }, [isOpen, activeTab, isReindexing, ragStatus?.is_indexing, ragStatus?.indexer?.is_indexing]);
+
+  const handleTriggerReindex = async () => {
+    setIsReindexing(true);
+    setReindexMsg(null);
+    try {
+      const res = await triggerRagReindex();
+      setReindexMsg({ success: true, text: res.message || "Re-indexing started in background" });
+      await loadRagStatus();
+    } catch (e: any) {
+      setReindexMsg({ success: false, text: e.message || "Failed to start re-indexing" });
+      setIsReindexing(false);
+    }
+  };
+
   // Sync state if config changes
   useEffect(() => {
     setEndpointUrl(backendConfig.endpointUrl || "/api/assistant/process");
@@ -170,7 +215,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const tabs = [
     { id: "appearance", label: "Appearance", icon: Palette },
     { id: "backend", label: "AI & Endpoint", icon: Server },
-    { id: "data", label: "Data & Reset", icon: Sliders },
+    { id: "data", label: "Knowledge & Data", icon: Database },
   ] as const;
 
   return (
@@ -705,7 +750,132 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                   isDark ? "bg-white/[0.03] border-white/10" : "bg-white border-black/10"
                 } space-y-4`}
               >
-                <div className="text-xs font-semibold uppercase tracking-wider opacity-60">History & Reset</div>
+                <div className="text-xs font-semibold uppercase tracking-wider opacity-60">Knowledge & Data Management</div>
+
+                {/* Knowledge Base & Document Indexing Visual Widget */}
+                <div className={`p-3.5 rounded-xl border ${isDark ? "bg-black/30 border-white/5" : "bg-slate-50 border-black/5"} space-y-3`}>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-xs font-semibold flex items-center space-x-1.5">
+                        <Database className="w-3.5 h-3.5 text-indigo-400" />
+                        <span>Knowledge Base & Document Index</span>
+                      </div>
+                      <div className="text-[11px] opacity-60 mt-0.5">
+                        Local offline ChromaDB vector store for fast document search
+                      </div>
+                    </div>
+                    <button
+                      onClick={handleTriggerReindex}
+                      disabled={isReindexing || Boolean(ragStatus?.indexer?.is_indexing)}
+                      className="px-3 py-1.5 rounded-xl text-xs font-semibold border border-indigo-500/30 bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500/20 disabled:opacity-50 transition-colors flex items-center space-x-1.5 shadow-sm"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isReindexing || Boolean(ragStatus?.indexer?.is_indexing) ? "animate-spin" : ""}`} />
+                      <span>{isReindexing || Boolean(ragStatus?.indexer?.is_indexing) ? "Indexing..." : "Re-index Files"}</span>
+                    </button>
+                  </div>
+
+                  {/* Live Progress Bar (when active or recently run) */}
+                  {(isReindexing || Boolean(ragStatus?.indexer?.is_indexing)) && (
+                    <div className="p-3 rounded-lg bg-indigo-500/[0.07] border border-indigo-500/20 space-y-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <div className="flex items-center space-x-1.5 text-indigo-400 font-medium">
+                          <span className="w-2 h-2 rounded-full bg-indigo-400 animate-ping" />
+                          <span>Indexing Documents in Background...</span>
+                        </div>
+                        <span className="font-mono font-semibold text-indigo-300">
+                          {ragStatus?.indexer?.progress_percent != null
+                            ? `${ragStatus.indexer.progress_percent}%`
+                            : "Scanning..."}
+                        </span>
+                      </div>
+
+                      {/* Progress Bar Track */}
+                      <div className="w-full h-2 rounded-full bg-black/40 overflow-hidden border border-white/5">
+                        <div
+                          className="h-full bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 rounded-full transition-all duration-300 ease-out"
+                          style={{
+                            width: `${Math.max(
+                              4,
+                              Math.min(100, ragStatus?.indexer?.progress_percent || 0)
+                            )}%`,
+                          }}
+                        />
+                      </div>
+
+                      {ragStatus?.indexer?.current_file && (
+                        <div className="text-[10px] text-slate-400 truncate flex items-center space-x-1">
+                          <FileText className="w-3 h-3 shrink-0 opacity-70" />
+                          <span className="truncate">{ragStatus.indexer.current_file}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* 3-Column Metrics Counters */}
+                  <div className="grid grid-cols-3 gap-2 pt-1">
+                    <div className={`p-2.5 rounded-lg border text-center ${isDark ? "bg-white/[0.02] border-white/5" : "bg-white border-black/5"}`}>
+                      <div className="text-[10px] font-medium uppercase tracking-wider text-emerald-400 flex items-center justify-center space-x-1">
+                        <CheckCircle2 className="w-3 h-3" />
+                        <span>Done / Indexed</span>
+                      </div>
+                      <div className="text-sm font-semibold mt-0.5 font-mono">
+                        {ragStatus?.indexer?.files_processed ?? ragStatus?.documents ?? 0}
+                      </div>
+                      <div className="text-[9px] opacity-50">
+                        {ragStatus?.indexer?.files_indexed ?? 0} new files
+                      </div>
+                    </div>
+
+                    <div className={`p-2.5 rounded-lg border text-center ${isDark ? "bg-white/[0.02] border-white/5" : "bg-white border-black/5"}`}>
+                      <div className="text-[10px] font-medium uppercase tracking-wider text-amber-400 flex items-center justify-center space-x-1">
+                        <Clock className="w-3 h-3" />
+                        <span>Remaining</span>
+                      </div>
+                      <div className="text-sm font-semibold mt-0.5 font-mono">
+                        {ragStatus?.indexer?.files_left ?? 0}
+                      </div>
+                      <div className="text-[9px] opacity-50">files left</div>
+                    </div>
+
+                    <div className={`p-2.5 rounded-lg border text-center ${isDark ? "bg-white/[0.02] border-white/5" : "bg-white border-black/5"}`}>
+                      <div className="text-[10px] font-medium uppercase tracking-wider text-indigo-400 flex items-center justify-center space-x-1">
+                        <Layers className="w-3 h-3" />
+                        <span>Total Scanned</span>
+                      </div>
+                      <div className="text-sm font-semibold mt-0.5 font-mono">
+                        {ragStatus?.indexer?.files_total ?? ragStatus?.documents ?? 0}
+                      </div>
+                      <div className="text-[9px] opacity-50">discovered files</div>
+                    </div>
+                  </div>
+
+                  {/* Summary & Telemetry Footer */}
+                  <div className="flex flex-wrap items-center justify-between gap-1 text-[10px] opacity-60 px-0.5 pt-1 border-t border-white/5">
+                    <span>
+                      Database: {ragStatus?.total ?? 0} indexed items ({ragStatus?.documents ?? 0} doc chunks, {ragStatus?.conversations ?? 0} memories)
+                    </span>
+                    {ragStatus?.indexer?.last_run && (
+                      <span>
+                        Last run: {new Date(ragStatus.indexer.last_run).toLocaleTimeString()} ({ragStatus.indexer.last_duration_seconds}s)
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {reindexMsg && (
+                  <div
+                    className={`text-[11px] px-2.5 py-1.5 rounded-lg flex items-center space-x-1.5 ${
+                      reindexMsg.success
+                        ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                        : "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                    }`}
+                  >
+                    {reindexMsg.success ? <CheckCircle2 className="w-3.5 h-3.5" /> : <AlertCircle className="w-3.5 h-3.5" />}
+                    <span>{reindexMsg.text}</span>
+                  </div>
+                )}
+
+                <div className="h-px bg-white/5" />
 
                 <div className="flex items-center justify-between">
                   <div>

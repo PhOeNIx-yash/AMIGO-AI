@@ -309,18 +309,28 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
         }`}
         style={{
           backgroundColor: isDark
-            ? `${theme.primary}18`
-            : "rgba(255, 255, 255, 0.92)",
+            ? colorTheme === "noir"
+              ? "rgba(18, 18, 22, 0.75)"
+              : `${theme.primary}12`
+            : "rgba(255, 255, 255, 0.95)",
           boxShadow: isListening
-            ? `0 0 35px ${theme.glow}, 0 12px 30px rgba(0,0,0,0.35)`
+            ? `0 0 18px ${theme.glow}, 0 6px 20px rgba(0,0,0,0.3)`
             : isFocused
-            ? `0 0 28px ${theme.glow}, 0 8px 24px rgba(0,0,0,0.25)`
+            ? isDark
+              ? `0 4px 18px rgba(0,0,0,0.35), 0 0 8px ${theme.glow}`
+              : `0 4px 14px rgba(0,0,0,0.05), 0 0 6px ${theme.glow}30`
             : isDark
-            ? `0 8px 30px rgba(0,0,0,0.35), 0 0 9px ${theme.glow}, inset 0 1px 0 rgba(255,255,255,0.15)`
-            : `0 8px 25px rgba(0,0,0,0.06), 0 0 7px ${theme.glow}40, inset 0 1px 0 rgba(255,255,255,0.9)`,
+            ? colorTheme === "noir"
+              ? `0 4px 16px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.06)`
+              : `0 4px 16px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.08)`
+            : `0 3px 12px rgba(0,0,0,0.03), inset 0 1px 0 rgba(255,255,255,0.9)`,
           borderColor: isListening || isFocused
             ? (theme.accent || theme.primary)
-            : `${theme.primary}66`,
+            : isDark
+            ? colorTheme === "noir"
+              ? "rgba(255, 255, 255, 0.12)"
+              : `${theme.primary}35`
+            : "rgba(0, 0, 0, 0.10)",
           "--voice-glow": theme.glow,
           "--voice-accent": theme.accent || theme.primary,
         } as React.CSSProperties}
@@ -385,7 +395,7 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
                   style={{
                     caretColor: theme.accent || theme.primary,
                     "--theme-caret-color": theme.accent || theme.primary,
-                    "--theme-caret-glow": theme.glow,
+                    "--theme-caret-glow-color": theme.accent || theme.primary,
                   } as React.CSSProperties}
                 />
               </div>

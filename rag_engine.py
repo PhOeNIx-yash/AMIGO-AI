@@ -1,7 +1,7 @@
 """
 RAG Engine for Amigo Voice Assistant.
 ChromaDB vector store + sentence-transformers embeddings.
-Replaces the old JSON-based memory with unlimited, semantically-searchable long-term memory.
+Semantic long-term memory, contextual search, and profile management.
 
 Collections:
   - conversations: Every conversation turn ever
@@ -50,10 +50,7 @@ ALL_COLLECTIONS = [CONVERSATIONS, USER_FACTS, DOCUMENTS, EMAILS, CALENDAR]
 
 SUPPORTED_EXTENSIONS = {
     ".pdf", ".docx", ".doc", ".txt", ".md", ".csv",
-    ".pptx", ".py", ".json", ".log", ".html", ".xml",
-    ".js", ".ts", ".css", ".yaml", ".yml", ".ini", ".cfg",
-    ".bat", ".ps1", ".sh", ".c", ".cpp", ".h", ".java",
-    ".rs", ".go", ".rb", ".php", ".sql", ".r",
+    ".xlsx", ".xls", ".pptx", ".ppt", ".rtf", ".odt",
 }
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
@@ -64,6 +61,8 @@ EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 MEDIA_STATE_TTL = 1800   # 30 min
 APP_STATE_TTL = 1800
 SEARCH_STATE_TTL = 900   # 15 min
+FILE_STATE_TTL = 1800     # 30 min
+SUBJECT_STATE_TTL = 1800  # 30 min
 
 # ── Lazy-loaded globals ────────────────────────────────────────
 _chroma_client = None
@@ -98,10 +97,38 @@ def _init_chroma() -> None:
             import chromadb
             from chromadb.utils import embedding_functions
 
+            # Fast offline-first initialization: prevent HuggingFace SSL/HTTP roundtrips if weights exist locally
+            cache_root = os.path.expanduser(os.path.join("~", ".cache", "huggingface", "hub"))
+            model_cache_exists = any(
+                os.path.exists(os.path.join(cache_root, f"models--sentence-transformers--{EMBEDDING_MODEL.lower()}"))
+                for _ in [None]
+            ) if os.path.exists(cache_root) else False
+
+            if model_cache_exists:
+                os.environ["HF_HUB_OFFLINE"] = "1"
+                os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
             _chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
-            _embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-                model_name=EMBEDDING_MODEL,
-            )
+
+            try:
+                _embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+                    model_name=EMBEDDING_MODEL,
+                )
+            except Exception as first_err:
+                # Force offline fallback
+                os.environ["HF_HUB_OFFLINE"] = "1"
+                os.environ["TRANSFORMERS_OFFLINE"] = "1"
+                try:
+                    _embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+                        model_name=EMBEDDING_MODEL,
+                    )
+                except Exception as second_err:
+                    # Final attempt online without offline flags
+                    os.environ.pop("HF_HUB_OFFLINE", None)
+                    os.environ.pop("TRANSFORMERS_OFFLINE", None)
+                    _embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+                        model_name=EMBEDDING_MODEL,
+                    )
 
             for name in ALL_COLLECTIONS:
                 _collections[name] = _chroma_client.get_or_create_collection(
@@ -110,7 +137,7 @@ def _init_chroma() -> None:
                     metadata={"hnsw:space": "cosine"},
                 )
 
-            logger.info("[RAG] ChromaDB initialized with %d collections.", len(_collections))
+            logger.info("[RAG] ChromaDB initialized with %d collections in fast mode.", len(_collections))
         except Exception as e:
             logger.error("[RAG] ChromaDB init failed: %s", e)
             raise
@@ -146,6 +173,7 @@ def _default_profile() -> dict:
             "active_app": {"name": "", "timestamp": None},
             "last_search": {"query": "", "timestamp": None},
             "active_subject": {"name": "", "category": "", "timestamp": None},
+            "active_file": {"path": "", "name": "", "timestamp": None},
         },
         "stats": {
             "total_turns": 0,
@@ -233,6 +261,14 @@ def get_active_state(clean_expired: bool = True) -> dict:
         if search and isinstance(search, dict) and _is_expired(search.get("timestamp"), SEARCH_STATE_TTL):
             state["last_search"] = {"query": "", "timestamp": None}
 
+        subject = state.get("active_subject")
+        if subject and isinstance(subject, dict) and _is_expired(subject.get("timestamp"), SUBJECT_STATE_TTL):
+            state["active_subject"] = {"name": "", "category": "", "timestamp": None}
+
+        file_entry = state.get("active_file")
+        if file_entry and isinstance(file_entry, dict) and _is_expired(file_entry.get("timestamp"), FILE_STATE_TTL):
+            state["active_file"] = {"path": "", "name": "", "timestamp": None}
+
     return state
 
 
@@ -261,6 +297,8 @@ def extract_text(filepath: str) -> str:
             return _extract_pdf(filepath)
         elif ext in (".docx", ".doc"):
             return _extract_docx(filepath)
+        elif ext in (".xlsx", ".xls"):
+            return _extract_xlsx(filepath)
         elif ext == ".pptx":
             return _extract_pptx(filepath)
         elif ext in SUPPORTED_EXTENSIONS:
@@ -275,23 +313,80 @@ def _extract_pdf(filepath: str) -> str:
         from pypdf import PdfReader
     except ImportError:
         from PyPDF2 import PdfReader
-    reader = PdfReader(filepath)
+    try:
+        reader = PdfReader(filepath)
+    except Exception as e:
+        logger.debug("[RAG] Failed to read PDF %s: %s", filepath, e)
+        return ""
+
     pages = []
     for page in reader.pages:
-        text = page.extract_text()
-        if text:
-            # Separate adjacent alphanumeric codes from titlecase words (e.g. "E6OZGINew" -> "E6OZGI New")
-            cleaned = re.sub(r"([A-Z0-9]{2,})([A-Z][a-z]+)", r"\1 \2", text)
-            pages.append(cleaned.strip())
+        try:
+            text = page.extract_text() or ""
+            # If standard extract returns vertical single-character lines (e.g. F\no\nr\nm\na\nt), try layout mode
+            if text and text.count("\n") > max(20, len(text) * 0.3):
+                try:
+                    layout_text = page.extract_text(extraction_mode="layout")
+                    if layout_text and len(layout_text.strip()) > 10:
+                        text = layout_text
+                except Exception:
+                    pass
+            if text:
+                # Fix single character newlines (e.g. F\no\nr\nm\na\nt -> Format)
+                cleaned = re.sub(r'(?<=[a-zA-Z0-9])\n(?=[a-zA-Z0-9])', '', text)
+                # Separate adjacent alphanumeric codes from titlecase words (e.g. "E6OZGINew" -> "E6OZGI New")
+                cleaned = re.sub(r"([A-Z0-9]{2,})([A-Z][a-z]+)", r"\1 \2", cleaned)
+                pages.append(cleaned.strip())
+        except Exception:
+            continue
     return "\n\n".join(pages)
 
 
 
 
 def _extract_docx(filepath: str) -> str:
-    import docx
-    doc = docx.Document(filepath)
-    return "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
+    try:
+        import docx
+        doc = docx.Document(filepath)
+        parts: list[str] = []
+        for p in doc.paragraphs:
+            if p.text.strip():
+                parts.append(p.text.strip())
+        for table in doc.tables:
+            for row in table.rows:
+                row_cells = [c.text.strip().replace("\n", " ") for c in row.cells if c.text.strip()]
+                # Deduplicate merged cells
+                seen = set()
+                deduped = []
+                for cell_t in row_cells:
+                    if cell_t not in seen:
+                        seen.add(cell_t)
+                        deduped.append(cell_t)
+                if deduped:
+                    parts.append(" | ".join(deduped))
+        return "\n\n".join(parts)
+    except Exception as e:
+        logger.debug("[RAG] Extraction error for docx %s: %s", filepath, e)
+        return ""
+
+
+def _extract_xlsx(filepath: str) -> str:
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
+        sheets: list[str] = []
+        for sheet in wb.worksheets:
+            rows_text: list[str] = []
+            for row in sheet.iter_rows(values_only=True):
+                non_empty = [str(v).strip() for v in row if v is not None and str(v).strip()]
+                if non_empty:
+                    rows_text.append(" | ".join(non_empty))
+            if rows_text:
+                sheets.append(f"[Sheet: {sheet.title}]\n" + "\n".join(rows_text[:300]))
+        return "\n\n".join(sheets)
+    except Exception as e:
+        logger.debug("[RAG] Extraction error for xlsx %s: %s", filepath, e)
+        return ""
 
 
 def _extract_pptx(filepath: str) -> str:
@@ -390,8 +485,8 @@ def add_conversation(
     if not user_msg or not user_msg.strip():
         return
 
-    user_msg = re.sub(r"\s+", " ", user_msg).strip()[:500]
-    assistant_msg = re.sub(r"\s+", " ", assistant_msg or "").strip()[:500]
+    user_msg = re.sub(r"\s+", " ", user_msg).strip()[:1000]
+    assistant_msg = re.sub(r"\s+", " ", assistant_msg or "").strip()[:1500]
     timestamp = datetime.datetime.now().isoformat()
     doc_text = f"User: {user_msg}\nAssistant: {assistant_msg}"
     doc_id = f"conv-{uuid.uuid4().hex[:12]}"
@@ -404,8 +499,8 @@ def add_conversation(
                 ids=[doc_id],
                 documents=[doc_text],
                 metadatas=[{
-                    "user_msg": user_msg[:250],
-                    "assistant_msg": assistant_msg[:250],
+                    "user_msg": user_msg,
+                    "assistant_msg": assistant_msg,
                     "tool": tool,
                     "timestamp": timestamp,
                     "type": "conversation",
@@ -501,7 +596,8 @@ def clear_conversations() -> None:
         "current_media": None,
         "active_app": {"name": "", "timestamp": None},
         "last_search": {"query": "", "timestamp": None},
-        "active_subject": {"name": "", "timestamp": None},
+        "active_subject": {"name": "", "category": "", "timestamp": None},
+        "active_file": {"path": "", "name": "", "timestamp": None},
     }
     save_profile(profile)
 
@@ -518,6 +614,11 @@ def add_user_fact(fact: str, category: str = "general") -> None:
     try:
         col = _col(USER_FACTS)
         if col:
+            if category == "identity":
+                try:
+                    col.delete(where={"category": "identity"})
+                except Exception:
+                    pass
             col.upsert(
                 ids=[doc_id],
                 documents=[fact.strip()],
@@ -658,34 +759,32 @@ def search_files_by_context(query: str, top_k: int = 10) -> list[dict]:
 #  RAG Context Builder  (for LLM prompt injection)
 # ═══════════════════════════════════════════════════════════════
 
-def build_rag_context(query: str, top_k: int = 4) -> str:
+def build_rag_context(query: str, top_k: int = 5) -> str:
     """Retrieve relevant context from RAG for the LLM prompt.
-    Searches across conversations, user facts, and documents."""
+    Searches across indexed documents and user facts."""
     if not query or not query.strip():
         return ""
 
-    results = search(query, target_collections=[CONVERSATIONS, USER_FACTS, DOCUMENTS], top_k=top_k)
+    results = search(query, target_collections=[DOCUMENTS, USER_FACTS], top_k=top_k)
     if not results:
         return ""
 
-    # Filter out low-relevance hits
-    relevant = [r for r in results if r["score"] > 0.25]
+    # Filter out very low-relevance hits (threshold 0.20 to capture specific entities, IDs, ticket/resume details)
+    relevant = [r for r in results if r.get("score", 0) >= 0.20]
     if not relevant:
-        return ""
+        relevant = results[:2]
 
     parts: list[str] = []
     for r in relevant:
-        src = r["source"]
-        text = r["text"][:800]
+        src = r.get("source", "")
+        text = r.get("text", "")[:1000]
         if src == DOCUMENTS:
-            fname = r.get("metadata", {}).get("filename", "unknown")
-            parts.append(f"[From file '{fname}']: {text}")
-        elif src == CONVERSATIONS:
-            parts.append(f"[Past conversation]: {text}")
+            fname = r.get("metadata", {}).get("filename", "document")
+            parts.append(f"[From document '{fname}']:\n{text}")
         elif src == USER_FACTS:
             parts.append(f"[Known fact]: {text}")
 
-    return "\n".join(parts)
+    return "\n\n".join(parts)
 
 
 def build_file_context(filepath: str, question: str) -> str:
@@ -890,17 +989,18 @@ def get_user_profile_prompt() -> str:
     """Format user profile for LLM prompt injection."""
     profile = load_profile()
     parts: list[str] = []
-    if name := profile.get("identity", {}).get("name"):
-        parts.append(f"The user's name is {name}. When the user asks for their name, tell them their name is {name}.")
+    user_name = profile.get("identity", {}).get("name")
+    if user_name:
+        parts.append(f"The user's name is {user_name}. Address the user as {user_name} when appropriate. Your name is Amigo.")
     if artists := profile.get("preferences", {}).get("favorite_artists"):
         parts.append(f"User's favorite artists: {', '.join(artists[:3])}.")
     if city := profile.get("preferences", {}).get("favorite_city"):
         parts.append(f"User lives in: {city}.")
 
-    # Pull latest user facts from RAG
+    # Pull latest user facts from RAG (skip redundant name facts)
     facts = get_all_user_facts()
     for f in facts[-5:]:
-        if f:
+        if f and not (user_name and f.lower().startswith("user's name is")):
             parts.append(f"Remembered fact: {f}")
 
     return "\n".join(parts) if parts else ""
@@ -947,12 +1047,12 @@ def get_index_stats() -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  Compatibility Layer  (drop-in for old ai.py consumers)
+#  Unified Memory & State Interface
 # ═══════════════════════════════════════════════════════════════
 
 def load_memory() -> dict:
-    """Backward-compatible: returns a dict shaped like the old amigo_memory.json.
-    Used by ui_server /api/history and amigo main.py."""
+    """Returns a memory dict shaped for UI and agent consumers.
+    Backed by ChromaDB vector collections + amigo_profile.json."""
     profile = load_profile()
     conversations = get_all_conversations(limit=200)
     return {
@@ -969,7 +1069,7 @@ def load_memory() -> dict:
 
 
 def save_memory(memory: dict) -> None:
-    """Backward-compatible: saves profile portion of a memory dict."""
+    """Saves profile and user facts portions of a memory dict."""
     profile = load_profile()
     if "ui_settings" in memory and isinstance(memory["ui_settings"], dict):
         profile["ui_settings"] = memory["ui_settings"]
@@ -980,6 +1080,10 @@ def save_memory(memory: dict) -> None:
                 profile["identity"] = up["identity"]
             if "preferences" in up:
                 profile["preferences"] = up["preferences"]
+            if "custom_facts" in up and isinstance(up["custom_facts"], list):
+                for fact in up["custom_facts"]:
+                    if isinstance(fact, str) and len(fact.strip()) >= 3:
+                        add_user_fact(fact.strip(), category="custom")
     save_profile(profile)
 
 
@@ -991,15 +1095,23 @@ def save_memory(memory: dict) -> None:
 _initialized = False
 
 
-def init_rag() -> None:
-    """Initialize RAG engine."""
+def init_rag(background: bool = True) -> None:
+    """Initialize RAG engine asynchronously in the background so startup is instant."""
     global _initialized
     if _initialized:
         return
 
-    try:
-        _init_chroma()
-        _initialized = True
-        logger.info("[RAG] Engine ready. %s", get_index_stats())
-    except Exception as e:
-        logger.error("[RAG] Init failed: %s", e)
+    def _worker():
+        global _initialized
+        try:
+            _init_chroma()
+            _initialized = True
+            logger.info("[RAG] Engine ready in background. %s", get_index_stats())
+        except Exception as e:
+            logger.warning("[RAG] Background init note: %s", e)
+
+    if background:
+        t = threading.Thread(target=_worker, daemon=True, name="RAG-Init-Thread")
+        t.start()
+    else:
+        _worker()

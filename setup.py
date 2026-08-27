@@ -62,18 +62,18 @@ def main():
     else:
         print(" -> Kokoro Neural TTS models already present.")
 
-    # Qwen 2.5 3B Instruct LLM GGUF Model
+    # Local LLM GGUF Model Check
     try:
         import local_llm
         model_info = local_llm.get_active_model_info()
-        print(f" -> Checking local LLM model: {model_info['name']} (~{model_info.get('size_gb', 2.05)}GB)...")
+        print(f" -> Checking local LLM model: {model_info['name']} (~{model_info.get('size_gb', 1.45)}GB)...")
         model_path = local_llm.get_model_path()
         if os.path.exists(model_path):
             print(f"    {model_info['name']} is ready at {model_path}.")
         else:
-            print(" -> Downloading Qwen 2.5 3B Instruct GGUF model...")
+            print(f" -> Downloading {model_info['name']} GGUF model...")
             local_llm.ensure_model_downloaded()
-            print("    LLM model downloaded successfully.")
+            print(f"    {model_info['name']} downloaded successfully.")
     except Exception as e:
         print(f"    LLM model check note: {e}")
 

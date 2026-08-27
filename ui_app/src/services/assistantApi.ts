@@ -480,3 +480,51 @@ function generateDynamicResponse(prompt: string): AssistantResponse {
     },
   };
 }
+
+export interface IndexerProgressData {
+  is_indexing?: boolean;
+  files_total?: number;
+  files_processed?: number;
+  files_indexed?: number;
+  files_skipped?: number;
+  files_left?: number;
+  progress_percent?: number;
+  current_file?: string;
+  status_message?: string;
+  last_run?: string | null;
+  last_duration_seconds?: number;
+}
+
+export interface RagStatusData {
+  conversations?: number;
+  user_facts?: number;
+  documents?: number;
+  emails?: number;
+  calendar?: number;
+  total?: number;
+  is_indexing?: boolean;
+  indexer?: IndexerProgressData;
+}
+
+export async function fetchRagStatus(): Promise<RagStatusData> {
+  try {
+    const res = await fetch("/api/rag/status");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (e) {
+    return { total: 0, documents: 0, conversations: 0, is_indexing: false };
+  }
+}
+
+export async function triggerRagReindex(): Promise<{ status: string; message: string }> {
+  const res = await fetch("/api/rag/reindex", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.message || `Failed to start re-indexing (HTTP ${res.status})`);
+  }
+  return await res.json();
+}
+

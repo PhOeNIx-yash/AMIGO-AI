@@ -14,7 +14,7 @@ numpy>=1.24.0                  # Audio array processing for Kokoro ONNX
 pyttsx3>=2.90                  # SAPI / Native Windows speech fallback
 pywin32>=306                   # win32com SAPI and Windows shell integrations
 
-# ── Local LLM Engine (Qwen 2.5 3B Instruct) ───────────────────
+# ── Local LLM Engine (Qwen 3.5 2B Instruct) ───────────────────
 llama-cpp-python>=0.2.80       # Local GGUF quantized model inference (CPU/CUDA)
 huggingface-hub>=0.23.0        # Automatic model downloading from HuggingFace
 

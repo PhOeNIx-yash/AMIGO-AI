@@ -44,6 +44,28 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   onToggleSettings,
 }) => {
   const theme = COLOR_THEMES[colorTheme] || COLOR_THEMES.violet;
+  const [isOnline, setIsOnline] = React.useState<boolean>(
+    typeof navigator !== "undefined" && typeof navigator.onLine === "boolean"
+      ? navigator.onLine
+      : true
+  );
+
+  React.useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    if (typeof navigator !== "undefined" && typeof navigator.onLine === "boolean") {
+      setIsOnline(navigator.onLine);
+    }
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
 
   return (
     <header
@@ -66,10 +88,17 @@ export const TitleBar: React.FC<TitleBarProps> = ({
           </div>
           <div className="flex items-center space-x-1.5">
             <span className="text-xs font-semibold tracking-tight">Amigo</span>
-            <span className="text-[10px] px-1.5 py-0.2 rounded-full font-mono bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center space-x-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              <span>Online</span>
-            </span>
+            {isOnline ? (
+              <span className="text-[10px] px-1.5 py-0.2 rounded-full font-mono bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center space-x-1 transition-colors duration-200">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                <span>Online</span>
+              </span>
+            ) : (
+              <span className="text-[10px] px-1.5 py-0.2 rounded-full font-mono bg-rose-500/15 text-rose-400 border border-rose-500/30 flex items-center space-x-1 transition-colors duration-200">
+                <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-pulse" />
+                <span>Offline</span>
+              </span>
+            )}
           </div>
         </div>
 

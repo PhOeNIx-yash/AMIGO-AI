@@ -211,7 +211,7 @@ export default function App() {
 
   const [history, setHistory] = useState<HistoryEntry[]>([]);
 
-  // Fetch conversation history directly from amigo_memory.json on mount
+  // Fetch conversation history directly from Amigo memory backend on mount
   const fetchBackendHistory = async () => {
     try {
       const res = await fetch("/api/history");
@@ -576,7 +576,7 @@ export default function App() {
   };
 
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-slate-950 flex items-center justify-center">
+    <div className={`relative w-screen h-screen overflow-hidden ${colorTheme === "noir" ? "bg-black" : "bg-slate-950"} flex items-center justify-center`}>
       {/* Background Desktop Simulation for Plugin Context */}
       <div className="absolute inset-0 z-0 flex flex-col justify-between p-6 opacity-30 select-none pointer-events-none">
         <div className="flex items-center justify-between text-xs text-white/50">
@@ -636,16 +636,18 @@ export default function App() {
             } ${getPluginContainerClasses()}`}
           >
             {/* Dynamic Hardware-Accelerated Ambient Glow Background */}
-            <div
-              className="absolute inset-0 pointer-events-none z-0 transition-opacity duration-300 opacity-25"
-              style={{
-                background: isDark
-                  ? `radial-gradient(circle 450px at 30% 20%, ${activeThemeObj.primary}, transparent 70%), radial-gradient(circle 400px at 80% 60%, ${activeThemeObj.secondary}, transparent 70%), radial-gradient(circle 500px at 40% 90%, ${activeThemeObj.accent}, transparent 70%)`
-                  : `radial-gradient(circle 450px at 30% 20%, ${activeThemeObj.primary}33, transparent 70%), radial-gradient(circle 400px at 80% 60%, ${activeThemeObj.secondary}33, transparent 70%)`,
-                transform: "translateZ(0)",
-                willChange: "opacity",
-              }}
-            />
+            {colorTheme !== "noir" && (
+              <div
+                className="absolute inset-0 pointer-events-none z-0 transition-opacity duration-300 opacity-25"
+                style={{
+                  background: isDark
+                    ? `radial-gradient(circle 450px at 30% 20%, ${activeThemeObj.primary}, transparent 70%), radial-gradient(circle 400px at 80% 60%, ${activeThemeObj.secondary}, transparent 70%), radial-gradient(circle 500px at 40% 90%, ${activeThemeObj.accent}, transparent 70%)`
+                    : `radial-gradient(circle 450px at 30% 20%, ${activeThemeObj.primary}33, transparent 70%), radial-gradient(circle 400px at 80% 60%, ${activeThemeObj.secondary}33, transparent 70%)`,
+                  transform: "translateZ(0)",
+                  willChange: "opacity",
+                }}
+              />
+            )}
 
             {/* Windows 11 Fluent TitleBar Header */}
             <TitleBar

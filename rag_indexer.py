@@ -19,10 +19,12 @@ _HOME = os.path.expanduser("~")
 
 FILE_HASHES_PATH = os.path.join(_BASE_DIR, "rag_data", "file_hashes.json")
 
-# Default directories to scan
+# Default directories to scan (supports both standard and OneDrive-synced folders)
 DEFAULT_SCAN_DIRS = [
     os.path.join(_HOME, "Documents"),
+    os.path.join(_HOME, "OneDrive", "Documents"),
     os.path.join(_HOME, "Desktop"),
+    os.path.join(_HOME, "OneDrive", "Desktop"),
     os.path.join(_HOME, "Downloads"),
 ]
 
@@ -47,6 +49,11 @@ class RAGIndexer:
             "files_indexed": 0,
             "files_skipped": 0,
             "files_total": 0,
+            "files_processed": 0,
+            "files_left": 0,
+            "progress_percent": 0.0,
+            "current_file": "",
+            "status_message": "Idle",
             "last_run": None,
             "last_duration_seconds": 0,
             "is_indexing": False,
@@ -131,7 +138,17 @@ class RAGIndexer:
             return {"status": "already_running"}
 
         self._is_indexing = True
-        self._stats["is_indexing"] = True
+        self._stats.update({
+            "is_indexing": True,
+            "status_message": "Scanning directories...",
+            "files_total": 0,
+            "files_processed": 0,
+            "files_indexed": 0,
+            "files_skipped": 0,
+            "files_left": 0,
+            "progress_percent": 0.0,
+            "current_file": "",
+        })
         start_time = time.time()
         indexed = 0
         skipped = 0
@@ -142,27 +159,41 @@ class RAGIndexer:
             files = self._discover_files(directories)
             total = len(files)
             self._stats["files_total"] = total
+            self._stats["files_left"] = total
             logger.info("[Indexer] Full index: %d files found in %s", total, directories)
 
             for i, filepath in enumerate(files):
                 if self._stop_event.is_set():
                     break
 
+                fname = os.path.basename(filepath)
+                pct = round((i / max(total, 1)) * 100, 1)
+                self._stats.update({
+                    "files_processed": i,
+                    "files_left": max(0, total - i),
+                    "progress_percent": pct,
+                    "current_file": fname,
+                    "status_message": f"Processing ({i + 1}/{total}): {fname}",
+                })
+
                 if not self._file_changed(filepath):
                     skipped += 1
+                    self._stats["files_skipped"] = skipped
                     continue
 
                 try:
                     if self._rag.index_document(filepath):
                         indexed += 1
                         self._file_hashes[filepath] = self._file_hash(filepath)
+                        self._stats["files_indexed"] = indexed
                     else:
                         skipped += 1
+                        self._stats["files_skipped"] = skipped
                 except Exception as e:
                     errors += 1
                     logger.debug("[Indexer] Error indexing %s: %s", filepath, e)
 
-                if progress_cb and (i + 1) % 10 == 0:
+                if progress_cb and (i + 1) % 5 == 0:
                     progress_cb(i + 1, total, indexed)
 
             self._save_hashes()
@@ -176,10 +207,16 @@ class RAGIndexer:
         finally:
             duration = round(time.time() - start_time, 1)
             self._is_indexing = False
+            total_scanned = indexed + skipped
             self._stats.update({
                 "is_indexing": False,
+                "files_processed": total_scanned,
                 "files_indexed": indexed,
                 "files_skipped": skipped,
+                "files_left": 0,
+                "progress_percent": 100.0 if total_scanned > 0 else 0.0,
+                "current_file": "",
+                "status_message": f"Complete: {indexed} indexed, {skipped} up-to-date ({duration}s)",
                 "last_run": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "last_duration_seconds": duration,
             })
