@@ -4,16 +4,23 @@ import { ColorTheme } from "../types";
 import { COLOR_THEMES } from "../data/presets";
 
 export type TextAnimationStyle =
-  | "amazing_fluid" // AmazingUI iconic: smooth liquid letter stagger + gradient sheen sweep + vertical flip
-  | "kinetic_wave" // Sine wave rolling crest animation with dynamic height bounce
-  | "hologram_typewriter" // Futuristic token reveal with glowing cursor & decrypt flicker
-  | "blur_reveal" // Cinematic deep Gaussian blur-to-crystal-focus
-  | "gradient_shine" // Continuously animated metallic/neon gradient light wave
-  | "aurora_glow" // Aurora Borealis rainbow luminescence with multi-stop color drifting
-  | "floating_lift" // Anti-gravity floating 3D perspective lift with subtle spatial hovering
-  | "neon_pulse" // High-intensity cybernetic neon glow pulsation
-  | "stagger_cascade" // 3D Y-axis rotational flip cascade with spring dampening
-  | "elastic_bounce"; // Playful kinetic elasticity with fluid stretch and spring overshoot
+  | "silk_blur" // Apple-grade optical Gaussian blur dissipation & subtle vertical drift
+  | "fluid_glide" // Organic critically-damped spring upward glide with zero bounce
+  | "ambient_shimmer" // Sophisticated specular metallic light sheen sweep across typography
+  | "calm_breathe"; // Serene, low-amplitude anti-gravity breath for deep focus
+
+export function normalizeAnimationStyle(style?: string): TextAnimationStyle {
+  if (style === "fluid_glide" || style === "elastic_bounce" || style === "stagger_cascade") {
+    return "fluid_glide";
+  }
+  if (style === "ambient_shimmer" || style === "gradient_shine" || style === "aurora_glow" || style === "neon_pulse") {
+    return "ambient_shimmer";
+  }
+  if (style === "calm_breathe" || style === "floating_lift" || style === "kinetic_wave" || style === "hologram_typewriter") {
+    return "calm_breathe";
+  }
+  return "silk_blur";
+}
 
 interface KineticHeadingProps {
   text: string;
@@ -33,57 +40,131 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
   text,
   isDark,
   colorTheme = "violet",
-  animationStyle = "amazing_fluid",
+  animationStyle = "silk_blur",
   className = "",
   highlightWords = [],
 }) => {
+  const activeStyle = normalizeAnimationStyle(animationStyle);
   const theme = COLOR_THEMES[colorTheme] || COLOR_THEMES.violet;
-  const words = useMemo(() => (text ? text.trim().split(" ") : []), [text]);
+  const words = useMemo(() => (text ? text.trim().split(/\s+/) : []), [text]);
+  const isLongText = words.length > 12;
+
+  const highlightedStyle = useMemo(
+    () => ({
+      backgroundImage:
+        colorTheme === "noir"
+          ? "linear-gradient(135deg, #ffffff 0%, #f4f4f5 40%, #e4e4e7 70%, #d4d4d8 100%)"
+          : theme.gradient,
+      WebkitBackgroundClip: "text",
+      WebkitTextFillColor: "transparent",
+    }),
+    [colorTheme, theme]
+  );
+
+  // Elegant specular sheen gradient for ambient_shimmer style
+  const shimmerStyle = useMemo(
+    () => ({
+      backgroundImage: isDark
+        ? "linear-gradient(110deg, #f8fafc 0%, #cbd5e1 35%, #ffffff 50%, #cbd5e1 65%, #f8fafc 100%)"
+        : "linear-gradient(110deg, #0f172a 0%, #334155 35%, #6366f1 50%, #334155 65%, #0f172a 100%)",
+      backgroundSize: "200% 100%",
+      WebkitBackgroundClip: "text",
+      WebkitTextFillColor: "transparent",
+    }),
+    [isDark]
+  );
 
   return (
     <AnimatePresence mode="wait">
       <motion.div
-        key={`${text}-${animationStyle}`}
-        initial={{ opacity: 0, y: 6 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: -6, transition: { duration: 0.15 } }}
-        transition={{ duration: 0.25, ease: "easeOut" }}
+        key={`${text}-${activeStyle}`}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0, transition: { duration: 0.15 } }}
         className={`flex min-w-0 w-full max-w-full flex-wrap items-center justify-center gap-x-2 gap-y-1 text-center select-none ${className}`}
-        style={{ willChange: "transform, opacity", overflowWrap: "anywhere" }}
+        style={{
+          willChange: "transform, opacity",
+          overflowWrap: "anywhere",
+        }}
       >
         {words.map((word, wordIdx) => {
+          const delay = isLongText ? Math.min(0.2, wordIdx * 0.016) : wordIdx * 0.026;
           const isHighlighted =
             (highlightWords.length > 0 &&
               highlightWords.some((hw) => word.toLowerCase().includes(hw.toLowerCase()))) ||
             word.startsWith("@") ||
             word.startsWith("#") ||
-            word.includes("!") ||
-            word.includes("?") ||
-            word.includes("•") ||
-            word.startsWith('"') ||
-            word.endsWith('"') ||
-            (words.length <= 3 && wordIdx === 0) ||
-            (wordIdx === 0 && words.length > 1 && word.length > 3);
+            (words.length <= 6 && (word.startsWith('"') || word.endsWith('"') || (words.length <= 3 && wordIdx === 0)));
+
+          let initialProps: any = { opacity: 0, y: 10 };
+          let animateProps: any = { opacity: 1, y: 0 };
+          let transitionProps: any = { duration: 0.45, delay, ease: [0.16, 1, 0.3, 1] };
+          let customWordStyle: React.CSSProperties = {};
+
+          switch (activeStyle) {
+            case "silk_blur":
+              // 1. Silk Emerge: Apple-grade optical Gaussian blur dissipation & gentle drift
+              initialProps = { opacity: 0, y: 10, filter: "blur(12px)", scale: 0.98 };
+              animateProps = { opacity: 1, y: 0, filter: "blur(0px)", scale: 1 };
+              transitionProps = { duration: 0.52, delay, ease: [0.16, 1, 0.3, 1] };
+              break;
+
+            case "fluid_glide":
+              // 2. Liquid Glide: Organic critically-damped spring upward glide with zero bounce
+              initialProps = { opacity: 0, y: 16 };
+              animateProps = { opacity: 1, y: 0 };
+              transitionProps = {
+                type: "spring",
+                stiffness: 175,
+                damping: 24,
+                mass: 0.85,
+                delay,
+              };
+              break;
+
+            case "ambient_shimmer":
+              // 3. Specular Sheen: Refined metallic light sweep across typography
+              initialProps = { opacity: 0, y: 8 };
+              animateProps = { opacity: 1, y: 0 };
+              transitionProps = { duration: 0.45, delay, ease: [0.22, 1, 0.36, 1] };
+              customWordStyle = shimmerStyle;
+              break;
+
+            case "calm_breathe":
+              // 4. Serene Float: Extremely soft, peaceful anti-gravity hovering
+              initialProps = { opacity: 0, y: 8 };
+              animateProps = {
+                opacity: 1,
+                y: [0, -3.5, 0],
+              };
+              transitionProps = {
+                opacity: { duration: 0.4, delay },
+                y: {
+                  duration: 4.8,
+                  repeat: Infinity,
+                  repeatType: "mirror",
+                  ease: "easeInOut",
+                  delay: delay + wordIdx * 0.07,
+                },
+              };
+              break;
+
+            default:
+              initialProps = { opacity: 0, y: 8, filter: "blur(8px)" };
+              animateProps = { opacity: 1, y: 0, filter: "blur(0px)" };
+              transitionProps = { duration: 0.45, delay, ease: [0.16, 1, 0.3, 1] };
+              break;
+          }
 
           return (
             <motion.span
               key={`${word}-${wordIdx}`}
-              initial={{
-                opacity: 0,
-                y: animationStyle === "floating_lift" ? 14 : animationStyle === "elastic_bounce" ? 10 : 8,
-                scale: animationStyle === "hologram_typewriter" ? 0.85 : 0.95,
-              }}
-              animate={{
-                opacity: 1,
-                y: 0,
-                scale: 1,
-              }}
-              transition={{
-                delay: Math.min(0.2, wordIdx * 0.025),
-                duration: 0.35,
-                ease: [0.16, 1, 0.3, 1],
-              }}
+              initial={initialProps}
+              animate={animateProps}
+              transition={transitionProps}
               className={`inline-block min-w-0 max-w-full font-medium tracking-tight ${
+                activeStyle === "ambient_shimmer" ? "animate-shimmer-sweep" : ""
+              } ${
                 isHighlighted
                   ? "font-bold text-transparent bg-clip-text"
                   : isDark
@@ -93,19 +174,9 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
                   : "text-slate-900"
               }`}
               style={{
-                willChange: "transform, opacity",
-                ...(isHighlighted
-                  ? {
-                      backgroundImage: colorTheme === "noir"
-                        ? "linear-gradient(135deg, #ffffff 0%, #f4f4f5 40%, #e4e4e7 70%, #d4d4d8 100%)"
-                        : theme.gradient,
-                      filter: isDark
-                        ? colorTheme === "noir"
-                          ? "drop-shadow(0 0 8px rgba(255,255,255,0.4))"
-                          : `drop-shadow(0 0 12px ${theme.glow})`
-                        : "none",
-                    }
-                  : {}),
+                willChange: "transform, opacity, filter",
+                ...(isHighlighted ? highlightedStyle : {}),
+                ...customWordStyle,
                 overflowWrap: "anywhere",
               }}
             >

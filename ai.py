@@ -20,6 +20,7 @@ from local_llm import (
 
 # ── RAG Engine (the new memory backbone) ──
 import rag_engine
+from network_utils import is_internet_connected
 
 logger = logging.getLogger("amigo.ai")
 
@@ -122,17 +123,67 @@ def get_active_context_prompt() -> str:
 #  LLM Prompt Building  (now RAG-enhanced)
 # ═══════════════════════════════════════════════════════════════
 
-def _build_voice_prompt(query: str = "") -> str:
-    """Assemble dynamic voice system prompt with user profile and context."""
+_thinking_enabled: bool = False
+_last_thought: str = ""
+
+def set_thinking_enabled(enabled: bool) -> None:
+    """Set whether deep chain-of-thought reasoning (<think>) is permitted."""
+    global _thinking_enabled
+    _thinking_enabled = bool(enabled)
+    logger.info("[AI Config] Deep Thinking Mode: %s", "ENABLED" if _thinking_enabled else "DISABLED")
+
+def is_thinking_enabled() -> bool:
+    """Return whether deep thinking mode is currently active."""
+    return _thinking_enabled
+
+def get_last_thought() -> str:
+    """Return the most recent reasoning/thought block, if any."""
+    return _last_thought
+
+
+def _build_voice_prompt(query: str = "", is_voice: bool = True, has_web_context: bool = False) -> str:
+    """Assemble dynamic system prompt with user profile and context."""
     now = datetime.datetime.now()
+    online = is_internet_connected()
+    net_status = "Connected (Online)" if online else "Disconnected (Offline)"
     prompt = (
-        f"You are Amigo, a private local AI voice assistant on the user's PC. "
+        f"You are Amigo, a friendly and helpful AI voice assistant on the user's Windows PC. "
         f"Today is {now.strftime('%A, %B %d, %Y at %I:%M %p')}.\n"
-        "You have authorized offline access to the user's local documents, files, and notes. "
-        "When the user asks about their files, tickets, receipts, or data, answer directly with the exact details, codes, PNRs, dates, and facts from the document context. "
-        "Respond in natural spoken English in plain sentences. No markdown, bullet points, or raw JSON. "
-        "Keep answers concise and direct for voice output."
+        f"Internet Status: {net_status}.\n"
     )
+
+    if not online:
+        prompt += (
+            "Important: You are currently NOT connected to the internet. "
+            "If the user asks you to perform an action that requires internet (such as web search, checking live weather, online lookups, or YouTube), "
+            "tell them directly that you are not connected to the internet right now.\n"
+        )
+    elif has_web_context:
+        prompt += (
+            "Current Network Status: Connected (Online). You are synthesizing online web search results to answer the user's query accurately. "
+            "Rely strictly on the provided web search facts. Answer accurately and directly based only on what the facts state without guessing or extrapolating.\n"
+        )
+    else:
+        prompt += (
+            "Current Network Status: Connected (Online). You have active internet connectivity right now. "
+            "CRITICAL: If any previous turns in conversation history mention being offline or not connected, ignore them as they are outdated. "
+            "Never tell the user you are offline when your Current Network Status is Connected (Online).\n"
+            "If the user asks whether you can search the web or browse the internet, confirm that yes, you can search the web and open search results for them.\n"
+            "When the user asks about their local files, tickets, receipts, or data, answer directly with the exact details, codes, PNRs, dates, and facts from the document context.\n"
+        )
+
+    prompt += (
+        "Instructions:\n"
+        "- You are the user's private, trusted personal assistant on their local Windows PC. You have full clearance to recall and provide their personal information, documents, IDs, PAN, tax details, passwords, codes, tickets, and personal records.\n"
+        "- NEVER refuse queries with privacy lectures or excuses like 'I cannot provide sensitive personal details'. The user is asking about their own personal data on their own PC.\n"
+        "- If a requested detail, document, or personal number (such as a PAN number) is not present in the provided context or saved records, plainly and politely state that it is not yet saved in your records, and offer to save or look it up if they provide the file.\n"
+        "- Respond in natural, concise plain English (1 to 2 clear sentences for voice).\n"
+        "- Do not recite your capabilities or list features unless explicitly asked.\n"
+    )
+    if is_thinking_enabled():
+        prompt += "- Deep reasoning mode: Think step-by-step before providing your final answer.\n"
+    else:
+        prompt += "- Direct answer mode: Respond immediately and concisely. Never think. No chain of thought.\n"
 
     if active_ctx := get_active_context_prompt():
         prompt += f"\n{active_ctx}"
@@ -157,7 +208,7 @@ def _build_ai_messages(
     messages: list[dict] = []
 
     if use_memory:
-        recent = rag_engine.get_recent_conversations(count=10)
+        recent = rag_engine.get_recent_conversations(count=8)
         for c in recent:
             u = (c.get("user", "") or "").strip()
             a = (c.get("assistant", "") or "").strip()
@@ -165,19 +216,30 @@ def _build_ai_messages(
                 messages.append({"role": "user", "content": u[:1000]})
                 messages.append({"role": "assistant", "content": (a or "Done.")[:1500]})
 
-    # Auto-fetch RAG document context if not already provided
-    if not doc_context and query:
+    # Auto-fetch RAG document context ONLY if not already provided AND if web_context is not present
+    if not doc_context and not web_context and query:
         try:
-            doc_context = rag_engine.build_rag_context(query, top_k=5)
+            doc_context = rag_engine.build_rag_context(query, top_k=4)
         except Exception:
             doc_context = ""
 
     # Build user content with any injected context
     user_parts: list[str] = []
     if web_context:
-        user_parts.append(f"[Web Search Facts]:\n{web_context}")
-    if doc_context:
-        user_parts.append(f"[Relevant Local Document Context]:\n{doc_context}\nAnswer the question directly using the details from these documents.")
+        user_parts.append(
+            f"[Web Search Facts]:\n{web_context}\n\n"
+            "Instructions for answering:\n"
+            "- Answer using ONLY the web search facts above.\n"
+            "- Answer directly, concisely, and factually based strictly on what the facts state.\n"
+            "- Do not guess, invent, or assume details not supported by the provided facts."
+        )
+    elif doc_context:
+        user_parts.append(
+            f"[Relevant Local Document Context]:\n{doc_context}\n\n"
+            "Instructions:\n"
+            "- Answer the user's question directly with the exact requested detail, number, or fact from the matching document.\n"
+            "- Do not list or summarize unrelated files; provide the specific requested value concisely."
+        )
     user_parts.append(query)
 
     messages.append({"role": "user", "content": "\n\n".join(user_parts)})
@@ -188,20 +250,36 @@ def _build_ai_messages(
 #  LLM Response Generation
 # ═══════════════════════════════════════════════════════════════
 
+_RE_SPEAKER_PREFIX = re.compile(r"^(Amigo|Assistant|AI):\s*", flags=re.IGNORECASE)
+
+
 def get_ai_response(
     query: str,
     use_memory: bool = True,
     web_context: str = "",
     doc_context: str = "",
+    is_voice: bool = True,
 ) -> str:
     """Query local AI model with RAG-enhanced context and return plain speech text."""
+    global _last_thought
     if not query or not query.strip():
+        _last_thought = ""
         return "How can I help you today?"
 
     messages = _build_ai_messages(query, use_memory=use_memory, web_context=web_context, doc_context=doc_context)
-    prompt = _build_voice_prompt(query=query)
-    response = query_local_llm(messages, system_prompt=prompt, max_tokens=512)
-    response = re.sub(r"^(Amigo|Assistant|AI):\s*", "", response, flags=re.I).strip()
+    prompt = _build_voice_prompt(query=query, is_voice=is_voice, has_web_context=bool(web_context))
+    max_tokens = 1024 if is_thinking_enabled() else (512 if (doc_context or web_context or not is_voice) else 300)
+    temp = 0.1 if (web_context or doc_context) else 0.4
+    response = query_local_llm(messages, system_prompt=prompt, max_tokens=max_tokens, temperature=temp)
+    response = _RE_SPEAKER_PREFIX.sub("", response).strip()
+
+    # Extract thought block if present
+    _last_thought = ""
+    if "<think>" in response:
+        m = re.search(r"<think>([\s\S]*?)(?:</think>|$)", response)
+        if m:
+            _last_thought = m.group(1).strip()
+
     return sanitize_for_tts(response) or "I am here and ready to help."
 
 
@@ -211,6 +289,7 @@ def get_ai_response_stream(
     web_context: str = "",
     doc_context: str = "",
     interruption_event: threading.Event | None = None,
+    is_voice: bool = True,
 ) -> Generator[str, None, None]:
     """Stream sentence chunks from local AI model with RAG-enhanced context."""
     if not query or not query.strip():
@@ -218,12 +297,15 @@ def get_ai_response_stream(
         return
 
     messages = _build_ai_messages(query, use_memory=use_memory, web_context=web_context, doc_context=doc_context)
-    prompt = _build_voice_prompt(query=query)
+    prompt = _build_voice_prompt(query=query, is_voice=is_voice, has_web_context=bool(web_context))
+    max_tokens = 256 if is_voice else 512
+    temp = 0.1 if (web_context or doc_context) else 0.6
     token_gen = query_local_llm_stream(
-        messages, system_prompt=prompt, max_tokens=512, interruption_event=interruption_event,
+        messages, system_prompt=prompt, max_tokens=max_tokens, interruption_event=interruption_event, temperature=temp,
     )
 
     for sentence in stream_sentence_chunks(token_gen, interruption_event=interruption_event):
-        clean = re.sub(r"^(Amigo|Assistant|AI):\s*", "", sentence, flags=re.I).strip()
+        clean = _RE_SPEAKER_PREFIX.sub("", sentence).strip()
         if clean:
             yield clean
+

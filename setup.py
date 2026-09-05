@@ -2,6 +2,7 @@ import os
 import sys
 import subprocess
 import shutil
+import json
 
 def run_step(desc: str, cmd: list, cwd: str = None, check: bool = True):
     print(f"\n[+] {desc}...")
@@ -18,10 +19,19 @@ def main():
     print("      AMIGO VOICE ASSISTANT - ONE-CLICK EASY SETUP")
     print("=" * 60)
 
-    # 1. Install Python dependencies
+    # 1. Check Python & Git Environment
+    print(f"[+] Python runtime: {sys.version.split()[0]} ({sys.executable})")
+    git_bin = shutil.which("git")
+    if git_bin:
+        print(f"    Git version control is ready: {git_bin}")
+    else:
+        print("    Notice: Git is not detected in PATH. To install Git via Winget, run:")
+        print("    winget install --id Git.Git -e --source winget")
+
+    # 2. Install Python dependencies
     run_step("Installing Python requirements", [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
 
-    # 2. Build Frontend UI (if Node/npm is available)
+    # 3. Build Frontend UI (if Node/npm is available)
     ui_dir = os.path.join(base_dir, "ui_app")
     dist_dir = os.path.join(ui_dir, "dist")
     if os.path.exists(ui_dir):
@@ -31,12 +41,31 @@ def main():
                 run_step("Building Web UI distribution bundle", ["npm", "run", "build"], cwd=ui_dir, check=False)
             else:
                 print("\n[!] Node.js/npm not found. Pre-built UI or dev server can be used.")
+        else:
+            print(" -> Pre-built Web UI distribution is present and ready.")
 
-    # 3. Create RAG Data Directories
+    # 4. Create RAG Data Directories & Default Profile
     rag_dir = os.path.join(base_dir, "rag_data", "chroma")
     os.makedirs(rag_dir, exist_ok=True)
 
-    # 4. Download AI Models
+    profile_path = os.path.join(base_dir, "amigo_profile.json")
+    if not os.path.exists(profile_path):
+        default_profile = {
+            "user_identity": {"name": "User", "preferred_title": ""},
+            "system": {"installed_at": None, "last_active": None},
+            "ui_settings": {
+                "thinkingEnabled": False,
+                "textAnimationStyle": "silk_blur",
+                "colorTheme": "violet",
+                "visualizerMode": "ribbon"
+            },
+            "active_state": {}
+        }
+        with open(profile_path, "w", encoding="utf-8") as f:
+            json.dump(default_profile, f, indent=2)
+        print(" -> Initialized default amigo_profile.json.")
+
+    # 5. Download AI Models
     print("\n[+] Downloading AI Models...")
     try:
         from huggingface_hub import hf_hub_download
@@ -73,7 +102,17 @@ def main():
         else:
             print(f" -> Downloading {model_info['name']} GGUF model...")
             local_llm.ensure_model_downloaded()
-            print(f"    {model_info['name']} downloaded successfully.")
+        # Multimodal Vision Projector Check
+        print(" -> Checking local vision projector (mmproj)...")
+        if local_llm.is_vision_ready():
+            print("    Native vision projector is ready.")
+        else:
+            print(" -> Downloading Qwen 3.5 2B vision projector (~640 MB)...")
+            local_llm.ensure_mmproj_downloaded()
+            if local_llm.is_vision_ready():
+                print("    Vision projector downloaded successfully.")
+            else:
+                print("    Vision projector will download on first vision query.")
     except Exception as e:
         print(f"    LLM model check note: {e}")
 
@@ -91,5 +130,18 @@ def main():
     print("=" * 60 + "\n")
 
 if __name__ == "__main__":
-    main()
+    # If invoked via pip install -e ., run standard setuptools setup
+    if len(sys.argv) > 1 and sys.argv[1] in ("egg_info", "dist_info", "bdist_wheel", "sdist", "develop"):
+        try:
+            from setuptools import setup, find_packages
+            setup(
+                name="amigo-assistant",
+                version="1.2.0",
+                description="Local Offline Agentic AI Voice Assistant for Windows",
+                packages=find_packages(),
+            )
+        except Exception:
+            main()
+    else:
+        main()
 

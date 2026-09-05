@@ -14,9 +14,17 @@ logging.basicConfig(
     stream=sys.stdout,
     force=True,
 )
+# Silence noisy third-party dependency spam in terminal
+logging.getLogger("werkzeug").setLevel(logging.WARNING)
+logging.getLogger("primp").setLevel(logging.WARNING)
+logging.getLogger("phonemizer").setLevel(logging.ERROR)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("chromadb").setLevel(logging.WARNING)
+
 print("[ AMIGO UI SERVER ] Starting up...", flush=True)
 
 import atexit
+import base64
 import datetime
 import json
 import os
@@ -37,11 +45,15 @@ from ai import (
     load_memory,
     save_memory,
     clear_conversations_memory,
+    set_thinking_enabled,
+    is_thinking_enabled,
+    get_last_thought,
 )
 from local_llm import (
     get_active_model_info as get_llm_model_info,
     get_agent_action,
     get_clipboard_text,
+    is_vision_ready,
     set_active_model,
 )
 from os_automation import (
@@ -72,10 +84,19 @@ from tts import (
 from weather import get_weather_data
 import rag_engine
 from rag_indexer import start_background_indexer
+from network_utils import is_internet_connected
 
 print("[ AMIGO UI SERVER ] All imports loaded.", flush=True)
 
+try:
+    _init_settings = rag_engine.load_profile().get("ui_settings", {})
+    set_thinking_enabled(_init_settings.get("thinkingEnabled", False))
+except Exception:
+    pass
+
 logger = logging.getLogger("amigo.ui_server")
+
+_RE_FILE_MATCH_COUNT = re.compile(r"I found (\d+) matching file")
 
 # ---------------------------------------------------------------------------
 # Flask App
@@ -134,8 +155,13 @@ def set_assistant_state(state_name: str) -> None:
     broadcaster.broadcast("state_change", {"state": state_name})
 
 
-# Wire TTS and Tool Registry to broadcaster
+# Wire TTS, Tool Registry, and Hotkey Service to broadcaster
 set_tts_callbacks(state_cb=set_assistant_state, broadcast_cb=broadcaster.broadcast)
+try:
+    import hotkey_service
+    hotkey_service.set_broadcast_callback(broadcaster.broadcast)
+except Exception:
+    pass
 
 
 def _on_media_update(media_data: dict):
@@ -197,20 +223,28 @@ def take_command_ui(max_retries: int = 3) -> str:
 def get_active_model_info():
     try:
         info = get_llm_model_info()
+        vision_ok = is_vision_ready()
         return {
             "key": info.get("key", "qwen-3.5-2b"),
             "name": info.get("name", "Qwen 3.5 2B Instruct"),
             "type": "local_gguf",
             "context_length": 8192,
             "tts_engine": get_tts_engine_name(),
+            "vision_ready": vision_ok,
+            "vision_mode": "Native Multimodal (Qwen 3.5 2B)" if vision_ok else "OCR Fallback (Windows Media OCR)",
+            "hotkey": "Alt+V",
         }
     except Exception:
+        vision_ok = is_vision_ready()
         return {
             "key": "qwen-3.5-2b",
             "name": "Qwen 3.5 2B Instruct",
             "type": "local_gguf",
             "context_length": 8192,
             "tts_engine": get_tts_engine_name(),
+            "vision_ready": vision_ok,
+            "vision_mode": "Native Multimodal (Qwen 3.5 2B)" if vision_ok else "OCR Fallback (Windows Media OCR)",
+            "hotkey": "Alt+V",
         }
 
 
@@ -224,12 +258,10 @@ def get_available_models():
 # ---------------------------------------------------------------------------
 # Core Query Processor (Agentic)
 # ---------------------------------------------------------------------------
-def _process_query(query: str, is_voice: bool = True, request_id: str | None = None) -> dict:
+def _process_query(query: str, is_voice: bool = True, request_id: str | None = None, display_prompt: str | None = None) -> dict:
     """Fully agentic query processor powered by local LLM."""
     set_assistant_state("processing")
-    memory = load_memory()
-    history = memory.get("conversations", [])
-    history = history[-15:]
+    history = rag_engine.get_recent_conversations(15)
 
     clipboard_used = bool(get_clipboard_text())
     llm_started = time.perf_counter()
@@ -249,7 +281,7 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
     for action in actions:
         tool = action.get("tool", "chat")
         params = action.get("params", {})
-        spoken = action.get("speak", "")
+        spoken = action.get("speak", "") or (params.get("speak", "") if isinstance(params, dict) else "")
         remember = action.get("remember", "")
 
         if not isinstance(tool, str) or tool not in UI_TOOL_HANDLERS:
@@ -261,7 +293,7 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
         if remember:
             last_remember = remember
 
-        if tool in ("chat", "web_search"):
+        if tool == "web_search":
             spoken = ""
 
         logger.info(f"[Query Action] tool={tool!r} params={params}")
@@ -293,7 +325,7 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
         if final_to_speak:
             speech_to_voice = final_to_speak
             if "matching file" in speech_to_voice and "\n" in speech_to_voice:
-                m_count = re.search(r"I found (\d+) matching file", speech_to_voice)
+                m_count = _RE_FILE_MATCH_COUNT.search(speech_to_voice)
                 c_num = m_count.group(1) if m_count else "some"
                 speech_to_voice = f"I found {c_num} matching files. Choose one on your screen or say 'Open number 1'."
             speak(speech_to_voice, request_id=request_id)
@@ -306,24 +338,29 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
     final_reply = " ".join(combined_spoken).strip() or (f"Completed {last_tool.replace('_', ' ')}." if last_tool != "chat" else "")
 
     add_to_memory(
-        query,
+        display_prompt or query,
         final_reply or f"Completed {last_tool.replace('_', ' ')}",
         tool=last_tool,
         clipboard_used=clipboard_used,
         remember=last_remember,
     )
 
+    last_thought = get_last_thought()
+    if last_thought:
+        response_metadata["thought"] = last_thought
+
     broadcaster.broadcast("chat_message", {
         "sender": "assistant",
         "text": final_reply or f"Completed {last_tool.replace('_', ' ')}",
         "tool": last_tool,
         "url": last_url,
+        "thought": last_thought,
     })
 
-    return {"tool": last_tool, "params": last_params, "response": final_reply, "url": last_url, "metadata": response_metadata}
+    return {"tool": last_tool, "params": last_params, "response": final_reply, "url": last_url, "metadata": response_metadata, "thought": last_thought}
 
 
-def process_query(query: str, is_voice: bool = True) -> dict:
+def process_query(query: str, is_voice: bool = True, display_prompt: str | None = None) -> dict:
     """Safely executes a query with error recovery and request telemetry."""
     request_id = uuid.uuid4().hex[:12]
     request_started = time.perf_counter()
@@ -331,7 +368,7 @@ def process_query(query: str, is_voice: bool = True) -> dict:
     logger.info("[Timing] request_id=%s stage=request start", request_id)
 
     try:
-        result = _process_query(query, is_voice=is_voice, request_id=request_id)
+        result = _process_query(query, is_voice=is_voice, request_id=request_id, display_prompt=display_prompt)
 
         request_status = "completed"
         result.setdefault("metadata", {})["request_id"] = request_id
@@ -436,6 +473,127 @@ def favicon():
     return Response(status=204)
 
 
+UPLOAD_DIR = os.environ.get(
+    "AMIGO_UPLOAD_DIR",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "rag_data", "uploads")
+)
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".svg", ".ico"}
+
+
+@app.route("/api/upload", methods=["POST", "OPTIONS"])
+def api_upload():
+    """Upload and index documents, PDFs, or images for assistant analysis."""
+    if request.method == "OPTIONS":
+        return jsonify({"status": "ok"})
+
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    filename = None
+    saved_path = None
+    file_bytes = None
+
+    # 1. Multipart/form-data
+    if "file" in request.files:
+        f = request.files["file"]
+        if f.filename:
+            raw_filename = os.path.basename(f.filename)
+            safe_name = f"{int(time.time())}_{re.sub(r'[^a-zA-Z0-9_.-]', '_', raw_filename)}"
+            saved_path = os.path.join(UPLOAD_DIR, safe_name)
+            f.save(saved_path)
+            filename = raw_filename
+            try:
+                with open(saved_path, "rb") as rf:
+                    file_bytes = rf.read()
+            except Exception:
+                pass
+
+    # 2. JSON Base64 payload
+    if not saved_path and request.is_json:
+        data = request.get_json(silent=True) or {}
+        raw_filename = os.path.basename(data.get("filename", "upload.bin"))
+        b64_data = data.get("fileData", "")
+        if b64_data:
+            if "," in b64_data:
+                b64_data = b64_data.split(",", 1)[1]
+            try:
+                file_bytes = base64.b64decode(b64_data)
+                safe_name = f"{int(time.time())}_{re.sub(r'[^a-zA-Z0-9_.-]', '_', raw_filename)}"
+                saved_path = os.path.join(UPLOAD_DIR, safe_name)
+                with open(saved_path, "wb") as wf:
+                    wf.write(file_bytes)
+                filename = raw_filename
+            except Exception as be:
+                logger.error("[Upload] Base64 decode error: %s", be)
+
+    if not saved_path or not os.path.exists(saved_path):
+        return jsonify({"success": False, "error": "No file uploaded or invalid file data"}), 400
+
+    ext = os.path.splitext(filename or saved_path)[1].lower()
+    file_size = os.path.getsize(saved_path)
+
+    # Classify file type dynamically
+    if ext == ".pdf":
+        file_type = "pdf"
+    elif ext in IMAGE_EXTENSIONS:
+        file_type = "image"
+    elif ext in rag_engine.SUPPORTED_EXTENSIONS:
+        file_type = "document"
+    else:
+        test_txt = rag_engine.extract_text(saved_path)
+        file_type = "document" if (test_txt and len(test_txt.strip()) > 0) else "generic"
+
+    extracted_preview = ""
+    ocr_text = ""
+
+    # Process and Index according to type
+    if file_type in ("pdf", "document"):
+        try:
+            extracted_text = rag_engine.extract_text(saved_path)
+            extracted_preview = (extracted_text or "").strip()[:800]
+            # Index document into ChromaDB vector store
+            indexed = rag_engine.index_document(saved_path)
+            # Update active_file state
+            rag_engine.update_active_state("active_file", {
+                "path": saved_path,
+                "name": filename,
+                "type": file_type,
+            })
+            logger.info("[Upload] Document '%s' indexed successfully (size: %d, indexed: %s)", filename, file_size, indexed)
+        except Exception as e:
+            logger.error("[Upload] Error indexing document %s: %s", saved_path, e)
+
+    elif file_type == "image":
+        try:
+            from PIL import Image
+            from screen_vision import read_text_from_image, analyze_image
+            ocr_text = ""
+            with Image.open(saved_path) as img:
+                ocr_text = read_text_from_image(img) or ""
+            # Native visual comprehension with Qwen 3.5 2B
+            visual_desc = analyze_image(saved_path, question="Summarize and describe what is visible in this image.")
+            extracted_preview = visual_desc or ocr_text.strip()[:800]
+            rag_engine.update_active_state("active_file", {
+                "path": saved_path,
+                "name": filename,
+                "type": "image",
+                "description": visual_desc,
+                "ocr_text": ocr_text.strip()[:1000],
+            })
+            logger.info("[Upload] Image '%s' processed (OCR chars: %d, vision: %s)", filename, len(ocr_text), bool(visual_desc))
+        except Exception as e:
+            logger.debug("[Upload] Image analysis note for %s: %s", saved_path, e)
+
+    return jsonify({
+        "success": True,
+        "filename": filename,
+        "filepath": saved_path,
+        "fileType": file_type,
+        "size": file_size,
+        "extractedPreview": extracted_preview or ocr_text,
+        "message": f"Successfully uploaded and indexed {filename}",
+    })
+
+
 @app.route("/api/assistant/process", methods=["POST", "OPTIONS"])
 def api_assistant_process():
     """Universal bridge for the React Windows 11 Voice Assistant UI."""
@@ -456,37 +614,82 @@ def api_assistant_process():
         })
 
     prompt_value = data.get("prompt", "")
-    if not isinstance(prompt_value, str):
-        return jsonify({"error": "Prompt must be a string"}), 400
-    prompt = prompt_value.strip()
+    prompt = str(prompt_value).strip() if prompt_value is not None else ""
+    attachment = data.get("attachment")
+
+    # If prompt is empty but attachment is supplied, default to summarizing the attachment
     if not prompt:
-        return jsonify({"error": "Empty prompt"}), 400
+        if isinstance(attachment, dict) and attachment.get("filename"):
+            prompt = f"Analyze {attachment.get('filename')}"
+        else:
+            return jsonify({"error": "Empty prompt"}), 400
+
+    # Enrich query with attached file / image context
+    attached_file_context = ""
+    if isinstance(attachment, dict):
+        att_filename = attachment.get("filename", "")
+        att_path = attachment.get("filepath", "")
+        att_type = attachment.get("fileType", "")
+        att_preview = attachment.get("extractedPreview", "")
+        if att_path and os.path.exists(att_path):
+            if att_type in ("pdf", "document"):
+                doc_ctx = rag_engine.build_file_context(att_path, prompt)
+                if not doc_ctx:
+                    doc_ctx = rag_engine.extract_text(att_path)[:3000]
+                attached_file_context = f"[Attached Document: {att_filename}]\n{doc_ctx}"
+            elif att_type == "image":
+                attached_file_context = f"[Attached Image: {att_filename}]\nExtracted Visual OCR Text:\n{att_preview}"
+        elif att_preview:
+            attached_file_context = f"[Attached File: {att_filename}]\nContent:\n{att_preview}"
+
+    effective_query = prompt
+    if attached_file_context:
+        effective_query = f"{attached_file_context}\n\nUser Question / Task: {prompt}"
 
     broadcaster.broadcast("chat_message", {"sender": "user", "text": prompt})
 
-    result = process_query(prompt, is_voice=False)
+    result = process_query(effective_query, is_voice=False, display_prompt=prompt)
     tool = result.get("tool", "chat")
     params = result.get("params", {})
     response_text = result.get("response", "")
     url = result.get("url", "")
     result_metadata = result.get("metadata", {})
 
-    action_cards = build_action_cards(
-        tool=tool,
-        params=params,
-        result_metadata=result_metadata,
-        url=url,
-        response_text=response_text,
-        prompt=prompt,
-    )
+    # Action cards are only for interactive tools (timer, weather, file picker), not for document Q&A/analysis
+    action_cards = []
+    if not attachment:
+        action_cards = build_action_cards(
+            tool=tool,
+            params=params,
+            result_metadata=result_metadata,
+            url=url,
+            response_text=response_text,
+            prompt=prompt,
+        )
 
     has_multiple_cards = bool(action_cards and len(action_cards) > 1 and any(not c.get("selected") for c in action_cards))
 
     speech_reply = response_text or f"Executing {tool.replace('_', ' ')}"
     if "matching file" in speech_reply and "\n" in speech_reply:
-        m_count = re.search(r"I found (\d+) matching file", speech_reply)
+        m_count = _RE_FILE_MATCH_COUNT.search(speech_reply)
         c_num = m_count.group(1) if m_count else "some"
         speech_reply = f"I found {c_num} matching files. Choose one on your screen or say 'Open number 1'."
+
+    status = result_metadata.get("status")
+    if not status:
+        if not is_internet_connected() and ("not connected to the internet" in speech_reply.lower() or "offline" in speech_reply.lower()):
+            status = "offline"
+        elif result_metadata.get("error") or "error" in result_metadata:
+            status = "failed"
+        else:
+            status = "completed"
+
+    if status == "offline":
+        headline = "Offline"
+    elif status == "failed":
+        headline = "Action Failed"
+    else:
+        headline = "Action Completed"
 
     formatted_response = {
         "speechReply": speech_reply,
@@ -496,9 +699,9 @@ def api_assistant_process():
         "actionCards": action_cards,
         "contactMatches": [],
         "executionSummary": {
-            "status": "completed",
-            "headline": "Action Completed",
-            "details": response_text or f"Completed {tool.replace('_', ' ')}.",
+            "status": status,
+            "headline": headline,
+            "details": response_text or f"{headline}: {tool.replace('_', ' ')}.",
             "secondaryDetails": url if url else "",
         },
         "metadata": result_metadata,
@@ -577,14 +780,29 @@ def get_system_stats():
             "ram":     round(mem.percent, 1),
             "battery": round(battery.percent, 1) if battery else None,
             "plugged": battery.power_plugged if battery else None,
+            "online":  is_internet_connected(),
         })
     except Exception as e:
         logger.error(f"[System Stats] {e}")
-        return jsonify({"cpu": 0, "ram": 0, "battery": None, "plugged": None})
+        return jsonify({"cpu": 0, "ram": 0, "battery": None, "plugged": None, "online": False})
+
+
+@app.route("/api/internal/broadcast", methods=["POST", "OPTIONS"])
+def api_internal_broadcast():
+    """Cross-process SSE broadcast bridge for hotkey and external assistant triggers."""
+    if request.method == "OPTIONS":
+        return jsonify({"status": "ok"})
+    payload = request.get_json(silent=True) or {}
+    event_type = payload.get("type", "chat_message")
+    data = payload.get("data", {})
+    broadcaster.broadcast(event_type, data)
+    return jsonify({"status": "ok", "broadcasted": event_type})
 
 
 @app.route("/api/history")
 def get_history():
+    """Fetch all conversation history from RAG engine with fresh cache check."""
+    rag_engine.invalidate_conversations_cache()
     return jsonify(rag_engine.load_memory())
 
 
@@ -658,10 +876,17 @@ def handle_settings():
             "isDark", "soundEnabled", "colorTheme", "visualizerMode",
             "textAnimationStyle", "pluginMode", "greetingText",
             "autoCycleGreetings", "autoCycleInterval", "backendConfig",
-            "theme", "autoSpeech", "model"
+            "theme", "autoSpeech", "model", "thinkingEnabled"
         ):
             if k in data:
                 ui_settings[k] = data[k]
+        if "thinkingEnabled" in data:
+            set_thinking_enabled(bool(data["thinkingEnabled"]))
+            ui_settings["thinkingEnabled"] = bool(data["thinkingEnabled"])
+        elif "backendConfig" in data and isinstance(data["backendConfig"], dict) and "thinkingEnabled" in data["backendConfig"]:
+            set_thinking_enabled(bool(data["backendConfig"]["thinkingEnabled"]))
+            ui_settings["thinkingEnabled"] = bool(data["backendConfig"]["thinkingEnabled"])
+
         if "user_profile" in data and isinstance(data["user_profile"], dict):
             memory["user_profile"] = data["user_profile"]
         if "theme" in data:
@@ -678,6 +903,7 @@ def handle_settings():
         "user_profile": memory.get("user_profile", {}),
         "model": info.get("key", "qwen-3.5-2b"),
         "model_name": info.get("name", "Qwen 3.5 2B Instruct"),
+        "thinking_enabled": is_thinking_enabled(),
         "available_models": get_available_models(),
     })
 
@@ -978,12 +1204,34 @@ def calendar_upcoming_endpoint():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/hotkey/status")
+def api_hotkey_status():
+    """Status of global Alt+V vision hotkey service."""
+    try:
+        from hotkey_service import is_hotkey_service_running
+        return jsonify({
+            "hotkey": "Alt+V",
+            "running": is_hotkey_service_running(),
+            "description": "Press Alt+V anywhere across Windows to wake Amigo without opening browser",
+        })
+    except Exception as e:
+        return jsonify({"running": False, "error": str(e)})
+
+
 if __name__ == "__main__":
     _info = get_active_model_info()
     print("==================================================")
     print("   AMIGO VOICE ASSISTANT - UI DASHBOARD SERVER   ")
     print(f"   [ {_info['name'].upper()} | {_info['tts_engine'].upper()} | RAG + AGENTIC ]")
     print("==================================================")
+    
+    # Start Alt+V global wake hotkey service
+    try:
+        import hotkey_service
+        hotkey_service.set_broadcast_callback(broadcaster.broadcast)
+        hotkey_service.start_hotkey_service()
+    except Exception as e:
+        logger.warning(f"[Hotkey Service] Could not start: {e}")
 
     # Initialize RAG engine and start background indexer
     print("[ AMIGO ] Initializing RAG memory engine...", flush=True)

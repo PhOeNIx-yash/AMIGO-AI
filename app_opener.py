@@ -301,9 +301,13 @@ def _find_best_app(query: str) -> Tuple[Optional[str], Optional[str]]:
 # File Search Engine
 # ---------------------------------------------------------------------------
 
+_RE_FILE_NON_WORD = re.compile(r"[^\w\s.-]")
+
+
 def _clean_file_keywords(query: str) -> List[str]:
-    clean = re.sub(r"[^\w\s.-]", " ", query.lower()).strip()
+    clean = _RE_FILE_NON_WORD.sub(" ", query.lower()).strip()
     return [t for t in clean.split() if t not in _CLEAN_WORDS and len(t) >= 2] or clean.split()
+
 
 
 def _score_file(path: str, filename: str, keywords: List[str]) -> int:
@@ -470,11 +474,21 @@ def open_windows_app(app_name: str) -> bool:
         if ok:
             return True
 
-    # 1. Check indexed apps (Start Menu, Registry, User AppData, Program Files)
+    # 1. Dynamic system PATH (resolves control, taskmgr, calc, notepad, cmd, wt, etc. instantly without waiting on index)
+    exe_candidate = shutil.which(clean) or shutil.which(clean.replace(" ", "")) or shutil.which(clean.replace(" ", "_"))
+    if exe_candidate:
+        try:
+            subprocess.Popen([exe_candidate], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except Exception:
+            pass
+
+    # 2. Check indexed apps (Start Menu, Registry, User AppData, Program Files)
     ensure_built()
-    deadline = time.time() + 3.0
-    while not _index_built and time.time() < deadline:
-        time.sleep(0.05)
+    if not _index_built:
+        deadline = time.time() + 0.8
+        while not _index_built and time.time() < deadline:
+            time.sleep(0.04)
 
     _, path = _find_best_app(app_name)
     if path:
@@ -497,15 +511,6 @@ def open_windows_app(app_name: str) -> bool:
                 return True
             except Exception:
                 pass
-
-    # 2. Dynamic system PATH & Windows Shell execution (resolves control, taskmgr, calc, notepad, cmd, wt, etc.)
-    exe_candidate = shutil.which(clean) or shutil.which(clean.replace(" ", "")) or shutil.which(clean.replace(" ", "_"))
-    if exe_candidate:
-        try:
-            subprocess.Popen([exe_candidate], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return True
-        except Exception:
-            pass
 
     # 3. Native Windows Shell Start (handles shell namespaces, control applets, ms-settings:, protocol URIs)
     try:
@@ -544,8 +549,20 @@ def execute_file_action(file_path: str, action: str = "open") -> Tuple[bool, str
         return True, "Revealing file in Explorer."
 
     if action == "copy":
-        subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", "Set-Clipboard", "-Value", file_path], timeout=2)
+        copied = False
+        try:
+            import pyperclip
+            pyperclip.copy(file_path)
+            copied = True
+        except Exception:
+            pass
+        if not copied:
+            try:
+                subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", "Set-Clipboard", "-Value", file_path], timeout=2)
+            except Exception:
+                pass
         return True, "File path copied to clipboard."
 
     ok = open_file_or_location(file_path)
     return ok, "Opening file." if ok else "Could not open file."
+

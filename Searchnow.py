@@ -1,9 +1,10 @@
 """
-Searchnow.py — Web search, stock prices, Wikipedia, and YouTube resolution for Amigo.
+Searchnow.py — Web search, stock prices, and YouTube resolution for Amigo.
 """
 
 import html
 import json
+import logging
 import re
 import urllib.parse
 import urllib.request
@@ -18,19 +19,45 @@ DEFAULT_HEADERS = {
 }
 
 
+logger = logging.getLogger("amigo.search")
+
+_RE_SEARCH_PREFIX = re.compile(
+    r"^(?:(?:hey\s+|hi\s+|hello\s+)?amigo\s*)?"
+    r"(?:(?:can|could|would)\s+(?:you|u)\s+)?(?:please\s+)?"
+    r"(?:tell\s+me\s+(?:more\s+about|about)?|"
+    r"what\s+(?:can\s+you\s+tell\s+me\s+about|do\s+you\s+know\s+about|is|are|was|were)|"
+    r"who\s+(?:is|are|was|were)|"
+    r"when\s+(?:is|was|did)|"
+    r"where\s+(?:is|are|was)|"
+    r"search\s+(?:google\s+for|the\s+web\s+for|online\s+for|for)?|"
+    r"look\s+up|google|find|show\s+me|give\s+me\s+(?:info|information)\s+(?:on|about))\s*",
+    re.IGNORECASE,
+)
+_RE_SEARCH_SUFFIX = re.compile(r"\s+(?:please|for\s+me|right\s+now|now|today|online|on\s+the\s+web|on\s+google)$", re.IGNORECASE)
+_RE_STOCK_CLEAN = re.compile(r"\b(stock|price|share|shares|quote|trading|today|current|what is|what's|the|of)\b", re.IGNORECASE)
+_RE_GOOGLE_CLEAN = re.compile(r"^(show me|open|search|find|look up|what is|google)\s+", re.IGNORECASE)
+_RE_YT_PREFIX = re.compile(r"^(?:(?:hey\s+|hi\s+|hello\s+)?amigo\s*)?(?:please\s+|can\s+(?:you|u)\s+|could\s+(?:you|u)\s+)?(?:open youtube|play|listen to|put on|stream|watch|search youtube for)?\s*", re.IGNORECASE)
+_RE_YT_SUFFIX = re.compile(r"\s+(?:on youtube|in youtube|youtube|for me|please|now|right now)$", re.IGNORECASE)
+_RE_YT_LATEST = re.compile(r"\b(latest|newest|recent|new|today|yesterday)\b", re.IGNORECASE)
+_RE_YT_LATEST_CLEAN = re.compile(r"['’]?s?\s*\b(latest|newest|recent|new|today|yesterday|videos?|uploads?|vids?)\b", re.IGNORECASE)
+_RE_YT_LIVE = re.compile(r"\b(live\s*stream|livestream|currently\s+live|current\s+live|live\s+now|is\s+live|live)\b", re.IGNORECASE)
+_RE_YT_LIVE_CLEAN = re.compile(r"\b(current\s+live\s+stream|currently\s+live|current\s+live|live\s*stream|livestream|live\s+now|is\s+live|live)\b", re.IGNORECASE)
+_RE_YT_NOISE = re.compile(r"\b(that\s+(?:does|do|makes?|creates?)|who\s+(?:does|do|makes?|creates?))\b", re.IGNORECASE)
+_RE_WHITESPACE = re.compile(r"\s+")
+_RE_VID_ID = re.compile(r'"videoRenderer":\{"videoId":"([a-zA-Z0-9_-]{11})"')
+_RE_TITLE = re.compile(r'"title":\{"runs":\[\{"text":"([^"]+)"')
+_RE_CHANNEL = re.compile(r'"ownerText":\{"runs":\[\{"text":"([^"]+)"')
+
+
 def clean_search_query(raw_query: str) -> str:
     """Extract core search terms by stripping conversational prefixes and suffixes."""
     if not raw_query:
         return ""
     q = raw_query.strip()
-    q = re.sub(
-        r"^(?:(?:hey\s+|hi\s+|hello\s+)?amigo\s*)?(?:can\s+you\s+|could\s+you\s+)?(?:please\s+)?(?:tell\s+me\s+(?:about\s+)?|show\s+me\s+|find\s+|search\s+(?:google\s+for\s+|for\s+)?|look\s+up\s+|who\s+(?:is|was|are|were)\s+|what\s+(?:is|was|are|were)\s+|when\s+(?:is|was|did)\s+|where\s+(?:is|was|are)\s+|how\s+to\s+|google\s+)?",
-        "",
-        q,
-        flags=re.IGNORECASE,
-    ).strip()
-    q = re.sub(r"\s+(?:please|for\s+me|right\s+now|now|today|online)$", "", q, flags=re.IGNORECASE).strip()
-    return q if len(q) > 2 else raw_query.strip()
+    q = _RE_SEARCH_PREFIX.sub("", q).strip()
+    q = _RE_SEARCH_SUFFIX.sub("", q).strip()
+    return q if len(q) >= 2 else raw_query.strip()
+
 
 
 def resolve_ticker(company_or_symbol: str) -> Optional[str]:
@@ -69,154 +96,198 @@ def get_stock_price(symbol_or_name: str) -> str:
     return ""
 
 
-def _is_junk_snippet(text: str) -> bool:
-    """Filter out navigation, ad boilerplate, or pure URLs from search snippets."""
-    t = text.lower()
-    if text.startswith("http") or (re.search(r"https?://", text) and len(text) < 120):
-        return True
-    bad_phrases = ["ad related to", "sponsored", "advertisement", "privacy policy", "terms of use", "tickertech"]
-    return any(bad in t for bad in bad_phrases)
-
-
-def scrape_web_info(query: str) -> str:
+def scrape_web_info(query: str, max_results: int = 3) -> str:
     """
-    Multi-Engine Web Search:
-    1. DuckDuckGo Instant Answer API (Factual answers)
-    2. Yahoo Search (News & snippets)
-    3. DuckDuckGo HTML (Fallback snippets)
+    Fast, reliable, free web search & fact collector.
+    1. Checks stock ticker / quote if financial keywords are present.
+    2. Uses DDGS (DuckDuckGo Search) to retrieve verified web snippets (clean JSON, TLS spoofed, no rate-limits).
+    3. Falls back to Wikipedia summary if needed for entity ground truth.
     """
     if not query or not query.strip():
         return ""
 
-    snippets = []
     core_q = clean_search_query(query)
-    search_queries = [core_q] if core_q.lower() == query.lower().strip() else [core_q, query.strip()]
+    search_term = core_q or query.strip()
 
-    # 1. Stock / Financial check
-    if any(w in query.lower() for w in ("stock", "share", "price of", "shares", "nasdaq", "nyse", "quote")):
-        subject = re.sub(r"\b(stock|price|share|shares|quote|trading|today|current|what is|what's|the|of)\b", "", core_q, flags=re.I).strip()
+    snippets: list[str] = []
+
+    # 1. Stock / Financial check if relevant
+    if any(w in query.lower() for w in ("stock", "share price", "nasdaq", "nyse", "market price")):
+        subject = _RE_STOCK_CLEAN.sub("", search_term).strip()
         if len(subject) >= 2:
-            price_fact = get_stock_price(subject)
-            if price_fact:
+            if price_fact := get_stock_price(subject):
                 snippets.append(price_fact)
 
-    # 2. DuckDuckGo Instant Answer API
+    # 2. DDGS Web Search (Fast, Structured, Free)
     try:
-        api_url = f"https://api.duckduckgo.com/?q={urllib.parse.quote(search_queries[0])}&format=json&no_html=1&skip_disambig=1"
-        req = urllib.request.Request(api_url, headers={"User-Agent": USER_AGENT})
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            data = json.loads(resp.read().decode("utf-8", errors="ignore"))
-            
-        abstract = data.get("AbstractText", "").strip()
-        if len(abstract) > 40:
-            snippets.append(abstract)
-            
-        answer = data.get("Answer", "").strip()
-        if len(answer) > 5 and answer not in snippets:
-            snippets.append(answer)
-            
-        for topic in data.get("RelatedTopics", [])[:3]:
-            txt = topic.get("Text", "").strip()
-            if len(txt) > 40 and txt not in snippets:
-                snippets.append(txt)
-    except Exception:
-        pass
+        from ddgs import DDGS
+        ddgs_client = DDGS(timeout=5)
+        results = list(ddgs_client.text(search_term, max_results=max_results))
+        for r in results:
+            title = (r.get("title") or "").strip()
+            body = (r.get("body") or "").strip()
+            if body and len(body) > 30:
+                snippet = f"{title}: {body}" if title else body
+                if snippet not in snippets:
+                    snippets.append(snippet)
+    except Exception as e:
+        logger.debug(f"[DDGS Error]: {e}")
 
-    # 3. Yahoo Search Snippets
-    if len(snippets) < 4:
-        for q in search_queries:
-            try:
-                url = f"https://search.yahoo.com/search?p={urllib.parse.quote(q)}"
-                req = urllib.request.Request(url, headers=DEFAULT_HEADERS)
-                with urllib.request.urlopen(req, timeout=4) as resp:
-                    html_content = resp.read().decode("utf-8", errors="ignore")
-                
-                from bs4 import BeautifulSoup
-                soup = BeautifulSoup(html_content, "html.parser")
-                for div in soup.select(".compText, p.lh-16, .fc-falcon, span.fc-falcon"):
-                    txt = re.sub(r"\s+", " ", div.get_text(separator=" ", strip=True)).strip()
-                    if len(txt) > 50 and not _is_junk_snippet(txt) and txt not in snippets:
-                        snippets.append(txt)
-                if len(snippets) >= 6:
-                    break
-            except Exception:
-                pass
+    # 3. Wikipedia Fallback (Instant authoritative facts for entities, organizations, people, concepts)
+    if len(snippets) < 2:
+        try:
+            import wikipedia
+            wiki_summary = wikipedia.summary(search_term, sentences=3, auto_suggest=True)
+            if wiki_summary and len(wiki_summary.strip()) > 40:
+                wiki_fact = f"Wikipedia ({search_term}): {wiki_summary.strip()}"
+                if wiki_fact not in snippets:
+                    snippets.insert(0, wiki_fact)
+        except Exception:
+            pass
 
-    # 4. DuckDuckGo HTML (fallback)
-    if len(snippets) < 3:
-        for q in search_queries:
-            try:
-                url = "https://html.duckduckgo.com/html/"
-                data = urllib.parse.urlencode({"q": q, "b": ""}).encode("utf-8")
-                req_headers = {**DEFAULT_HEADERS, "Referer": "https://html.duckduckgo.com/", "Content-Type": "application/x-www-form-urlencoded"}
-                req = urllib.request.Request(url, data=data, headers=req_headers)
-                with urllib.request.urlopen(req, timeout=4) as resp:
-                    raw_html = resp.read().decode("utf-8", errors="ignore")
-
-                found = re.findall(r'class="result__snippet[^>]*>(.*?)</a>', raw_html, re.DOTALL)
-                for s in found[:4]:
-                    clean = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", s))).strip()
-                    if len(clean) > 50 and not _is_junk_snippet(clean) and clean not in snippets:
-                        snippets.append(clean)
-                if len(snippets) >= 5:
-                    break
-            except Exception:
-                pass
-
-    return " | ".join(snippets)[:3500] if snippets else ""
+    return " | ".join(snippets)[:3000] if snippets else ""
 
 
 def searchGoogle(query: str) -> None:
     """Open Google search in the default web browser."""
     if not query:
         return
-    clean_q = re.sub(r"^(show me|open|search|find|look up|what is|google)\s+", "", query, flags=re.I).strip()
+    clean_q = _RE_GOOGLE_CLEAN.sub("", query).strip()
     clean_q = clean_q.replace("google", "").strip() or query
     webbrowser.open(f"https://www.google.com/search?q={urllib.parse.quote(clean_q)}")
 
 
-def resolve_youtube_video(query: str) -> dict:
-    """Extract query, fetch top YouTube video, title, and channel."""
-    q = (query or "").strip()
-    # 1. Clean conversational prefixes and suffixes
-    q = re.sub(r"^(?:(?:hey\s+|hi\s+|hello\s+)?amigo\s*)?(?:please\s+|can you\s+|could you\s+)?(?:open youtube|play|listen to|put on|stream|watch|search youtube for)?\s*", "", q, flags=re.I)
-    q = re.sub(r"\s+(?:on youtube|in youtube|youtube|for me|please|now|right now)$", "", q, flags=re.I).strip()
-
-    # 2. Check if user wants latest/recent uploads -> clean noise and sort by upload date
-    is_latest = bool(re.search(r"\b(latest|newest|recent|new|today|yesterday)\b", q, flags=re.I))
-    clean_q = re.sub(r"['’]?s?\s*\b(latest|newest|recent|new|today|yesterday|videos?|uploads?|vids?)\b", "", q, flags=re.I).strip() if is_latest else q
-    clean_q = re.sub(r"\b(that\s+(?:does|do|makes?|creates?)|who\s+(?:does|do|makes?|creates?))\b", "", clean_q, flags=re.I).strip()
-    clean_q = re.sub(r"\s+", " ", clean_q).strip() or q
-
-    # 3. Choose YouTube filter: Upload Date (CAISAhAB) or Relevance (EgIQAQ%253D%253D)
-    sp = "CAISAhAB" if is_latest else "EgIQAQ%253D%253D"
-    search_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(clean_q)}&sp={sp}"
-
-    result = {"url": search_url, "title": clean_q.title(), "channel": "YouTube", "video_id": "", "query": clean_q}
-
+def _fetch_top_yt_video(search_url: str) -> Optional[dict]:
+    """Helper to query YouTube and extract top video ID, title, channel, and live status."""
     try:
         req = urllib.request.Request(search_url, headers=DEFAULT_HEADERS)
         with urllib.request.urlopen(req, timeout=4.5) as resp:
             page_html = resp.read().decode("utf-8", errors="ignore")
 
-        # Extract top video ID
-        vid_m = re.search(r'"videoRenderer":\{"videoId":"([a-zA-Z0-9_-]{11})"', page_html)
-        if vid_m:
-            result["video_id"] = vid_m.group(1)
-            result["url"] = f"https://www.youtube.com/watch?v={vid_m.group(1)}&autoplay=1"
+        # 1. Parse ytInitialData JSON for highest accuracy & live badge detection
+        m = re.search(r"var ytInitialData\s*=\s*({.+?});</script>", page_html)
+        if m:
+            try:
+                data = json.loads(m.group(1))
+                contents = data.get("contents", {}).get("twoColumnSearchResultsRenderer", {}).get("primaryContents", {}).get("sectionListRenderer", {}).get("contents", [])
+                for sec in contents:
+                    for item in sec.get("itemSectionRenderer", {}).get("contents", []):
+                        if "videoRenderer" in item:
+                            vr = item["videoRenderer"]
+                            vid_id = vr.get("videoId")
+                            if vid_id:
+                                title = vr.get("title", {}).get("runs", [{}])[0].get("text", "")
+                                channel = vr.get("ownerText", {}).get("runs", [{}])[0].get("text", "YouTube")
+                                badges = [b.get("metadataBadgeRenderer", {}).get("label") for b in vr.get("badges", [])]
+                                is_live = any("LIVE" in str(b).upper() for b in badges) or "BADGE_STYLE_TYPE_LIVE_NOW" in str(vr.get("badges"))
+                                return {
+                                    "video_id": vid_id,
+                                    "title": title,
+                                    "channel": channel,
+                                    "url": f"https://www.youtube.com/watch?v={vid_id}&autoplay=1",
+                                    "is_live": is_live,
+                                }
+            except Exception:
+                pass
 
-        # Extract title and channel
-        title_m = re.search(r'"title":\{"runs":\[\{"text":"([^"]+)"', page_html)
-        if title_m:
-            result["title"] = title_m.group(1).replace(r"\u0026", "&").replace(r'\"', '"')
+        # 2. Regex fallback
+        vid_m = _RE_VID_ID.search(page_html)
+        if not vid_m:
+            return None
 
-        channel_m = re.search(r'"ownerText":\{"runs":\[\{"text":"([^"]+)"', page_html)
-        if channel_m:
-            result["channel"] = channel_m.group(1).replace(r"\u0026", "&")
+        vid_id = vid_m.group(1)
+        title_m = _RE_TITLE.search(page_html)
+        title = title_m.group(1).replace(r"\u0026", "&").replace(r'\"', '"') if title_m else ""
+        channel_m = _RE_CHANNEL.search(page_html)
+        channel = channel_m.group(1).replace(r"\u0026", "&") if channel_m else "YouTube"
+        is_live = "BADGE_STYLE_TYPE_LIVE_NOW" in page_html
+
+        return {
+            "video_id": vid_id,
+            "title": title,
+            "channel": channel,
+            "url": f"https://www.youtube.com/watch?v={vid_id}&autoplay=1",
+            "is_live": is_live,
+        }
     except Exception:
-        pass
+        return None
+
+
+def resolve_youtube_video(query: str) -> dict:
+    """Extract query, fetch top YouTube video, title, and channel, with support for live streams and fallbacks."""
+    q = (query or "").strip()
+    # 1. Clean conversational prefixes and suffixes
+    q = _RE_YT_PREFIX.sub("", q)
+    q = _RE_YT_SUFFIX.sub("", q).strip()
+
+    is_live = bool(_RE_YT_LIVE.search(q))
+    is_latest = bool(_RE_YT_LATEST.search(q))
+
+    clean_q = q
+    if is_live:
+        clean_q = _RE_YT_LIVE_CLEAN.sub("", clean_q).strip()
+    if is_latest:
+        clean_q = _RE_YT_LATEST_CLEAN.sub("", clean_q).strip()
+    clean_q = _RE_YT_NOISE.sub("", clean_q).strip()
+    clean_q = _RE_WHITESPACE.sub(" ", clean_q).strip() or q
+
+    result = {
+        "url": f"https://www.youtube.com/results?search_query={urllib.parse.quote(clean_q)}",
+        "title": clean_q.title(),
+        "channel": "YouTube",
+        "video_id": "",
+        "query": clean_q,
+        "is_live": False,
+        "not_live_fallback": False,
+    }
+
+    # 1. If live stream requested:
+    # First search clean_q + " live" which YouTube's search ranks best for live broadcasts
+    if is_live:
+        live_kw_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(clean_q + ' live')}"
+        hit = _fetch_top_yt_video(live_kw_url)
+        if hit and hit.get("is_live"):
+            result.update(hit)
+            return result
+
+        # Also try YouTube Live filter (sp=EgJAAQ%253D%253D)
+        live_sp_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(clean_q)}&sp=EgJAAQ%253D%253D"
+        hit_sp = _fetch_top_yt_video(live_sp_url)
+        if hit_sp:
+            result.update(hit_sp)
+            result["is_live"] = True
+            return result
+
+        # If not currently live, fall back to top result from live keyword search or latest
+        if hit:
+            result.update(hit)
+            result["not_live_fallback"] = True
+            return result
+
+        latest_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(clean_q + ' stream')}&sp=CAISAhAB"
+        hit_latest = _fetch_top_yt_video(latest_url)
+        if hit_latest:
+            result.update(hit_latest)
+            result["not_live_fallback"] = True
+            return result
+
+    # 2. If latest upload requested, search with Upload Date filter (sp=CAISAhAB)
+    if is_latest:
+        latest_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(clean_q)}&sp=CAISAhAB"
+        hit = _fetch_top_yt_video(latest_url)
+        if hit:
+            result.update(hit)
+            return result
+
+    # 3. Standard relevance search (sp=EgIQAQ%253D%253D)
+    standard_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(clean_q)}&sp=EgIQAQ%253D%253D"
+    hit = _fetch_top_yt_video(standard_url)
+    if hit:
+        result.update(hit)
+        return result
 
     return result
+
 
 
 def searchYoutube(query: str) -> str:
@@ -225,13 +296,3 @@ def searchYoutube(query: str) -> str:
     webbrowser.open(media_info["url"])
     return media_info["url"]
 
-
-def search_wikipedia(query: str, sentences: int = 2) -> str:
-    """Fetches summary from Wikipedia."""
-    if not query:
-        return "Please provide a topic to search on Wikipedia."
-    try:
-        import wikipedia
-        return wikipedia.summary(query.strip(), sentences=sentences)
-    except Exception:
-        return f"I couldn't find a Wikipedia page for {query.strip()}."

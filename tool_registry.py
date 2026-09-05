@@ -22,9 +22,20 @@ from reminder_timer import (
     handle_cancel_reminder,
     parse_relative_seconds,
 )
-from Searchnow import searchGoogle, searchYoutube, scrape_web_info, resolve_youtube_video, search_wikipedia
+from Searchnow import searchGoogle, searchYoutube, scrape_web_info, resolve_youtube_video, clean_search_query
 from settings_resolver import open_setting
 from weather import weather_command, get_weather_data
+from network_utils import is_internet_connected
+
+# Pre-compiled regex patterns for fast matching
+_RE_URLS = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]*[^\s<>"{}|\\^`\[\].,;:!?]')
+_RE_APP_STRIP = re.compile(r"^(?:please\s+)?(?:open|launch|start|run|show)\s+(?:the\s+|my\s+|an?\s+)?", re.IGNORECASE)
+_RE_APP_ARTICLE = re.compile(r"^(?:the|that|my|an?)\s+", re.IGNORECASE)
+_RE_MEDIA_CLEAN_TITLE = re.compile(r"^(?:play|playing)\s*:\s*", re.IGNORECASE)
+_RE_DOC_STRIP_ACTION = re.compile(r"^(?:open|show|read|summarize|tell me about|what is in|what does|find|locate|can you open)\s+", re.IGNORECASE)
+_RE_DOC_STOPWORDS = re.compile(r"\b(?:the|that|those|these|my|a|an|file|files|document|documents|doc|pdf)\b", re.IGNORECASE)
+_RE_DOC_ORDINAL = re.compile(r"\b(?:number\s+(\d+)|(\d+)(?:st|nd|rd|th)?|first|second|third|fourth|fifth)\b", re.IGNORECASE)
+_RE_TIMER_PROMPT = re.compile(r"\b(timer|countdown|stopwatch)\b", re.IGNORECASE)
 
 logger = logging.getLogger("amigo.tool_registry")
 
@@ -40,7 +51,7 @@ def set_media_update_callback(cb):
 
 def extract_and_open_urls(text: str) -> bool:
     """Finds URLs in text and opens top matches in default browser."""
-    urls = re.findall(r'https?://[^\s<>"{}|\\^`\[\]]*[^\s<>"{}|\\^`\[\].,;:!?]', text)
+    urls = _RE_URLS.findall(text)
     opened = False
     for url in urls[:2]:
         webbrowser.open(url)
@@ -53,22 +64,38 @@ def extract_and_open_urls(text: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def _tool_web_search(params, query, spoken):
+    if not is_internet_connected():
+        response = get_ai_response(query, web_context="Error: The PC is currently offline with no internet connection. Explain to the user that you cannot search the web right now because you are not connected to the internet.")
+        return response, None, {"status": "offline", "error": "No internet connection"}
+
     q = params.get("query", query).strip() or query
+    clean_q = clean_search_query(q)
+    target = clean_q or q
+
     try:
-        update_active_state("last_search", {"query": q})
+        update_active_state("last_search", {"query": target})
     except Exception:
         pass
-    snippets = scrape_web_info(q)
+
+    snippets = scrape_web_info(target)
+    search_url = "https://www.google.com/search?q=" + urllib.parse.quote(target)
+
     if snippets:
         response = get_ai_response(query, web_context=snippets)
         if any(kw in query.lower() for kw in ("google", "browser", "open google", "search google", "show in browser")):
-            searchGoogle(q)
-        return response, "https://www.google.com/search?q=" + urllib.parse.quote(q)
-    searchGoogle(q)
-    return spoken or get_ai_response(query), "https://www.google.com/search?q=" + urllib.parse.quote(q)
+            searchGoogle(target)
+        return response, search_url
+
+    searchGoogle(target)
+    web_ctx = f"Web search for '{target}' was executed and the Google search page has been opened in the browser."
+    response = get_ai_response(query, web_context=web_ctx)
+    return response, search_url
 
 
 def _tool_open_website(params, query, spoken):
+    if not is_internet_connected():
+        response = get_ai_response(query, web_context="Error: The PC is currently offline with no internet connection. Explain to the user that websites cannot be opened or loaded without an internet connection.")
+        return response, None, {"status": "offline", "error": "No internet connection"}
     raw_url = params.get("url", "")
     if raw_url:
         url = raw_url if raw_url.startswith("http") else f"https://{raw_url}"
@@ -83,6 +110,9 @@ def _tool_open_website(params, query, spoken):
 
 
 def _tool_play_youtube(params, query, spoken):
+    if not is_internet_connected():
+        response = get_ai_response(query, web_context="Error: The PC is currently offline with no internet connection. Explain to the user that you cannot search or stream YouTube videos without an internet connection.")
+        return response, None, {"status": "offline", "error": "No internet connection"}
     q = params.get("query", query) or query
     media_info = resolve_youtube_video(q)
     clean_q = media_info.get("query") or q
@@ -111,6 +141,21 @@ def _tool_play_youtube(params, query, spoken):
     if media_info.get("url"):
         webbrowser.open(media_info["url"])
 
+    title = media_info.get("title")
+    channel = media_info.get("channel")
+    if media_info.get("is_live"):
+        speak_text = f"Playing live stream: '{title}'"
+        if channel and channel not in ("YouTube", "YouTube Music", ""):
+            speak_text += f" by {channel}"
+        return speak_text + " on YouTube.", media_info.get("url")
+    elif media_info.get("not_live_fallback"):
+        return f"{clean_q} is not currently live. Playing their latest stream: '{title}' on YouTube.", media_info.get("url")
+    elif title and title.strip().lower() != clean_q.strip().lower():
+        speak_text = f"Playing '{title}'"
+        if channel and channel not in ("YouTube", "YouTube Music", ""):
+            speak_text += f" by {channel}"
+        return speak_text + " on YouTube.", media_info.get("url")
+
     return spoken or f"Playing {clean_q} on YouTube.", media_info.get("url")
 
 
@@ -121,7 +166,7 @@ def _tool_get_current_media(params, query, spoken):
         title = media_state.get("title") or media_state.get("query")
         artist = media_state.get("artist") or ""
         if title:
-            clean_title = re.sub(r"^(?:play|playing)\s*:\s*", "", title, flags=re.I).strip()
+            clean_title = _RE_MEDIA_CLEAN_TITLE.sub("", title).strip()
             by_artist = f" by {artist}" if artist and artist not in ("YouTube Music", "YouTube", "") else ""
             return f"Currently playing '{clean_title}'{by_artist} on YouTube.", media_state.get("url")
     except Exception:
@@ -138,6 +183,9 @@ def _tool_get_date(params, query, spoken):
 
 
 def _tool_get_weather(params, query, spoken):
+    if not is_internet_connected():
+        response = get_ai_response(query, web_context="Error: The PC is currently offline with no internet connection. Explain to the user that live weather reports cannot be fetched without an internet connection.")
+        return response, None, {"status": "offline", "error": "No internet connection"}
     city = params.get("city", "").strip()
     return weather_command(city if city else query) or spoken, None
 
@@ -168,11 +216,11 @@ def _tool_open_app(params, query, spoken):
         or ""
     ).strip()
     if not app_name:
-        app_name = re.sub(r"^(?:please\s+)?(?:open|launch|start|run|show)\s+(?:the\s+|my\s+|an?\s+)?", "", query, flags=re.I).strip()
+        app_name = _RE_APP_STRIP.sub("", query).strip()
     if not app_name:
         return spoken or "Which application would you like to open?", None
 
-    clean_target = re.sub(r"^(?:the|that|my|an?)\s+", "", app_name, flags=re.I).strip()
+    clean_target = _RE_APP_ARTICLE.sub("", app_name).strip()
 
     # 1. Is it an installed Windows application / System tool?
     if open_windows_app(clean_target):
@@ -309,12 +357,6 @@ def _tool_pause_media(params, query, spoken):
         pass
     state = get_active_state(clean_expired=True)
     media = state.get("current_media")
-    has_tracked_media = bool(media and isinstance(media, dict) and media.get("status") == "playing")
-    has_audio = _is_system_audio_playing()
-
-    if not has_tracked_media and not has_audio:
-        return "No music or audio is currently playing.", None
-
     os_automation.play_pause_media()
     if _media_update_cb:
         _media_update_cb({"status": "paused"})
@@ -328,10 +370,6 @@ def _tool_play_media(params, query, spoken):
     state = get_active_state(clean_expired=False)
     media = state.get("current_media")
     has_tracked_media = bool(media and isinstance(media, dict))
-    has_audio = _is_system_audio_playing()
-
-    if not has_tracked_media and not has_audio:
-        return _tool_play_youtube({"query": "music"}, query, spoken)
 
     os_automation.play_pause_media()
     if _media_update_cb:
@@ -342,19 +380,11 @@ def _tool_play_media(params, query, spoken):
 
 
 def _tool_next_track(params, query, spoken):
-    state = get_active_state(clean_expired=True)
-    media = state.get("current_media")
-    if not media and not _is_system_audio_playing():
-        return "No music or playlist is currently active.", None
     os_automation.next_track()
     return spoken or "Next track.", None
 
 
 def _tool_prev_track(params, query, spoken):
-    state = get_active_state(clean_expired=True)
-    media = state.get("current_media")
-    if not media and not _is_system_audio_playing():
-        return "No music or playlist is currently active.", None
     os_automation.prev_track()
     return spoken or "Previous track.", None
 
@@ -389,9 +419,14 @@ def _tool_calculate(params, query, spoken):
 
 
 def _tool_chat(params, query, spoken):
+    if spoken and spoken.strip():
+        extract_and_open_urls(spoken)
+        return spoken, None
     response = get_ai_response(query)
     extract_and_open_urls(response)
     return response, None
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -445,13 +480,13 @@ def resolve_document_path(query_or_target: str) -> str | None:
         return raw
 
     # Check for pronoun / follow-up references ('open that', 'open it', 'open this', 'open those', 'open the file')
-    clean = re.sub(r"^(?:open|show|read|summarize|tell me about|what is in|what does|find|locate|can you open)\s+", "", raw, flags=re.I)
-    clean = re.sub(r"\b(?:the|that|those|these|my|a|an|file|files|document|documents|doc|pdf)\b", "", clean, flags=re.I).strip()
+    clean = _RE_DOC_STRIP_ACTION.sub("", raw)
+    clean = _RE_DOC_STOPWORDS.sub("", clean).strip()
 
     # Check for ordinal / numbered references ("open number 1", "open number 2", "open first", "open second", "open 3rd")
     found_list = state.get("found_files", [])
     if isinstance(found_list, list) and found_list:
-        if m := re.search(r"\b(?:number\s+(\d+)|(\d+)(?:st|nd|rd|th)?|first|second|third|fourth|fifth)\b", raw, flags=re.I):
+        if m := _RE_DOC_ORDINAL.search(raw):
             matched_text = m.group(0).lower()
             idx = 0
             if "1" in matched_text or "first" in matched_text:
@@ -515,13 +550,59 @@ def _tool_file_action(params, query, spoken):
 
 
 
+def _tool_show_images(params, query, spoken):
+    return spoken or "Showing images.", "https://www.google.com/search?q=" + urllib.parse.quote(params.get("query", query))
+
+def _tool_search_and_type(params, query, spoken):
+    os_automation.search_and_type(params.get("text", ""))
+    return spoken, None
+
+def _tool_new_tab(params, query, spoken):
+    os_automation.new_tab(params.get("url", ""))
+    return spoken, None
+
+
+def _tool_set_volume(params, query, spoken):
+    _, msg = os_automation.set_volume(params.get("level", "50"))
+    return msg, None
+
+def _tool_set_brightness(params, query, spoken):
+    _, msg = os_automation.set_brightness(params.get("level", "50"))
+    return msg, None
+
+def _tool_open_settings(params, query, spoken):
+    return open_setting(params.get("setting", "")), None
+
+def _tool_system_status(params, query, spoken):
+    return os_automation.get_system_status().get("summary", "System status checked."), None
+
+def _tool_restart_pc(params, query, spoken):
+    os_automation.restart_pc(30)
+    return spoken or "Restarting in 30 seconds.", None
+
+def _tool_set_timer(params, query, spoken):
+    return handle_set_timer(params, query), None
+
+def _tool_set_reminder(params, query, spoken):
+    return handle_set_reminder(params, query), None
+
+def _tool_list_reminders(params, query, spoken):
+    return handle_list_reminders(), None
+
+def _tool_cancel_reminder(params, query, spoken):
+    return handle_cancel_reminder(params), None
+
+def _tool_exit(params, query, spoken):
+    return spoken or "Goodbye!", None
+
+
 # ---------------------------------------------------------------------------
 # Unified Tool Handlers Dictionary
 # ---------------------------------------------------------------------------
 UI_TOOL_HANDLERS = {
     "web_search":        _tool_web_search,
     "open_website":      _tool_open_website,
-    "show_images":       lambda p, q, s: (s or "Showing images.", "https://www.google.com/search?q=" + urllib.parse.quote(p.get("query", q))),
+    "show_images":       _tool_show_images,
     "play_youtube":      _tool_play_youtube,
     "get_time":          _tool_get_time,
     "get_date":          _tool_get_date,
@@ -531,38 +612,36 @@ UI_TOOL_HANDLERS = {
     "read_screen":       _tool_read_screen,
     "ask_about_screen":  _tool_read_screen,
     "type_text":         _tool_type_text,
-    "search_and_type":   lambda p, q, s: (os_automation.search_and_type(p.get("text", "")), s)[1] and (s, None) or (s, None),
+    "search_and_type":   _tool_search_and_type,
     "press_key":         _tool_press_key,
-    "new_tab":           lambda p, q, s: (os_automation.new_tab(p.get("url", "")), None)[1] and (s, None) or (s, None),
+    "new_tab":           _tool_new_tab,
     "close_app":         _tool_close_app,
     "window_management": _tool_window_management,
-    "wikipedia":         lambda p, q, s: (search_wikipedia(p.get("query", q)), None),
     "calculate":         _tool_calculate,
-    "set_volume":        lambda p, q, s: (os_automation.set_volume(p.get("level", "50"))[1], None),
-    "set_brightness":    lambda p, q, s: (os_automation.set_brightness(p.get("level", "50"))[1], None),
-    "open_settings":     lambda p, q, s: (open_setting(p.get("setting", "")), None),
-    "system_status":     lambda p, q, s: (os_automation.get_system_status().get("summary", "System status checked."), None),
-    "hardware_metrics":  lambda p, q, s: (os_automation.get_system_status().get("summary", "System status checked."), None),
-    "restart_pc":        lambda p, q, s: (os_automation.restart_pc(30), None) and (s or "Restarting in 30 seconds.", None),
+    "set_volume":        _tool_set_volume,
+    "set_brightness":    _tool_set_brightness,
+    "open_settings":     _tool_open_settings,
+    "system_status":     _tool_system_status,
+    "hardware_metrics":  _tool_system_status,
+    "restart_pc":        _tool_restart_pc,
     "pause_media":       _tool_pause_media,
     "play_media":        _tool_play_media,
     "stop":              _tool_stop,
     "stop_speaking":     _tool_stop,
     "next_track":        _tool_next_track,
     "prev_track":        _tool_prev_track,
-    "set_timer":         lambda p, q, s: (handle_set_timer(p, q), None),
-
-    "stopwatch":         lambda p, q, s: (handle_set_timer(p, q), None),
-    "set_reminder":      lambda p, q, s: (handle_set_reminder(p, q), None),
-    "list_reminders":    lambda p, q, s: (handle_list_reminders(), None),
-    "cancel_reminder":   lambda p, q, s: (handle_cancel_reminder(p), None),
+    "set_timer":         _tool_set_timer,
+    "stopwatch":         _tool_set_timer,
+    "set_reminder":      _tool_set_reminder,
+    "list_reminders":    _tool_list_reminders,
+    "cancel_reminder":   _tool_cancel_reminder,
     "open_folder":       _tool_open_folder,
     "find_file":         _tool_find_file,
     "open_file":         _tool_file_action,
     "reveal_file":       _tool_file_action,
     "copy_file_path":    _tool_file_action,
     "get_current_media": _tool_get_current_media,
-    "exit":              lambda p, q, s: (s or "Goodbye!", None),
+    "exit":              _tool_exit,
     "chat":              _tool_chat,
 }
 
@@ -588,7 +667,7 @@ def _tool_ask_document(params, query, spoken):
         ctx = rag_engine.build_rag_context(question, top_k=6)
 
     if ctx:
-        return get_ai_response(f"Answer accurately based on the document:\nQuestion: {question}", doc_context=ctx), None
+        return get_ai_response(question, doc_context=ctx), None
     return get_ai_response(question), None
 
 
@@ -857,7 +936,7 @@ def build_action_cards(tool: str, params: dict, result_metadata: dict, url: str 
         })
 
     # 3. Live Countdown Timer & Stopwatch Widget
-    elif tool in ("set_timer", "timer", "stopwatch") or re.search(r"\b(timer|countdown|stopwatch)\b", prompt, re.IGNORECASE):
+    elif tool in ("set_timer", "timer", "stopwatch") or _RE_TIMER_PROMPT.search(prompt):
         parsed_secs = parse_relative_seconds(prompt) or parse_relative_seconds(str(params.get("duration") or params.get("seconds") or 60)) or 60
         is_stopwatch = tool == "stopwatch" or "stopwatch" in prompt.lower()
         label = params.get("label") or ("Stopwatch" if is_stopwatch else "Timer")

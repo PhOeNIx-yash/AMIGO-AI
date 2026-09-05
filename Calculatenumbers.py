@@ -8,6 +8,8 @@ import operator
 import re
 from local_llm import query_local_llm
 
+_RE_ALPHA = re.compile(r"[a-zA-Z_]")
+
 # Safe arithmetic operators supported for instant calculation
 _OPERATORS = {
     ast.Add: operator.add,
@@ -45,16 +47,13 @@ def Calc(query, speak=None):
     Calculates math queries using safe AST arithmetic evaluation for instant expressions,
     and the local AI model for word-based / advanced math. Zero API keys, zero hardcoding.
     """
-    if speak is None:
-        speak = print  # fallback to print if no speak function provided
-
     term = str(query).strip().replace("Amigo", "").replace("amigo", "").strip()
 
     # Fast path: Try parsing as pure AST arithmetic expression (e.g. "2 + 2", "18 + 19 + 20 * 5")
     # Only evaluates if the query is strictly valid math syntax with no alphabet characters
     try:
         clean_expr = term.replace("^", "**").strip()
-        if clean_expr and not re.search(r"[a-zA-Z_]", clean_expr):
+        if clean_expr and not _RE_ALPHA.search(clean_expr):
             parsed = ast.parse(clean_expr, mode="eval")
             res = _eval_safe_arithmetic(parsed.body)
             if isinstance(res, (int, float)):
@@ -67,7 +66,8 @@ def Calc(query, speak=None):
 
                 result_str = f"The result is {res_str}"
                 print(result_str)
-                speak(result_str)
+                if speak:
+                    speak(result_str)
                 return res_str
     except Exception:
         pass  # Not a pure arithmetic expression — pass full natural query to LLM
@@ -78,9 +78,13 @@ def Calc(query, speak=None):
 
     if ai_answer:
         print(f"Calculation Result: {ai_answer}")
-        speak(ai_answer)
+        if speak:
+            speak(ai_answer)
         return ai_answer
 
     err = "The value is not answerable."
-    speak(err)
+    if speak:
+        speak(err)
+    else:
+        print(err)
     return err

@@ -155,11 +155,23 @@ export const CanvasVisualizer: React.FC<CanvasVisualizerProps> = React.memo(({
     const resize = () => {
       if (!canvas || !canvas.parentElement) return;
       const rect = canvas.parentElement.getBoundingClientRect();
-      width = rect.width;
-      height = rect.height;
-      canvas.width = Math.floor(width * dpr);
-      canvas.height = Math.floor(height * dpr);
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const newWidth = rect.width;
+      const newHeight = rect.height;
+      if (newWidth <= 0 || newHeight <= 0) return;
+
+      const targetW = Math.floor(newWidth * dpr);
+      const targetH = Math.floor(newHeight * dpr);
+
+      if (canvas.width !== targetW || canvas.height !== targetH) {
+        width = newWidth;
+        height = newHeight;
+        canvas.width = targetW;
+        canvas.height = targetH;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      } else {
+        width = newWidth;
+        height = newHeight;
+      }
     };
 
     resize();

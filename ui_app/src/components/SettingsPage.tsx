@@ -27,6 +27,7 @@ import {
   FileText,
   Layers,
   Loader2,
+  Brain,
 } from "lucide-react";
 import {
   BackendConfig,
@@ -34,7 +35,7 @@ import {
   PluginMode,
   VisualizerMode,
 } from "../types";
-import { TextAnimationStyle } from "./KineticText";
+import { KineticHeading, TextAnimationStyle } from "./KineticText";
 import { COLOR_THEMES, GREETING_PRESETS } from "../data/presets";
 import { testBackendConnection, fetchRagStatus, triggerRagReindex, RagStatusData } from "../services/assistantApi";
 
@@ -104,6 +105,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const [apiKey, setApiKey] = useState(backendConfig.apiKey || "");
   const [transcriptionEngine, setTranscriptionEngine] = useState(backendConfig.transcriptionEngine || "web-speech");
   const [autoSpeech, setAutoSpeech] = useState(backendConfig.autoSpeech !== false);
+  const [thinkingEnabled, setThinkingEnabled] = useState(backendConfig.thinkingEnabled === true);
 
   // Diagnostics
   const [testing, setTesting] = useState(false);
@@ -162,6 +164,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     setApiKey(backendConfig.apiKey || "");
     setTranscriptionEngine(backendConfig.transcriptionEngine || "web-speech");
     setAutoSpeech(backendConfig.autoSpeech !== false);
+    setThinkingEnabled(backendConfig.thinkingEnabled === true);
   }, [backendConfig]);
 
   const handleSave = () => {
@@ -173,6 +176,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
       protocol: "rest",
       autoSpeech,
       transcriptionEngine,
+      thinkingEnabled,
     };
     onSaveBackendConfig(updated);
     setSavedBanner(true);
@@ -200,10 +204,11 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const handleResetToDefaults = () => {
     onChangeColorTheme("violet");
     onChangeVisualizerMode("ribbon");
-    onChangeTextAnimationStyle("amazing_fluid");
+    onChangeTextAnimationStyle("silk_blur");
     onChangePluginMode("fullscreen");
     setTranscriptionEngine("web-speech");
     setAutoSpeech(true);
+    setThinkingEnabled(false);
     setEndpointUrl("/api/assistant/process");
     setActionWebhookUrl("");
     setApiKey("");
@@ -580,44 +585,85 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                   <div className="flex items-center justify-between mb-3">
                     <div>
                       <div className="text-xs font-semibold uppercase tracking-wider opacity-60">Typography & Animation Style</div>
-                      <div className="text-[11px] opacity-60">Live kinetic physics for greetings and assistant speech</div>
+                      <div className="text-[11px] opacity-60">Curated, fluid kinetic animations for headings and voice responses</div>
                     </div>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-indigo-500/20 text-indigo-400 font-mono">10 Styles</span>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 font-medium border border-emerald-500/20">4 Curated Styles</span>
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+
+                  {/* Live Interactive Kinetic Preview Box */}
+                  <div
+                    className={`mb-3.5 p-4 rounded-xl border flex flex-col items-center justify-center min-h-[76px] transition-all overflow-hidden ${
+                      isDark ? "bg-black/40 border-white/10" : "bg-slate-50 border-black/10"
+                    }`}
+                  >
+                    <div className="text-[9px] font-mono uppercase tracking-widest opacity-40 mb-1.5">
+                      Live Kinetic Physics Preview
+                    </div>
+                    <KineticHeading
+                      text="Hello Amigo, what is the plan for today?"
+                      isDark={isDark}
+                      colorTheme={colorTheme}
+                      animationStyle={textAnimationStyle}
+                      className="text-base sm:text-lg font-medium tracking-tight"
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                     {[
-                      { id: "amazing_fluid", label: "Fluid Wave Spring", desc: "Per-letter liquid rise & spring settle" },
-                      { id: "aurora_glow", label: "Aurora Borealis Glow", desc: "Multi-chromatic rainbow ambient sheen" },
-                      { id: "floating_lift", label: "Floating Elevation", desc: "Anti-gravity floating 3D spatial hover" },
-                      { id: "kinetic_wave", label: "Sine Wave Float", desc: "Continuous rolling crest amplitude" },
-                      { id: "neon_pulse", label: "Cyber Neon Pulse", desc: "High-intensity luminescent pulsation" },
-                      { id: "stagger_cascade", label: "3D Perspective Flip", desc: "Rotational cascade with spring dampening" },
-                      { id: "elastic_bounce", label: "Elastic Liquid Pop", desc: "Playful elasticity & fluid stretch" },
-                      { id: "gradient_shine", label: "Luminous Gradient Sheen", desc: "Light sweep across typography" },
-                      { id: "blur_reveal", label: "Gaussian Blur-to-Focus", desc: "Deep cinematic lens focus" },
-                      { id: "hologram_typewriter", label: "Holographic Token Stream", desc: "Digital token streaming reveal" },
+                      {
+                        id: "silk_blur",
+                        label: "Silk Emerge",
+                        badge: "Apple Keynote",
+                        desc: "Cinematic Gaussian blur dissipation & gentle organic drift",
+                      },
+                      {
+                        id: "fluid_glide",
+                        label: "Liquid Glide",
+                        badge: "Organic Spring",
+                        desc: "Critically-damped upward glide with zero cartoon bounce",
+                      },
+                      {
+                        id: "ambient_shimmer",
+                        label: "Specular Sheen",
+                        badge: "Linear Style",
+                        desc: "Refined metallic light sheen sweep across typography",
+                      },
+                      {
+                        id: "calm_breathe",
+                        label: "Serene Float",
+                        badge: "Tranquil",
+                        desc: "Subtle low-amplitude anti-gravity breath for calm focus",
+                      },
                     ].map((styleItem) => {
                       const isSelected = textAnimationStyle === styleItem.id;
                       return (
                         <button
                           key={styleItem.id}
                           onClick={() => onChangeTextAnimationStyle(styleItem.id as TextAnimationStyle)}
-                          className={`p-2.5 rounded-xl border text-left transition-all ${
+                          className={`p-3 rounded-xl border text-left transition-all relative overflow-hidden ${
                             isSelected
-                              ? "border-emerald-500 ring-1 ring-emerald-500/40 bg-emerald-500/5 shadow-sm"
+                              ? "border-emerald-500 ring-1 ring-emerald-500/40 bg-emerald-500/10 shadow-sm"
                               : isDark
                               ? "border-white/10 bg-white/[0.02] hover:bg-white/5"
                               : "border-black/10 bg-white hover:bg-slate-50"
                           }`}
                         >
-                          <div className="flex items-center justify-between mb-0.5">
-                            <div className="flex items-center space-x-1.5 text-xs font-semibold">
+                          <div className="flex items-center justify-between mb-1">
+                            <div className="flex items-center space-x-2 text-xs font-semibold">
                               <Type className="w-3.5 h-3.5" style={{ color: theme.accent }} />
                               <span>{styleItem.label}</span>
+                              <span
+                                className={`text-[9px] px-1.5 py-0.5 rounded font-mono ${
+                                  isSelected
+                                    ? "bg-emerald-500/20 text-emerald-300"
+                                    : "bg-white/10 text-white/60"
+                                }`}
+                              >
+                                {styleItem.badge}
+                              </span>
                             </div>
-                            {isSelected && <Check className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />}
+                            {isSelected && <Check className="w-4 h-4 text-emerald-400 flex-shrink-0" />}
                           </div>
-                          <div className="text-[10px] opacity-60">{styleItem.desc}</div>
+                          <div className="text-[11px] leading-snug opacity-60">{styleItem.desc}</div>
                         </button>
                       );
                     })}
@@ -712,6 +758,61 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                       isDark ? "bg-black/40 border-white/10 text-white" : "bg-slate-50 border-black/10 text-slate-900"
                     }`}
                   />
+                </div>
+
+                {/* Reasoning / Thinking Mode Toggle */}
+                <div
+                  className={`p-3.5 rounded-xl border transition-colors ${
+                    thinkingEnabled
+                      ? isDark
+                        ? "bg-purple-950/20 border-purple-500/40"
+                        : "bg-purple-50 border-purple-300"
+                      : isDark
+                      ? "bg-white/[0.02] border-white/10"
+                      : "bg-slate-50 border-black/10"
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2.5">
+                      <div
+                        className={`w-7 h-7 rounded-lg flex items-center justify-center ${
+                          thinkingEnabled
+                            ? "bg-purple-500 text-white shadow-sm"
+                            : isDark
+                            ? "bg-white/10 text-slate-400"
+                            : "bg-slate-200 text-slate-600"
+                        }`}
+                      >
+                        <Brain className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-semibold flex items-center space-x-1.5">
+                          <span>Deep Reasoning Mode</span>
+                        </div>
+                        <div className="text-[11px] opacity-60">
+                          {thinkingEnabled
+                            ? "Enabled — Model performs step-by-step reasoning before answering"
+                            : "Disabled — Direct, fast conversational responses"}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setThinkingEnabled(!thinkingEnabled)}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${
+                        thinkingEnabled ? "bg-purple-600" : isDark ? "bg-white/20" : "bg-slate-300"
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                          thinkingEnabled ? "translate-x-6" : "translate-x-1"
+                        }`}
+                      />
+                    </button>
+                  </div>
+                  <p className="text-[10px] opacity-50 mt-2">
+                    When enabled, reasoning steps are preserved in chat history and excluded from voice output.
+                  </p>
                 </div>
 
                 {/* Diagnostics Test Button */}

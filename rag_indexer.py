@@ -30,9 +30,10 @@ DEFAULT_SCAN_DIRS = [
 
 # Skip these directory names entirely
 SKIP_DIRS = {
-    "node_modules", ".git", ".venv", "venv", "__pycache__", ".idea", ".vscode",
-    ".cache", ".npm", ".nuget", "AppData", ".checkpoints", "rag_data",
-    "dist", "build", ".next", ".turbo", "vendor", "target",
+    "node_modules", ".git", ".venv", "venv", "env", "envs", "__pycache__",
+    ".idea", ".vscode", ".cache", ".npm", ".nuget", "AppData", ".checkpoints",
+    "rag_data", "dist", "build", ".next", ".turbo", "vendor", "target",
+    "bin", "obj", "packages", "site-packages", "temp", "tmp",
 }
 
 

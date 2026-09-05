@@ -47,7 +47,7 @@ except ImportError:
             pass
 
 KOKORO_VOICE = "af_heart"
-KOKORO_SPEED = 1.15
+KOKORO_SPEED = 1.10
 KOKORO_LANG = "en-us"
 _tts_lock = threading.Lock()
 
@@ -85,20 +85,32 @@ def _get_kokoro():
     return _kokoro_instance
 
 
+# Pre-compiled regex patterns for zero overhead text sanitization & splitting
+_RE_URL = re.compile(r'https?://\S+|www\.\S+')
+_RE_SPECIAL_CHARS = re.compile(r'[*#_`~>\[\]()]')
+_RE_CONSECUTIVE_DOTS = re.compile(r'\.{2,}')
+_RE_WHITESPACE = re.compile(r'\s+')
+_RE_SENTENCE_SPLIT = re.compile(r'(?<=[.!?])\s+')
+
+
 def _warmup_kokoro():
+    """Warms up Kokoro ONNX in a background thread so module loading is near-instant."""
     if _USE_KOKORO:
-        try:
-            kokoro = _get_kokoro()
-            with _tts_lock:
-                kokoro.create(
-                    "Amigo ready.",
-                    voice=KOKORO_VOICE,
-                    speed=KOKORO_SPEED,
-                    lang=KOKORO_LANG,
-                )
-            logger.info("[TTS] Kokoro inference warmed up.")
-        except Exception as e:
-            logger.debug(f"[TTS Warmup] {e}")
+        def _warm():
+            try:
+                kokoro = _get_kokoro()
+                with _tts_lock:
+                    kokoro.create(
+                        "Amigo ready.",
+                        voice=KOKORO_VOICE,
+                        speed=KOKORO_SPEED,
+                        lang=KOKORO_LANG,
+                    )
+                logger.info("[TTS] Kokoro inference warmed up.")
+            except Exception as e:
+                logger.debug(f"[TTS Warmup] {e}")
+
+        threading.Thread(target=_warm, daemon=True, name="Kokoro-Warmup").start()
 
 
 _warmup_kokoro()
@@ -118,11 +130,10 @@ def _clean_tts_text(text: str) -> str:
     """Cleans up markdown, links, and special symbols for natural neural TTS prosody."""
     if not text:
         return ""
-    t = re.sub(r'https?://\S+|www\.\S+', '', text)
-    t = re.sub(r'[*#_`~>\[\]()]', ' ', t)
-    t = re.sub(r'\.{2,}', ', ', t)
-    t = re.sub(r'\s+', ' ', t).strip()
-    return t
+    t = _RE_URL.sub('', text)
+    t = _RE_SPECIAL_CHARS.sub(' ', t)
+    t = _RE_CONSECUTIVE_DOTS.sub(', ', t)
+    return _RE_WHITESPACE.sub(' ', t).strip()
 
 
 def _compact_tts_text(text: str, max_chars: int = 700) -> str:
@@ -130,7 +141,7 @@ def _compact_tts_text(text: str, max_chars: int = 700) -> str:
     clean = _clean_tts_text(text)
     if len(clean) <= max_chars:
         return clean
-    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", clean) if part.strip()]
+    sentences = [part.strip() for part in _RE_SENTENCE_SPLIT.split(clean) if part.strip()]
     compact = ""
     for sentence in sentences:
         candidate = f"{compact} {sentence}".strip()
@@ -140,6 +151,7 @@ def _compact_tts_text(text: str, max_chars: int = 700) -> str:
     if compact:
         return compact
     return clean[:max_chars].rsplit(" ", 1)[0] + "."
+
 
 
 def _trim_audio_silence(samples, threshold=0.001, pad_ms=180, sr=24000):
@@ -165,7 +177,7 @@ def _synthesize_and_play_kokoro(kokoro, text, generation):
     if not clean_text:
         return
 
-    raw_sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', clean_text) if s.strip()]
+    raw_sentences = [s.strip() for s in _RE_SENTENCE_SPLIT.split(clean_text) if s.strip()]
     chunks = []
     current_chunk = []
     current_len = 0
@@ -230,9 +242,12 @@ def _speech_worker():
     while True:
         item = _speech_queue.get()
         if isinstance(item, tuple):
-            text, generation, request_id = (item + (None, None,))[:3]
+            text = item[0] if len(item) > 0 else ""
+            generation = item[1] if len(item) > 1 else 0
+            request_id = item[2] if len(item) > 2 else None
+            broadcast_chat = item[3] if len(item) > 3 else False
         else:
-            text, generation, request_id = item, 0, None
+            text, generation, request_id, broadcast_chat = item, 0, None, False
         if not text:
             _speech_queue.task_done()
             continue
@@ -242,7 +257,7 @@ def _speech_worker():
             tts_started = time.perf_counter()
             if _on_state_change:
                 _on_state_change("speaking")
-            if _on_broadcast:
+            if broadcast_chat and _on_broadcast:
                 _on_broadcast("chat_message", {"sender": "assistant", "text": text})
 
             if _USE_KOKORO:
@@ -286,13 +301,13 @@ def _speech_worker():
 threading.Thread(target=_speech_worker, daemon=True).start()
 
 
-def speak(text: str, block: bool = False, request_id: str | None = None) -> None:
+def speak(text: str, block: bool = False, request_id: str | None = None, broadcast_chat: bool = False) -> None:
     """Speak text asynchronously, update assistant state, and animate UI with 0ms delay."""
     if not text:
         return
     with _speech_generation_lock:
         generation = _speech_generation
-    item = (text, generation, request_id)
+    item = (text, generation, request_id, broadcast_chat)
     if block:
         _speech_queue.put(item)
         _speech_queue.join()

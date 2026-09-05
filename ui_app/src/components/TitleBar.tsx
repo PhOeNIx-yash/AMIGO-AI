@@ -57,13 +57,25 @@ export const TitleBar: React.FC<TitleBarProps> = ({
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
 
-    if (typeof navigator !== "undefined" && typeof navigator.onLine === "boolean") {
-      setIsOnline(navigator.onLine);
-    }
+    const checkBackendStatus = async () => {
+      try {
+        const res = await fetch("/api/system-stats");
+        if (res.ok) {
+          const stats = await res.json();
+          if (typeof stats.online === "boolean") {
+            setIsOnline(stats.online);
+          }
+        }
+      } catch (e) {}
+    };
+
+    checkBackendStatus();
+    const interval = setInterval(checkBackendStatus, 10000);
 
     return () => {
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
+      clearInterval(interval);
     };
   }, []);
 

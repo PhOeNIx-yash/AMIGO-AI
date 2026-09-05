@@ -3,15 +3,29 @@ Weather Lookup Module for Amigo Voice Assistant.
 Keyless weather service (wttr.in) with offline error handling. Zero API keys.
 """
 
+import time
 import requests
+
+# 5-minute in-memory cache to prevent duplicate network calls across tools & widgets
+_WEATHER_CACHE: dict[str, tuple[float, dict]] = {}
+_CACHE_TTL = 300.0  # 5 minutes
 
 
 def get_weather_data(city=""):
     """
     Fetches rich structured weather data without API keys using wttr.in.
     Returns a dict suitable for UI widgets and conversational responses.
+    Caches responses for 5 minutes to prevent duplicate network calls.
     """
     city_clean = city.strip() if city else ""
+    cache_key = city_clean.lower()
+    now = time.time()
+
+    if cache_key in _WEATHER_CACHE:
+        cached_time, cached_data = _WEATHER_CACHE[cache_key]
+        if now - cached_time < _CACHE_TTL:
+            return cached_data
+
     url = f"https://wttr.in/{city_clean}?format=j1" if city_clean else "https://wttr.in/?format=j1"
 
     try:
@@ -62,7 +76,7 @@ def get_weather_data(city=""):
             min_c = forecast_today.get("mintempC", temp_c)
             max_c = forecast_today.get("maxtempC", temp_c)
 
-            return {
+            res = {
                 "success": True,
                 "city": resolved_city,
                 "temp_c": temp_c,
@@ -80,6 +94,8 @@ def get_weather_data(city=""):
                 "min_c": min_c,
                 "max_c": max_c,
             }
+            _WEATHER_CACHE[cache_key] = (now, res)
+            return res
     except Exception as e:
         return {
             "success": False,
@@ -118,17 +134,26 @@ def get_weather(city):
 def weather_command(query):
     """Parse city from query string and return weather info string."""
     city = ""
-    if "in" in query:
-        city = query.split("in")[-1].strip()
-    elif "of" in query:
-        city = query.split("of")[-1].strip()
+    clean_q = query.strip()
+    if " in " in clean_q.lower():
+        city = clean_q.lower().split(" in ")[-1].strip()
+    elif " of " in clean_q.lower():
+        city = clean_q.lower().split(" of ")[-1].strip()
+    elif " for " in clean_q.lower():
+        city = clean_q.lower().split(" for ")[-1].strip()
     else:
         city = (
-            query.replace("weather", "")
+            clean_q.lower()
+            .replace("weather", "")
             .replace("temperature", "")
             .replace("climate", "")
+            .replace("what is the", "")
+            .replace("check", "")
+            .replace("current", "")
+            .replace("today", "")
             .strip()
         )
 
     return get_weather(city)
+
 

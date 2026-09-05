@@ -57,6 +57,7 @@ export interface HistoryEntry {
   id: string;
   timestamp: number;
   prompt: string;
+  status?: string;
   response: AssistantResponse;
   selectedContact?: ContactItem;
 }
@@ -65,10 +66,24 @@ export interface BackendConfig {
   endpointUrl: string;
   actionWebhookUrl?: string;
   apiKey?: string;
-  customHeaders?: string; // JSON string of key-values
+  customHeaders?: string;
   protocol: "rest" | "websocket";
   autoSpeech: boolean;
   transcriptionEngine: "amigo-speech" | "web-speech" | "custom";
   transcriptionUrl?: string;
+  thinkingEnabled?: boolean;
+}
+
+export interface AttachmentItem {
+  id: string;
+  file?: File;
+  filename: string;
+  fileType: "pdf" | "image" | "document" | "generic";
+  size: number;
+  previewUrl?: string;
+  uploadStatus: "idle" | "uploading" | "success" | "error";
+  filepath?: string;
+  extractedPreview?: string;
+  error?: string;
 }
 

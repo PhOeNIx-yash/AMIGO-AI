@@ -6,8 +6,12 @@ and answers contextual visual questions about open windows, errors, code, or doc
 
 import asyncio
 import ctypes
+import logging
+import os
 import re
 from PIL import Image
+
+logger = logging.getLogger("amigo.screen_vision")
 
 try:
     import pyautogui
@@ -19,15 +23,7 @@ try:
 except ImportError:
     ImageGrab = None
 
-try:
-    import winocr
-except ImportError:
-    winocr = None
-
-try:
-    import pytesseract
-except ImportError:
-    pytesseract = None
+# winocr and pytesseract are imported lazily in read_text_from_image to prevent Direct3D/Vulkan loader conflicts
 
 
 def get_active_window_title() -> str:
@@ -137,6 +133,11 @@ def read_text_from_image(image) -> str:
         return ""
 
     # 1. winocr (native Windows Media OCR - 100% offline, hardware-accelerated)
+    try:
+        import winocr
+    except ImportError:
+        winocr = None
+
     if winocr is not None:
         try:
             async def _ocr():
@@ -150,6 +151,11 @@ def read_text_from_image(image) -> str:
             pass
 
     # 2. pytesseract fallback
+    try:
+        import pytesseract
+    except ImportError:
+        pytesseract = None
+
     if pytesseract is not None:
         try:
             text = pytesseract.image_to_string(image)
@@ -178,14 +184,44 @@ def get_screen_vision_context() -> str:
 
 def answer_screen_question(question: str) -> str:
     """
-    High-level visual Q&A: captures screen, extracts visible text & active window,
-    and returns a concise spoken explanation tailored to the user's specific question.
+    High-level visual Q&A: captures screen and returns a concise spoken explanation
+    tailored to the user's specific question.
+    Uses native multimodal vision when available, gracefully falling back to OCR text extraction.
     """
     window_title = get_active_window_title()
-    screen_text = get_screen_vision_context()
+    screenshot = capture_screen_image()
+
+    # Strategy 1: Native Multimodal Vision with Qwen 3.5 2B
+    try:
+        from local_llm import is_vision_ready, query_local_vision, sanitize_for_tts
+        if is_vision_ready() and screenshot is not None:
+            vision_prompt = question if question else "Describe what is currently displayed on my computer screen in clear, natural language."
+            if window_title:
+                vision_prompt = f"The active window title is '{window_title}'.\n{vision_prompt}"
+            reply = query_local_vision(
+                screenshot,
+                prompt=vision_prompt,
+                system_prompt=(
+                    "You are Amigo, a helpful voice assistant with screen vision capabilities. "
+                    "Analyze the user's computer screen and answer their question clearly and directly. "
+                    "Do not use markdown, bullet points, or code formatting. Speak in natural plain English."
+                ),
+                max_tokens=350,
+            )
+            if reply and len(reply.strip()) > 10:
+                return sanitize_for_tts(reply)
+    except Exception as e:
+        logger.debug(f"[Screen Vision] Native vision note: {e}")
+
+    # Strategy 2: OCR Fallback (winocr / pytesseract)
+    screen_text = ""
+    if screenshot is not None:
+        screen_text = read_text_from_image(screenshot)
+        if screen_text:
+            screen_text = re.sub(r"\n{3,}", "\n\n", screen_text)[:2500]
 
     if not screen_text and not window_title:
-        return "I captured the screen, but could not detect readable text in the current window."
+        return "I captured the screen, but could not detect readable content in the current window."
 
     context_parts = []
     if window_title:
@@ -212,3 +248,43 @@ def answer_screen_question(question: str) -> str:
         return sanitize_for_tts(reply) if reply else "I analyzed the screen, but have nothing further to report."
     except Exception as e:
         return f"I had trouble analyzing the screen content: {e}"
+
+
+def analyze_image(image_input, question: str = "Describe what you see in this image in detail.") -> str:
+    """
+    Analyzes an arbitrary image file, PIL Image, or screenshot using native vision or OCR fallback.
+    """
+    # 1. Native Multimodal Vision
+    try:
+        from local_llm import is_vision_ready, query_local_vision, sanitize_for_tts
+        if is_vision_ready():
+            reply = query_local_vision(
+                image_input,
+                prompt=question,
+                system_prompt="You are Amigo, a helpful assistant with image vision. Describe what is in the image clearly in plain English without markdown.",
+                max_tokens=350,
+            )
+            if reply and len(reply.strip()) > 10:
+                return sanitize_for_tts(reply)
+    except Exception as e:
+        logger.debug(f"[Analyze Image] Native vision note: {e}")
+
+    # 2. OCR Fallback
+    try:
+        from PIL import Image
+        img = None
+        if isinstance(image_input, str) and os.path.exists(image_input):
+            img = Image.open(image_input)
+        elif hasattr(image_input, "save"):
+            img = image_input
+        if img is not None:
+            ocr_text = read_text_from_image(img)
+            if ocr_text:
+                from local_llm import query_local_llm, sanitize_for_tts
+                prompt = f"[Extracted Image Text]:\n{ocr_text[:2000]}\n\nQuestion: {question}"
+                reply = query_local_llm(prompt, max_tokens=250)
+                return sanitize_for_tts(reply) if reply else "I read the text in this image."
+    except Exception as e:
+        logger.debug(f"[Analyze Image] OCR fallback note: {e}")
+
+    return "I was unable to analyze this image."

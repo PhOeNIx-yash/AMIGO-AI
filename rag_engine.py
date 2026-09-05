@@ -14,16 +14,25 @@ Lightweight structured config in amigo_profile.json.
 """
 
 import collections
+import copy
 import datetime
 import hashlib
 import json
 import logging
 import os
+import queue
 import re
 import threading
 import time
 import uuid
 from typing import Any
+
+# Pre-compiled regex patterns for PDF cleanup & chunking
+_RE_PDF_NEWLINES = re.compile(r'(?<=[a-zA-Z0-9])\n(?=[a-zA-Z0-9])')
+_RE_PDF_ADJACENT = re.compile(r"([A-Z0-9]{2,})([A-Z][a-z]+)")
+_RE_CHUNK_WHITESPACE = re.compile(r"\s+")
+_RE_CHUNK_SENTENCES = re.compile(r"(?<=[.!?])\s+")
+
 
 
 logger = logging.getLogger("amigo.rag_engine")
@@ -49,8 +58,10 @@ CALENDAR = "calendar"
 ALL_COLLECTIONS = [CONVERSATIONS, USER_FACTS, DOCUMENTS, EMAILS, CALENDAR]
 
 SUPPORTED_EXTENSIONS = {
-    ".pdf", ".docx", ".doc", ".txt", ".md", ".csv",
-    ".xlsx", ".xls", ".pptx", ".ppt", ".rtf", ".odt",
+    # Core documents & notes
+    ".pdf", ".docx", ".doc", ".txt", ".md",
+    # Essential spreadsheets & presentations
+    ".xlsx", ".csv", ".pptx",
 }
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
@@ -215,20 +226,44 @@ def load_profile() -> dict:
     return _profile_cache
 
 
+_profile_queue = queue.Queue()
+
+
+def _profile_writer_worker():
+    """Background worker that persists profile changes without thread spawning thrashing."""
+    while True:
+        p = _profile_queue.get()
+        try:
+            # Drain any newer queued updates to write only the newest state
+            while not _profile_queue.empty():
+                try:
+                    p = _profile_queue.get_nowait()
+                    _profile_queue.task_done()
+                except queue.Empty:
+                    break
+            with _profile_lock:
+                dumped = json.dumps(p, indent=2)
+                with open(PROFILE_FILE, "w", encoding="utf-8") as f:
+                    f.write(dumped)
+        except Exception as e:
+            logger.error("[RAG] Error saving profile: %s", e)
+        finally:
+            _profile_queue.task_done()
+
+
+threading.Thread(target=_profile_writer_worker, daemon=True, name="ProfileWriter").start()
+
+
 def save_profile(profile: dict) -> None:
-    """Update RAM cache and asynchronously persist profile to disk."""
+    """Update RAM cache and asynchronously persist profile to disk via background queue."""
     global _profile_cache
     _profile_cache = profile
+    try:
+        # Snapshot dictionary shallowly to avoid modification during serialization
+        _profile_queue.put(copy.deepcopy(profile))
+    except Exception:
+        _profile_queue.put(dict(profile))
 
-    def _write():
-        with _profile_lock:
-            try:
-                with open(PROFILE_FILE, "w", encoding="utf-8") as f:
-                    json.dump(profile, f, indent=2)
-            except Exception as e:
-                logger.error("[RAG] Error saving profile: %s", e)
-
-    threading.Thread(target=_write, daemon=True).start()
 
 
 # ── Active State ───────────────────────────────────────────────
@@ -288,20 +323,22 @@ def update_active_state(slot: str, data: dict) -> None:
 # ═══════════════════════════════════════════════════════════════
 
 def extract_text(filepath: str) -> str:
-    """Extract text from a file. Supports PDF, DOCX, PPTX, TXT, CSV, MD, code."""
+    """Extract text from a supported document (PDF, DOCX, XLSX, PPTX, TXT, MD, CSV)."""
     if not os.path.exists(filepath):
         return ""
     ext = os.path.splitext(filepath)[1].lower()
+    if ext not in SUPPORTED_EXTENSIONS:
+        return ""
     try:
         if ext == ".pdf":
             return _extract_pdf(filepath)
         elif ext in (".docx", ".doc"):
             return _extract_docx(filepath)
-        elif ext in (".xlsx", ".xls"):
+        elif ext == ".xlsx":
             return _extract_xlsx(filepath)
         elif ext == ".pptx":
             return _extract_pptx(filepath)
-        elif ext in SUPPORTED_EXTENSIONS:
+        elif ext in (".txt", ".md", ".csv"):
             return _extract_plain(filepath)
     except Exception as e:
         logger.debug("[RAG] Extraction error for %s: %s", filepath, e)
@@ -333,9 +370,9 @@ def _extract_pdf(filepath: str) -> str:
                     pass
             if text:
                 # Fix single character newlines (e.g. F\no\nr\nm\na\nt -> Format)
-                cleaned = re.sub(r'(?<=[a-zA-Z0-9])\n(?=[a-zA-Z0-9])', '', text)
+                cleaned = _RE_PDF_NEWLINES.sub('', text)
                 # Separate adjacent alphanumeric codes from titlecase words (e.g. "E6OZGINew" -> "E6OZGI New")
-                cleaned = re.sub(r"([A-Z0-9]{2,})([A-Z][a-z]+)", r"\1 \2", cleaned)
+                cleaned = _RE_PDF_ADJACENT.sub(r"\1 \2", cleaned)
                 pages.append(cleaned.strip())
         except Exception:
             continue
@@ -417,8 +454,9 @@ def smart_chunk(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OV
     if not text or len(text.strip()) < 20:
         return []
 
-    text = re.sub(r"\s+", " ", text).strip()
-    sentences = re.split(r"(?<=[.!?])\s+", text)
+    text = _RE_CHUNK_WHITESPACE.sub(" ", text).strip()
+    sentences = _RE_CHUNK_SENTENCES.split(text)
+
 
     chunks: list[str] = []
     current = ""
@@ -509,14 +547,18 @@ def add_conversation(
     except Exception as e:
         logger.error("[RAG] Error storing conversation: %s", e)
 
-    # ── 2. Update in-memory buffer ──
-    buf = _ensure_buffer()
-    buf.append({
+    # ── 2. Update in-memory buffer and conversation cache ──
+    turn_item = {
         "user": user_msg,
         "assistant": assistant_msg,
         "tool": tool,
         "timestamp": timestamp,
-    })
+    }
+    buf = _ensure_buffer()
+    buf.append(turn_item)
+    with _conv_cache_lock:
+        if _all_conversations_cache is not None:
+            _all_conversations_cache.append(turn_item)
 
     # ── 3. Active-state updates ──
     if state_update and isinstance(state_update, dict):
@@ -540,17 +582,36 @@ def add_conversation(
 
 
 def get_recent_conversations(count: int = 6) -> list[dict]:
-    """Return the most recent N conversations from in-memory buffer."""
+    """Return the most recent N conversations directly from in-memory buffer."""
     buf = _ensure_buffer()
     return list(buf)[-count:]
 
 
+_all_conversations_cache: list[dict] | None = None
+_conv_cache_lock = threading.Lock()
+
+
+def invalidate_conversations_cache() -> None:
+    """Invalidates the in-memory conversations cache so the next read pulls fresh data from ChromaDB."""
+    global _all_conversations_cache
+    with _conv_cache_lock:
+        _all_conversations_cache = None
+
+
 def get_all_conversations(limit: int = 200) -> list[dict]:
-    """Return all stored conversations (for history UI). Falls through to ChromaDB."""
+    """Return stored conversations (cached in memory for high UI throughput)."""
+    global _all_conversations_cache
+    with _conv_cache_lock:
+        if _all_conversations_cache is not None:
+            return list(_all_conversations_cache[-limit:])
+
     try:
         col = _col(CONVERSATIONS)
         if not col or col.count() == 0:
-            return list(_ensure_buffer())
+            res = list(_ensure_buffer())
+            with _conv_cache_lock:
+                _all_conversations_cache = list(res)
+            return res
 
         fetch = min(col.count(), limit)
         results = col.get(limit=fetch, include=["metadatas"])
@@ -564,16 +625,24 @@ def get_all_conversations(limit: int = 200) -> list[dict]:
                     "timestamp": meta.get("timestamp", ""),
                 })
             items.sort(key=lambda x: x.get("timestamp", ""))
+            with _conv_cache_lock:
+                _all_conversations_cache = list(items)
             return items
     except Exception as e:
         logger.debug("[RAG] get_all_conversations note: %s", e)
-    return list(_ensure_buffer())
+
+    fallback = list(_ensure_buffer())
+    with _conv_cache_lock:
+        _all_conversations_cache = list(fallback)
+    return fallback
 
 
 def clear_conversations() -> None:
-    """Clear all conversation memory (ChromaDB + buffer)."""
-    global _conversation_buffer
+    """Clear all conversation memory (ChromaDB + buffer + memory cache)."""
+    global _conversation_buffer, _all_conversations_cache
     _conversation_buffer = collections.deque(maxlen=_BUFFER_MAX)
+    with _conv_cache_lock:
+        _all_conversations_cache = []
 
     try:
         import chromadb
@@ -589,6 +658,7 @@ def clear_conversations() -> None:
             )
     except Exception as e:
         logger.error("[RAG] Error clearing conversations: %s", e)
+
 
     # Reset active state
     profile = load_profile()
@@ -769,10 +839,10 @@ def build_rag_context(query: str, top_k: int = 5) -> str:
     if not results:
         return ""
 
-    # Filter out very low-relevance hits (threshold 0.20 to capture specific entities, IDs, ticket/resume details)
-    relevant = [r for r in results if r.get("score", 0) >= 0.20]
+    # Filter out low-relevance hits (require at least 0.35 similarity score)
+    relevant = [r for r in results if r.get("score", 0) >= 0.35]
     if not relevant:
-        relevant = results[:2]
+        return ""
 
     parts: list[str] = []
     for r in relevant:
@@ -997,10 +1067,10 @@ def get_user_profile_prompt() -> str:
     if city := profile.get("preferences", {}).get("favorite_city"):
         parts.append(f"User lives in: {city}.")
 
-    # Pull latest user facts from RAG (skip redundant name facts)
+    # Pull latest user facts from RAG (skip redundant name facts and image dumps)
     facts = get_all_user_facts()
     for f in facts[-5:]:
-        if f and not (user_name and f.lower().startswith("user's name is")):
+        if f and not (user_name and f.lower().startswith("user's name is")) and not f.startswith("Uploaded image"):
             parts.append(f"Remembered fact: {f}")
 
     return "\n".join(parts) if parts else ""

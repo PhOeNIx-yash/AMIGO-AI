@@ -105,6 +105,36 @@
   animation: neon-glow-pulse 4s ease-in-out infinite;
 }
 
+@keyframes aurora-drift {
+  0% {
+    filter: hue-rotate(0deg) drop-shadow(0 0 16px rgba(16, 185, 129, 0.45));
+  }
+  50% {
+    filter: hue-rotate(180deg) drop-shadow(0 0 24px rgba(236, 72, 153, 0.65));
+  }
+  100% {
+    filter: hue-rotate(360deg) drop-shadow(0 0 16px rgba(16, 185, 129, 0.45));
+  }
+}
+
+.animate-aurora-glow {
+  animation: aurora-drift 6s ease-in-out infinite;
+}
+
+@keyframes shimmer-sweep {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.animate-shimmer-sweep {
+  background-size: 200% 100%;
+  animation: shimmer-sweep 3s linear infinite;
+}
+
 /* Custom thin scrollbar */
 ::-webkit-scrollbar {
   width: 6px;

@@ -14,6 +14,7 @@ import {
   RotateCcw,
   Sparkles,
   ExternalLink,
+  Brain,
 } from "lucide-react";
 import { BackendConfig, ColorTheme } from "../types";
 import { COLOR_THEMES } from "../data/presets";
@@ -44,6 +45,7 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
   const [customHeaders, setCustomHeaders] = useState(config.customHeaders || "");
   const [transcriptionEngine, setTranscriptionEngine] = useState(config.transcriptionEngine || "web-speech");
   const [autoSpeech, setAutoSpeech] = useState(config.autoSpeech !== false);
+  const [thinkingEnabled, setThinkingEnabled] = useState(config.thinkingEnabled === true);
 
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{
@@ -87,6 +89,7 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
       protocol: "rest",
       autoSpeech,
       transcriptionEngine,
+      thinkingEnabled,
     };
     onSaveConfig(updated);
     onClose();
@@ -100,6 +103,7 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
     setCustomHeaders("");
     setTranscriptionEngine("web-speech");
     setAutoSpeech(true);
+    setThinkingEnabled(false);
     setTestResult(null);
   };
 
@@ -283,6 +287,29 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
                   >
                     <span>Auto-speak responses</span>
                     <span className="font-semibold">{autoSpeech ? "ON" : "OFF"}</span>
+                  </button>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5 opacity-80 flex items-center justify-between">
+                    <span className="flex items-center space-x-1.5">
+                      <Brain className="w-3.5 h-3.5 text-purple-400" />
+                      <span>Deep Reasoning Mode</span>
+                    </span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setThinkingEnabled(!thinkingEnabled)}
+                    className={`w-full p-2 rounded-xl border text-xs font-medium flex items-center justify-between transition-all ${
+                      thinkingEnabled
+                        ? "bg-purple-600/20 border-purple-500/40 text-purple-300"
+                        : isDark
+                        ? "bg-white/5 border-white/10 opacity-60"
+                        : "bg-black/5 border-black/10 opacity-60"
+                    }`}
+                  >
+                    <span>{thinkingEnabled ? "Reasoning ON (Step-by-step)" : "Reasoning OFF (Fast Spoken)"}</span>
+                    <span className="font-semibold">{thinkingEnabled ? "ON" : "OFF"}</span>
                   </button>
                 </div>
               </div>

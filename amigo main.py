@@ -11,18 +11,10 @@ import time
 import numpy as np
 import speech_recognition as sr
 
-# TTS Engines
-_USE_KOKORO = False
-_USE_WIN32 = False
-_sd = None
-_KokoroOnnx = None
-
 try:
     import sounddevice as _sd
-    from kokoro_onnx import Kokoro as _KokoroOnnx
-    _USE_KOKORO = True
 except Exception:
-    _USE_KOKORO = False
+    _sd = None
 
 from ai import add_to_memory, get_ai_response_stream, load_memory
 from app_opener import ensure_built
@@ -30,48 +22,11 @@ from local_llm import get_active_model_info, get_agent_action, get_clipboard_tex
 from reminder_timer import init_reminders
 from Searchnow import scrape_web_info
 from tool_registry import execute_tool
+from tts import speak as tts_speak, stop_speaking
 import rag_engine
 from rag_indexer import start_background_indexer
 
-_kokoro_instance = None
-_tts_engine = None
-_sapi = None
-
-_KOKORO_MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "kokoro-onnx")
-_KOKORO_MODEL_PATH = os.path.join(_KOKORO_MODEL_DIR, "kokoro-v1.0.onnx")
-_KOKORO_VOICES_PATH = os.path.join(_KOKORO_MODEL_DIR, "voices-v1.0.bin")
-
-if _USE_KOKORO:
-    print("[TTS] Kokoro ONNX available.")
-else:
-    try:
-        import win32com.client as _win32
-        _sapi = _win32.Dispatch("SAPI.SpVoice")
-        _sapi.Rate = 1
-        _USE_WIN32 = True
-        print("[TTS] Using win32com SAPI SpVoice.")
-    except Exception:
-        try:
-            import pyttsx3 as _pyttsx3
-            _tts_engine = _pyttsx3.init("sapi5")
-        except Exception:
-            print("[TTS] Warning: No TTS engine available!")
-
-KOKORO_VOICE = "af_heart"
-KOKORO_SPEED = 1.15
-KOKORO_LANG = "en-us"
-_tts_cache = {}
 _ACTIVE_MODE = "3"
-
-
-def _get_kokoro():
-    """Lazy-load the Kokoro ONNX model once."""
-    global _kokoro_instance
-    if _kokoro_instance is None:
-        if not os.path.exists(_KOKORO_MODEL_PATH):
-            raise FileNotFoundError(f"Kokoro model not found at {_KOKORO_MODEL_PATH}")
-        _kokoro_instance = _KokoroOnnx(_KOKORO_MODEL_PATH, _KOKORO_VOICES_PATH)
-    return _kokoro_instance
 
 
 class BargeInMonitor:
@@ -91,11 +46,7 @@ class BargeInMonitor:
             self._consecutive_hits += 1
             if self._consecutive_hits >= 4:
                 self.interruption_event.set()
-                if _sd:
-                    try:
-                        _sd.stop()
-                    except Exception:
-                        pass
+                stop_speaking()
         else:
             self._consecutive_hits = max(0, self._consecutive_hits - 1)
 
@@ -121,48 +72,13 @@ class BargeInMonitor:
 
 
 def speak(text: str, interruption_event: threading.Event | None = None) -> None:
-    """Speaks text using Kokoro ONNX, Win32 SAPI, or Pyttsx3."""
+    """Speaks text using unified TTS engine with optional barge-in check."""
     if not text or (interruption_event and interruption_event.is_set()):
         return
 
     clean_text = sanitize_for_tts(text) or text.strip()
     print(f"Amigo: {clean_text}", flush=True)
-
-    if _USE_KOKORO:
-        try:
-            kokoro = _get_kokoro()
-            clean_text = re.sub(r'[*#_`~>\[\]()]', ' ', clean_text)
-            clean_text = re.sub(r'\s+', ' ', clean_text).strip()
-
-            cache_key = clean_text.lower()
-            if cache_key in _tts_cache:
-                samples, sample_rate = _tts_cache[cache_key]
-            else:
-                samples, sample_rate = kokoro.create(clean_text, voice=KOKORO_VOICE, speed=KOKORO_SPEED, lang=KOKORO_LANG)
-                silence_pad = np.zeros(int(0.20 * sample_rate), dtype=samples.dtype)
-                samples = np.concatenate([samples, silence_pad])
-                if len(clean_text) < 120 and len(_tts_cache) < 20:
-                    _tts_cache[cache_key] = (samples, sample_rate)
-
-            _sd.play(samples, samplerate=sample_rate)
-            _sd.wait()
-            return
-        except Exception as e:
-            print(f"[TTS] Kokoro error: {e}")
-
-    if _USE_WIN32:
-        try:
-            _sapi.Speak(clean_text)
-            return
-        except Exception:
-            pass
-
-    if _tts_engine:
-        try:
-            _tts_engine.say(clean_text)
-            _tts_engine.runAndWait()
-        except Exception:
-            pass
+    tts_speak(clean_text, block=True)
 
 
 def speak_stream(sentence_generator, interruption_event: threading.Event | None = None) -> str:
@@ -259,8 +175,7 @@ def _execute_action(action: dict, query: str, spoken_so_far: list, interruption_
 
 def process_agent_query(query: str) -> None:
     """Processes user voice query through agent actions and stores context in memory."""
-    memory = load_memory()
-    history = memory.get("conversations", [])[-15:]
+    history = rag_engine.get_recent_conversations(15)
     clipboard_used = bool(get_clipboard_text())
 
     actions = [{"tool": "chat", "params": {}, "speak": ""}] if _RE_PROBE_GUARD.search(query) else get_agent_action(query, conversation_history=history)
@@ -305,7 +220,12 @@ if __name__ == "__main__":
     print("[ AMIGO ] Initializing RAG memory engine...", flush=True)
     rag_engine.init_rag()
     start_background_indexer(rag_engine, interval_minutes=30)
-    print("[ AMIGO ] RAG engine ready. Background indexer started.", flush=True)
+    # Start Alt+V global wake hotkey service
+    try:
+        from hotkey_service import start_hotkey_service
+        start_hotkey_service()
+    except Exception as e:
+        print(f"    Hotkey service note: {e}")
 
     speak("Amigo Voice Assistant activated.")
 

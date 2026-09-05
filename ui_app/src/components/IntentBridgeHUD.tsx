@@ -1,40 +1,42 @@
 import React from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { CheckCircle2, Circle, Loader2 } from "lucide-react";
+import { CheckCircle2, Circle, Loader2, AlertCircle, WifiOff } from "lucide-react";
 import { ColorTheme } from "../types";
 import { COLOR_THEMES } from "../data/presets";
 
-interface IntentBridgeHUDProps {
-  prompt: string;
-  isDark: boolean;
-  colorTheme?: ColorTheme;
-  statusText?: string;
-  isCompleted?: boolean;
-  intent?: string;
-  historyCount?: number;
-}
+const NON_ACTION_INTENTS = new Set([
+  "chat",
+  "ask_document",
+  "search_knowledge",
+  "summarize_document",
+  "custom_response",
+  "error",
+]);
 
 // Generalized Action Intent Detection
 export function isActionIntent(text: string, intent?: string): boolean {
   // If backend intent is explicitly known, honor it directly
   if (intent !== undefined && intent !== null && intent !== "") {
-    return intent !== "chat" && intent !== "custom_response" && intent !== "error";
+    return !NON_ACTION_INTENTS.has(intent.toLowerCase());
   }
 
-  // During initial prompt state (before server response), check for genuine action triggers
+  // During initial prompt state (before server response), check for genuine system action triggers
   if (!text || !text.trim()) return false;
   const clean = text.toLowerCase().replace(/[_]/g, " ").trim();
+
+  // If the prompt is a natural question, it is not a system action HUD trigger
+  if (/^(?:who|what|when|where|why|how|can\s+you\s+tell|tell\s+me|is\s+there|explain|describe)\b/i.test(clean)) {
+    return false;
+  }
 
   const actionPrefixes = [
     /^(?:open|launch|start|run|close|kill|terminate)\b/i,
     /^(?:play|pause|resume|skip|next|prev|previous)\b/i,
     /^(?:set\s+(?:volume|brightness|timer|reminder)|volume\s+|brightness\s+|mute|unmute)\b/i,
     /^(?:take\s+screenshot|capture\s+screen|snip)\b/i,
-    /^(?:search\s+for|google\s+|browse\s+|wikipedia\s+)\b/i,
     /^(?:lock\s+pc|sleep\s+pc|restart\s+pc|empty\s+recycle\s+bin)\b/i,
-    /^(?:weather\s+in|what's\s+the\s+weather|check\s+weather|forecast)\b/i,
+    /^(?:weather\s+in|check\s+weather|forecast)\b/i,
     /^(?:system\s+status|cpu\s+usage|battery\s+status|hardware\s+metrics)\b/i,
-    /^(?:find\s+file|find\s+document|open\s+file|read\s+emails?|unread\s+emails?)\b/i,
     /^(?:stopwatch|start\s+stopwatch|set\s+timer)\b/i,
   ];
 
@@ -194,260 +196,172 @@ const AmigoSparkleLogo = () => (
   </svg>
 );
 
+const AppIcon: React.FC<{ name: string }> = ({ name }) => {
+  const n = (name || "").toLowerCase();
+  if (n.includes("chrome") || n.includes("browser") || n.includes("web")) return <ChromeIcon />;
+  if (n.includes("spotify") || n.includes("music") || n.includes("song")) return <SpotifyIcon />;
+  if (n.includes("youtube") || n.includes("video")) return <YouTubeIcon />;
+  if (n.includes("google") || n.includes("search")) return <GoogleIcon />;
+  if (n.includes("discord")) return <DiscordIcon />;
+  if (n.includes("notepad") || n.includes("text") || n.includes("note") || n.includes("editor")) return <NotepadIcon />;
+  if (n.includes("calc")) return <CalculatorIcon />;
+  if (n.includes("calendar") || n.includes("schedule")) return <CalendarIcon />;
+  if (n.includes("wiki")) return <WikipediaIcon />;
+  if (n.includes("folder") || n.includes("explorer") || n.includes("file")) return <FolderIcon />;
+  if (n.includes("camera") || n.includes("photo")) return <CameraIcon />;
+  if (n.includes("weather")) return <WeatherIcon />;
+  if (n.includes("cpu") || n.includes("task manager") || n.includes("performance") || n.includes("monitor")) return <CpuIcon />;
+  return <WindowsIcon />;
+};
+
 interface AppInfo {
   name: string;
   actionVerb: string;
   icon: React.ReactNode;
 }
 
-// Multi-Faceted Entity & Intent Resolver
+// Clean, Data-Driven Entity & Intent Resolver
 function parseActionEntity(prompt: string, intent?: string): AppInfo {
   const cleanPrompt = (prompt || "").trim();
   const cleanIntent = (intent || "").trim().toLowerCase();
-  const combined = `${cleanIntent} ${cleanPrompt}`.toLowerCase().replace(/_/g, " ");
 
-  // 1. Timer & Stopwatch
-  if (
-    cleanIntent === "stopwatch" ||
-    /\b(stopwatch)\b/i.test(combined)
-  ) {
-    return {
-      name: "Stopwatch",
-      actionVerb: "Initializing Live Stopwatch...",
-      icon: (
-        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-          <circle cx="12" cy="12" r="9" stroke="#06B6D4" strokeWidth="2" />
-          <path d="M12 7v5l3 3" stroke="#FFFFFF" strokeWidth="2" strokeLinecap="round" />
-        </svg>
-      ),
-    };
-  }
+  // Intent-based Direct Mapping
+  switch (cleanIntent) {
+    case "stopwatch":
+      return {
+        name: "Stopwatch",
+        actionVerb: "Initializing Live Stopwatch...",
+        icon: (
+          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="9" stroke="#06B6D4" strokeWidth="2" />
+            <path d="M12 7v5l3 3" stroke="#FFFFFF" strokeWidth="2" strokeLinecap="round" />
+          </svg>
+        ),
+      };
 
-  if (
-    cleanIntent === "set_timer" ||
-    cleanIntent === "timer" ||
-    /\b(timer|countdown|set a timer)\b/i.test(combined)
-  ) {
-    return {
-      name: "Countdown Timer",
-      actionVerb: "Initializing Live Timer...",
-      icon: (
-        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-          <circle cx="12" cy="12" r="9" stroke="#F59E0B" strokeWidth="2" />
-          <path d="M12 7v5l3 3" stroke="#FFFFFF" strokeWidth="2" strokeLinecap="round" />
-        </svg>
-      ),
-    };
-  }
+    case "set_timer":
+    case "timer":
+      return {
+        name: "Countdown Timer",
+        actionVerb: "Initializing Live Timer...",
+        icon: (
+          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="9" stroke="#F59E0B" strokeWidth="2" />
+            <path d="M12 7v5l3 3" stroke="#FFFFFF" strokeWidth="2" strokeLinecap="round" />
+          </svg>
+        ),
+      };
 
-  // 2. Weather Intent
-  if (
-    cleanIntent === "get_weather" ||
-    /\b(weather|temperature|forecast|climate|rain|snow|humidity|is it raining|how's the weather)\b/i.test(combined)
-  ) {
-    const cityMatch = cleanPrompt.match(/\b(?:in|of|for|at)\s+([a-zA-Z\s]+)/i);
-    const cityName = cityMatch ? cityMatch[1].trim() : "";
-    return {
-      name: cityName ? `Weather in ${cityName}` : "Weather Radar",
-      actionVerb: cityName ? `Fetching Weather for ${cityName}...` : "Fetching Meteorological Data...",
-      icon: <WeatherIcon />,
-    };
-  }
+    case "get_weather":
+      return {
+        name: "Weather Radar",
+        actionVerb: "Fetching Meteorological Data...",
+        icon: <WeatherIcon />,
+      };
 
-  // 3. YouTube & Music
-  if (
-    cleanIntent === "play_youtube" ||
-    cleanIntent === "search_youtube" ||
-    combined.includes("youtube") ||
-    (combined.includes("play") && !combined.includes("spotify"))
-  ) {
-    return {
-      name: "YouTube",
-      actionVerb: "Connecting to YouTube...",
-      icon: <YouTubeIcon />,
-    };
-  }
+    case "play_youtube":
+    case "search_youtube":
+      return {
+        name: "YouTube",
+        actionVerb: "Connecting to YouTube...",
+        icon: <YouTubeIcon />,
+      };
 
-  // 4. Spotify
-  if (combined.includes("spotify")) {
-    return {
-      name: "Spotify",
-      actionVerb: "Connecting to Spotify...",
-      icon: <SpotifyIcon />,
-    };
-  }
+    case "calculate":
+      return {
+        name: "Calculator",
+        actionVerb: "Calculating with Math Engine...",
+        icon: <CalculatorIcon />,
+      };
 
-  // 5. Discord
-  if (combined.includes("discord")) {
-    return {
-      name: "Discord",
-      actionVerb: "Connecting to Discord...",
-      icon: <DiscordIcon />,
-    };
-  }
+    case "set_reminder":
+    case "list_reminders":
+    case "cancel_reminder":
+      return {
+        name: "Scheduler",
+        actionVerb: "Scheduling Event Hook...",
+        icon: <CalendarIcon />,
+      };
 
-  // 6. Chrome / Browser / Web Search
-  if (combined.includes("chrome") || combined.includes("browser")) {
-    return {
-      name: "Google Chrome",
-      actionVerb: "Launching Chrome...",
-      icon: <ChromeIcon />,
-    };
-  }
+    case "get_time":
+    case "get_date":
+      return {
+        name: "World Clock",
+        actionVerb: "Querying System Time...",
+        icon: <CalendarIcon />,
+      };
 
-  if (
-    cleanIntent === "web_search" ||
-    cleanIntent === "open_website" ||
-    /\b(search|google|browse|web|internet)\b/i.test(combined)
-  ) {
-    return {
-      name: "Google Search",
-      actionVerb: "Searching Google...",
-      icon: <GoogleIcon />,
-    };
-  }
+    case "find_file":
+    case "open_file":
+    case "open_folder":
+    case "reveal_file":
+      return {
+        name: "File Explorer",
+        actionVerb: "Indexing File System...",
+        icon: <FolderIcon />,
+      };
 
-  // 7. Wikipedia
-  if (cleanIntent === "wikipedia" || /\b(wikipedia|wiki)\b/i.test(combined)) {
-    return {
-      name: "Wikipedia",
-      actionVerb: "Querying Wikipedia Knowledge...",
-      icon: <WikipediaIcon />,
-    };
-  }
+    case "volume_up":
+    case "volume_down":
+    case "set_volume":
+    case "mute":
+    case "unmute":
+      return {
+        name: "System Audio",
+        actionVerb: "Adjusting System Audio...",
+        icon: <VolumeIcon />,
+      };
 
-  // 8. Notepad / Notes
-  if (combined.includes("notepad") || combined.includes("note") || combined.includes("text editor")) {
-    return {
-      name: "Notepad",
-      actionVerb: "Opening Notepad...",
-      icon: <NotepadIcon />,
-    };
-  }
+    case "take_screenshot":
+    case "read_screen":
+    case "ask_about_screen":
+      return {
+        name: "Screen Vision",
+        actionVerb: "Capturing Screen Vision...",
+        icon: <CameraIcon />,
+      };
 
-  // 9. Calculator & Math
-  if (
-    cleanIntent === "calculate" ||
-    /\b(calculate|calc|math|multiply|divide|\+|\-|\*|\/)\b/i.test(combined)
-  ) {
-    return {
-      name: "Calculator",
-      actionVerb: "Calculating with Math Engine...",
-      icon: <CalculatorIcon />,
-    };
-  }
+    case "system_status":
+    case "hardware_metrics":
+      return {
+        name: "Hardware Telemetry",
+        actionVerb: "Querying Hardware Stats...",
+        icon: <CpuIcon />,
+      };
 
-  // 10. Reminders & Scheduler
-  if (
-    cleanIntent === "set_reminder" ||
-    cleanIntent === "list_reminders" ||
-    cleanIntent === "cancel_reminder" ||
-    /\b(remind|schedule|calendar|event)\b/i.test(combined)
-  ) {
-    return {
-      name: "Scheduler",
-      actionVerb: "Scheduling Event Hook...",
-      icon: <CalendarIcon />,
-    };
+    case "lock_pc":
+      return {
+        name: "Windows Security",
+        actionVerb: "Locking Workstation...",
+        icon: <WindowsIcon />,
+      };
+
+    case "sleep_pc":
+      return {
+        name: "Windows Power",
+        actionVerb: "Entering Sleep Mode...",
+        icon: <WindowsIcon />,
+      };
+
+    case "restart_pc":
+      return {
+        name: "Windows Power",
+        actionVerb: "Initiating Restart...",
+        icon: <WindowsIcon />,
+      };
+
+    case "empty_recycle_bin":
+      return {
+        name: "Recycle Bin",
+        actionVerb: "Purging Recycle Bin...",
+        icon: <WindowsIcon />,
+      };
+
+    default:
+      break;
   }
 
-  // 11. Time & Date
-  if (cleanIntent === "get_time" || cleanIntent === "get_date" || /\b(time|clock|date)\b/i.test(combined)) {
-    return {
-      name: "World Clock",
-      actionVerb: "Querying System Time...",
-      icon: <CalendarIcon />,
-    };
-  }
-
-  // 12. Files, Folders & Explorer
-  if (
-    cleanIntent === "find_file" ||
-    cleanIntent === "open_file" ||
-    cleanIntent === "open_folder" ||
-    cleanIntent === "reveal_file" ||
-    /\b(folder|directory|file|explorer|find file)\b/i.test(combined)
-  ) {
-    return {
-      name: "File Explorer",
-      actionVerb: "Indexing File System...",
-      icon: <FolderIcon />,
-    };
-  }
-
-  // 13. System Audio & Volume
-  if (
-    cleanIntent === "volume_up" ||
-    cleanIntent === "volume_down" ||
-    cleanIntent === "set_volume" ||
-    cleanIntent === "mute" ||
-    /\b(volume|sound|mute|unmute)\b/i.test(combined)
-  ) {
-    return {
-      name: "System Audio",
-      actionVerb: "Adjusting System Audio...",
-      icon: <VolumeIcon />,
-    };
-  }
-
-  // 14. Screen Vision & Screenshots
-  if (
-    cleanIntent === "take_screenshot" ||
-    cleanIntent === "read_screen" ||
-    cleanIntent === "ask_about_screen" ||
-    /\b(screenshot|capture|snip|screen vision|read screen)\b/i.test(combined)
-  ) {
-    return {
-      name: "Screen Vision",
-      actionVerb: "Analyzing Screen Vision...",
-      icon: <CameraIcon />,
-    };
-  }
-
-  // 15. Hardware & System Status
-  if (
-    cleanIntent === "system_status" ||
-    cleanIntent === "hardware_metrics" ||
-    /\b(system status|cpu|ram|battery|hardware|metrics)\b/i.test(combined)
-  ) {
-    return {
-      name: "Hardware Telemetry",
-      actionVerb: "Querying Hardware Stats...",
-      icon: <CpuIcon />,
-    };
-  }
-
-  // 16. Power & OS Management
-  if (cleanIntent === "lock_pc" || /\b(lock pc|lock screen)\b/i.test(combined)) {
-    return {
-      name: "Windows Security",
-      actionVerb: "Locking Workstation...",
-      icon: <WindowsIcon />,
-    };
-  }
-  if (cleanIntent === "sleep_pc" || /\b(sleep pc|sleep mode)\b/i.test(combined)) {
-    return {
-      name: "Windows Power",
-      actionVerb: "Entering Sleep Mode...",
-      icon: <WindowsIcon />,
-    };
-  }
-  if (cleanIntent === "restart_pc" || /\b(restart pc|reboot)\b/i.test(combined)) {
-    return {
-      name: "Windows Power",
-      actionVerb: "Initiating Restart...",
-      icon: <WindowsIcon />,
-    };
-  }
-  if (cleanIntent === "empty_recycle_bin" || /\b(recycle bin|empty trash)\b/i.test(combined)) {
-    return {
-      name: "Recycle Bin",
-      actionVerb: "Purging Recycle Bin...",
-      icon: <WindowsIcon />,
-    };
-  }
-
-  // 17. General Dynamic App Launch (e.g. "open <App>")
+  // Dynamic App Name Resolution for general app launch / close actions
   const launchMatch = cleanPrompt.match(/\b(?:open|launch|start|run|close|switch to)\s+([a-zA-Z0-9_\-\.\s]+)/i);
   if (launchMatch && launchMatch[1]) {
     const rawTarget = launchMatch[1].replace(/\b(please|now|for me|app|application)\b/gi, "").trim();
@@ -456,19 +370,19 @@ function parseActionEntity(prompt: string, intent?: string): AppInfo {
         .split(" ")
         .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
         .join(" ");
-
       return {
         name: formattedName,
         actionVerb: `Launching ${formattedName}...`,
-        icon: <WindowsIcon />,
+        icon: <AppIcon name={formattedName} />,
       };
     }
   }
 
+  // Universal Fallback
   return {
-    name: "Windows OS",
-    actionVerb: "Executing System Action...",
-    icon: <WindowsIcon />,
+    name: "System Action",
+    actionVerb: "Executing Requested Action...",
+    icon: <AmigoSparkleLogo />,
   };
 }
 
@@ -478,6 +392,7 @@ interface IntentBridgeHUDProps {
   colorTheme?: ColorTheme;
   statusText?: string;
   isCompleted?: boolean;
+  status?: string;
   intent?: string;
   historyCount?: number;
   onDismiss?: () => void;
@@ -489,15 +404,17 @@ export const IntentBridgeHUD: React.FC<IntentBridgeHUDProps> = ({
   colorTheme = "violet",
   statusText,
   isCompleted = false,
+  status,
   intent,
   historyCount = 0,
   onDismiss,
 }) => {
   const theme = COLOR_THEMES[colorTheme] || COLOR_THEMES.violet;
   const app = parseActionEntity(prompt, intent);
-  const currentStage = isCompleted ? 2 : statusText ? 1 : 0;
-  const stages = ["Understanding", "Executing", "Completed"];
-  const progressLabel = stages[currentStage];
+
+  const isOffline = status === "offline" || statusText?.toLowerCase().includes("offline");
+  const isFailed = status === "failed" || statusText?.toLowerCase().includes("failed");
+  const isSuccess = isCompleted && !isOffline && !isFailed;
 
   return (
     <motion.div
@@ -512,8 +429,18 @@ export const IntentBridgeHUD: React.FC<IntentBridgeHUDProps> = ({
       {/* Gemini-Style App Extension Connector Pill with Fluid Glow & Morphing Aura */}
       <motion.div
         animate={{
-          borderColor: isCompleted ? "rgba(16, 185, 129, 0.55)" : `${theme.primary}55`,
-          boxShadow: isCompleted
+          borderColor: isOffline
+            ? "rgba(244, 63, 94, 0.45)"
+            : isFailed
+            ? "rgba(239, 68, 68, 0.45)"
+            : isSuccess
+            ? "rgba(16, 185, 129, 0.55)"
+            : `${theme.primary}55`,
+          boxShadow: isOffline
+            ? "0 4px 22px rgba(244, 63, 94, 0.25)"
+            : isFailed
+            ? "0 4px 22px rgba(239, 68, 68, 0.25)"
+            : isSuccess
             ? "0 4px 25px rgba(16, 185, 129, 0.32), 0 0 12px rgba(16, 185, 129, 0.18)"
             : `0 4px 20px ${theme.glow}35, 0 1px 4px rgba(0,0,0,0.12)`,
         }}
@@ -562,10 +489,30 @@ export const IntentBridgeHUD: React.FC<IntentBridgeHUDProps> = ({
           </motion.div>
         </div>
 
-        {/* 3. Real Vector Brand App Logo Node with Smooth Morphing to Emerald Checkmark */}
+        {/* 3. Real Vector Brand App Logo Node with Smooth Morphing to Emerald Checkmark / Rose Offline */}
         <div className="relative flex items-center justify-center flex-shrink-0 w-4 h-4">
           <AnimatePresence mode="wait">
-            {isCompleted ? (
+            {isOffline ? (
+              <motion.div
+                key="offline-icon"
+                initial={{ scale: 0.3, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.5, opacity: 0 }}
+                className="w-4 h-4 rounded-full bg-rose-500 flex items-center justify-center shadow-md shadow-rose-500/30"
+              >
+                <WifiOff className="w-2.5 h-2.5 text-white" />
+              </motion.div>
+            ) : isFailed ? (
+              <motion.div
+                key="failed-icon"
+                initial={{ scale: 0.3, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.5, opacity: 0 }}
+                className="w-4 h-4 rounded-full bg-amber-500 flex items-center justify-center shadow-md shadow-amber-500/30"
+              >
+                <AlertCircle className="w-2.5 h-2.5 text-white" />
+              </motion.div>
+            ) : isSuccess ? (
               <motion.div
                 key="completed-check"
                 initial={{ scale: 0.3, rotate: -30, opacity: 0 }}
@@ -595,14 +542,22 @@ export const IntentBridgeHUD: React.FC<IntentBridgeHUDProps> = ({
         <div className="flex min-w-0 max-w-[min(48vw,22rem)] items-center space-x-1.5 pl-1 pr-0.5 text-[11.5px] font-medium tracking-tight overflow-hidden">
           <AnimatePresence mode="wait">
             <motion.span
-              key={isCompleted ? "status-completed" : statusText || app.actionVerb}
+              key={statusText || (isOffline ? "offline" : isFailed ? "failed" : isSuccess ? "status-completed" : app.actionVerb)}
               initial={{ opacity: 0, y: 3, filter: "blur(2px)" }}
               animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
               exit={{ opacity: 0, y: -3, filter: "blur(2px)" }}
               transition={{ duration: 0.25, ease: "easeOut" }}
-              className={`min-w-0 truncate transition-colors ${isCompleted ? "text-emerald-400 font-semibold" : "opacity-90"}`}
+              className={`min-w-0 truncate transition-colors ${
+                isOffline
+                  ? "text-rose-400 font-semibold"
+                  : isFailed
+                  ? "text-amber-400 font-semibold"
+                  : isSuccess
+                  ? "text-emerald-400 font-semibold"
+                  : "opacity-90"
+              }`}
             >
-              {statusText || (isCompleted ? `${app.name} Ready` : app.actionVerb)}
+              {statusText || (isOffline ? "Offline" : isFailed ? "Action Failed" : isSuccess ? `${app.name} Ready` : app.actionVerb)}
             </motion.span>
           </AnimatePresence>
         </div>
@@ -611,17 +566,26 @@ export const IntentBridgeHUD: React.FC<IntentBridgeHUDProps> = ({
         <div className="flex items-center space-x-1.5 pl-1 flex-shrink-0">
           <span
             className={`text-[10px] px-2 py-0.5 rounded-full font-mono border flex items-center space-x-1 ${
-              isCompleted
+              isOffline
+                ? "bg-rose-500/15 text-rose-400 border-rose-500/30 font-semibold"
+                : isFailed
+                ? "bg-amber-500/15 text-amber-400 border-amber-500/30 font-semibold"
+                : isSuccess
                 ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30 font-semibold"
                 : "bg-indigo-500/15 text-indigo-300 border-indigo-500/30"
             }`}
           >
-            {isCompleted ? (
+            {isOffline ? (
               <>
-                <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400" />
-                <span>Completed</span>
+                <WifiOff className="w-2.5 h-2.5 text-rose-400" />
+                <span>Offline</span>
               </>
-            ) : statusText === "Action Ready" || statusText === "Action Completed" ? (
+            ) : isFailed ? (
+              <>
+                <AlertCircle className="w-2.5 h-2.5 text-amber-400" />
+                <span>Failed</span>
+              </>
+            ) : isSuccess ? (
               <>
                 <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400" />
                 <span>Completed</span>
@@ -633,8 +597,8 @@ export const IntentBridgeHUD: React.FC<IntentBridgeHUDProps> = ({
               </>
             ) : (
               <>
-                <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400" />
-                <span>Completed</span>
+                <Loader2 className="w-2.5 h-2.5 animate-spin text-indigo-400" />
+                <span>Processing</span>
               </>
             )}
           </span>

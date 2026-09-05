@@ -1,4 +1,4 @@
-import { AssistantResponse, BackendConfig, ActionCardItem } from "../types";
+import { AssistantResponse, BackendConfig, ActionCardItem, AttachmentItem } from "../types";
 
 /**
  * Service to transcribe recorded audio buffer using Amigo local speech or custom STT endpoint
@@ -168,7 +168,8 @@ export async function executeBackendAction(
 export async function processVoiceCommand(
   prompt: string,
   backendConfig?: BackendConfig,
-  context?: Record<string, any>
+  context?: Record<string, any>,
+  attachment?: AttachmentItem
 ): Promise<AssistantResponse> {
   const endpoint = backendConfig?.endpointUrl?.trim() || "/api/assistant/process";
 
@@ -194,6 +195,15 @@ export async function processVoiceCommand(
       body: JSON.stringify({
         prompt,
         context: context || {},
+        attachment: attachment
+          ? {
+              filename: attachment.filename,
+              filepath: attachment.filepath,
+              fileType: attachment.fileType,
+              size: attachment.size,
+              extractedPreview: attachment.extractedPreview,
+            }
+          : undefined,
         timestamp: Date.now(),
       }),
     });
@@ -207,6 +217,63 @@ export async function processVoiceCommand(
   }
 
   return generateDynamicResponse(prompt);
+}
+
+/**
+ * Upload an attached file (PDF, image, document) to the backend for storage, indexing, and OCR
+ */
+export async function uploadFileToBackend(file: File): Promise<{
+  success: boolean;
+  filename: string;
+  filepath: string;
+  fileType: "pdf" | "image" | "document" | "generic";
+  size: number;
+  extractedPreview?: string;
+  error?: string;
+}> {
+  // Try multipart/form-data first
+  try {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const res = await fetch("/api/upload", {
+      method: "POST",
+      body: formData,
+    });
+
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch (e) {
+    console.warn("FormData upload failed, trying base64 fallback:", e);
+  }
+
+  // Fallback: convert to base64 JSON payload
+  const arrayBuffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(arrayBuffer);
+  let binary = "";
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  const base64Data = btoa(binary);
+
+  const res = await fetch("/api/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      filename: file.name,
+      mimeType: file.type,
+      size: file.size,
+      fileData: base64Data,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Upload failed (HTTP ${res.status})`);
+  }
+
+  return await res.json();
 }
 
 /**

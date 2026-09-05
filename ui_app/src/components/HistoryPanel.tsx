@@ -100,6 +100,29 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
     return new Date(timeMs).toLocaleDateString([], { month: "short", day: "numeric" });
   };
 
+  const formatPromptDisplay = (rawPrompt: string): string => {
+    if (!rawPrompt) return "";
+    const match = rawPrompt.match(/^\[Attached (?:Document|Image|File):\s*([^\]\n]+)\]/);
+    if (match) {
+      const filename = match[1].trim();
+      const qMatch = rawPrompt.match(/User Question \/ Task:\s*(.+)$/s);
+      if (qMatch && qMatch[1]) {
+        const userQ = qMatch[1].trim();
+        const lowerQ = userQ.toLowerCase();
+        const lowerFn = filename.toLowerCase();
+        if (
+          lowerQ === `analyze ${lowerFn}` ||
+          (lowerQ.includes(lowerFn) && (lowerQ.startsWith("analyze") || lowerQ.startsWith("summarize")))
+        ) {
+          return `Analyze: ${filename}`;
+        }
+        return `${userQ} (${filename})`;
+      }
+      return `Analyze: ${filename}`;
+    }
+    return rawPrompt;
+  };
+
   const getIntentIcon = (intent: string) => {
     switch (intent) {
       case "translate_email":
@@ -346,7 +369,7 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
 
                   {/* Prompt Text */}
                   <p className="text-xs font-semibold leading-snug">
-                    "{item.prompt}"
+                    "{formatPromptDisplay(item.prompt)}"
                   </p>
                   <button
                     type="button"

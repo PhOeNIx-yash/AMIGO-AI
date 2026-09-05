@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   AssistantState,
@@ -10,6 +10,7 @@ import {
   HistoryEntry,
   BackendConfig,
   ActionCardItem,
+  AttachmentItem,
 } from "./types";
 import { CanvasVisualizer } from "./components/CanvasVisualizer";
 import { TitleBar } from "./components/TitleBar";
@@ -19,7 +20,7 @@ import { VoiceControls } from "./components/VoiceControls";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { BackendSettingsModal } from "./components/BackendSettingsModal";
 import { SettingsPage } from "./components/SettingsPage";
-import { KineticHeading, KineticStateBadge, TextAnimationStyle } from "./components/KineticText";
+import { KineticHeading, KineticStateBadge, TextAnimationStyle, normalizeAnimationStyle } from "./components/KineticText";
 import { IntentBridgeHUD, isActionIntent } from "./components/IntentBridgeHUD";
 import { COLOR_THEMES, GREETING_PRESETS } from "./data/presets";
 import { speakText, sfx } from "./utils/audio";
@@ -62,9 +63,9 @@ export default function App() {
   const [textAnimationStyle, setTextAnimationStyle] = useState<TextAnimationStyle>(() => {
     if (typeof window !== "undefined") {
       const saved = localStorage.getItem("windows11_voice_assistant_anim_style");
-      if (saved) return saved as TextAnimationStyle;
+      if (saved) return normalizeAnimationStyle(saved);
     }
-    return "amazing_fluid";
+    return "silk_blur";
   });
 
   const [pluginMode, setPluginMode] = useState<PluginMode>(() => {
@@ -199,6 +200,7 @@ export default function App() {
           autoCycleInterval,
           backendConfig: config,
           autoSpeech: config.autoSpeech,
+          thinkingEnabled: config.thinkingEnabled,
         }),
       });
     } catch (e) {}
@@ -211,6 +213,29 @@ export default function App() {
 
   const [history, setHistory] = useState<HistoryEntry[]>([]);
 
+  const cleanHistoryPrompt = (raw: string): string => {
+    if (!raw) return "";
+    const match = raw.match(/^\[Attached (?:Document|Image|File):\s*([^\]\n]+)\]/);
+    if (match) {
+      const filename = match[1].trim();
+      const qMatch = raw.match(/User Question \/ Task:\s*(.+)$/s);
+      if (qMatch && qMatch[1]) {
+        const userQ = qMatch[1].trim();
+        const lowerQ = userQ.toLowerCase();
+        const lowerFn = filename.toLowerCase();
+        if (
+          lowerQ === `analyze ${lowerFn}` ||
+          (lowerQ.includes(lowerFn) && (lowerQ.startsWith("analyze") || lowerQ.startsWith("summarize")))
+        ) {
+          return `Analyze: ${filename}`;
+        }
+        return `${userQ} (${filename})`;
+      }
+      return `Analyze: ${filename}`;
+    }
+    return raw;
+  };
+
   // Fetch conversation history directly from Amigo memory backend on mount
   const fetchBackendHistory = async () => {
     try {
@@ -218,24 +243,27 @@ export default function App() {
       if (res.ok) {
         const memory = await res.json();
         if (memory && Array.isArray(memory.conversations)) {
-          const formatted: HistoryEntry[] = memory.conversations.map((c: any, idx: number) => ({
-            id: `hist-${idx}-${new Date(c.timestamp || Date.now()).getTime()}`,
-            prompt: c.user || "",
-            timestamp: new Date(c.timestamp || Date.now()).getTime(),
-            status: "completed",
-            response: {
-              speechReply: c.assistant || "",
-              displayTitle: c.user || "",
-              intent: c.tool || "chat",
-              requiresDisambiguation: false,
-              actionCards: [],
-              executionSummary: {
-                status: "completed",
-                headline: "Executed with Amigo",
-                details: c.assistant || "",
+          const formatted: HistoryEntry[] = memory.conversations.map((c: any, idx: number) => {
+            const cleanUser = cleanHistoryPrompt(c.user || "");
+            return {
+              id: `hist-${idx}-${new Date(c.timestamp || Date.now()).getTime()}`,
+              prompt: cleanUser,
+              timestamp: new Date(c.timestamp || Date.now()).getTime(),
+              status: "completed",
+              response: {
+                speechReply: c.assistant || "",
+                displayTitle: cleanUser,
+                intent: c.tool || "chat",
+                requiresDisambiguation: false,
+                actionCards: [],
+                executionSummary: {
+                  status: "completed",
+                  headline: "Executed with Amigo",
+                  details: c.assistant || "",
+                },
               },
-            },
-          }));
+            };
+          });
           setHistory(formatted.reverse());
         }
       }
@@ -263,6 +291,9 @@ export default function App() {
           if (ui.backendConfig && typeof ui.backendConfig === "object") {
             setBackendConfig((prev) => ({ ...prev, ...ui.backendConfig }));
           }
+          if (typeof ui.thinkingEnabled === "boolean") {
+            setBackendConfig((prev) => ({ ...prev, thinkingEnabled: ui.thinkingEnabled }));
+          }
         }
       }
     } catch (e) {}
@@ -276,6 +307,7 @@ export default function App() {
 
   const [state, setState] = useState<AssistantState>("idle");
   const [activePrompt, setActivePrompt] = useState<string>("");
+  const activePromptRef = useRef<string>("");
   const [displayText, setDisplayText] = useState<string>(greetingText);
   const [isListening, setIsListening] = useState<boolean>(false);
   const [liveTranscript, setLiveTranscript] = useState<string>("");
@@ -287,6 +319,8 @@ export default function App() {
   // Real-time bidirectional SSE sync with Amigo Python voice loop & server events
   useEffect(() => {
     let es: EventSource | null = null;
+    let reconnectTimeout: any = null;
+
     const connectSSE = () => {
       try {
         es = new EventSource("/events");
@@ -307,11 +341,35 @@ export default function App() {
             } else if (data.type === "chat_message") {
               if (data.sender === "user") {
                 setActivePrompt(data.text);
+                activePromptRef.current = data.text;
                 setDisplayText(data.text);
                 setState("processing");
               } else if (data.sender === "assistant" || data.sender === "amigo") {
                 setDisplayText(data.text);
                 setState("completed");
+
+                // Optimistically update History Drawer immediately
+                const userPrompt = data.user_query || activePromptRef.current || "Voice Command";
+                const cleanUser = cleanHistoryPrompt(userPrompt);
+                const optimisticEntry: HistoryEntry = {
+                  id: `hist-live-${Date.now()}`,
+                  prompt: cleanUser,
+                  timestamp: Date.now(),
+                  status: "completed",
+                  response: {
+                    speechReply: data.text,
+                    displayTitle: cleanUser,
+                    intent: data.tool || "chat",
+                    requiresDisambiguation: false,
+                    actionCards: [],
+                    executionSummary: {
+                      status: "completed",
+                      headline: "Executed with Amigo",
+                      details: data.text,
+                    },
+                  },
+                };
+                setHistory((prev) => [optimisticEntry, ...prev.filter((p) => p.prompt !== cleanUser || Math.abs(p.timestamp - optimisticEntry.timestamp) > 5000)]);
                 fetchBackendHistory();
               }
             } else if (data.type === "intent_detected") {
@@ -323,15 +381,20 @@ export default function App() {
         };
         es.onerror = () => {
           es?.close();
-          setTimeout(connectSSE, 3000);
+          es = null;
+          clearTimeout(reconnectTimeout);
+          reconnectTimeout = setTimeout(connectSSE, 4000);
         };
       } catch (err) {}
     };
+
     connectSSE();
     return () => {
+      clearTimeout(reconnectTimeout);
       es?.close();
+      es = null;
     };
-  }, [activePrompt]);
+  }, []);
 
   // Dynamic auto-cycling of greeting phrases when idle
   useEffect(() => {
@@ -394,39 +457,41 @@ export default function App() {
 
   // Keep AI response on stage until next interaction or user reset
 
-  // Process user voice or typed command
-  const handleProcessCommand = async (prompt: string) => {
-    if (!prompt.trim()) return;
+  // Process user voice or typed command (with optional file attachment)
+  const handleProcessCommand = async (prompt: string, attachment?: AttachmentItem) => {
+    const effectivePrompt = prompt.trim() || (attachment ? `Analyze ${attachment.filename}` : "");
+    if (!effectivePrompt) return;
 
-    setActivePrompt(prompt);
-    setDisplayText(prompt);
+    setActivePrompt(effectivePrompt);
+    setDisplayText(effectivePrompt);
     setState("processing");
     setLoading(true);
 
     try {
-      const data = await processVoiceCommand(prompt, backendConfig);
+      const data = await processVoiceCommand(effectivePrompt, backendConfig, undefined, attachment);
       setAssistantData(data);
       setLoading(false);
 
       // Update center stage with the full real assistant response text
-      const resultText = data.speechReply || data.executionSummary?.details || data.displayTitle || prompt;
+      const resultText = data.speechReply || data.executionSummary?.details || data.displayTitle || effectivePrompt;
       setDisplayText(resultText);
 
       // Append to command history
       const newEntry: HistoryEntry = {
         id: `hist-${Date.now()}`,
         timestamp: Date.now(),
-        prompt: prompt.trim(),
+        prompt: effectivePrompt,
         response: data,
       };
       setHistory((prev) => [
         newEntry,
-        ...prev.filter((p) => p.prompt.toLowerCase() !== prompt.trim().toLowerCase()),
+        ...prev.filter((p) => p.prompt.toLowerCase() !== effectivePrompt.toLowerCase()),
       ]);
 
       const hasActionCards = Boolean(
         data.actionCards &&
-        data.actionCards.length > 0
+        data.actionCards.length > 0 &&
+        data.actionCards.some((c: any) => c.type !== "file")
       );
 
       if (data.requiresDisambiguation && data.contactMatches && data.contactMatches.length > 0) {
@@ -463,7 +528,8 @@ export default function App() {
     setDisplayText(fullText);
     const hasActionCards = Boolean(
       responseData.actionCards &&
-      responseData.actionCards.length > 0
+      responseData.actionCards.length > 0 &&
+      responseData.actionCards.some((c: any) => c.type !== "file")
     );
     setState(hasActionCards ? "action_card" : responseData.requiresDisambiguation ? "contact_picker" : "completed");
 
@@ -842,7 +908,9 @@ export default function App() {
                       )}
 
                       {/* 3. Single Unified Gemini Action Pill (From Routing to Executed in ONE Continuous Pill) */}
-                      {(state === "processing" || state === "working" || state === "action_card" || state === "completed") &&
+                      {state !== "action_card" &&
+                        state !== "contact_picker" &&
+                        (state === "processing" || state === "working" || state === "completed") &&
                         isActionIntent(activePrompt, assistantData?.intent) && (
                         <IntentBridgeHUD
                           key="intent-bridge-hud"
@@ -852,14 +920,13 @@ export default function App() {
                           intent={assistantData?.intent}
                           historyCount={history.length}
                           isCompleted={state === "completed"}
+                          status={assistantData?.executionSummary?.status}
                           onDismiss={handleReset}
                           statusText={
                             state === "completed"
-                              ? (assistantData?.executionSummary?.headline || "Action Completed")
+                              ? (assistantData?.executionSummary?.headline || "Completed")
                               : state === "working"
                               ? "Executing Action..."
-                              : state === "action_card"
-                              ? "Action Ready"
                               : undefined
                           }
                         />
