@@ -231,7 +231,6 @@ def init_local_llm(force_reload: bool = False):
                         "n_ubatch": 512,
                         "flash_attn": fa,
                         "use_mmap": True,
-                        "chat_format": "chatml",
                         "verbose": False,
                     }
                     _local_llm_instance = Llama(**kwargs)
@@ -265,24 +264,13 @@ def strip_markdown_for_tts(text: str) -> str:
     """Strips markdown, thought tags, and formatting characters so TTS sounds natural."""
     if not text:
         return ""
-    # Strip closed think tags
-    text = _RE_THINK.sub("", text)
-    # Strip unclosed think tag (from <think> to end of string)
-    if "<think>" in text:
-        parts = text.split("<think>")
-        prefix = parts[0].strip()
-        if prefix:
-            text = prefix
-        else:
-            body = parts[1].strip()
-            body = re.sub(r"^(?:think\s+|thought\s+)?thinking\s+process\s*:\s*", "", body, flags=re.IGNORECASE).strip()
-            valid_lines = [l.strip() for l in body.splitlines() if l.strip() and not l.strip().startswith(("*", "-", "#", "1.", "2.", "3.", "4.", "5."))]
-            text = valid_lines[-1] if valid_lines else body[-200:]
-    # Strip any orphaned closing tag
+    # Strip any thought blocks: text inside <think>...</think> is internal reasoning
     if "</think>" in text:
         text = text.split("</think>")[-1].strip()
-    # Strip leaked thinking process headers
-    text = re.sub(r"^(?:think\s+|thought\s+)?thinking\s+process\s*:\s*[\s\S]*?(?:\n\n|$)", "", text, flags=re.IGNORECASE).strip()
+    elif "<think>" in text:
+        # If <think> was never closed (token limit hit during thinking),
+        # keep only what came before <think>, never leak internal thoughts
+        text = text.split("<think>")[0].strip()
     text = text.replace("₹", " rupees ").replace("$", " dollars ").replace("€", " euros ").replace("£", " pounds ")
     text = _RE_CODE_BLOCK.sub(r"\1", text)
     text = _RE_MD_MARKS.sub("", text)
@@ -864,6 +852,7 @@ def _build_tier2_system_prompt() -> str:
         "You are Amigo's intent router. Select the best tool for the user's request.\n"
         "Return ONLY a JSON array containing the action object:\n"
         '[{"tool": "tool_name", "params": {"param": "value"}, "speak": ""}]\n\n'
+        "Do not output <think> tags, internal reasoning, or conversational commentary. Immediately return the JSON array.\n\n"
         f"Current Time: {date_ctx}\n"
         f"Internet Status: {net_status}\n"
         f"{net_directive}\n\n"

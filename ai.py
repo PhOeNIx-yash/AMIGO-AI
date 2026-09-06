@@ -181,9 +181,9 @@ def _build_voice_prompt(query: str = "", is_voice: bool = True, has_web_context:
         "- Do not recite your capabilities or list features unless explicitly asked.\n"
     )
     if is_thinking_enabled():
-        prompt += "- Deep reasoning mode: Think step-by-step before providing your final answer.\n"
+        prompt += "- Reasoning mode: Think step-by-step inside <think> tags before providing your final answer outside of <think>.\n"
     else:
-        prompt += "- Direct answer mode: Respond immediately and concisely. Never think. No chain of thought.\n"
+        prompt += "- Direct answer mode: Respond directly with your answer. Do NOT output <think> tags or internal deliberation.\n"
 
     if active_ctx := get_active_context_prompt():
         prompt += f"\n{active_ctx}"
@@ -268,8 +268,8 @@ def get_ai_response(
 
     messages = _build_ai_messages(query, use_memory=use_memory, web_context=web_context, doc_context=doc_context)
     prompt = _build_voice_prompt(query=query, is_voice=is_voice, has_web_context=bool(web_context))
-    max_tokens = 1024 if is_thinking_enabled() else (512 if (doc_context or web_context or not is_voice) else 300)
-    temp = 0.1 if (web_context or doc_context) else 0.4
+    max_tokens = 1024
+    temp = 0.1 if (web_context or doc_context) else 0.5
     response = query_local_llm(messages, system_prompt=prompt, max_tokens=max_tokens, temperature=temp)
     response = _RE_SPEAKER_PREFIX.sub("", response).strip()
 
@@ -280,7 +280,17 @@ def get_ai_response(
         if m:
             _last_thought = m.group(1).strip()
 
-    return sanitize_for_tts(response) or "I am here and ready to help."
+    cleaned = sanitize_for_tts(response)
+    if not cleaned and query:
+        # If output was truncated inside unclosed thinking tags, query model directly for a plain answer
+        retry_res = query_local_llm(
+            f"Respond directly and concisely to: {query}",
+            system_prompt="You are Amigo, a helpful voice assistant. Speak in clear, plain sentences. Do not use <think> tags.",
+            max_tokens=256,
+        )
+        cleaned = sanitize_for_tts(retry_res)
+
+    return cleaned or "I am here and ready to help."
 
 
 def get_ai_response_stream(
