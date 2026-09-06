@@ -8,14 +8,15 @@ openai-whisper>=20231117       # Official OpenAI Whisper offline STT engine
 tiktoken>=0.7.0                # Fast BPE tokenizer for Whisper
 SpeechRecognition>=3.10.0      # Voice command microphone transcription
 pyaudio>=0.2.14                # Microphone audio capture backend
+av>=11.0.0                     # PyAV offline audio container decoding (WebM, Opus, MP3, WAV)
+soundfile>=0.12.1              # Audio file buffer reading
 num2words>=0.5.13              # Phonetic text expansion for neural TTS
 
 # ── Neural Text-to-Speech (TTS) ───────────────────────────────
 kokoro-onnx>=0.3.1             # Primary neural TTS engine — fast, local, offline
 sounddevice>=0.4.6             # Real-time audio playback backend
 numpy>=1.24.0                  # Audio array processing for Kokoro ONNX
-pyttsx3>=2.90                  # SAPI / Native Windows speech fallback
-pywin32>=306                   # win32com SAPI and Windows shell integrations
+pywin32>=306                   # Windows shell integrations
 
 # ── Local LLM Engine (Qwen 3.5 2B Instruct) ───────────────────
 llama-cpp-python>=0.2.80       # Local GGUF quantized model inference (CPU/CUDA)

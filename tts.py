@@ -386,12 +386,6 @@ def _process_audio_clarity(samples, sr=24000) -> tuple[np.ndarray, int]:
     return samples, sr
 
 
-def _trim_audio_silence(samples, threshold=0.00015, pad_ms=120, sr=24000):
-    """Backwards-compatible alias for audio clarity processor."""
-    processed, _ = _process_audio_clarity(samples, sr=sr)
-    return processed
-
-
 def _synthesize_and_play_kokoro(kokoro, text, generation):
     """Natural, high-prosody neural speech synthesis without artificial pauses or clipped endings."""
     global _active_stream

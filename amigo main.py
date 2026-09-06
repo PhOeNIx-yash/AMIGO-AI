@@ -1,6 +1,6 @@
 """
 Main Entrypoint for Amigo Voice Assistant.
-Coordinates voice/type input, LLM agent action dispatching, and Kokoro/SAPI TTS playback.
+Coordinates voice/type input, LLM agent action dispatching, and Kokoro Neural TTS / Whisper STT.
 """
 
 import os

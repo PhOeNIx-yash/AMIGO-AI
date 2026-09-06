@@ -276,7 +276,7 @@ def _handle_wake_action():
         })
         _broadcast("state_change", {"state": "speaking"})
 
-        # Step 6: Speak output via Kokoro Neural TTS / SAPI
+        # Step 6: Speak output via Kokoro Neural TTS
         speak(clean_reply, block=True)
 
     except Exception as e:

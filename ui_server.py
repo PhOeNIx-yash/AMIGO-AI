@@ -37,7 +37,6 @@ import uuid
 
 import psutil
 from flask import Flask, Response, jsonify, request, send_from_directory
-import speech_recognition as sr
 
 from ai import (
     add_to_memory,
@@ -82,7 +81,6 @@ from tts import (
     set_tts_callbacks,
     get_tts_engine_name,
     transcribe_b64,
-    transcribe_audio_data,
 )
 from weather import get_weather_data
 import rag_engine
@@ -174,51 +172,6 @@ def _on_media_update(media_data: dict):
 
 
 set_media_update_callback(_on_media_update)
-
-
-# ---------------------------------------------------------------------------
-# Microphone & Voice Recognition Helpers
-# ---------------------------------------------------------------------------
-_recognizer = sr.Recognizer()
-_recognizer.energy_threshold = 400
-_recognizer.dynamic_energy_threshold = True
-_recognizer.pause_threshold = 0.65
-_recognizer.phrase_threshold = 0.2
-_mic_calibrated = False
-
-
-def _calibrate_mic_once():
-    """Calibrate ambient noise once at first use."""
-    global _mic_calibrated
-    if _mic_calibrated:
-        return
-    try:
-        with sr.Microphone() as source:
-            logger.info("Calibrating microphone (one-time)...")
-            _recognizer.adjust_for_ambient_noise(source, duration=0.3)
-            _mic_calibrated = True
-            logger.info("Microphone calibrated.")
-    except Exception as e:
-        logger.debug(f"Mic calibration note: {e}")
-
-
-def take_command_ui(max_retries: int = 3) -> str:
-    """Listen to mic and return recognized speech lower-cased offline with Whisper."""
-    _calibrate_mic_once()
-    for attempt in range(max_retries):
-        try:
-            with sr.Microphone() as source:
-                audio = _recognizer.listen(source, timeout=8, phrase_time_limit=15)
-                query = transcribe_audio_data(audio)
-                if query and query.strip():
-                    logger.info("[Voice Recognized Offline]: " + query)
-                    return query.lower()
-        except Exception:
-            if attempt < max_retries - 1:
-                time.sleep(0.5)
-                continue
-            return "None"
-    return "None"
 
 
 # ---------------------------------------------------------------------------
@@ -396,41 +349,7 @@ def process_query(query: str, is_voice: bool = True, display_prompt: str | None 
         set_assistant_state("idle")
 
 
-# ---------------------------------------------------------------------------
-# Background Voice Loop
-# ---------------------------------------------------------------------------
 _running = True
-
-
-def background_voice_loop():
-    """Background daemon: wake-word detection + voice command processing."""
-    global _running
-    logger.info("[Voice Loop] Background listening engine started.")
-    wake_phrases = ["hey amigo", "hi amigo", "hello amigo", "amigo"]
-    while _running:
-        try:
-            set_assistant_state("idle")
-            query = take_command_ui()
-            if not _running:
-                break
-            if not query or query.lower() == "none":
-                continue
-            cleaned = query
-            for phrase in wake_phrases:
-                cleaned = cleaned.replace(phrase, "").strip()
-            if cleaned:
-                process_query(cleaned, is_voice=True)
-            else:
-                speak("Yes, how can I assist you?")
-                cmd = take_command_ui()
-                if cmd and cmd.lower() != "none" and _running:
-                    process_query(cmd, is_voice=True)
-        except Exception as e:
-            if not _running:
-                break
-            logger.error(f"[Voice Loop Exception]: {e}")
-            time.sleep(1)
-    logger.info("[Voice Loop] Background listening engine stopped.")
 
 
 # ---------------------------------------------------------------------------
