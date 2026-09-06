@@ -822,8 +822,7 @@ _PRECOMPUTED_RULES_DOC = (
     "- For real-time online lookups and specific search topics (e.g. stock prices, latest news, live scores, 'search for Python tutorials'), use 'web_search'. Never use 'web_search' without an actual subject to search.\n"
     "- For 'play_youtube', extract the target song, video, or artist in 'query'.\n"
     "- When the user asks to OPEN or VIEW a specific file, document, PDF, or report, use 'open_file' with the target name.\n"
-    "- When the user asks to FIND or SEARCH documents by concept/topic (e.g. 'find documents related to accounting and GST'), use 'find_document'.\n"
-    "- For extracting specific numbers, PAN, PIN, dates, amounts, or details inside user documents, invoices, or files, ALWAYS use 'ask_document'. NEVER use 'read_emails' or 'search_emails' unless the user explicitly mentions 'email', 'inbox', or 'Outlook'.\n"
+    "- For extracting specific numbers, PAN, PIN, dates, amounts, or details inside user documents, invoices, or files (even if the user says 'find' or 'search' for a detail in a document), ALWAYS use 'ask_document', NEVER use 'find_document'. Use 'find_document' ONLY when the user asks to locate or browse files themselves on disk.\n"
     "- Output strictly valid JSON."
 )
 
@@ -893,34 +892,65 @@ def resolve_intent_via_llm(user_query: str, conversation_history: list | None = 
 
         raw = res["choices"][0]["message"]["content"].strip()
         if raw:
-            # 1. Parse JSON array
-            if arr_match := _RE_JSON_ARRAY.search(raw):
-                parsed = json.loads(arr_match.group())
-                if isinstance(parsed, list) and parsed:
-                    results = []
-                    for a in parsed:
-                        if isinstance(a, dict):
-                            t = str(a.get("tool", "chat")).strip()
-                            spk = "" if t == "chat" else sanitize_for_tts(str(a.get("speak") or (a.get("params", {}).get("speak") if isinstance(a.get("params"), dict) else "") or ""))
-                            results.append({
-                                "tool": t,
-                                "params": a.get("params", {}) if isinstance(a.get("params"), dict) else {},
-                                "speak": spk,
-                            })
-                    if results:
-                        return results
+            # Strip markdown fences if wrapped in ```json ... ```
+            clean_raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            clean_raw = re.sub(r"\s*```$", "", clean_raw).strip()
 
-            # 2. Parse single JSON object
-            if obj_match := _RE_JSON_OBJECT.search(raw):
-                parsed = json.loads(obj_match.group())
-                if isinstance(parsed, dict) and "tool" in parsed:
-                    t = str(parsed.get("tool", "chat")).strip()
-                    spk = "" if t == "chat" else sanitize_for_tts(str(parsed.get("speak") or (parsed.get("params", {}).get("speak") if isinstance(parsed.get("params"), dict) else "") or ""))
-                    return [{
-                        "tool": t,
-                        "params": parsed.get("params", {}) if isinstance(parsed.get("params"), dict) else {},
-                        "speak": spk,
-                    }]
+            parsed = None
+            # Direct parse
+            try:
+                parsed = json.loads(clean_raw)
+            except Exception:
+                pass
+
+            # Try finding [ ... ] with balanced/greedy brackets
+            if parsed is None:
+                start_bracket = clean_raw.find("[")
+                end_bracket = clean_raw.rfind("]")
+                if start_bracket != -1 and end_bracket > start_bracket:
+                    try:
+                        parsed = json.loads(clean_raw[start_bracket:end_bracket + 1])
+                    except Exception:
+                        pass
+
+            # Try finding { ... }
+            if parsed is None:
+                start_brace = clean_raw.find("{")
+                end_brace = clean_raw.rfind("}")
+                if start_brace != -1 and end_brace > start_brace:
+                    try:
+                        parsed = json.loads(clean_raw[start_brace:end_brace + 1])
+                    except Exception:
+                        pass
+
+            # Regex extraction fallback: extract "tool" and optional "question"/"query"/"filepath"/"name"
+            if parsed is None:
+                tool_match = re.search(r'"tool"\s*:\s*"([a-zA-Z0-9_]+)"', clean_raw)
+                if tool_match:
+                    tool_name = tool_match.group(1)
+                    fallback_params = {}
+                    for key in ("question", "query", "filepath", "name", "action"):
+                        m_val = re.search(rf'"{key}"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', clean_raw)
+                        if m_val:
+                            fallback_params[key] = m_val.group(1)
+                    parsed = [{"tool": tool_name, "params": fallback_params}]
+
+            if isinstance(parsed, dict):
+                parsed = [parsed]
+
+            if isinstance(parsed, list) and parsed:
+                results = []
+                for a in parsed:
+                    if isinstance(a, dict):
+                        t = str(a.get("tool", "chat")).strip()
+                        spk = "" if t == "chat" else sanitize_for_tts(str(a.get("speak") or (a.get("params", {}).get("speak") if isinstance(a.get("params"), dict) else "") or ""))
+                        results.append({
+                            "tool": t,
+                            "params": a.get("params", {}) if isinstance(a.get("params"), dict) else {},
+                            "speak": spk,
+                        })
+                if results:
+                    return results
 
     except Exception as e:
         logger.debug("[Tier 2 LLM Routing Fallback Note]: %s", e)

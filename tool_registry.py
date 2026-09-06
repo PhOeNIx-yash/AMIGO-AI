@@ -32,7 +32,7 @@ _RE_URLS = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]*[^\s<>"{}|\\^`\[\].,;:!?]')
 _RE_APP_STRIP = re.compile(r"^(?:please\s+)?(?:open|launch|start|run|show)\s+(?:the\s+|my\s+|an?\s+)?", re.IGNORECASE)
 _RE_APP_ARTICLE = re.compile(r"^(?:the|that|my|an?)\s+", re.IGNORECASE)
 _RE_MEDIA_CLEAN_TITLE = re.compile(r"^(?:play|playing)\s*:\s*", re.IGNORECASE)
-_RE_DOC_STRIP_ACTION = re.compile(r"^(?:open|show|read|summarize|tell me about|what is in|what does|find|locate|can you open)\s+", re.IGNORECASE)
+_RE_DOC_STRIP_ACTION = re.compile(r"^(?:please\s+)?(?:can you\s+|could you\s+|will you\s+|would you\s+)?(?:open|show|read|summarize|tell me about|what is in|what does|find|locate|check|view|inspect)\s+", re.IGNORECASE)
 _RE_DOC_STOPWORDS = re.compile(r"\b(?:the|that|those|these|my|a|an|file|files|document|documents|doc|pdf)\b", re.IGNORECASE)
 _RE_DOC_ORDINAL = re.compile(r"\b(?:number\s+(\d+)|(\d+)(?:st|nd|rd|th)?|first|second|third|fourth|fifth)\b", re.IGNORECASE)
 _RE_TIMER_PROMPT = re.compile(r"\b(timer|countdown|stopwatch)\b", re.IGNORECASE)
@@ -503,15 +503,23 @@ def resolve_document_path(query_or_target: str) -> str | None:
     if not clean or clean.lower() in ("that", "it", "this", "those", "them", "these", "first", "one", "the first one", "selected", "file", "files", "document", "documents"):
         if active_path and os.path.exists(active_path):
             return active_path
+        return None
 
 
     search_terms = [clean, raw] if clean and clean != raw else [raw]
+    m_doc = re.search(r"\b(?:from|in|of|about)\s+([a-zA-Z0-9_\-\.\s]{2,40})", raw, re.I)
+    if m_doc:
+        candidate = m_doc.group(1).strip()
+        candidate = _RE_DOC_STOPWORDS.sub("", candidate).strip()
+        if candidate and candidate not in search_terms:
+            search_terms.insert(0, candidate)
 
     # 1. Filename lookup
     for term in search_terms:
         if len(term) >= 2:
             matches, _ = find_files(term)
             if matches:
+                update_active_state("active_file", {"path": matches[0], "name": os.path.basename(matches[0])})
                 return matches[0]
 
     # 2. Semantic vector lookup in ChromaDB (only for real meaningful terms, never stopwords/pronouns!)
@@ -519,7 +527,10 @@ def resolve_document_path(query_or_target: str) -> str | None:
         if len(term) >= 3 and term.lower() not in ("that", "this", "those", "them", "file", "files", "document", "documents", "open", "show"):
             results = rag_engine.search_files_by_context(term, top_k=1)
             if results and results[0].get("score", 0) > 0.30:
-                return results[0].get("filepath")
+                fpath = results[0].get("filepath")
+                if fpath:
+                    update_active_state("active_file", {"path": fpath, "name": os.path.basename(fpath)})
+                    return fpath
 
     # 3. Contextual fallback: most recently referenced active file
     if active_path and os.path.exists(active_path):
@@ -653,7 +664,7 @@ def _tool_ask_document(params, query, spoken):
     filepath = params.get("filepath", "") if isinstance(params, dict) else ""
     question = (params.get("question", query) if isinstance(params, dict) else query).strip() or query
 
-    target_path = resolve_document_path(filepath) or resolve_document_path(question)
+    target_path = resolve_document_path(filepath) or resolve_document_path(question) or resolve_document_path(query)
     if target_path:
         try:
             update_active_state("active_file", {"path": target_path, "name": os.path.basename(target_path)})

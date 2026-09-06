@@ -91,14 +91,17 @@ def main():
     else:
         print(" -> Kokoro Neural TTS models already present.")
 
-    # OpenAI Whisper STT Model Check
+    # Sherpa-ONNX Streaming STT Model Check
     try:
-        import whisper
-        print(" -> Checking OpenAI Whisper base.en STT model...")
-        whisper.load_model("base.en", device="cpu")
-        print("    OpenAI Whisper base.en model is ready.")
+        from tts import get_stt_recognizer, is_stt_available
+        print(" -> Checking Sherpa-ONNX Neural STT engine...")
+        rec = get_stt_recognizer()
+        if is_stt_available():
+            print("    Sherpa-ONNX Streaming STT engine is ready.")
+        else:
+            print("    Sherpa-ONNX model will be automatically fetched on first voice input.")
     except Exception as e:
-        print(f"    Whisper model check note: {e}")
+        print(f"    Sherpa-ONNX model check note: {e}")
 
     # Local LLM GGUF Model Check
     try:

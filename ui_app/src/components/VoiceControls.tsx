@@ -313,7 +313,7 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
       recognition.onerror = (e: any) => {
         console.warn("Web Speech error:", e);
         webSpeechActiveRef.current = false;
-        // If offline network error or speech recognition fails, fall back to offline Whisper STT
+        // If offline network error or speech recognition fails, fall back to offline Sherpa-ONNX STT
         if (e.error === "network" || e.error === "not-allowed" || e.error === "service-not-allowed") {
           try {
             recognition.stop();
@@ -416,7 +416,7 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
         startWebSpeechRecognition();
       }
 
-      // 2. Capture audio chunks for Whisper offline STT
+      // 2. Capture audio chunks for Sherpa-ONNX offline neural STT
       audioChunksRef.current = [];
       const options = { mimeType: "audio/webm" };
       let recorder: MediaRecorder;
@@ -433,7 +433,7 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
       };
 
       // 3. Periodic real-time background transcription ticker:
-      // If Web Speech is inactive or offline, periodically slice current audio and transcribe with Whisper
+      // If Web Speech is inactive or offline, periodically slice current audio and transcribe with Sherpa-ONNX
       if (interimTimerRef.current) {
         clearInterval(interimTimerRef.current);
       }

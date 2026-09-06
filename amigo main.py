@@ -1,6 +1,6 @@
 """
 Main Entrypoint for Amigo Voice Assistant.
-Coordinates voice/type input, LLM agent action dispatching, and Kokoro Neural TTS / Whisper STT.
+Coordinates voice/type input, LLM agent action dispatching, and Kokoro Neural TTS / Sherpa-ONNX STT.
 """
 
 import os
@@ -214,7 +214,7 @@ if __name__ == "__main__":
     print(f"   AMIGO VOICE ASSISTANT - {_model_info['name'].upper()}")
     print("   [ AGENTIC AI MODE ENABLED ]")
     print("==========================================\n")
-    stt_info = "works 100% offline via OpenAI Whisper" if is_stt_available() else "cloud fallback"
+    stt_info = "works 100% offline via Sherpa-ONNX Neural STT" if is_stt_available() else "cloud fallback"
     print(f"  [1] Voice (microphone) - {stt_info}")
     print("  [2] Type  (keyboard)   - works offline")
     print("  [3] Both  (voice + type fallback)\n")

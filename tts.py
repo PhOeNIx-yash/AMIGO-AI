@@ -1,7 +1,7 @@
 """
 Unified Speech Engine Module for Amigo Voice Assistant.
 Handles both Offline Neural Text-to-Speech (TTS via Kokoro ONNX)
-and Offline Neural Speech-to-Text (STT via OpenAI Whisper).
+and Offline Neural Speech-to-Text (STT via Sherpa-ONNX Zipformer).
 """
 
 import io
@@ -568,46 +568,101 @@ def stop_speaking() -> None:
 
 
 # ────────────────────────────────────────────────────────────────
-# ── OPENAI WHISPER OFFLINE SPEECH-TO-TEXT (STT) ENGINE ─────────
+# ── SHERPA-ONNX ULTRA-FAST SPEECH-TO-TEXT (STT) ENGINE ──────────
 # ────────────────────────────────────────────────────────────────
 
-_whisper_model = None
-_whisper_model_lock = threading.Lock()
-_WHISPER_INIT_ATTEMPTED = False
-_WHISPER_IS_AVAILABLE = False
-_WHISPER_MODEL_NAME = "base.en"
+_sherpa_model = None
+_sherpa_model_lock = threading.Lock()
+_SHERPA_INIT_ATTEMPTED = False
+_SHERPA_IS_AVAILABLE = False
+_SHERPA_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "models", "sherpa-onnx", "sherpa-onnx-streaming-zipformer-en-2023-06-26"
+)
+
+
+def _ensure_sherpa_model_downloaded() -> bool:
+    """Ensures Sherpa-ONNX streaming zipformer model is present on disk."""
+    if os.path.isdir(_SHERPA_DIR):
+        tokens = os.path.join(_SHERPA_DIR, "tokens.txt")
+        if os.path.exists(tokens):
+            return True
+
+    parent_dir = os.path.dirname(_SHERPA_DIR)
+    os.makedirs(parent_dir, exist_ok=True)
+    archive_path = os.path.join(parent_dir, "model.tar.bz2")
+    url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-2023-06-26.tar.bz2"
+    try:
+        logger.info("[STT] Downloading Sherpa-ONNX streaming Zipformer model...")
+        urllib.request.urlretrieve(url, archive_path)
+        with tarfile.open(archive_path, "r:bz2") as tar:
+            tar.extractall(path=parent_dir)
+        if os.path.exists(archive_path):
+            os.remove(archive_path)
+        logger.info("[STT] Sherpa-ONNX model downloaded and extracted successfully.")
+        return True
+    except Exception as e:
+        logger.error("[STT] Failed to download Sherpa-ONNX model: %s", e)
+        if os.path.exists(archive_path):
+            try:
+                os.remove(archive_path)
+            except Exception:
+                pass
+        return False
 
 
 def get_stt_recognizer():
-    """Lazy-loads the OpenAI Whisper offline speech recognizer."""
-    global _whisper_model, _WHISPER_INIT_ATTEMPTED, _WHISPER_IS_AVAILABLE
-    if _whisper_model is not None:
-        return _whisper_model
+    """Lazy-loads the Sherpa-ONNX streaming speech recognizer."""
+    global _sherpa_model, _SHERPA_INIT_ATTEMPTED, _SHERPA_IS_AVAILABLE
+    if _sherpa_model is not None:
+        return _sherpa_model
 
-    with _whisper_model_lock:
-        if _whisper_model is not None:
-            return _whisper_model
-        if _WHISPER_INIT_ATTEMPTED and not _WHISPER_IS_AVAILABLE:
+    with _sherpa_model_lock:
+        if _sherpa_model is not None:
+            return _sherpa_model
+        if _SHERPA_INIT_ATTEMPTED and not _SHERPA_IS_AVAILABLE:
             return None
 
-        _WHISPER_INIT_ATTEMPTED = True
+        _SHERPA_INIT_ATTEMPTED = True
         try:
-            import whisper
+            import sherpa_onnx
         except ImportError:
-            logger.warning("[STT] openai-whisper not installed.")
-            _WHISPER_IS_AVAILABLE = False
+            logger.warning("[STT] sherpa-onnx not installed.")
+            _SHERPA_IS_AVAILABLE = False
+            return None
+
+        if not _ensure_sherpa_model_downloaded():
+            _SHERPA_IS_AVAILABLE = False
             return None
 
         try:
             t0 = time.time()
-            logger.info(f"[STT] Loading OpenAI Whisper ({_WHISPER_MODEL_NAME})...")
-            _whisper_model = whisper.load_model(_WHISPER_MODEL_NAME, device="cpu")
-            _WHISPER_IS_AVAILABLE = True
-            logger.info(f"[STT] OpenAI Whisper ({_WHISPER_MODEL_NAME}) ready in {(time.time() - t0)*1000:.1f}ms.")
-            return _whisper_model
+            logger.info("[STT] Loading Sherpa-ONNX Zipformer engine...")
+            tokens = os.path.join(_SHERPA_DIR, "tokens.txt")
+            encoder = os.path.join(_SHERPA_DIR, "encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx")
+            if not os.path.exists(encoder):
+                encoder = os.path.join(_SHERPA_DIR, "encoder-epoch-99-avg-1-chunk-16-left-128.onnx")
+            decoder = os.path.join(_SHERPA_DIR, "decoder-epoch-99-avg-1-chunk-16-left-128.onnx")
+            joiner = os.path.join(_SHERPA_DIR, "joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx")
+            if not os.path.exists(joiner):
+                joiner = os.path.join(_SHERPA_DIR, "joiner-epoch-99-avg-1-chunk-16-left-128.onnx")
+
+            _sherpa_model = sherpa_onnx.OnlineRecognizer.from_transducer(
+                tokens=tokens,
+                encoder=encoder,
+                decoder=decoder,
+                joiner=joiner,
+                num_threads=2,
+                sample_rate=16000,
+                feature_dim=80,
+                decoding_method="greedy_search",
+                provider="cpu",
+            )
+            _SHERPA_IS_AVAILABLE = True
+            logger.info("[STT] Sherpa-ONNX Zipformer ready in %.1fms.", (time.time() - t0) * 1000)
+            return _sherpa_model
         except Exception as e:
-            logger.error(f"[STT] Failed to load OpenAI Whisper model: {e}")
-            _WHISPER_IS_AVAILABLE = False
+            logger.error("[STT] Failed to initialize Sherpa-ONNX model: %s", e)
+            _SHERPA_IS_AVAILABLE = False
             return None
 
 
@@ -619,12 +674,12 @@ def is_stt_available() -> bool:
 def get_stt_engine_name() -> str:
     """Returns descriptive name of active STT engine."""
     if is_stt_available():
-        return f"OpenAI Whisper ({_WHISPER_MODEL_NAME})"
+        return "Sherpa-ONNX (Zipformer Streaming)"
     return "Unavailable"
 
 
 def transcribe_samples(samples: np.ndarray, sample_rate: int = 16000) -> str:
-    """Transcribes raw float32 audio samples [-1.0, 1.0] completely offline with Whisper."""
+    """Transcribes raw float32 audio samples [-1.0, 1.0] completely offline with Sherpa-ONNX."""
     model = get_stt_recognizer()
     if model is None or samples is None or len(samples) == 0:
         return ""
@@ -646,17 +701,19 @@ def transcribe_samples(samples: np.ndarray, sample_rate: int = 16000) -> str:
         if peak > 1.0:
             samples = samples / peak
 
-        with _whisper_model_lock:
-            result = model.transcribe(
-                samples,
-                language="en",
-                fp16=False,
-                temperature=0.0,
-                condition_on_previous_text=False,
-            )
-            return (result.get("text") or "").strip()
+        with _sherpa_model_lock:
+            stream = model.create_stream()
+            stream.accept_waveform(16000, samples)
+            while model.is_ready(stream):
+                model.decode_stream(stream)
+            res = model.get_result(stream)
+            if hasattr(res, "text"):
+                raw_text = str(res.text or "")
+            else:
+                raw_text = str(res or "")
+            return raw_text.strip()
     except Exception as e:
-        logger.error(f"[STT] Whisper transcription error: {e}")
+        logger.error("[STT] Sherpa-ONNX transcription error: %s", e)
         return ""
 
 
@@ -716,7 +773,7 @@ def transcribe_audio_bytes(audio_bytes: bytes) -> str:
 
 
 def transcribe_b64(audio_b64: str) -> str:
-    """Decodes base64-encoded audio data and transcribes it offline with Whisper."""
+    """Decodes base64-encoded audio data and transcribes it offline with Sherpa-ONNX."""
     if not audio_b64:
         return ""
     try:
@@ -738,11 +795,11 @@ def _warmup_stt():
             if model:
                 dummy = np.zeros(16000, dtype=np.float32)
                 transcribe_samples(dummy, 16000)
-                logger.debug("[STT] OpenAI Whisper STT primed.")
+                logger.debug("[STT] Sherpa-ONNX STT primed.")
         except Exception:
             pass
 
-    threading.Thread(target=_run, daemon=True, name="WhisperSTT-Warmup").start()
+    threading.Thread(target=_run, daemon=True, name="SherpaSTT-Warmup").start()
 
 
 _warmup_stt()

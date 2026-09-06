@@ -810,14 +810,25 @@ def build_rag_context(query: str, top_k: int = 5) -> str:
         return ""
 
     parts: list[str] = []
+    top_doc = None
     for r in relevant:
         src = r.get("source", "")
         text = r.get("text", "")[:1000]
         if src == DOCUMENTS:
-            fname = r.get("metadata", {}).get("filename", "document")
+            meta = r.get("metadata", {})
+            fname = meta.get("filename", "document")
+            fpath = meta.get("filepath", "")
+            if not top_doc and fpath and os.path.exists(fpath):
+                top_doc = {"path": fpath, "name": fname}
             parts.append(f"[From document '{fname}']:\n{text}")
         elif src == USER_FACTS:
             parts.append(f"[Known fact]: {text}")
+
+    if top_doc:
+        try:
+            update_active_state("active_file", top_doc)
+        except Exception:
+            pass
 
     return "\n\n".join(parts)
 
