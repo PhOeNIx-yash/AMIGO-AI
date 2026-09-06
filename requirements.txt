@@ -4,6 +4,7 @@
 # ──────────────────────────────────────────────────────────────
 
 # ── Speech Recognition (STT) ──────────────────────────────────
+sherpa-onnx>=1.13.0            # Offline neural STT & TTS engine (Moonshine/VITS)
 SpeechRecognition>=3.10.0      # Voice command microphone transcription
 pyaudio>=0.2.14                # Microphone audio capture backend
 

@@ -22,7 +22,15 @@ from local_llm import get_active_model_info, get_agent_action, get_clipboard_tex
 from reminder_timer import init_reminders
 from Searchnow import scrape_web_info
 from tool_registry import execute_tool
-from tts import speak as tts_speak, stop_speaking
+from tts import (
+    speak as tts_speak,
+    stop_speaking,
+    set_voice,
+    get_voice_catalog,
+    get_active_voice,
+    transcribe_audio_data,
+    is_stt_available,
+)
 import rag_engine
 from rag_indexer import start_background_indexer
 
@@ -136,14 +144,18 @@ def take_command(timeout=8, phrase_time_limit=15) -> str:
             audio = _recognizer.listen(source, timeout=timeout, phrase_time_limit=phrase_time_limit)
 
         print("Recognizing...", flush=True)
-        query = _recognizer.recognize_google(audio, language="en-US")
-        print(f"User said: {query}", flush=True)
-        return query.lower()
+        if is_stt_available():
+            try:
+                query = transcribe_audio_data(audio)
+                if query and query.strip():
+                    print(f"[STT Offline] User said: {query}", flush=True)
+                    return query.lower()
+            except Exception as e:
+                print(f"[STT Offline Error]: {e}", flush=True)
+
+        return "None"
     except (sr.WaitTimeoutError, sr.UnknownValueError):
         return "None"
-    except sr.RequestError:
-        print("[Offline Mode] Voice recognition offline.", flush=True)
-        return "OFFLINE_ERROR"
     except Exception as e:
         print(f"[Speech Note]: {e}", flush=True)
         return "None"
@@ -202,8 +214,8 @@ if __name__ == "__main__":
     print(f"   AMIGO VOICE ASSISTANT - {_model_info['name'].upper()}")
     print("   [ AGENTIC AI MODE ENABLED ]")
     print("==========================================\n")
-    print("  Choose input mode:")
-    print("  [1] Voice (microphone) - needs internet")
+    stt_info = "works 100% offline via Sherpa-ONNX" if is_stt_available() else "cloud fallback"
+    print(f"  [1] Voice (microphone) - {stt_info}")
     print("  [2] Type  (keyboard)   - works offline")
     print("  [3] Both  (voice + type fallback)\n")
 
@@ -234,18 +246,31 @@ if __name__ == "__main__":
             query = None
             if mode == "1":
                 query = take_command()
-                if query == "OFFLINE_ERROR":
-                    query = input("\n[ OFFLINE MODE ] Type your command: ").strip()
             elif mode == "2":
                 query = input("You: ").strip()
             else:
                 query = take_command()
-                if query == "OFFLINE_ERROR":
-                    query = input("\n[ OFFLINE MODE ] Type your command: ").strip()
-                elif not query or query.lower() == "none":
+                if not query or query.lower() == "none":
                     query = input("Voice didn't catch that. Type here: ").strip()
 
-            if query and query.lower() not in ("none", "offline_error"):
+            if query and query.lower() != "none":
+                q_clean = query.lower().strip().rstrip(".?!")
+                if q_clean in ("voices", "list voices", "voice list"):
+                    catalog = get_voice_catalog()
+                    print("\n--- AVAILABLE 10 OFFLINE VOICES ---")
+                    for k, v in catalog.items():
+                        current = " [ACTIVE]" if k == get_active_voice() else ""
+                        print(f"  • {k:<8} [{v['engine'].title()} - {v['gender']}, {v['accent']}]: {v['desc']}{current}")
+                    print("\nSay or type 'voice <name>' (e.g. 'voice ryan' or 'voice bella') to switch.\n")
+                    speak(f"You have 10 voices available. Current voice is {get_active_voice()}.")
+                    continue
+                elif q_clean.startswith("voice ") or q_clean.startswith("switch voice to ") or q_clean.startswith("change voice to "):
+                    target = q_clean.replace("switch voice to ", "").replace("change voice to ", "").replace("voice ", "").strip()
+                    if target in get_voice_catalog():
+                        vname = set_voice(target)
+                        speak(f"Voice switched to {vname}.")
+                        continue
+
                 process_agent_query(query)
 
         except KeyboardInterrupt:
