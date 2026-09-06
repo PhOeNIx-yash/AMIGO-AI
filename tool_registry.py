@@ -419,9 +419,6 @@ def _tool_calculate(params, query, spoken):
 
 
 def _tool_chat(params, query, spoken):
-    if spoken and spoken.strip():
-        extract_and_open_urls(spoken)
-        return spoken, None
     response = get_ai_response(query)
     extract_and_open_urls(response)
     return response, None

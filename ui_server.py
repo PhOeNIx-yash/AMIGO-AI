@@ -53,6 +53,7 @@ from local_llm import (
     get_active_model_info as get_llm_model_info,
     get_agent_action,
     get_clipboard_text,
+    init_local_llm,
     is_vision_ready,
     set_active_model,
 )
@@ -1238,5 +1239,10 @@ if __name__ == "__main__":
     rag_engine.init_rag()
     start_background_indexer(rag_engine, interval_minutes=30)
     print("[ AMIGO ] RAG engine ready. Background indexer started.", flush=True)
+
+    # Pre-load local AI model so the very first command has zero cold-start delay
+    print("[ AMIGO ] Loading local AI model into memory...", flush=True)
+    init_local_llm()
+    print("[ AMIGO ] Local AI model ready.", flush=True)
 
     launch_server(port=5000, open_browser=True)

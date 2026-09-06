@@ -913,20 +913,29 @@ def resolve_intent_via_llm(user_query: str, conversation_history: list | None = 
             if arr_match := _RE_JSON_ARRAY.search(raw):
                 parsed = json.loads(arr_match.group())
                 if isinstance(parsed, list) and parsed:
-                    return [{
-                        "tool": str(a.get("tool", "chat")).strip(),
-                        "params": a.get("params", {}) if isinstance(a.get("params"), dict) else {},
-                        "speak": sanitize_for_tts(str(a.get("speak") or (a.get("params", {}).get("speak") if isinstance(a.get("params"), dict) else "") or "")),
-                    } for a in parsed if isinstance(a, dict)]
+                    results = []
+                    for a in parsed:
+                        if isinstance(a, dict):
+                            t = str(a.get("tool", "chat")).strip()
+                            spk = "" if t == "chat" else sanitize_for_tts(str(a.get("speak") or (a.get("params", {}).get("speak") if isinstance(a.get("params"), dict) else "") or ""))
+                            results.append({
+                                "tool": t,
+                                "params": a.get("params", {}) if isinstance(a.get("params"), dict) else {},
+                                "speak": spk,
+                            })
+                    if results:
+                        return results
 
             # 2. Parse single JSON object
             if obj_match := _RE_JSON_OBJECT.search(raw):
                 parsed = json.loads(obj_match.group())
                 if isinstance(parsed, dict) and "tool" in parsed:
+                    t = str(parsed.get("tool", "chat")).strip()
+                    spk = "" if t == "chat" else sanitize_for_tts(str(parsed.get("speak") or (parsed.get("params", {}).get("speak") if isinstance(parsed.get("params"), dict) else "") or ""))
                     return [{
-                        "tool": str(parsed.get("tool", "chat")).strip(),
+                        "tool": t,
                         "params": parsed.get("params", {}) if isinstance(parsed.get("params"), dict) else {},
-                        "speak": sanitize_for_tts(str(parsed.get("speak") or (parsed.get("params", {}).get("speak") if isinstance(parsed.get("params"), dict) else "") or "")),
+                        "speak": spk,
                     }]
 
     except Exception as e:
