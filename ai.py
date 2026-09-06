@@ -160,8 +160,12 @@ def _build_voice_prompt(query: str = "", is_voice: bool = True, has_web_context:
         )
     elif has_web_context:
         prompt += (
-            "Current Network Status: Connected (Online). You are synthesizing online web search results to answer the user's query accurately. "
-            "Rely strictly on the provided web search facts. Answer accurately and directly based only on what the facts state without guessing or extrapolating.\n"
+            "Current Network Status: Connected (Online). You are synthesizing online web search results to answer the user's query accurately.\n"
+            "CRITICAL FACTUAL INTEGRITY RULES:\n"
+            "- Rely strictly and ONLY on the provided [Web Search Facts].\n"
+            "- State ONLY facts that are explicitly mentioned in the provided text.\n"
+            "- NEVER extrapolate, guess, or invent acquisitions, dates, founders, or owners from other companies or external memory.\n"
+            "- If a detail is not in the search results, do not make it up. State only what is verified.\n"
         )
     else:
         prompt += (
@@ -208,6 +212,10 @@ def _build_ai_messages(
     Pulls recent turns from RAG and injects document/web context."""
     messages: list[dict] = []
 
+    # When web_context is provided, disable memory injection so old hallucinations or prior topics don't bleed in
+    if web_context:
+        use_memory = False
+
     if use_memory:
         recent = rag_engine.get_recent_conversations(count=8)
         for c in recent:
@@ -229,10 +237,10 @@ def _build_ai_messages(
     if web_context:
         user_parts.append(
             f"[Web Search Facts]:\n{web_context}\n\n"
-            "Instructions for answering:\n"
-            "- Answer using ONLY the web search facts above.\n"
-            "- Answer directly, concisely, and factually based strictly on what the facts state.\n"
-            "- Do not guess, invent, or assume details not supported by the provided facts."
+            "CRITICAL RULES:\n"
+            "- Answer using ONLY the information stated directly in [Web Search Facts].\n"
+            "- Do NOT borrow, mix, or blend history, owners, or events from other entities or external memory.\n"
+            "- If the facts only state the founders or owners, state only those names and do not invent transactions or years not mentioned."
         )
     elif doc_context:
         user_parts.append(
@@ -270,7 +278,7 @@ def get_ai_response(
     messages = _build_ai_messages(query, use_memory=use_memory, web_context=web_context, doc_context=doc_context)
     prompt = _build_voice_prompt(query=query, is_voice=is_voice, has_web_context=bool(web_context))
     max_tokens = 1024
-    temp = 0.1 if (web_context or doc_context) else 0.5
+    temp = 0.0 if web_context else (0.1 if doc_context else 0.5)
     response = query_local_llm(messages, system_prompt=prompt, max_tokens=max_tokens, temperature=temp)
     response = _RE_SPEAKER_PREFIX.sub("", response).strip()
 
@@ -310,7 +318,7 @@ def get_ai_response_stream(
     messages = _build_ai_messages(query, use_memory=use_memory, web_context=web_context, doc_context=doc_context)
     prompt = _build_voice_prompt(query=query, is_voice=is_voice, has_web_context=bool(web_context))
     max_tokens = 256 if is_voice else 512
-    temp = 0.1 if (web_context or doc_context) else 0.6
+    temp = 0.0 if web_context else (0.1 if doc_context else 0.6)
     token_gen = query_local_llm_stream(
         messages, system_prompt=prompt, max_tokens=max_tokens, interruption_event=interruption_event, temperature=temp,
     )
