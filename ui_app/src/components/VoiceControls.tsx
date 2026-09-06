@@ -252,6 +252,7 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
   const speechRecognitionRef = useRef<any>(null);
   const miniCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const interimTimerRef = useRef<any>(null);
+  const webSpeechActiveRef = useRef<boolean>(false);
 
   // Clean up on unmount
   useEffect(() => {
@@ -263,6 +264,19 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
       stopRecordingAndAnalysis();
     };
   }, []);
+
+  // Synchronize recording state whenever isListening prop changes (from Click, Orb, Spacebar, or SSE)
+  const isListeningRef = useRef(false);
+  useEffect(() => {
+    if (isListening && !isListeningRef.current) {
+      isListeningRef.current = true;
+      updateTranscript("");
+      startRecordingAndAnalysis();
+    } else if (!isListening && isListeningRef.current) {
+      isListeningRef.current = false;
+      stopRecordingAndAnalysis();
+    }
+  }, [isListening]);
 
   // Update live transcript helper
   const updateTranscript = (text: string) => {
@@ -282,18 +296,15 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
       recognition.continuous = true;
       recognition.interimResults = true;
       recognition.lang = "en-US";
+      webSpeechActiveRef.current = false;
 
       recognition.onresult = (event: any) => {
-        let interim = "";
-        let final = "";
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          if (event.results[i].isFinal) {
-            final += event.results[i][0].transcript;
-          } else {
-            interim += event.results[i][0].transcript;
-          }
+        webSpeechActiveRef.current = true;
+        let fullTranscript = "";
+        for (let i = 0; i < event.results.length; ++i) {
+          fullTranscript += event.results[i][0].transcript;
         }
-        const current = final || interim;
+        const current = fullTranscript.trim();
         if (current) {
           updateTranscript(current);
         }
@@ -301,6 +312,7 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
 
       recognition.onerror = (e: any) => {
         console.warn("Web Speech error:", e);
+        webSpeechActiveRef.current = false;
         // If offline network error or speech recognition fails, fall back to offline Whisper STT
         if (e.error === "network" || e.error === "not-allowed" || e.error === "service-not-allowed") {
           try {
@@ -310,10 +322,15 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
         }
       };
 
+      recognition.onend = () => {
+        webSpeechActiveRef.current = false;
+      };
+
       recognition.start();
       speechRecognitionRef.current = recognition;
     } catch (err) {
       console.warn("Could not start Web Speech:", err);
+      webSpeechActiveRef.current = false;
       speechRecognitionRef.current = null;
     }
   };
@@ -422,8 +439,8 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
       }
       let isTranscribingChunk = false;
       interimTimerRef.current = setInterval(async () => {
-        // If Web Speech is actively providing live text on screen, skip Whisper interim calls
-        if (liveTranscriptRef.current && liveTranscriptRef.current.trim().length > 0) {
+        // If Web Speech is actively providing live real-time text, let Web Speech handle the display
+        if (webSpeechActiveRef.current) {
           return;
         }
         if (isTranscribingChunk || audioChunksRef.current.length === 0) {
@@ -432,7 +449,7 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
         const currentBlob = new Blob(audioChunksRef.current, {
           type: recorder.mimeType || "audio/webm",
         });
-        if (currentBlob.size < 2500) return; // Need at least ~0.6s audio
+        if (currentBlob.size < 2000) return; // Need at least ~0.5s audio
         isTranscribingChunk = true;
         try {
           const partial = await transcribeAudio(
@@ -440,14 +457,14 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
             backendConfig?.transcriptionUrl,
             backendConfig?.apiKey
           );
-          if (partial && partial.trim() && !liveTranscriptRef.current) {
+          if (partial && partial.trim() && !webSpeechActiveRef.current) {
             updateTranscript(partial.trim());
           }
         } catch (_) {
         } finally {
           isTranscribingChunk = false;
         }
-      }, 1200);
+      }, 1000);
 
       recorder.onstop = async () => {
         if (interimTimerRef.current) {
@@ -519,6 +536,7 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
       } catch (e) {}
       speechRecognitionRef.current = null;
     }
+    webSpeechActiveRef.current = false;
 
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
       try {
@@ -544,13 +562,10 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
 
     if (isListening) {
       sfx.playMicOff();
-      stopRecordingAndAnalysis();
       onSetListening(false);
     } else {
       sfx.playMicOn();
-      updateTranscript("");
       onSetListening(true);
-      startRecordingAndAnalysis();
     }
   };
 

@@ -823,7 +823,7 @@ export default function App() {
               >
                 <div className="w-full my-auto flex flex-col items-center justify-center py-2">
                   {/* State Pill Badge (Only for listening or interactive pickers) */}
-                  {state === "listening" && (
+                  {(state === "listening" || isListening) && (
                     <div className="mb-2 sm:mb-3">
                       <KineticStateBadge
                         stateText={liveTranscript ? "Live Transcribing" : "Listening to voice"}
@@ -837,13 +837,13 @@ export default function App() {
                   {/* Main Central Spoken / Heading Text */}
                   {state !== "action_card" && (
                     <div className="text-center max-w-2xl mx-auto mb-4 sm:mb-6 px-4">
-                      {state === "listening" && liveTranscript ? (
+                      {(state === "listening" || isListening) && liveTranscript ? (
                         <div className="flex min-w-0 w-full flex-col items-center px-2">
                           <p className="w-full min-w-0 max-w-2xl break-words text-center text-xl font-semibold leading-snug text-slate-100 sm:text-2xl md:text-3xl">
                             {liveTranscript}
                           </p>
                         </div>
-                      ) : state === "listening" ? (
+                      ) : (state === "listening" || isListening) ? (
                         <div className="flex flex-col items-center space-y-1">
                           <KineticHeading
                             text="Listening... speak now"
