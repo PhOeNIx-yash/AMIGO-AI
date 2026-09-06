@@ -1066,12 +1066,53 @@ def rag_search_endpoint():
 
 @app.route("/api/rag/reindex", methods=["POST"])
 def rag_reindex_endpoint():
-    """Trigger manual re-indexing."""
+    """Trigger manual re-indexing with live SSE progress broadcasting."""
     try:
+        data = request.get_json(silent=True) or {}
+        force = data.get("force", True)
         from rag_indexer import get_indexer
         indexer = get_indexer(rag_engine)
+
+        def _progress_cb(processed, total, indexed, skipped, fname):
+            pct = round((processed / max(total, 1)) * 100, 1)
+            broadcaster.broadcast("rag_indexing_progress", {
+                "is_indexing": True,
+                "files_total": total,
+                "files_processed": processed,
+                "files_indexed": indexed,
+                "files_skipped": skipped,
+                "progress_percent": pct,
+                "current_file": fname,
+                "status_message": f"Processing ({processed}/{total}): {fname}",
+            })
+
+        def _run():
+            # Initial announcement
+            broadcaster.broadcast("rag_indexing_progress", {
+                "is_indexing": True,
+                "files_total": 0,
+                "files_processed": 0,
+                "files_indexed": 0,
+                "files_skipped": 0,
+                "progress_percent": 0.0,
+                "current_file": "Scanning directories...",
+                "status_message": "Scanning directories...",
+            })
+            indexer.full_index(force=force, progress_cb=_progress_cb)
+            st = indexer.get_status()
+            broadcaster.broadcast("rag_indexing_progress", {
+                "is_indexing": False,
+                "files_total": st.get("files_total", 0),
+                "files_processed": st.get("files_processed", 0),
+                "files_indexed": st.get("files_indexed", 0),
+                "files_skipped": st.get("files_skipped", 0),
+                "progress_percent": 100.0,
+                "current_file": "",
+                "status_message": st.get("status_message", "Complete"),
+            })
+
         import threading as _th
-        _th.Thread(target=indexer.full_index, daemon=True).start()
+        _th.Thread(target=_run, daemon=True, name="rag-manual-reindex").start()
         return jsonify({"success": True, "message": "Re-indexing started in background."})
     except Exception as e:
         return jsonify({"error": str(e)}), 500

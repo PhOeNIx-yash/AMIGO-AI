@@ -173,7 +173,7 @@ def _build_voice_prompt(query: str = "", is_voice: bool = True, has_web_context:
             "CRITICAL: If any previous turns in conversation history mention being offline or not connected, ignore them as they are outdated. "
             "Never tell the user you are offline when your Current Network Status is Connected (Online).\n"
             "If the user asks whether you can search the web or browse the internet, confirm that yes, you can search the web and open search results for them.\n"
-            "When the user asks about their local files, tickets, receipts, or data, answer directly with the exact details, codes, PNRs, dates, and facts from the document context.\n"
+            "When the user asks about their local files, tickets, reports, documents, or data, answer directly from the provided document context—whether they need a full synopsis/summary or a specific code, PAN, PIN, PNR, date, or detail.\n"
         )
 
     prompt += (
@@ -187,7 +187,7 @@ def _build_voice_prompt(query: str = "", is_voice: bool = True, has_web_context:
         "- Never mention 'Windows PC', 'computer', or operating systems in your greeting or conversation unless the user explicitly asks about system specs.\n"
         "- You are the user's trusted personal assistant. You have full clearance to recall their personal details, documents, and records when asked.\n"
         "- NEVER refuse queries with privacy lectures or excuses like 'I cannot provide sensitive personal details'. The user is asking about their own personal data.\n"
-        "- If a requested detail or document is not present in the provided context, plainly state that it is not yet in your records, and offer to look it up if they provide the file.\n"
+        "- If no document context is provided and a requested detail or document is not present in your records, plainly state that it is not yet in your records. BUT whenever document context IS provided, always answer directly from it.\n"
     )
     if is_thinking_enabled():
         prompt += "- Reasoning mode: Think step-by-step inside <think> tags before providing your final answer outside of <think>.\n"
@@ -216,8 +216,8 @@ def _build_ai_messages(
     Pulls recent turns from RAG and injects document/web context."""
     messages: list[dict] = []
 
-    # When web_context is provided, disable memory injection so old hallucinations or prior topics don't bleed in
-    if web_context:
+    # When web_context or doc_context is provided, disable memory injection so old hallucinations, prior refusals, or off-topic history don't bleed in
+    if web_context or doc_context:
         use_memory = False
 
     if use_memory:
@@ -243,9 +243,12 @@ def _build_ai_messages(
     elif doc_context:
         user_parts.append(
             f"[Relevant Local Document Context]:\n{doc_context}\n\n"
-            "Instructions:\n"
-            "- Answer the user's question directly with the exact requested detail, number, or fact from the matching document.\n"
-            "- Do not list or summarize unrelated files; provide the specific requested value concisely."
+            "CRITICAL RULES FOR LOCAL DOCUMENT QUERIES:\n"
+            "- The document content is provided above. You have DIRECT ACCESS to this document right now.\n"
+            "- When the user asks for a synopsis, summary, overview, explanation, or key findings, provide a clear, comprehensive synopsis directly from the text above.\n"
+            "- When the user asks for a specific detail, number, date, PAN, PIN, PNR, name, or fact, provide the exact detail accurately and concisely.\n"
+            "- NEVER state that you do not have access to the document, never say you cannot view it, and NEVER ask the user to share or upload the file, because the text is already right here above.\n"
+            "- Synthesize your response entirely from the provided document context."
         )
     user_parts.append(query)
 

@@ -202,6 +202,26 @@ async function startServer() {
     return res.json({ success: true });
   });
 
+  // Generic transparent proxy for all other /api/* routes -> Proxies to Amigo Python backend
+  app.all("/api/*", async (req, res) => {
+    try {
+      const targetUrl = `${AMIGO_BACKEND}${req.originalUrl}`;
+      const options: RequestInit = {
+        method: req.method,
+        headers: { "Content-Type": "application/json" },
+      };
+      if (req.method !== "GET" && req.method !== "HEAD" && req.body && Object.keys(req.body).length > 0) {
+        options.body = JSON.stringify(req.body);
+      }
+      const amigoRes = await fetch(targetUrl, options);
+      const data = await amigoRes.json().catch(() => ({}));
+      return res.status(amigoRes.status).json(data);
+    } catch (e: any) {
+      console.warn(`[Amigo Generic API Proxy Error for ${req.originalUrl}]:`, e?.message);
+      return res.status(502).json({ error: "Backend unreachable" });
+    }
+  });
+
   // Vite middleware setup
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

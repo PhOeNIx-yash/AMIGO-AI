@@ -583,10 +583,11 @@ export async function fetchRagStatus(): Promise<RagStatusData> {
   }
 }
 
-export async function triggerRagReindex(): Promise<{ status: string; message: string }> {
+export async function triggerRagReindex(force: boolean = true): Promise<{ status: string; message: string }> {
   const res = await fetch("/api/rag/reindex", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ force }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));

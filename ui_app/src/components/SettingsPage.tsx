@@ -358,6 +358,18 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const [ragStatus, setRagStatus] = useState<RagStatusData | null>(null);
   const [isReindexing, setIsReindexing] = useState(false);
   const [reindexMsg, setReindexMsg] = useState<{ success: boolean; text: string } | null>(null);
+  const [indexingProgress, setIndexingProgress] = useState<{
+    is_indexing: boolean;
+    percent: number;
+    current_file: string;
+    files_processed: number;
+    files_total: number;
+    files_indexed: number;
+    files_skipped: number;
+    status_message?: string;
+    completed?: boolean;
+  } | null>(null);
+  const dismissTimerRef = useRef<any>(null);
 
   const loadRagStatus = async () => {
     try {
@@ -365,32 +377,83 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
       setRagStatus(stats);
       if (stats.indexer?.is_indexing) {
         setIsReindexing(true);
-      } else if (!stats.is_indexing && !stats.indexer?.is_indexing) {
+      } else if (!stats.is_indexing && !stats.indexer?.is_indexing && !indexingProgress?.is_indexing) {
         setIsReindexing(false);
       }
     } catch (e) {}
   };
 
+  // Real-time SSE progress listener for background indexing
+  useEffect(() => {
+    const handleSSE = (e: any) => {
+      const detail = e.detail;
+      if (detail?.type === "rag_indexing_progress") {
+        const isIdx = Boolean(detail.is_indexing);
+        setIndexingProgress({
+          is_indexing: isIdx,
+          percent: detail.progress_percent ?? 0,
+          current_file: detail.current_file || "",
+          files_processed: detail.files_processed || 0,
+          files_total: detail.files_total || 0,
+          files_indexed: detail.files_indexed || 0,
+          files_skipped: detail.files_skipped || 0,
+          status_message: detail.status_message,
+          completed: !isIdx,
+        });
+
+        if (isIdx) {
+          setIsReindexing(true);
+          if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current);
+        } else {
+          setIsReindexing(false);
+          loadRagStatus();
+          // Keep completion status visible for 6s so user sees the 100% finished state
+          if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current);
+          dismissTimerRef.current = setTimeout(() => {
+            setIndexingProgress(null);
+          }, 6000);
+        }
+      }
+    };
+    window.addEventListener("amigo_sse", handleSSE);
+    return () => {
+      window.removeEventListener("amigo_sse", handleSSE);
+      if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current);
+    };
+  }, []);
+
   useEffect(() => {
     if (!isOpen || activeTab !== "data") return;
     loadRagStatus();
-    const isBusy = isReindexing || ragStatus?.is_indexing || ragStatus?.indexer?.is_indexing;
+    const isBusy = isReindexing || ragStatus?.is_indexing || ragStatus?.indexer?.is_indexing || indexingProgress?.is_indexing;
     const interval = setInterval(() => {
       loadRagStatus();
     }, isBusy ? 1000 : 4000);
     return () => clearInterval(interval);
-  }, [isOpen, activeTab, isReindexing, ragStatus?.is_indexing, ragStatus?.indexer?.is_indexing]);
+  }, [isOpen, activeTab, isReindexing, ragStatus?.is_indexing, ragStatus?.indexer?.is_indexing, indexingProgress?.is_indexing]);
 
   const handleTriggerReindex = async () => {
     setIsReindexing(true);
     setReindexMsg(null);
+    setIndexingProgress({
+      is_indexing: true,
+      percent: 0,
+      current_file: "Scanning documents...",
+      files_processed: 0,
+      files_total: ragStatus?.documents || 0,
+      files_indexed: 0,
+      files_skipped: 0,
+      status_message: "Starting full re-index...",
+      completed: false,
+    });
     try {
-      const res = await triggerRagReindex();
+      const res = await triggerRagReindex(true);
       setReindexMsg({ success: true, text: res.message || "Re-indexing started in background" });
       await loadRagStatus();
     } catch (e: any) {
       setReindexMsg({ success: false, text: e.message || "Failed to start re-indexing" });
       setIsReindexing(false);
+      setIndexingProgress(null);
     }
   };
 
@@ -1298,24 +1361,35 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     </div>
                     <button
                       onClick={handleTriggerReindex}
-                      disabled={isReindexing || Boolean(ragStatus?.indexer?.is_indexing)}
+                      disabled={isReindexing || Boolean(ragStatus?.indexer?.is_indexing) || Boolean(indexingProgress?.is_indexing)}
                       className="px-3 py-1.5 rounded-xl text-xs font-semibold border border-indigo-500/30 bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500/20 disabled:opacity-50 transition-colors flex items-center space-x-1.5 shadow-sm"
                     >
-                      <RefreshCw className={`w-3.5 h-3.5 ${isReindexing || Boolean(ragStatus?.indexer?.is_indexing) ? "animate-spin" : ""}`} />
-                      <span>{isReindexing || Boolean(ragStatus?.indexer?.is_indexing) ? "Indexing..." : "Re-index Files"}</span>
+                      <RefreshCw className={`w-3.5 h-3.5 ${isReindexing || Boolean(ragStatus?.indexer?.is_indexing) || Boolean(indexingProgress?.is_indexing) ? "animate-spin" : ""}`} />
+                      <span>{isReindexing || Boolean(ragStatus?.indexer?.is_indexing) || Boolean(indexingProgress?.is_indexing) ? "Indexing..." : "Re-index Files"}</span>
                     </button>
                   </div>
 
                   {/* Live Progress Bar (when active or recently run) */}
-                  {(isReindexing || Boolean(ragStatus?.indexer?.is_indexing)) && (
+                  {(isReindexing || Boolean(ragStatus?.indexer?.is_indexing) || Boolean(indexingProgress)) && (
                     <div className="p-3 rounded-lg bg-indigo-500/[0.07] border border-indigo-500/20 space-y-2">
                       <div className="flex items-center justify-between text-xs">
                         <div className="flex items-center space-x-1.5 text-indigo-400 font-medium">
-                          <span className="w-2 h-2 rounded-full bg-indigo-400 animate-ping" />
-                          <span>Indexing Documents in Background...</span>
+                          {indexingProgress?.completed ? (
+                            <>
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                              <span className="text-emerald-400 font-semibold">Indexing Complete!</span>
+                            </>
+                          ) : (
+                            <>
+                              <span className="w-2 h-2 rounded-full bg-indigo-400 animate-ping" />
+                              <span>Indexing Documents in Background...</span>
+                            </>
+                          )}
                         </div>
                         <span className="font-mono font-semibold text-indigo-300">
-                          {ragStatus?.indexer?.progress_percent != null
+                          {indexingProgress?.percent != null
+                            ? `${indexingProgress.percent}%`
+                            : ragStatus?.indexer?.progress_percent != null
                             ? `${ragStatus.indexer.progress_percent}%`
                             : "Scanning..."}
                         </span>
@@ -1324,20 +1398,20 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                       {/* Progress Bar Track */}
                       <div className="w-full h-2 rounded-full bg-black/40 overflow-hidden border border-white/5">
                         <div
-                          className="h-full bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 rounded-full transition-all duration-300 ease-out"
+                          className={`h-full ${indexingProgress?.completed ? "bg-emerald-500" : "bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500"} rounded-full transition-all duration-300 ease-out`}
                           style={{
                             width: `${Math.max(
                               4,
-                              Math.min(100, ragStatus?.indexer?.progress_percent || 0)
+                              Math.min(100, indexingProgress?.percent ?? ragStatus?.indexer?.progress_percent ?? 0)
                             )}%`,
                           }}
                         />
                       </div>
 
-                      {ragStatus?.indexer?.current_file && (
+                      {(indexingProgress?.current_file || ragStatus?.indexer?.current_file) && (
                         <div className="text-[10px] text-slate-400 truncate flex items-center space-x-1">
                           <FileText className="w-3 h-3 shrink-0 opacity-70" />
-                          <span className="truncate">{ragStatus.indexer.current_file}</span>
+                          <span className="truncate">{indexingProgress?.current_file || ragStatus?.indexer?.current_file}</span>
                         </div>
                       )}
                     </div>
@@ -1351,10 +1425,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                         <span>Done / Indexed</span>
                       </div>
                       <div className="text-sm font-semibold mt-0.5 font-mono">
-                        {ragStatus?.indexer?.files_processed ?? ragStatus?.documents ?? 0}
+                        {indexingProgress?.files_processed ?? ragStatus?.indexer?.files_processed ?? ragStatus?.documents ?? 0}
                       </div>
                       <div className="text-[9px] opacity-50">
-                        {ragStatus?.indexer?.files_indexed ?? 0} new files
+                        {indexingProgress?.files_indexed != null ? `${indexingProgress.files_indexed} newly indexed` : `${ragStatus?.indexer?.files_indexed ?? 0} new files`}
                       </div>
                     </div>
 
@@ -1364,7 +1438,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                         <span>Remaining</span>
                       </div>
                       <div className="text-sm font-semibold mt-0.5 font-mono">
-                        {ragStatus?.indexer?.files_left ?? 0}
+                        {indexingProgress?.files_total != null ? Math.max(0, indexingProgress.files_total - indexingProgress.files_processed) : (ragStatus?.indexer?.files_left ?? 0)}
                       </div>
                       <div className="text-[9px] opacity-50">files left</div>
                     </div>
@@ -1375,7 +1449,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                         <span>Total Scanned</span>
                       </div>
                       <div className="text-sm font-semibold mt-0.5 font-mono">
-                        {ragStatus?.indexer?.files_total ?? ragStatus?.documents ?? 0}
+                        {indexingProgress?.files_total ?? ragStatus?.indexer?.files_total ?? ragStatus?.documents ?? 0}
                       </div>
                       <div className="text-[9px] opacity-50">discovered files</div>
                     </div>

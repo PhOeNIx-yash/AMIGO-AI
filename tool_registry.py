@@ -32,7 +32,7 @@ _RE_URLS = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]*[^\s<>"{}|\\^`\[\].,;:!?]')
 _RE_APP_STRIP = re.compile(r"^(?:please\s+)?(?:open|launch|start|run|show)\s+(?:the\s+|my\s+|an?\s+)?", re.IGNORECASE)
 _RE_APP_ARTICLE = re.compile(r"^(?:the|that|my|an?)\s+", re.IGNORECASE)
 _RE_MEDIA_CLEAN_TITLE = re.compile(r"^(?:play|playing)\s*:\s*", re.IGNORECASE)
-_RE_DOC_STRIP_ACTION = re.compile(r"^(?:please\s+)?(?:can you\s+|could you\s+|will you\s+|would you\s+)?(?:open|show|read|summarize|tell me about|what is in|what does|find|locate|check|view|inspect)\s+", re.IGNORECASE)
+_RE_DOC_STRIP_ACTION = re.compile(r"^(?:please\s+)?(?:can you\s+|can u\s+|could you\s+|could u\s+|will you\s+|would you\s+)?(?:tell me\s+|give me\s+|show me\s+)?(?:open|show|read|summarize|tell me about|what is in|what does|find|locate|check|view|inspect)\s+", re.IGNORECASE)
 _RE_DOC_STOPWORDS = re.compile(r"\b(?:the|that|those|these|my|a|an|file|files|document|documents|doc|pdf)\b", re.IGNORECASE)
 _RE_DOC_ORDINAL = re.compile(r"\b(?:number\s+(\d+)|(\d+)(?:st|nd|rd|th)?|first|second|third|fourth|fifth)\b", re.IGNORECASE)
 _RE_TIMER_PROMPT = re.compile(r"\b(timer|countdown|stopwatch)\b", re.IGNORECASE)
@@ -674,9 +674,10 @@ def _tool_ask_document(params, query, spoken):
     else:
         ctx = rag_engine.build_rag_context(question, top_k=6)
 
+    target_prompt = query if (query and any(k in query.lower() for k in ("synopsis", "summary", "summarize", "overview", "detail", "explain", "pan", "pin", "what", "how", "who"))) else question
     if ctx:
-        return get_ai_response(question, doc_context=ctx), None
-    return get_ai_response(question), None
+        return get_ai_response(target_prompt, doc_context=ctx), None
+    return get_ai_response(target_prompt), None
 
 
 
@@ -695,7 +696,8 @@ def _tool_summarize_document(params, query, spoken):
         ctx = rag_engine.build_rag_context(query, top_k=6)
 
     if ctx:
-        return get_ai_response(f"Summarize this document concisely:\n{query}", doc_context=ctx), None
+        target_prompt = query if query and any(k in query.lower() for k in ("synopsis", "summary", "summarize", "overview", "brief")) else f"Summarize this document concisely:\n{query}"
+        return get_ai_response(target_prompt, doc_context=ctx), None
     return "I couldn't find that document to summarize.", None
 
 

@@ -118,6 +118,8 @@ class RAGIndexer:
                     dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
 
                     for fname in filenames:
+                        if fname.startswith("~$") or fname.startswith(".~"):
+                            continue
                         ext = os.path.splitext(fname)[1].lower()
                         if ext not in self._rag.SUPPORTED_EXTENSIONS:
                             continue
@@ -133,8 +135,8 @@ class RAGIndexer:
 
         return files
 
-    def full_index(self, progress_cb: Callable | None = None) -> dict:
-        """Full crawl and index of all scan directories."""
+    def full_index(self, force: bool = False, progress_cb: Callable | None = None) -> dict:
+        """Full crawl and index of all scan directories. If force=True, re-indexes even if files are unchanged."""
         if self._is_indexing:
             return {"status": "already_running"}
 
@@ -161,25 +163,36 @@ class RAGIndexer:
             total = len(files)
             self._stats["files_total"] = total
             self._stats["files_left"] = total
-            logger.info("[Indexer] Full index: %d files found in %s", total, directories)
+            logger.info("[Indexer] Full index (force=%s): %d files found in %s", force, total, directories)
+
+            if progress_cb:
+                try:
+                    progress_cb(0, total, 0, 0, "Discovered files...")
+                except Exception:
+                    pass
 
             for i, filepath in enumerate(files):
                 if self._stop_event.is_set():
                     break
 
                 fname = os.path.basename(filepath)
-                pct = round((i / max(total, 1)) * 100, 1)
+                pct = round(((i + 1) / max(total, 1)) * 100, 1)
                 self._stats.update({
-                    "files_processed": i,
-                    "files_left": max(0, total - i),
+                    "files_processed": i + 1,
+                    "files_left": max(0, total - (i + 1)),
                     "progress_percent": pct,
                     "current_file": fname,
                     "status_message": f"Processing ({i + 1}/{total}): {fname}",
                 })
 
-                if not self._file_changed(filepath):
+                if not force and not self._file_changed(filepath):
                     skipped += 1
                     self._stats["files_skipped"] = skipped
+                    if progress_cb:
+                        try:
+                            progress_cb(i + 1, total, indexed, skipped, fname)
+                        except Exception:
+                            pass
                     continue
 
                 try:
@@ -194,11 +207,13 @@ class RAGIndexer:
                     errors += 1
                     logger.debug("[Indexer] Error indexing %s: %s", filepath, e)
 
-                if progress_cb and (i + 1) % 5 == 0:
-                    progress_cb(i + 1, total, indexed)
+                if progress_cb:
+                    try:
+                        progress_cb(i + 1, total, indexed, skipped, fname)
+                    except Exception:
+                        pass
 
             self._save_hashes()
-
 
         finally:
             duration = round(time.time() - start_time, 1)
@@ -212,7 +227,7 @@ class RAGIndexer:
                 "files_left": 0,
                 "progress_percent": 100.0 if total_scanned > 0 else 0.0,
                 "current_file": "",
-                "status_message": f"Complete: {indexed} indexed, {skipped} up-to-date ({duration}s)",
+                "status_message": f"Complete: {indexed} indexed, {skipped} skipped ({duration}s)",
                 "last_run": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "last_duration_seconds": duration,
             })
@@ -225,7 +240,7 @@ class RAGIndexer:
 
     def incremental_index(self) -> dict:
         """Re-index only new or modified files since last scan."""
-        return self.full_index()
+        return self.full_index(force=False)
 
     def index_single_file(self, filepath: str) -> bool:
         """Index a single file on demand."""

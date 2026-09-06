@@ -329,6 +329,7 @@ export default function App() {
         es.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
+            window.dispatchEvent(new CustomEvent("amigo_sse", { detail: data }));
             if (data.type === "state_change") {
               const s = data.state;
               if (s === "listening") {

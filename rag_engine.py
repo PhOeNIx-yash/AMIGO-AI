@@ -849,18 +849,23 @@ def build_file_context(filepath: str, question: str) -> str:
     try:
         col = _col(DOCUMENTS)
         if col and col.count() > 0:
-            results = col.query(
-                query_texts=[question],
-                n_results=8,
-                where={"filepath": filepath},
-                include=["documents", "distances"],
-            )
-            if results and results.get("documents") and results["documents"][0]:
-                return f"[Relevant sections from '{os.path.basename(filepath)}']:\n" + "\n\n".join(results["documents"][0])
+            seen_paths = set()
+            for p in (filepath, os.path.normpath(filepath), filepath.replace("\\", "/"), filepath.replace("/", "\\")):
+                if p in seen_paths:
+                    continue
+                seen_paths.add(p)
+                results = col.query(
+                    query_texts=[question],
+                    n_results=8,
+                    where={"filepath": p},
+                    include=["documents", "distances"],
+                )
+                if results and results.get("documents") and results["documents"][0]:
+                    return f"[Relevant sections from '{os.path.basename(filepath)}']:\n" + "\n\n".join(results["documents"][0])
     except Exception as e:
         logger.debug("[RAG] build_file_context error: %s", e)
 
-    return f"[Content from '{os.path.basename(filepath)}']:\n{text[:4000]}"
+    return f"[Content from '{os.path.basename(filepath)}']:\n{text[:6000]}"
 
 
 
@@ -869,7 +874,9 @@ def get_file_summary_context(filepath: str) -> str:
     text = extract_text(filepath)
     if not text:
         return ""
-    return f"[Full content of '{os.path.basename(filepath)}']:\n{text[:3000]}"
+    if len(text) <= 6000:
+        return f"[Full content of '{os.path.basename(filepath)}']:\n{text}"
+    return f"[Content from '{os.path.basename(filepath)}']:\n{text[:6000]}"
 
 
 # ═══════════════════════════════════════════════════════════════
