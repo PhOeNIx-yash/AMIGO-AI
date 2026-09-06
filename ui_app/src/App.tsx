@@ -316,6 +316,7 @@ export default function App() {
   const [selectedContact, setSelectedContact] = useState<ContactItem | undefined>(undefined);
   const [loading, setLoading] = useState<boolean>(false);
   const loadingRef = useRef<boolean>(false);
+  const [hudDismissed, setHudDismissed] = useState<boolean>(false);
 
   // Real-time bidirectional SSE sync with Amigo Python voice loop & server events
   useEffect(() => {
@@ -453,6 +454,7 @@ export default function App() {
     setSelectedContact(undefined);
     setIsListening(false);
     setLoading(false);
+    setHudDismissed(false);
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
     }
@@ -465,6 +467,7 @@ export default function App() {
     const effectivePrompt = prompt.trim() || (attachment ? `Analyze ${attachment.filename}` : "");
     if (!effectivePrompt) return;
 
+    setHudDismissed(false);
     loadingRef.current = true;
     setActivePrompt(effectivePrompt);
     activePromptRef.current = effectivePrompt;
@@ -527,6 +530,7 @@ export default function App() {
 
   // Inspect previous result from history
   const handleSelectHistoryEntry = (entry: HistoryEntry) => {
+    setHudDismissed(false);
     setActivePrompt(entry.prompt);
     const responseData = entry.response;
     setAssistantData(responseData);
@@ -922,6 +926,7 @@ export default function App() {
                       {state !== "action_card" &&
                         state !== "contact_picker" &&
                         (state === "processing" || state === "working" || state === "completed") &&
+                        !hudDismissed &&
                         isActionIntent(activePrompt, assistantData?.intent) && (
                         <IntentBridgeHUD
                           key="intent-bridge-hud"
@@ -932,7 +937,7 @@ export default function App() {
                           historyCount={history.length}
                           isCompleted={state === "completed"}
                           status={assistantData?.executionSummary?.status}
-                          onDismiss={handleReset}
+                          onDismiss={() => setHudDismissed(true)}
                           statusText={
                             state === "completed"
                               ? (assistantData?.executionSummary?.headline || "Completed")

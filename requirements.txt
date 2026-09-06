@@ -4,9 +4,11 @@
 # ──────────────────────────────────────────────────────────────
 
 # ── Speech Recognition (STT) ──────────────────────────────────
-sherpa-onnx>=1.13.0            # Offline neural STT & TTS engine (Moonshine/VITS)
+openai-whisper>=20231117       # Official OpenAI Whisper offline STT engine
+tiktoken>=0.7.0                # Fast BPE tokenizer for Whisper
 SpeechRecognition>=3.10.0      # Voice command microphone transcription
 pyaudio>=0.2.14                # Microphone audio capture backend
+num2words>=0.5.13              # Phonetic text expansion for neural TTS
 
 # ── Neural Text-to-Speech (TTS) ───────────────────────────────
 kokoro-onnx>=0.3.1             # Primary neural TTS engine — fast, local, offline

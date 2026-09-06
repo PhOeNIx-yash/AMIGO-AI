@@ -1,10 +1,11 @@
 """
 Unified Speech Engine Module for Amigo Voice Assistant.
-Handles both Offline Neural Text-to-Speech (TTS via Kokoro & Sherpa Piper)
-and Offline Neural Speech-to-Text (STT via Sherpa Moonshine).
+Handles both Offline Neural Text-to-Speech (TTS via Kokoro ONNX)
+and Offline Neural Speech-to-Text (STT via OpenAI Whisper).
 """
 
 import io
+import json
 import os
 import queue
 import re
@@ -14,6 +15,11 @@ import time
 import urllib.request
 import logging
 import numpy as np
+
+try:
+    import num2words
+except ImportError:
+    num2words = None
 
 logger = logging.getLogger("amigo.speech")
 
@@ -31,79 +37,102 @@ try:
     from kokoro_onnx import Kokoro as _KokoroOnnx
 
     _USE_KOKORO = True
+    logging.getLogger("phonemizer").setLevel(logging.ERROR)
     logger.info("[TTS] Kokoro ONNX available.")
 except ImportError:
     logger.warning("[TTS] kokoro-onnx not available.")
 
-_USE_SHERPA = False
-try:
-    import sherpa_onnx
-    _USE_SHERPA = True
-    logger.info("[TTS] Sherpa-ONNX available.")
-except ImportError:
-    logger.warning("[TTS] sherpa-onnx not available.")
-
-# ── 10 Curated Best Offline Voices (5 Kokoro + 5 Sherpa) ────────
+# ── 10 Curated Best Offline Studio Neural Voices (Kokoro 24kHz) ────────
 CURATED_VOICES = {
-    # 5 Best Kokoro Voices (Deep Neural)
-    "heart":   {"engine": "kokoro", "id": "af_heart",   "name": "Heart",   "gender": "Female", "accent": "US", "desc": "Warm & natural American female (Default)"},
-    "bella":   {"engine": "kokoro", "id": "af_bella",   "name": "Bella",   "gender": "Female", "accent": "US", "desc": "Energetic & clear American female"},
-    "adam":    {"engine": "kokoro", "id": "am_adam",    "name": "Adam",    "gender": "Male",   "accent": "US", "desc": "Natural & deep American male"},
-    "michael": {"engine": "kokoro", "id": "am_michael", "name": "Michael", "gender": "Male",   "accent": "US", "desc": "Professional & clean American male"},
-    "george":  {"engine": "kokoro", "id": "bm_george",  "name": "George",  "gender": "Male",   "accent": "GB", "desc": "Distinguished British English gentleman"},
+    # 5 Best Female Neural Voices
+    "nicole":  {"engine": "kokoro", "id": "af_nicole",  "name": "Nicole",  "gender": "Female", "accent": "US", "desc": "Smooth, articulate & studio-clean American female (Recommended)"},
+    "sarah":   {"engine": "kokoro", "id": "af_sarah",   "name": "Sarah",   "gender": "Female", "accent": "US", "desc": "Soft, natural & warm American female"},
+    "heart":   {"engine": "kokoro", "id": "af_heart",   "name": "Heart",   "gender": "Female", "accent": "US", "desc": "Warm & expressive American female"},
+    "sky":     {"engine": "kokoro", "id": "af_sky",     "name": "Sky",     "gender": "Female", "accent": "US", "desc": "Bright, friendly & clear American female"},
+    "bella":   {"engine": "kokoro", "id": "af_bella",   "name": "Bella",   "gender": "Female", "accent": "US", "desc": "Energetic & crisp American female"},
 
-    # 5 Best Sherpa Voices (Piper VITS INT8)
-    "amy":     {"engine": "sherpa", "folder": "vits-piper-en_US-amy-low-int8",     "onnx": "en_US-amy-low.onnx",     "name": "Amy",    "gender": "Female", "accent": "US", "desc": "Natural & friendly American female"},
-    "ryan":    {"engine": "sherpa", "folder": "vits-piper-en_US-ryan-low-int8",    "onnx": "en_US-ryan-low.onnx",    "name": "Ryan",   "gender": "Male",   "accent": "US", "desc": "Young conversational American male"},
-    "kristin": {"engine": "sherpa", "folder": "vits-piper-en_US-kristin-medium-int8", "onnx": "en_US-kristin-medium.onnx", "name": "Kristin", "gender": "Female", "accent": "US", "desc": "Warm & articulate American female"},
-    "joe":     {"engine": "sherpa", "folder": "vits-piper-en_US-joe-medium-int8",  "onnx": "en_US-joe-medium.onnx",  "name": "Joe",    "gender": "Male",   "accent": "US", "desc": "Casual & clear American male"},
-    "glados":  {"engine": "sherpa", "folder": "vits-piper-en_US-glados-high-int8", "onnx": "en_US-glados-high.onnx", "name": "GLaDOS", "gender": "Robot",  "accent": "US", "desc": "Iconic Portal AI robotic voice"},
+    # 5 Best Male Neural Voices
+    "adam":    {"engine": "kokoro", "id": "am_adam",    "name": "Adam",    "gender": "Male",   "accent": "US", "desc": "Deep, natural & calm American male baritone"},
+    "michael": {"engine": "kokoro", "id": "am_michael", "name": "Michael", "gender": "Male",   "accent": "US", "desc": "Professional, articulate American male"},
+    "echo":    {"engine": "kokoro", "id": "am_echo",    "name": "Echo",    "gender": "Male",   "accent": "US", "desc": "Warm & conversational American male"},
+    "liam":    {"engine": "kokoro", "id": "am_liam",    "name": "Liam",    "gender": "Male",   "accent": "US", "desc": "Young, natural & clear American male"},
+    "george":  {"engine": "kokoro", "id": "bm_george",  "name": "George",  "gender": "Male",   "accent": "GB", "desc": "Distinguished British English gentleman"},
 }
 
-ACTIVE_VOICE = "heart"
-KOKORO_VOICE = "af_heart"
-KOKORO_SPEED = 1.10
+_PROFILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "amigo_profile.json")
+
+ACTIVE_VOICE = "nicole"
+KOKORO_VOICE = "af_nicole"
+KOKORO_SPEED = 1.05
 KOKORO_LANG = "en-us"
 _tts_lock = threading.Lock()
+_active_stream = None
+_active_stream_lock = threading.Lock()
 
-_SHERPA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "sherpa-onnx")
-_sherpa_instances = {}
 
-
-def _get_sherpa_tts(folder: str, onnx_file: str):
-    """Lazy-loads and caches Sherpa-ONNX Piper VITS models."""
-    key = (folder, onnx_file)
-    if key not in _sherpa_instances:
-        vdir = os.path.join(_SHERPA_DIR, folder)
-        cfg = sherpa_onnx.OfflineTtsConfig(
-            model=sherpa_onnx.OfflineTtsModelConfig(
-                vits=sherpa_onnx.OfflineTtsVitsModelConfig(
-                    model=os.path.join(vdir, onnx_file),
-                    tokens=os.path.join(vdir, "tokens.txt"),
-                    data_dir=os.path.join(vdir, "espeak-ng-data"),
-                ),
-                num_threads=2,
+def sync_voice_from_profile() -> str:
+    """Synchronizes active voice selection dynamically from amigo_profile.json."""
+    global ACTIVE_VOICE, KOKORO_VOICE, KOKORO_LANG
+    try:
+        if os.path.exists(_PROFILE_PATH):
+            with open(_PROFILE_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            v = (
+                data.get("preferences", {}).get("voice")
+                or data.get("ui_settings", {}).get("voice")
+                or data.get("user_profile", {}).get("preferences", {}).get("voice")
             )
-        )
-        _sherpa_instances[key] = sherpa_onnx.OfflineTts(cfg)
-    return _sherpa_instances[key]
+            if v and isinstance(v, str):
+                v_key = v.strip().lower()
+                if v_key in CURATED_VOICES:
+                    ACTIVE_VOICE = v_key
+                    info = CURATED_VOICES[v_key]
+                    if info["engine"] == "kokoro":
+                        KOKORO_VOICE = info["id"]
+                        KOKORO_LANG = "en-gb" if info.get("accent") == "GB" or info["id"].startswith("b") else "en-us"
+                    return v_key
+    except Exception as e:
+        logger.debug(f"[TTS] Voice profile sync note: {e}")
+    return ACTIVE_VOICE
+
+
+# Initialize active voice from user preference immediately on startup
+sync_voice_from_profile()
 
 
 def set_voice(voice_name: str) -> str:
-    """Sets the active voice (from the 10 curated aliases or Kokoro voice IDs)."""
-    global ACTIVE_VOICE, KOKORO_VOICE
+    """Sets the active voice, updates language, and immediately persists to user profile."""
+    global ACTIVE_VOICE, KOKORO_VOICE, KOKORO_LANG
     key = voice_name.lower().strip()
+    display_name = voice_name
     if key in CURATED_VOICES:
         ACTIVE_VOICE = key
         info = CURATED_VOICES[key]
+        display_name = info["name"]
         if info["engine"] == "kokoro":
             KOKORO_VOICE = info["id"]
+            KOKORO_LANG = "en-gb" if info.get("accent") == "GB" or info["id"].startswith("b") else "en-us"
         logger.info(f"[TTS] Active voice switched to: {info['name']} ({info['engine'].title()})")
-        return info["name"]
-    # Fallback to direct Kokoro ID
-    KOKORO_VOICE = voice_name
-    ACTIVE_VOICE = voice_name
-    return voice_name
+    else:
+        KOKORO_VOICE = voice_name
+        ACTIVE_VOICE = voice_name
+        display_name = voice_name
+
+    # Persist to profile so voice selection is remembered across restarts
+    try:
+        pdata = {}
+        if os.path.exists(_PROFILE_PATH):
+            with open(_PROFILE_PATH, "r", encoding="utf-8") as f:
+                pdata = json.load(f)
+        pdata.setdefault("preferences", {})["voice"] = key
+        pdata.setdefault("ui_settings", {})["voice"] = key
+        pdata.setdefault("user_profile", {}).setdefault("preferences", {})["voice"] = key
+        with open(_PROFILE_PATH, "w", encoding="utf-8") as f:
+            json.dump(pdata, f, indent=2)
+    except Exception as e:
+        logger.debug(f"[TTS] Voice persistence note: {e}")
+
+    return display_name
 
 
 def get_voice_catalog() -> dict:
@@ -132,8 +161,6 @@ def set_tts_callbacks(state_cb=None, broadcast_cb=None):
 
 def get_tts_engine_name() -> str:
     voice_info = CURATED_VOICES.get(ACTIVE_VOICE)
-    if voice_info and voice_info.get("engine") == "sherpa":
-        return f"Sherpa-ONNX Piper ({voice_info['name']})"
     vname = voice_info["name"] if voice_info else KOKORO_VOICE
     return f"Kokoro ONNX Neural ({vname})"
 
@@ -191,18 +218,104 @@ def _speech_is_current(generation: int) -> bool:
         return generation == _speech_generation
 
 
-def _clean_tts_text(text: str) -> str:
-    """Cleans up markdown, links, and special symbols for natural neural TTS prosody."""
+def normalize_text_for_tts(text: str) -> str:
+    """
+    Normalizes raw text into clean, phonetically speakable words:
+    - Strips markdown formatting, links, and code symbols
+    - Expands currency ($50 -> 50 dollars) and percentages (45% -> 45 percent)
+    - Expands dates (e.g. September 6, 2026 -> September sixth, twenty twenty-six)
+    - Expands ordinals (1st -> first, 2nd -> second, 6th -> sixth)
+    - Expands 4-digit years (2026 -> twenty twenty-six, 1999 -> nineteen ninety-nine)
+    - Expands standalone numbers using num2words so phonemizer never encounters raw digits
+    - Expands acronyms (VCT -> V. C. T., CPU -> C. P. U., AI -> A. I.)
+    """
     if not text:
         return ""
-    t = _RE_URL.sub('', text)
+    t = text
+    # 1. Remove URLs
+    t = _RE_URL.sub('', t)
+    # 2. Markdown formatting removal
     t = _RE_SPECIAL_CHARS.sub(' ', t)
+    # 3. Hyphenated scores and ranges (e.g. 3-1 -> 3 to 1, 2024-2025 -> 2024 to 2025)
+    t = re.sub(r'(\d+)\s*[-–—]\s*(\d+)', r'\1 to \2', t)
+    t = re.sub(r'[-–—/|]', ' ', t)
+    # 4. Currency and percentages
+    t = re.sub(r'\$(\d+(?:\.\d{2})?)', r'\1 dollars', t)
+    t = re.sub(r'(\d+)%', r'\1 percent', t)
+
+    if num2words is not None:
+        # 4. Dates: e.g. September 6, 2026
+        def _date_repl(m):
+            month = m.group(1)
+            day = int(m.group(2))
+            year = int(m.group(3))
+            try:
+                day_str = num2words.num2words(day, to='ordinal')
+                year_str = num2words.num2words(year, to='year')
+                return f"{month} {day_str}, {year_str}"
+            except Exception:
+                return m.group(0)
+
+        t = re.sub(
+            r'\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})(?:st|nd|rd|th)?,\s+(\d{4})\b',
+            _date_repl,
+            t,
+            flags=re.I,
+        )
+
+        # 5. Ordinals (1st, 2nd, 3rd, 4th, 21st)
+        def _ord_repl(m):
+            try:
+                return num2words.num2words(int(m.group(1)), to='ordinal')
+            except Exception:
+                return m.group(0)
+
+        t = re.sub(r'\b(\d+)(?:st|nd|rd|th)\b', _ord_repl, t, flags=re.I)
+
+        # 6. Four-digit years (e.g. 1900-2099)
+        def _year_repl(m):
+            try:
+                return num2words.num2words(int(m.group(1)), to='year')
+            except Exception:
+                return m.group(0)
+
+        t = re.sub(r'\b(19\d\d|20\d\d)\b', _year_repl, t)
+
+        # 7. Other standalone numbers (cardinals)
+        def _num_repl(m):
+            try:
+                return num2words.num2words(int(m.group(1)))
+            except Exception:
+                return m.group(0)
+
+        t = re.sub(r'\b(\d+)\b', _num_repl, t)
+
+    # 8. Acronyms (e.g. VCT, CPU, AI, GPU, API, STT, TTS)
+    common_words = {
+        'A', 'I', 'IN', 'ON', 'AT', 'TO', 'BY', 'FOR', 'AND', 'THE', 'IS', 'IT', 'US', 'OK',
+        'AM', 'PM', 'HE', 'SHE', 'WE', 'MY', 'ME', 'SO', 'NO', 'GO', 'DO', 'IF', 'OR', 'AS'
+    }
+
+    def _acronym_repl(m):
+        word = m.group(0)
+        if word in common_words:
+            return word
+        return '. '.join(list(word)) + '.'
+
+    t = re.sub(r'\b[A-Z]{2,5}\b', _acronym_repl, t)
+
+    # 9. Clean consecutive dots and whitespace
     t = _RE_CONSECUTIVE_DOTS.sub(', ', t)
     return _RE_WHITESPACE.sub(' ', t).strip()
 
 
-def _compact_tts_text(text: str, max_chars: int = 700) -> str:
-    """Keep spoken replies concise while preserving the full UI response."""
+def _clean_tts_text(text: str) -> str:
+    """Cleans and normalizes text for natural neural TTS prosody."""
+    return normalize_text_for_tts(text)
+
+
+def _compact_tts_text(text: str, max_chars: int = 1500) -> str:
+    """Keep spoken replies natural without prematurely truncating."""
     clean = _clean_tts_text(text)
     if len(clean) <= max_chars:
         return clean
@@ -219,36 +332,83 @@ def _compact_tts_text(text: str, max_chars: int = 700) -> str:
 
 
 
-def _trim_audio_silence(samples, threshold=0.001, pad_ms=180, sr=24000):
-    """Trim excess trailing silence while safely preserving soft trailing consonants, sibilants, and natural decay."""
+def _process_audio_clarity(samples, sr=24000) -> tuple[np.ndarray, int]:
+    """
+    Studio audio mastering pipeline:
+    - High-fidelity polyphase resampling for non-24kHz sources to prevent WASAPI driver distortion.
+    - Preserves natural phoneme decay while trimming silence.
+    - Soft anti-click fade ramps.
+    - Peak gain normalization to 0.92 (-0.7 dBFS).
+    """
     if samples is None or len(samples) == 0:
-        return samples
-    import numpy as np
-    mask = np.abs(samples) > threshold
-    if not np.any(mask):
-        return samples
-    last_idx = int(np.max(np.where(mask)[0]))
-    pad_samples = int((pad_ms / 1000.0) * sr)
-    end_idx = min(len(samples), last_idx + pad_samples)
-    trimmed = samples[:end_idx]
-    # Add a tiny 60ms cushion so Windows PortAudio/WASAPI hardware buffers do not clip the tail
-    cushion = np.zeros(int(0.06 * sr), dtype=samples.dtype)
-    return np.concatenate([trimmed, cushion])
+        return samples, sr
+    samples = np.asarray(samples, dtype=np.float32)
+
+    # 1. Resample to 24000 Hz if needed so all speech plays at uniform high-resolution rate
+    target_sr = 24000
+    if sr != target_sr and len(samples) > 0:
+        try:
+            import scipy.signal
+            from math import gcd
+            g = gcd(int(sr), target_sr)
+            samples = scipy.signal.resample_poly(samples, target_sr // g, int(sr) // g).astype(np.float32)
+            sr = target_sr
+        except Exception:
+            pass
+
+    # 2. Gentle trailing silence trim
+    mask = np.abs(samples) > 0.0002
+    if np.any(mask):
+        last_idx = int(np.max(np.where(mask)[0]))
+        pad_samples = int(0.12 * sr)
+        end_idx = min(len(samples), last_idx + pad_samples)
+        samples = samples[:end_idx]
+
+    # 3. Fade-in (5ms)
+    fade_in_len = min(int(0.005 * sr), len(samples))
+    if fade_in_len > 0:
+        samples[:fade_in_len] *= np.linspace(0.0, 1.0, fade_in_len, dtype=np.float32)
+
+    # 4. Fade-out (25ms)
+    fade_out_len = min(int(0.025 * sr), len(samples))
+    if fade_out_len > 0:
+        samples[-fade_out_len:] *= np.linspace(1.0, 0.0, fade_out_len, dtype=np.float32)
+
+    # 5. Buffer cushion
+    cushion = np.zeros(int(0.04 * sr), dtype=np.float32)
+    samples = np.concatenate([samples, cushion])
+
+    # 6. Peak amplitude normalization to 0.92
+    peak = float(np.max(np.abs(samples)))
+    if peak > 1e-4:
+        samples = samples * (0.92 / peak)
+
+    return samples, sr
+
+
+def _trim_audio_silence(samples, threshold=0.00015, pad_ms=120, sr=24000):
+    """Backwards-compatible alias for audio clarity processor."""
+    processed, _ = _process_audio_clarity(samples, sr=sr)
+    return processed
 
 
 def _synthesize_and_play_kokoro(kokoro, text, generation):
     """Natural, high-prosody neural speech synthesis without artificial pauses or clipped endings."""
+    global _active_stream
+    sync_voice_from_profile()
     clean_text = _compact_tts_text(text)
     if not clean_text:
         return
 
     raw_sentences = [s.strip() for s in _RE_SENTENCE_SPLIT.split(clean_text) if s.strip()]
+    if not raw_sentences:
+        raw_sentences = [clean_text]
+
     chunks = []
     current_chunk = []
     current_len = 0
     for s in raw_sentences:
-        chunk_limit = 220 if not chunks else 380
-        if current_len + len(s) + 1 > chunk_limit and current_chunk:
+        if current_len + len(s) + 1 > 350 and current_chunk:
             chunks.append(" ".join(current_chunk))
             current_chunk = [s]
             current_len = len(s)
@@ -261,36 +421,28 @@ def _synthesize_and_play_kokoro(kokoro, text, generation):
     if not chunks:
         chunks = [clean_text]
 
-    audio_queue = queue.Queue(maxsize=4)
+    audio_queue = queue.Queue(maxsize=6)
     sentinel = object()
 
     def producer():
         try:
             for chunk in chunks:
                 if not chunk or not _speech_is_current(generation):
-                    continue
-                # Ensure ending punctuation so synthesizer creates complete phoneme decay
+                    break
                 spoken_chunk = chunk if chunk.endswith((".", "!", "?", ",", ";", ":")) else chunk + "."
-                samp, sr = None, 16000
+                samp, sr = None, 24000
                 voice_info = CURATED_VOICES.get(ACTIVE_VOICE)
-
-                if voice_info and voice_info.get("engine") == "sherpa" and _USE_SHERPA:
-                    sherpa_tts = _get_sherpa_tts(voice_info["folder"], voice_info["onnx"])
-                    with _tts_lock:
-                        audio = sherpa_tts.generate(spoken_chunk, sid=0, speed=1.0)
-                        samp = np.array(audio.samples, dtype=np.float32)
-                        sr = audio.sample_rate
-                else:
-                    voice_id = voice_info["id"] if voice_info else KOKORO_VOICE
-                    with _tts_lock:
-                        samp, sr = kokoro.create(
-                            spoken_chunk,
-                            voice=voice_id,
-                            speed=KOKORO_SPEED,
-                            lang=KOKORO_LANG,
-                        )
+                voice_id = voice_info["id"] if voice_info else KOKORO_VOICE
+                lang = "en-gb" if (voice_info and voice_info.get("accent") == "GB") or str(voice_id).startswith("b") else "en-us"
+                with _tts_lock:
+                    samp, sr = kokoro.create(
+                        spoken_chunk,
+                        voice=voice_id,
+                        speed=KOKORO_SPEED,
+                        lang=lang,
+                    )
                 if samp is not None and len(samp) > 0:
-                    samp = _trim_audio_silence(samp, threshold=0.001, pad_ms=180, sr=sr)
+                    samp, sr = _process_audio_clarity(samp, sr=sr)
                     while _speech_is_current(generation):
                         try:
                             audio_queue.put((samp, sr), timeout=0.1)
@@ -305,13 +457,40 @@ def _synthesize_and_play_kokoro(kokoro, text, generation):
     t = threading.Thread(target=producer, daemon=True)
     t.start()
 
-    while True:
-        item = audio_queue.get()
-        if item is sentinel or not _speech_is_current(generation):
-            break
-        samples, sample_rate = item
-        _sd.play(samples, samplerate=sample_rate)
-        _sd.wait()
+    stream = None
+    stream_sr = None
+    try:
+        while True:
+            item = audio_queue.get()
+            if item is sentinel or not _speech_is_current(generation):
+                break
+            samples, sample_rate = item
+            if stream is None or stream_sr != sample_rate:
+                if stream is not None:
+                    try:
+                        stream.stop()
+                        stream.close()
+                    except Exception:
+                        pass
+                stream = _sd.OutputStream(samplerate=sample_rate, channels=1, dtype="float32")
+                stream.start()
+                stream_sr = sample_rate
+                with _active_stream_lock:
+                    _active_stream = stream
+
+            stream.write(samples)
+    except Exception as e:
+        logger.debug(f"[TTS Playback Note] {e}")
+    finally:
+        with _active_stream_lock:
+            if _active_stream is stream:
+                _active_stream = None
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
 
 
 def _speech_worker():
@@ -380,6 +559,12 @@ def stop_speaking() -> None:
             _speech_queue.task_done()
         except queue.Empty:
             break
+    with _active_stream_lock:
+        if _active_stream is not None:
+            try:
+                _active_stream.abort()
+            except Exception:
+                pass
     try:
         _sd.stop()
     except Exception:
@@ -389,96 +574,46 @@ def stop_speaking() -> None:
 
 
 # ────────────────────────────────────────────────────────────────
-# ── SHERPA-ONNX OFFLINE SPEECH-TO-TEXT (STT) ENGINE ────────────
+# ── OPENAI WHISPER OFFLINE SPEECH-TO-TEXT (STT) ENGINE ─────────
 # ────────────────────────────────────────────────────────────────
 
-_stt_recognizer = None
-_stt_recognizer_lock = threading.Lock()
-_STT_INIT_ATTEMPTED = False
-_STT_IS_AVAILABLE = False
-
-_STT_MODEL_DIR = os.path.join(_SHERPA_DIR, "moonshine-tiny-en-quantized")
-_STT_ENCODER_PATH = os.path.join(_STT_MODEL_DIR, "encoder_model.ort")
-_STT_DECODER_PATH = os.path.join(_STT_MODEL_DIR, "decoder_model_merged.ort")
-_STT_TOKENS_PATH = os.path.join(_STT_MODEL_DIR, "tokens.txt")
-
-_STT_DOWNLOAD_URL = (
-    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
-    "sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27.tar.bz2"
-)
-
-
-def ensure_stt_model() -> bool:
-    """Ensures offline STT model files exist; downloads the ~29MB archive if absent."""
-    if (os.path.exists(_STT_ENCODER_PATH) and
-        os.path.exists(_STT_DECODER_PATH) and
-        os.path.exists(_STT_TOKENS_PATH)):
-        return True
-
-    logger.info("[STT] Sherpa-ONNX Moonshine model not found locally. Downloading (~29MB)...")
-    try:
-        os.makedirs(os.path.dirname(_STT_MODEL_DIR), exist_ok=True)
-        archive_path = os.path.join(os.path.dirname(_STT_MODEL_DIR), "stt_download.tar.bz2")
-        urllib.request.urlretrieve(_STT_DOWNLOAD_URL, archive_path)
-
-        with tarfile.open(archive_path, "r:bz2") as tar:
-            tar.extractall(os.path.dirname(_STT_MODEL_DIR))
-
-        extracted_folder = os.path.join(
-            os.path.dirname(_STT_MODEL_DIR),
-            "sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27",
-        )
-        if os.path.exists(extracted_folder) and not os.path.exists(_STT_MODEL_DIR):
-            os.rename(extracted_folder, _STT_MODEL_DIR)
-
-        if os.path.exists(archive_path):
-            os.remove(archive_path)
-
-        logger.info("[STT] Sherpa-ONNX Moonshine model installed successfully.")
-        return True
-    except Exception as e:
-        logger.error(f"[STT] Failed to download Sherpa-ONNX model: {e}")
-        return False
+_whisper_model = None
+_whisper_model_lock = threading.Lock()
+_WHISPER_INIT_ATTEMPTED = False
+_WHISPER_IS_AVAILABLE = False
+_WHISPER_MODEL_NAME = "base.en"
 
 
 def get_stt_recognizer():
-    """Lazy-loads the Sherpa-ONNX offline recognizer."""
-    global _stt_recognizer, _STT_INIT_ATTEMPTED, _STT_IS_AVAILABLE
-    if _stt_recognizer is not None:
-        return _stt_recognizer
+    """Lazy-loads the OpenAI Whisper offline speech recognizer."""
+    global _whisper_model, _WHISPER_INIT_ATTEMPTED, _WHISPER_IS_AVAILABLE
+    if _whisper_model is not None:
+        return _whisper_model
 
-    with _stt_recognizer_lock:
-        if _stt_recognizer is not None:
-            return _stt_recognizer
-        if _STT_INIT_ATTEMPTED and not _STT_IS_AVAILABLE:
+    with _whisper_model_lock:
+        if _whisper_model is not None:
+            return _whisper_model
+        if _WHISPER_INIT_ATTEMPTED and not _WHISPER_IS_AVAILABLE:
             return None
 
-        _STT_INIT_ATTEMPTED = True
+        _WHISPER_INIT_ATTEMPTED = True
         try:
-            import sherpa_onnx
+            import whisper
         except ImportError:
-            logger.warning("[STT] sherpa-onnx not installed.")
-            _STT_IS_AVAILABLE = False
-            return None
-
-        if not ensure_stt_model():
-            _STT_IS_AVAILABLE = False
+            logger.warning("[STT] openai-whisper not installed.")
+            _WHISPER_IS_AVAILABLE = False
             return None
 
         try:
             t0 = time.time()
-            _stt_recognizer = sherpa_onnx.OfflineRecognizer.from_moonshine_v2(
-                encoder=_STT_ENCODER_PATH,
-                decoder=_STT_DECODER_PATH,
-                tokens=_STT_TOKENS_PATH,
-                num_threads=2,
-            )
-            _STT_IS_AVAILABLE = True
-            logger.info(f"[STT] Sherpa-ONNX Moonshine ready in {(time.time() - t0)*1000:.1f}ms.")
-            return _stt_recognizer
+            logger.info(f"[STT] Loading OpenAI Whisper ({_WHISPER_MODEL_NAME})...")
+            _whisper_model = whisper.load_model(_WHISPER_MODEL_NAME, device="cpu")
+            _WHISPER_IS_AVAILABLE = True
+            logger.info(f"[STT] OpenAI Whisper ({_WHISPER_MODEL_NAME}) ready in {(time.time() - t0)*1000:.1f}ms.")
+            return _whisper_model
         except Exception as e:
-            logger.error(f"[STT] Failed to load Sherpa-ONNX recognizer: {e}")
-            _STT_IS_AVAILABLE = False
+            logger.error(f"[STT] Failed to load OpenAI Whisper model: {e}")
+            _WHISPER_IS_AVAILABLE = False
             return None
 
 
@@ -490,21 +625,45 @@ def is_stt_available() -> bool:
 def get_stt_engine_name() -> str:
     """Returns descriptive name of active STT engine."""
     if is_stt_available():
-        return "Sherpa-ONNX Moonshine (Offline INT8)"
+        return f"OpenAI Whisper ({_WHISPER_MODEL_NAME})"
     return "Unavailable"
 
 
 def transcribe_samples(samples: np.ndarray, sample_rate: int = 16000) -> str:
-    """Transcribes raw float32 audio samples [-1.0, 1.0] completely offline."""
-    rec = get_stt_recognizer()
-    if rec is None or samples is None or len(samples) == 0:
+    """Transcribes raw float32 audio samples [-1.0, 1.0] completely offline with Whisper."""
+    model = get_stt_recognizer()
+    if model is None or samples is None or len(samples) == 0:
         return ""
 
-    with _stt_recognizer_lock:
-        stream = rec.create_stream()
-        stream.accept_waveform(sample_rate, samples.astype(np.float32))
-        rec.decode_stream(stream)
-        return stream.result.text.strip()
+    try:
+        samples = np.asarray(samples, dtype=np.float32)
+        # Resample to 16000 Hz if necessary
+        if sample_rate != 16000 and len(samples) > 0:
+            try:
+                import scipy.signal
+                from math import gcd
+                g = gcd(int(sample_rate), 16000)
+                samples = scipy.signal.resample_poly(samples, 16000 // g, int(sample_rate) // g).astype(np.float32)
+            except Exception:
+                pass
+
+        # Normalize audio levels if needed
+        peak = float(np.max(np.abs(samples))) if len(samples) > 0 else 0
+        if peak > 1.0:
+            samples = samples / peak
+
+        with _whisper_model_lock:
+            result = model.transcribe(
+                samples,
+                language="en",
+                fp16=False,
+                temperature=0.0,
+                condition_on_previous_text=False,
+            )
+            return (result.get("text") or "").strip()
+    except Exception as e:
+        logger.error(f"[STT] Whisper transcription error: {e}")
+        return ""
 
 
 def transcribe_audio_data(audio_data) -> str:
@@ -545,15 +704,15 @@ def transcribe_audio_bytes(audio_bytes: bytes) -> str:
 def _warmup_stt():
     def _run():
         try:
-            rec = get_stt_recognizer()
-            if rec:
-                dummy = np.zeros(1600, dtype=np.float32)
+            model = get_stt_recognizer()
+            if model:
+                dummy = np.zeros(16000, dtype=np.float32)
                 transcribe_samples(dummy, 16000)
-                logger.debug("[STT] Sherpa-ONNX STT primed.")
+                logger.debug("[STT] OpenAI Whisper STT primed.")
         except Exception:
             pass
 
-    threading.Thread(target=_run, daemon=True, name="SherpaSTT-Warmup").start()
+    threading.Thread(target=_run, daemon=True, name="WhisperSTT-Warmup").start()
 
 
 _warmup_stt()

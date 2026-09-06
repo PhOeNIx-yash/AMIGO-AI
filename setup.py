@@ -91,6 +91,15 @@ def main():
     else:
         print(" -> Kokoro Neural TTS models already present.")
 
+    # OpenAI Whisper STT Model Check
+    try:
+        import whisper
+        print(" -> Checking OpenAI Whisper base.en STT model...")
+        whisper.load_model("base.en", device="cpu")
+        print("    OpenAI Whisper base.en model is ready.")
+    except Exception as e:
+        print(f"    Whisper model check note: {e}")
+
     # Local LLM GGUF Model Check
     try:
         import local_llm

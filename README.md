@@ -1,6 +1,6 @@
 # Amigo Voice Assistant 🎙️✨
 
-A private, intelligent, and agentic personal voice assistant powered locally by the **Qwen 3.5 2B Instruct** GGUF model and **Kokoro ONNX** neural speech synthesis. 
+A private, intelligent, and agentic personal voice assistant powered locally by the **Qwen 3.5 2B Instruct** GGUF model, **OpenAI Whisper** offline speech recognition, and **Kokoro ONNX** 24kHz studio neural speech synthesis. 
 
 Amigo provides desktop automation, document intelligence (invoices, PDFs, spreadsheets), live interactive action widgets (countdown timers, stopwatches, weather telemetry), deep web browsing, app management, and an adaptive RAG-powered vector memory system — completely offline, with **zero API keys and zero cloud dependencies**.
 
@@ -9,7 +9,8 @@ Amigo provides desktop automation, document intelligence (invoices, PDFs, spread
 ## 🌟 Key Capabilities & Features
 
 - **100% Offline Local AI** — Powered by `Qwen 3.5 2B Instruct` via `llama-cpp-python` with optional CUDA GPU acceleration for near-instant inference.
-- **Neural Text-to-Speech (TTS)** — `Kokoro ONNX` delivers expressive, human-like voice synthesis locally with asynchronous streaming, with automatic fallback to native Windows SAPI.
+- **Offline Speech-to-Text (STT)** — Powered by `OpenAI Whisper` (`base.en`) for state-of-the-art voice command recognition, immune to background noise and fluent in technical jargon, gaming terms, and diverse accents.
+- **24kHz Studio Neural TTS** — `Kokoro ONNX` delivers expressive, studio-grade speech synthesis with 10 curated voices (5 Female: *Nicole, Sarah, Heart, Sky, Bella*; 5 Male: *Adam, Michael, Echo, Liam, George*), low-latency audio streaming, and built-in phonetic text expansion for numbers, acronyms, scores, dates, and currency.
 - **Curated High-End Kinetic Typography** — 4 luxury, fluid animation styles designed with Apple and Linear aesthetics:
   - **Silk Emerge (`silk_blur`)** — Apple-grade optical Gaussian blur dissipation & gentle vertical drift.
   - **Liquid Glide (`fluid_glide`)** — Organic, critically damped spring upward glide with zero cartoon bounce.
@@ -53,7 +54,7 @@ amigo-main/
 ├── start_amigo.bat         # Windows one-click dashboard launcher
 ├── requirements.txt        # Python backend dependencies
 ├── ui_server.py            # Flask REST API, SSE event streaming & UI server
-├── tts.py                  # Neural TTS engine (Kokoro ONNX / SAPI fallback)
+├── tts.py                  # Unified speech engine (Kokoro ONNX TTS & OpenAI Whisper STT)
 ├── tool_registry.py        # Central tool registry, dispatcher & action cards
 ├── rag_engine.py           # ChromaDB vector store, semantic search & prompt injection
 ├── rag_indexer.py          # Background file crawling & incremental hash indexer
@@ -160,7 +161,8 @@ Choose your preferred interaction mode:
 
 Amigo is designed from the ground up for privacy:
 - All LLM reasoning runs locally on your machine via `llama-cpp-python`.
-- All neural TTS speech generation runs locally on your CPU/GPU via `kokoro-onnx`.
+- All speech recognition (STT) runs 100% locally on your machine via `openai-whisper`.
+- All neural TTS speech generation runs locally on your machine via `kokoro-onnx`.
 - Memory vector embeddings and user profiles remain entirely on your local filesystem.
 - Zero analytics, zero data harvesting, zero tracking.
 
