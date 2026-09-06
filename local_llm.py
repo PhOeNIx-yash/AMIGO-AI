@@ -219,31 +219,26 @@ def init_local_llm(force_reload: bool = False):
 
         try:
             from llama_cpp import Llama
-            old_stderr = sys.stderr
-            sys.stderr = _devnull
-            try:
-                for fa in [True, False]:
-                    try:
-                        kwargs = {
-                            "model_path": model_file,
-                            "n_ctx": 4096,
-                            "n_gpu_layers": -1,
-                            "main_gpu": 0,
-                            "n_threads": max(1, multiprocessing.cpu_count() - 2),
-                            "n_batch": 1024,
-                            "n_ubatch": 512,
-                            "flash_attn": fa,
-                            "use_mmap": True,
-                            "chat_format": "chatml",
-                            "verbose": False,
-                        }
-                        _local_llm_instance = Llama(**kwargs)
-                        if _local_llm_instance:
-                            break
-                    except Exception:
-                        pass
-            finally:
-                sys.stderr = old_stderr
+            for fa in [True, False]:
+                try:
+                    kwargs = {
+                        "model_path": model_file,
+                        "n_ctx": 4096,
+                        "n_gpu_layers": -1,
+                        "main_gpu": 0,
+                        "n_threads": max(1, multiprocessing.cpu_count() - 2),
+                        "n_batch": 1024,
+                        "n_ubatch": 512,
+                        "flash_attn": fa,
+                        "use_mmap": True,
+                        "chat_format": "chatml",
+                        "verbose": False,
+                    }
+                    _local_llm_instance = Llama(**kwargs)
+                    if _local_llm_instance:
+                        break
+                except Exception:
+                    pass
 
             if _local_llm_instance:
                 logger.info(f"[Local AI Engine] {MODEL_NAME} loaded.")

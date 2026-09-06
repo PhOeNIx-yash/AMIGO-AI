@@ -1087,6 +1087,16 @@ def launch_server(port: int = 5000, open_browser: bool = True) -> None:
     init_reminders(speak_callback=speak, broadcast_callback=broadcaster.broadcast)
 
     try:
+        import flask.cli
+        flask.cli.show_server_banner = lambda *args, **kwargs: None
+    except Exception:
+        pass
+
+    try:
+        from werkzeug.serving import run_simple
+        run_simple("0.0.0.0", port, app, use_reloader=False, threaded=True)
+    except Exception as e:
+        logger.warning(f"[Server] run_simple fallback: {e}")
         app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
     finally:
         _cleanup_all()
