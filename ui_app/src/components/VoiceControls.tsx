@@ -296,12 +296,20 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
 
       recognition.onerror = (e: any) => {
         console.warn("Web Speech error:", e);
+        // If offline network error or speech recognition fails, fall back to offline Whisper STT
+        if (e.error === "network" || e.error === "not-allowed" || e.error === "service-not-allowed") {
+          try {
+            recognition.stop();
+          } catch (_) {}
+          speechRecognitionRef.current = null;
+        }
       };
 
       recognition.start();
       speechRecognitionRef.current = recognition;
     } catch (err) {
       console.warn("Could not start Web Speech:", err);
+      speechRecognitionRef.current = null;
     }
   };
 
@@ -380,7 +388,9 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
 
       animFrameRef.current = requestAnimationFrame(checkVolume);
 
-      if (backendConfig?.transcriptionEngine === "web-speech") {
+      // Only attempt browser Web Speech if connected online; when offline, Whisper STT handles speech directly
+      const isOnline = typeof navigator === "undefined" || navigator.onLine !== false;
+      if (backendConfig?.transcriptionEngine === "web-speech" && isOnline) {
         startWebSpeechRecognition();
       }
 

@@ -81,6 +81,8 @@ from tts import (
     stop_speaking,
     set_tts_callbacks,
     get_tts_engine_name,
+    transcribe_b64,
+    transcribe_audio_data,
 )
 from weather import get_weather_data
 import rag_engine
@@ -201,15 +203,16 @@ def _calibrate_mic_once():
 
 
 def take_command_ui(max_retries: int = 3) -> str:
-    """Listen to mic and return recognized speech lower-cased."""
+    """Listen to mic and return recognized speech lower-cased offline with Whisper."""
     _calibrate_mic_once()
     for attempt in range(max_retries):
         try:
             with sr.Microphone() as source:
                 audio = _recognizer.listen(source, timeout=8, phrase_time_limit=15)
-                query = _recognizer.recognize_google(audio, language="en-US")
-                logger.info("[Voice Recognized]: " + query)
-                return query.lower()
+                query = transcribe_audio_data(audio)
+                if query and query.strip():
+                    logger.info("[Voice Recognized Offline]: " + query)
+                    return query.lower()
         except Exception:
             if attempt < max_retries - 1:
                 time.sleep(0.5)
@@ -744,6 +747,14 @@ def api_transcribe():
     if request.method == "OPTIONS":
         return jsonify({"status": "ok"})
     data = request.get_json() or {}
+    audio_b64 = data.get("audioData") or data.get("audio") or ""
+    if audio_b64:
+        try:
+            text = transcribe_b64(audio_b64)
+            return jsonify({"transcription": text})
+        except Exception as e:
+            logger.error("[STT API] Transcription error: %s", e)
+            return jsonify({"transcription": "", "error": str(e)}), 500
     return jsonify({"transcription": data.get("text", "")})
 
 

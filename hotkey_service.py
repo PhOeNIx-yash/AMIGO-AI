@@ -172,7 +172,8 @@ def _handle_wake_action():
             with sr.Microphone() as source:
                 logger.info("[Hotkey Wake] Listening for voice command...")
                 audio = recognizer.listen(source, timeout=4.5, phrase_time_limit=10.0)
-            query = recognizer.recognize_google(audio).strip()
+            from tts import transcribe_audio_data
+            query = transcribe_audio_data(audio).strip()
             logger.info(f"[Hotkey Wake] User said: '{query}'")
         except sr.WaitTimeoutError:
             logger.info("[Hotkey Wake] Listening timed out (no speech detected).")

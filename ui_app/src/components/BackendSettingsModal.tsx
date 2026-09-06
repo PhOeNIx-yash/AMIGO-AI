@@ -43,7 +43,7 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
   const [actionWebhookUrl, setActionWebhookUrl] = useState(config.actionWebhookUrl || "");
   const [apiKey, setApiKey] = useState(config.apiKey || "");
   const [customHeaders, setCustomHeaders] = useState(config.customHeaders || "");
-  const [transcriptionEngine, setTranscriptionEngine] = useState(config.transcriptionEngine || "web-speech");
+  const [transcriptionEngine, setTranscriptionEngine] = useState(config.transcriptionEngine || "amigo-speech");
   const [autoSpeech, setAutoSpeech] = useState(config.autoSpeech !== false);
   const [thinkingEnabled, setThinkingEnabled] = useState(config.thinkingEnabled === true);
 
@@ -101,7 +101,7 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
     setActionWebhookUrl("");
     setApiKey("");
     setCustomHeaders("");
-    setTranscriptionEngine("web-speech");
+    setTranscriptionEngine("amigo-speech");
     setAutoSpeech(true);
     setThinkingEnabled(false);
     setTestResult(null);

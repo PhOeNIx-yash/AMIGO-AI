@@ -681,9 +681,27 @@ def transcribe_audio_data(audio_data) -> str:
 
 
 def transcribe_audio_bytes(audio_bytes: bytes) -> str:
-    """Transcribes audio bytes from uploaded WAV, WebM, or PCM buffer."""
+    """Transcribes audio bytes from uploaded WebM, Opus, Ogg, WAV, or PCM buffer completely offline."""
     if not audio_bytes:
         return ""
+
+    # 1. Try PyAV (handles WebM/Opus from browser MediaRecorder, OGG, WAV, MP3, AAC, FLAC)
+    try:
+        import av
+        with io.BytesIO(audio_bytes) as in_bio:
+            container = av.open(in_bio)
+            resampler = av.AudioResampler(format="flt", layout="mono", rate=16000)
+            chunks = []
+            for frame in container.decode(audio=0):
+                for rf in resampler.resample(frame):
+                    chunks.append(rf.to_ndarray()[0])
+            if chunks:
+                audio_samples = np.concatenate(chunks)
+                return transcribe_samples(audio_samples, 16000)
+    except Exception as e_av:
+        logger.debug(f"[STT] PyAV decode note: {e_av}")
+
+    # 2. Try soundfile (WAV, FLAC, OGG)
     try:
         import soundfile as sf
         with io.BytesIO(audio_bytes) as bio:
@@ -692,12 +710,30 @@ def transcribe_audio_bytes(audio_bytes: bytes) -> str:
                 audio = np.mean(audio, axis=1)
             return transcribe_samples(audio, sr)
     except Exception:
-        try:
-            samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-            return transcribe_samples(samples, 16000)
-        except Exception as e2:
-            logger.error(f"[STT] Raw audio byte transcription failed: {e2}")
-            return ""
+        pass
+
+    # 3. Fallback: Raw 16-bit PCM
+    try:
+        samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+        return transcribe_samples(samples, 16000)
+    except Exception as e2:
+        logger.error(f"[STT] Raw audio byte transcription failed: {e2}")
+        return ""
+
+
+def transcribe_b64(audio_b64: str) -> str:
+    """Decodes base64-encoded audio data and transcribes it offline with Whisper."""
+    if not audio_b64:
+        return ""
+    try:
+        import base64
+        if "," in audio_b64:
+            audio_b64 = audio_b64.split(",", 1)[1]
+        raw_bytes = base64.b64decode(audio_b64)
+        return transcribe_audio_bytes(raw_bytes)
+    except Exception as e:
+        logger.error(f"[STT] Base64 decode error: {e}")
+        return ""
 
 
 # Warm up STT in background thread

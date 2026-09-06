@@ -175,7 +175,7 @@ export default function App() {
       customHeaders: "",
       protocol: "rest",
       autoSpeech: true,
-      transcriptionEngine: "web-speech",
+      transcriptionEngine: "amigo-speech",
     };
   });
 

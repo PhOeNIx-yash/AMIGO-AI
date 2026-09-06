@@ -49,7 +49,7 @@ export interface VoiceOption {
   id: string;
   name: string;
   engine: "Kokoro";
-  gender: "Female" | "Male";
+  gender: "Female" | "Male" | "Robot";
   accent: "US" | "GB";
   desc: string;
   previewText: string;
@@ -340,7 +340,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const [endpointUrl, setEndpointUrl] = useState(backendConfig.endpointUrl || "/api/assistant/process");
   const [actionWebhookUrl, setActionWebhookUrl] = useState(backendConfig.actionWebhookUrl || "");
   const [apiKey, setApiKey] = useState(backendConfig.apiKey || "");
-  const [transcriptionEngine, setTranscriptionEngine] = useState(backendConfig.transcriptionEngine || "web-speech");
+  const [transcriptionEngine, setTranscriptionEngine] = useState(backendConfig.transcriptionEngine || "amigo-speech");
   const [autoSpeech, setAutoSpeech] = useState(backendConfig.autoSpeech !== false);
   const [thinkingEnabled, setThinkingEnabled] = useState(backendConfig.thinkingEnabled === true);
 
@@ -443,7 +443,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     onChangeVisualizerMode("ribbon");
     onChangeTextAnimationStyle("silk_blur");
     onChangePluginMode("fullscreen");
-    setTranscriptionEngine("web-speech");
+    setTranscriptionEngine("amigo-speech");
     setAutoSpeech(true);
     setThinkingEnabled(false);
     setEndpointUrl("/api/assistant/process");
