@@ -172,13 +172,6 @@ const FolderIcon = () => (
   </svg>
 );
 
-const WikipediaIcon = () => (
-  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-    <rect x="2" y="2" width="20" height="20" rx="4" fill="#202124" />
-    <path d="M6 7l3.5 10L12 9l2.5 8L18 7" stroke="#FFFFFF" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-);
-
 const CpuIcon = () => (
   <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
     <rect x="4" y="4" width="16" height="16" rx="3" fill="#6366F1" />
@@ -206,7 +199,6 @@ const AppIcon: React.FC<{ name: string }> = ({ name }) => {
   if (n.includes("notepad") || n.includes("text") || n.includes("note") || n.includes("editor")) return <NotepadIcon />;
   if (n.includes("calc")) return <CalculatorIcon />;
   if (n.includes("calendar") || n.includes("schedule")) return <CalendarIcon />;
-  if (n.includes("wiki")) return <WikipediaIcon />;
   if (n.includes("folder") || n.includes("explorer") || n.includes("file")) return <FolderIcon />;
   if (n.includes("camera") || n.includes("photo")) return <CameraIcon />;
   if (n.includes("weather")) return <WeatherIcon />;

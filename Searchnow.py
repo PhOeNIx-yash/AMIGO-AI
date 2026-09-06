@@ -96,12 +96,11 @@ def get_stock_price(symbol_or_name: str) -> str:
     return ""
 
 
-def scrape_web_info(query: str, max_results: int = 3) -> str:
+def scrape_web_info(query: str, max_results: int = 4) -> str:
     """
     Fast, reliable, free web search & fact collector.
     1. Checks stock ticker / quote if financial keywords are present.
-    2. Uses DDGS (DuckDuckGo Search) to retrieve verified web snippets (clean JSON, TLS spoofed, no rate-limits).
-    3. Falls back to Wikipedia summary if needed for entity ground truth.
+    2. Uses DDGS to retrieve verified web snippets (excludes Wikipedia articles).
     """
     if not query or not query.strip():
         return ""
@@ -118,32 +117,30 @@ def scrape_web_info(query: str, max_results: int = 3) -> str:
             if price_fact := get_stock_price(subject):
                 snippets.append(price_fact)
 
-    # 2. DDGS Web Search (Fast, Structured, Free)
+    # 2. DDGS Web Search (Filtered to exclude Wikipedia)
     try:
         from ddgs import DDGS
-        ddgs_client = DDGS(timeout=5)
-        results = list(ddgs_client.text(search_term, max_results=max_results))
+        ddgs_client = DDGS(timeout=6)
+        # Explicitly exclude wikipedia from results
+        ddgs_query = f"{search_term} -site:wikipedia.org"
+        results = list(ddgs_client.text(ddgs_query, max_results=max_results + 2))
         for r in results:
+            href = (r.get("href") or "").lower()
             title = (r.get("title") or "").strip()
             body = (r.get("body") or "").strip()
+
+            # Strict guard against Wikipedia articles
+            if "wikipedia.org" in href or "wikipedia" in title.lower():
+                continue
+
             if body and len(body) > 30:
                 snippet = f"{title}: {body}" if title else body
                 if snippet not in snippets:
                     snippets.append(snippet)
+            if len(snippets) >= max_results:
+                break
     except Exception as e:
         logger.debug(f"[DDGS Error]: {e}")
-
-    # 3. Wikipedia Fallback (Instant authoritative facts for entities, organizations, people, concepts)
-    if len(snippets) < 2:
-        try:
-            import wikipedia
-            wiki_summary = wikipedia.summary(search_term, sentences=3, auto_suggest=True)
-            if wiki_summary and len(wiki_summary.strip()) > 40:
-                wiki_fact = f"Wikipedia ({search_term}): {wiki_summary.strip()}"
-                if wiki_fact not in snippets:
-                    snippets.insert(0, wiki_fact)
-        except Exception:
-            pass
 
     return " | ".join(snippets)[:3000] if snippets else ""
 
