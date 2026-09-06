@@ -104,9 +104,9 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
           switch (activeStyle) {
             case "silk_blur":
               // 1. Silk Emerge: Apple-grade optical Gaussian blur dissipation & gentle drift
-              initialProps = { opacity: 0, y: 10, filter: "blur(12px)", scale: 0.98 };
+              initialProps = { opacity: 0, y: 10, filter: "blur(4px)", scale: 0.98 };
               animateProps = { opacity: 1, y: 0, filter: "blur(0px)", scale: 1 };
-              transitionProps = { duration: 0.52, delay, ease: [0.16, 1, 0.3, 1] };
+              transitionProps = { duration: 0.42, delay, ease: [0.16, 1, 0.3, 1] };
               break;
 
             case "fluid_glide":
@@ -150,9 +150,9 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
               break;
 
             default:
-              initialProps = { opacity: 0, y: 8, filter: "blur(8px)" };
+              initialProps = { opacity: 0, y: 8, filter: "blur(3px)" };
               animateProps = { opacity: 1, y: 0, filter: "blur(0px)" };
-              transitionProps = { duration: 0.45, delay, ease: [0.16, 1, 0.3, 1] };
+              transitionProps = { duration: 0.4, delay, ease: [0.16, 1, 0.3, 1] };
               break;
           }
 
@@ -174,7 +174,7 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
                   : "text-slate-900"
               }`}
               style={{
-                willChange: "transform, opacity, filter",
+                willChange: "transform, opacity",
                 ...(isHighlighted ? highlightedStyle : {}),
                 ...customWordStyle,
                 overflowWrap: "anywhere",

@@ -315,6 +315,7 @@ export default function App() {
   const [assistantData, setAssistantData] = useState<AssistantResponse | null>(null);
   const [selectedContact, setSelectedContact] = useState<ContactItem | undefined>(undefined);
   const [loading, setLoading] = useState<boolean>(false);
+  const loadingRef = useRef<boolean>(false);
 
   // Real-time bidirectional SSE sync with Amigo Python voice loop & server events
   useEffect(() => {
@@ -334,7 +335,9 @@ export default function App() {
                 setState("listening");
               } else if (s === "idle") {
                 setIsListening(false);
-                setState((current) => (current === "action_card" || current === "completed") ? current : "idle");
+                if (!loadingRef.current) {
+                  setState((current) => (current === "action_card" || current === "completed") ? current : "idle");
+                }
               } else if (s === "speaking") {
                 setState("completed");
               }
@@ -462,7 +465,9 @@ export default function App() {
     const effectivePrompt = prompt.trim() || (attachment ? `Analyze ${attachment.filename}` : "");
     if (!effectivePrompt) return;
 
+    loadingRef.current = true;
     setActivePrompt(effectivePrompt);
+    activePromptRef.current = effectivePrompt;
     setDisplayText(effectivePrompt);
     setState("processing");
     setLoading(true);
@@ -471,6 +476,7 @@ export default function App() {
       const data = await processVoiceCommand(effectivePrompt, backendConfig, undefined, attachment);
       setAssistantData(data);
       setLoading(false);
+      loadingRef.current = false;
 
       // Update center stage with the full real assistant response text
       const resultText = data.speechReply || data.executionSummary?.details || data.displayTitle || effectivePrompt;
@@ -508,6 +514,7 @@ export default function App() {
     } catch (err) {
       console.warn("Assistant processing fallback:", err);
       setLoading(false);
+      loadingRef.current = false;
       setState("completed");
     }
   };
@@ -823,8 +830,8 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Main Central Spoken / Heading Text (Hidden during action execution to ensure single pill focus) */}
-                  {state !== "action_card" && !(isActionIntent(activePrompt) && (state === "processing" || state === "working")) && (
+                  {/* Main Central Spoken / Heading Text */}
+                  {state !== "action_card" && (
                     <div className="text-center max-w-2xl mx-auto mb-4 sm:mb-6 px-4">
                       {state === "listening" && liveTranscript ? (
                         <div className="flex min-w-0 w-full flex-col items-center px-2">
@@ -854,14 +861,18 @@ export default function App() {
                           title={state === "idle" ? "Click to cycle greeting phrase" : undefined}
                         >
                           <KineticHeading
-                            text={state === "processing" ? (activePrompt || "Thinking...") : displayText}
+                            text={
+                              state === "processing" || state === "working"
+                                ? (activePrompt || "Thinking...")
+                                : (displayText || greetingText)
+                            }
                             isDark={isDark}
                             colorTheme={colorTheme}
                             animationStyle={textAnimationStyle}
                             className={`${
-                              displayText.split(" ").length > 30
+                              (displayText || "").split(" ").length > 30
                                 ? "text-sm sm:text-base md:text-lg leading-relaxed font-normal"
-                                : displayText.split(" ").length > 14
+                                : (displayText || "").split(" ").length > 14
                                 ? "text-base sm:text-xl md:text-2xl leading-snug font-medium"
                                 : "text-xl sm:text-2xl md:text-3xl font-medium tracking-tight leading-snug"
                             } group-hover:opacity-90 transition-opacity`}

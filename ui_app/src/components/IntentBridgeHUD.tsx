@@ -416,6 +416,16 @@ export const IntentBridgeHUD: React.FC<IntentBridgeHUDProps> = ({
   const isFailed = status === "failed" || statusText?.toLowerCase().includes("failed");
   const isSuccess = isCompleted && !isOffline && !isFailed;
 
+  // Auto-dismiss completed HUD pill after 3.5 seconds to restore clean view
+  React.useEffect(() => {
+    if (isCompleted && onDismiss) {
+      const timer = setTimeout(() => {
+        onDismiss();
+      }, 3500);
+      return () => clearTimeout(timer);
+    }
+  }, [isCompleted, onDismiss]);
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 10, scale: 0.92 }}
