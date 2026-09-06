@@ -251,10 +251,15 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
   const streamRef = useRef<MediaStream | null>(null);
   const speechRecognitionRef = useRef<any>(null);
   const miniCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const interimTimerRef = useRef<any>(null);
 
   // Clean up on unmount
   useEffect(() => {
     return () => {
+      if (interimTimerRef.current) {
+        clearInterval(interimTimerRef.current);
+        interimTimerRef.current = null;
+      }
       stopRecordingAndAnalysis();
     };
   }, []);
@@ -388,13 +393,13 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
 
       animFrameRef.current = requestAnimationFrame(checkVolume);
 
-      // Only attempt browser Web Speech if connected online; when offline, Whisper STT handles speech directly
-      const isOnline = typeof navigator === "undefined" || navigator.onLine !== false;
-      if (backendConfig?.transcriptionEngine === "web-speech" && isOnline) {
+      // 1. Real-time visual speech streaming: start browser Web Speech whenever available
+      const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (SpeechRec) {
         startWebSpeechRecognition();
       }
 
-      // Capture audio chunks for STT
+      // 2. Capture audio chunks for Whisper offline STT
       audioChunksRef.current = [];
       const options = { mimeType: "audio/webm" };
       let recorder: MediaRecorder;
@@ -410,19 +415,59 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
         }
       };
 
-      recorder.onstop = async () => {
-        const spoken = liveTranscriptRef.current.trim();
-        if (spoken) {
-          onProcessCommand(spoken);
-          updateTranscript("");
+      // 3. Periodic real-time background transcription ticker:
+      // If Web Speech is inactive or offline, periodically slice current audio and transcribe with Whisper
+      if (interimTimerRef.current) {
+        clearInterval(interimTimerRef.current);
+      }
+      let isTranscribingChunk = false;
+      interimTimerRef.current = setInterval(async () => {
+        // If Web Speech is actively providing live text on screen, skip Whisper interim calls
+        if (liveTranscriptRef.current && liveTranscriptRef.current.trim().length > 0) {
           return;
         }
+        if (isTranscribingChunk || audioChunksRef.current.length === 0) {
+          return;
+        }
+        const currentBlob = new Blob(audioChunksRef.current, {
+          type: recorder.mimeType || "audio/webm",
+        });
+        if (currentBlob.size < 2500) return; // Need at least ~0.6s audio
+        isTranscribingChunk = true;
+        try {
+          const partial = await transcribeAudio(
+            currentBlob,
+            backendConfig?.transcriptionUrl,
+            backendConfig?.apiKey
+          );
+          if (partial && partial.trim() && !liveTranscriptRef.current) {
+            updateTranscript(partial.trim());
+          }
+        } catch (_) {
+        } finally {
+          isTranscribingChunk = false;
+        }
+      }, 1200);
 
+      recorder.onstop = async () => {
+        if (interimTimerRef.current) {
+          clearInterval(interimTimerRef.current);
+          interimTimerRef.current = null;
+        }
+
+        const spoken = liveTranscriptRef.current.trim();
         const audioBlob = new Blob(audioChunksRef.current, {
           type: recorder.mimeType || "audio/webm",
         });
 
         if (audioBlob.size > 0) {
+          // If user configured web-speech and we already have real-time spoken text, process directly
+          if (spoken && backendConfig?.transcriptionEngine === "web-speech") {
+            onProcessCommand(spoken);
+            updateTranscript("");
+            return;
+          }
+
           setIsTranscribing(true);
           try {
             const text = await transcribeAudio(
@@ -430,15 +475,22 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
               backendConfig?.transcriptionUrl,
               backendConfig?.apiKey
             );
-            if (text && text.trim()) {
-              onProcessCommand(text.trim());
+            const finalText = (text && text.trim()) || spoken;
+            if (finalText) {
+              onProcessCommand(finalText);
             }
           } catch (err: any) {
             console.warn("Transcription error:", err);
+            if (spoken) {
+              onProcessCommand(spoken);
+            }
           } finally {
             setIsTranscribing(false);
             updateTranscript("");
           }
+        } else if (spoken) {
+          onProcessCommand(spoken);
+          updateTranscript("");
         }
       };
 
@@ -454,6 +506,10 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
     if (animFrameRef.current) {
       cancelAnimationFrame(animFrameRef.current);
       animFrameRef.current = null;
+    }
+    if (interimTimerRef.current) {
+      clearInterval(interimTimerRef.current);
+      interimTimerRef.current = null;
     }
     audioBus.emit(0);
 
