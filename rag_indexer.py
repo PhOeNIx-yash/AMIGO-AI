@@ -199,11 +199,6 @@ class RAGIndexer:
 
             self._save_hashes()
 
-            # Update profile stats
-            if self._rag:
-                profile = self._rag.load_profile()
-                profile.setdefault("stats", {})["rag_indexed_files"] = indexed + skipped
-                self._rag.save_profile(profile)
 
         finally:
             duration = round(time.time() - start_time, 1)

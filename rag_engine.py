@@ -167,35 +167,8 @@ def _col(name: str):
 
 def _default_profile() -> dict:
     return {
-        "identity": {"name": "", "role": ""},
+        "identity": {"name": ""},
         "ui_settings": {},
-        "preferences": {
-
-            "favorite_artists": [],
-            "favorite_genres": [],
-            "favorite_city": "",
-            "theme": "dark",
-            "preferred_style": "conversational",
-            "rag_scan_dirs": [],
-            "language": "en-us",
-        },
-        "active_state": {
-            "current_media": None,
-            "active_app": {"name": "", "timestamp": None},
-            "last_search": {"query": "", "timestamp": None},
-            "active_subject": {"name": "", "category": "", "timestamp": None},
-            "active_file": {"path": "", "name": "", "timestamp": None},
-        },
-        "stats": {
-            "total_turns": 0,
-            "session_count": 0,
-            "last_seen": None,
-            "clipboard_uses": 0,
-            "screen_reads": 0,
-            "top_tools": {},
-            "rag_indexed_files": 0,
-            "rag_indexed_conversations": 0,
-        },
     }
 
 
@@ -277,12 +250,18 @@ def _is_expired(ts_str: str | None, ttl: int) -> bool:
         return True
 
 
-def get_active_state(clean_expired: bool = True) -> dict:
-    """Returns active state slots, auto-cleaning expired entries."""
-    state = load_profile().get("active_state", {})
-    if not isinstance(state, dict):
-        return {}
+_ACTIVE_STATE: dict = {
+    "current_media": None,
+    "active_app": {"name": "", "timestamp": None},
+    "last_search": {"query": "", "timestamp": None},
+    "active_subject": {"name": "", "category": "", "timestamp": None},
+    "active_file": {"path": "", "name": "", "timestamp": None},
+}
 
+
+def get_active_state(clean_expired: bool = True) -> dict:
+    """Returns active state slots from in-memory cache, auto-cleaning expired entries."""
+    state = _ACTIVE_STATE
     if clean_expired:
         media = state.get("current_media")
         if media and isinstance(media, dict) and _is_expired(media.get("timestamp"), MEDIA_STATE_TTL):
@@ -308,14 +287,12 @@ def get_active_state(clean_expired: bool = True) -> dict:
 
 
 def update_active_state(slot: str, data: dict) -> None:
-    """Update an active-state slot in profile."""
+    """Update an active-state slot in memory."""
     if not slot or not isinstance(data, dict):
         return
-    profile = load_profile()
     slot_data = dict(data)
     slot_data["timestamp"] = datetime.datetime.now().isoformat()
-    profile.setdefault("active_state", {})[slot] = slot_data
-    save_profile(profile)
+    _ACTIVE_STATE[slot] = slot_data
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -567,18 +544,6 @@ def add_conversation(
 
     # ── 4. Extract user profile updates ──
     extract_user_profile_updates(user_msg, remember=remember)
-
-    # ── 5. Update profile stats ──
-    profile = load_profile()
-    stats = profile.setdefault("stats", {})
-    stats["total_turns"] = stats.get("total_turns", 0) + 1
-    stats["last_seen"] = timestamp
-    stats["rag_indexed_conversations"] = stats.get("rag_indexed_conversations", 0) + 1
-    if clipboard_used:
-        stats["clipboard_uses"] = stats.get("clipboard_uses", 0) + 1
-    top_tools = stats.setdefault("top_tools", {})
-    top_tools[tool] = top_tools.get(tool, 0) + 1
-    save_profile(profile)
 
 
 def get_recent_conversations(count: int = 6) -> list[dict]:
