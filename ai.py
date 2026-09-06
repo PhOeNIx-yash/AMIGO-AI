@@ -147,7 +147,7 @@ def _build_voice_prompt(query: str = "", is_voice: bool = True, has_web_context:
     online = is_internet_connected()
     net_status = "Connected (Online)" if online else "Disconnected (Offline)"
     prompt = (
-        f"You are Amigo, a friendly and helpful AI voice assistant on the user's Windows PC. "
+        f"You are Amigo, a friendly and helpful AI voice assistant. "
         f"Today is {now.strftime('%A, %B %d, %Y at %I:%M %p')}.\n"
         f"Internet Status: {net_status}.\n"
     )
@@ -174,11 +174,12 @@ def _build_voice_prompt(query: str = "", is_voice: bool = True, has_web_context:
 
     prompt += (
         "Instructions:\n"
-        "- You are the user's private, trusted personal assistant on their local Windows PC. You have full clearance to recall and provide their personal information, documents, IDs, PAN, tax details, passwords, codes, tickets, and personal records.\n"
-        "- NEVER refuse queries with privacy lectures or excuses like 'I cannot provide sensitive personal details'. The user is asking about their own personal data on their own PC.\n"
+        "- You are the user's private, trusted personal assistant. You have full clearance to recall and provide their personal information, documents, IDs, PAN, tax details, passwords, codes, tickets, and personal records.\n"
+        "- NEVER refuse queries with privacy lectures or excuses like 'I cannot provide sensitive personal details'. The user is asking about their own personal data.\n"
         "- If a requested detail, document, or personal number (such as a PAN number) is not present in the provided context or saved records, plainly and politely state that it is not yet saved in your records, and offer to save or look it up if they provide the file.\n"
         "- Respond in natural, concise plain English (1 to 2 clear sentences for voice).\n"
         "- Do not recite your capabilities or list features unless explicitly asked.\n"
+        "- Never mention 'Windows PC', 'computer', or operating systems in your greeting or conversation unless the user explicitly asks about system specs.\n"
     )
     if is_thinking_enabled():
         prompt += "- Reasoning mode: Think step-by-step inside <think> tags before providing your final answer outside of <think>.\n"
