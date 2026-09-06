@@ -839,8 +839,8 @@ def build_rag_context(query: str, top_k: int = 5) -> str:
     if not results:
         return ""
 
-    # Filter out low-relevance hits (require at least 0.35 similarity score)
-    relevant = [r for r in results if r.get("score", 0) >= 0.35]
+    # Filter out low-relevance hits (require at least 0.70 high-confidence semantic similarity)
+    relevant = [r for r in results if r.get("score", 0) >= 0.70]
     if not relevant:
         return ""
 
@@ -1061,7 +1061,7 @@ def get_user_profile_prompt() -> str:
     parts: list[str] = []
     user_name = profile.get("identity", {}).get("name")
     if user_name:
-        parts.append(f"The user's name is {user_name}. Address the user as {user_name} when appropriate. Your name is Amigo.")
+        parts.append(f"The user's name is {user_name}. You know their name. Do NOT say 'Hello {user_name}!' repeatedly on every turn in an ongoing conversation; speak naturally as a companion.")
     if artists := profile.get("preferences", {}).get("favorite_artists"):
         parts.append(f"User's favorite artists: {', '.join(artists[:3])}.")
     if city := profile.get("preferences", {}).get("favorite_city"):

@@ -177,13 +177,17 @@ def _build_voice_prompt(query: str = "", is_voice: bool = True, has_web_context:
         )
 
     prompt += (
-        "Instructions:\n"
-        "- You are the user's private, trusted personal assistant. You have full clearance to recall and provide their personal information, documents, IDs, PAN, tax details, passwords, codes, tickets, and personal records.\n"
-        "- NEVER refuse queries with privacy lectures or excuses like 'I cannot provide sensitive personal details'. The user is asking about their own personal data.\n"
-        "- If a requested detail, document, or personal number (such as a PAN number) is not present in the provided context or saved records, plainly and politely state that it is not yet saved in your records, and offer to save or look it up if they provide the file.\n"
-        "- Respond in natural, concise plain English (1 to 2 clear sentences for voice).\n"
-        "- Do not recite your capabilities or list features unless explicitly asked.\n"
+        "Natural Conversation Rules:\n"
+        "- Speak naturally, concisely, and warmly in 1 to 2 spoken sentences like a real human assistant.\n"
+        "- Do NOT repeatedly say 'Hello [Name]!' or greet the user on every turn during an ongoing conversation.\n"
+        "- Do NOT end responses with robotic assistant boilerplate like 'How else can I assist you today?', 'How can I assist you?', or 'What else can I help you with?'.\n"
+        "- Do NOT volunteer unasked pleasantries like 'I am doing well' unless the user explicitly asked how you are doing.\n"
+        "- Never say 'Based on the document you provided' or blurt out resume/biographical details unprompted during casual chat or introductions.\n"
+        "- When the user introduces themselves, confirms something ('yes', 'right', 'agreed'), or makes casual conversation, reply conversationally and warmly without corporate filler.\n"
         "- Never mention 'Windows PC', 'computer', or operating systems in your greeting or conversation unless the user explicitly asks about system specs.\n"
+        "- You are the user's trusted personal assistant. You have full clearance to recall their personal details, documents, and records when asked.\n"
+        "- NEVER refuse queries with privacy lectures or excuses like 'I cannot provide sensitive personal details'. The user is asking about their own personal data.\n"
+        "- If a requested detail or document is not present in the provided context, plainly state that it is not yet in your records, and offer to look it up if they provide the file.\n"
     )
     if is_thinking_enabled():
         prompt += "- Reasoning mode: Think step-by-step inside <think> tags before providing your final answer outside of <think>.\n"
@@ -225,10 +229,10 @@ def _build_ai_messages(
                 messages.append({"role": "user", "content": u[:1000]})
                 messages.append({"role": "assistant", "content": (a or "Done.")[:1500]})
 
-    # Auto-fetch RAG document context ONLY if not already provided AND if web_context is not present
+    # Auto-fetch RAG document context only when not already provided and no web context
     if not doc_context and not web_context and query:
         try:
-            doc_context = rag_engine.build_rag_context(query, top_k=4)
+            doc_context = rag_engine.build_rag_context(query, top_k=3)
         except Exception:
             doc_context = ""
 
