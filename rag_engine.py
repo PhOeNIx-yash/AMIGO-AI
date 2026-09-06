@@ -839,8 +839,8 @@ def build_rag_context(query: str, top_k: int = 5) -> str:
     if not results:
         return ""
 
-    # Filter out low-relevance hits (require at least 0.70 high-confidence semantic similarity)
-    relevant = [r for r in results if r.get("score", 0) >= 0.70]
+    # Filter out low-relevance hits (require at least 0.35 similarity score)
+    relevant = [r for r in results if r.get("score", 0) >= 0.35]
     if not relevant:
         return ""
 

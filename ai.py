@@ -229,12 +229,6 @@ def _build_ai_messages(
                 messages.append({"role": "user", "content": u[:1000]})
                 messages.append({"role": "assistant", "content": (a or "Done.")[:1500]})
 
-    # Auto-fetch RAG document context only when not already provided and no web context
-    if not doc_context and not web_context and query:
-        try:
-            doc_context = rag_engine.build_rag_context(query, top_k=3)
-        except Exception:
-            doc_context = ""
 
     # Build user content with any injected context
     user_parts: list[str] = []
