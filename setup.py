@@ -114,17 +114,8 @@ def main():
         else:
             print(f" -> Downloading {model_info['name']} GGUF model...")
             local_llm.ensure_model_downloaded()
-        # Multimodal Vision Projector Check
-        print(" -> Checking local vision projector (mmproj)...")
-        if local_llm.is_vision_ready():
-            print("    Native vision projector is ready.")
-        else:
-            print(" -> Downloading Qwen 3.5 2B vision projector (~640 MB)...")
-            local_llm.ensure_mmproj_downloaded()
-            if local_llm.is_vision_ready():
-                print("    Vision projector downloaded successfully.")
-            else:
-                print("    Vision projector will download on first vision query.")
+        # Vision Configuration Check
+        print(" -> Screen Vision: Configured with native Windows Media OCR engine (winocr).")
     except Exception as e:
         print(f"    LLM model check note: {e}")
 

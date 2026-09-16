@@ -16,6 +16,8 @@ from local_llm import (
     stream_sentence_chunks,
     sanitize_for_tts,
     get_clipboard_text,
+    is_thinking_enabled,
+    set_thinking_enabled,
 )
 
 # ── RAG Engine (the new memory backbone) ──
@@ -123,18 +125,7 @@ def get_active_context_prompt() -> str:
 #  LLM Prompt Building  (now RAG-enhanced)
 # ═══════════════════════════════════════════════════════════════
 
-_thinking_enabled: bool = False
 _last_thought: str = ""
-
-def set_thinking_enabled(enabled: bool) -> None:
-    """Set whether deep chain-of-thought reasoning (<think>) is permitted."""
-    global _thinking_enabled
-    _thinking_enabled = bool(enabled)
-    logger.info("[AI Config] Deep Thinking Mode: %s", "ENABLED" if _thinking_enabled else "DISABLED")
-
-def is_thinking_enabled() -> bool:
-    """Return whether deep thinking mode is currently active."""
-    return _thinking_enabled
 
 def get_last_thought() -> str:
     """Return the most recent reasoning/thought block, if any."""
@@ -225,9 +216,9 @@ def _build_ai_messages(
         for c in recent:
             u = (c.get("user", "") or "").strip()
             a = (c.get("assistant", "") or "").strip()
-            if u:
+            if u and a and a != "I am here and ready to help.":
                 messages.append({"role": "user", "content": u[:1000]})
-                messages.append({"role": "assistant", "content": (a or "Done.")[:1500]})
+                messages.append({"role": "assistant", "content": a[:1500]})
 
 
     # Build user content with any injected context
@@ -278,9 +269,10 @@ def get_ai_response(
 
     messages = _build_ai_messages(query, use_memory=use_memory, web_context=web_context, doc_context=doc_context)
     prompt = _build_voice_prompt(query=query, is_voice=is_voice, has_web_context=bool(web_context))
-    max_tokens = 1024
+    thinking_active = is_thinking_enabled()
+    max_tokens = 2048 if thinking_active else 512
     temp = 0.0 if web_context else (0.1 if doc_context else 0.5)
-    response = query_local_llm(messages, system_prompt=prompt, max_tokens=max_tokens, temperature=temp)
+    response = query_local_llm(messages, system_prompt=prompt, max_tokens=max_tokens, temperature=temp, thinking=thinking_active, sanitize=False)
     response = _RE_SPEAKER_PREFIX.sub("", response).strip()
 
     # Extract thought block if present
@@ -295,8 +287,11 @@ def get_ai_response(
         # If output was truncated inside unclosed thinking tags, query model directly for a plain answer
         retry_res = query_local_llm(
             f"Respond directly and concisely to: {query}",
-            system_prompt="You are Amigo, a helpful voice assistant. Speak in clear, plain sentences. Do not use <think> tags.",
+            system_prompt="You are Amigo, a helpful voice assistant. Speak in clear, plain sentences.",
             max_tokens=256,
+            temperature=0.3,
+            thinking=False,
+            sanitize=False,
         )
         cleaned = sanitize_for_tts(retry_res)
 
@@ -318,10 +313,11 @@ def get_ai_response_stream(
 
     messages = _build_ai_messages(query, use_memory=use_memory, web_context=web_context, doc_context=doc_context)
     prompt = _build_voice_prompt(query=query, is_voice=is_voice, has_web_context=bool(web_context))
-    max_tokens = 256 if is_voice else 512
+    thinking_active = is_thinking_enabled()
+    max_tokens = 2048 if thinking_active else (256 if is_voice else 512)
     temp = 0.0 if web_context else (0.1 if doc_context else 0.6)
     token_gen = query_local_llm_stream(
-        messages, system_prompt=prompt, max_tokens=max_tokens, interruption_event=interruption_event, temperature=temp,
+        messages, system_prompt=prompt, max_tokens=max_tokens, interruption_event=interruption_event, temperature=temp, thinking=thinking_active,
     )
 
     for sentence in stream_sentence_chunks(token_gen, interruption_event=interruption_event):

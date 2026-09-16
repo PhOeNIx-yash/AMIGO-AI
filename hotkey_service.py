@@ -209,7 +209,7 @@ def _handle_wake_action():
             if window_title:
                 prompt = f"The user is viewing '{window_title}'. Question: {query}"
 
-            # Try native Qwen 3.5 2B multimodal vision first
+            # Try native multimodal vision if available
             reply = local_llm.query_local_vision(
                 screenshot,
                 prompt=prompt,

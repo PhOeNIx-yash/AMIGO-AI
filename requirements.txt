@@ -17,7 +17,7 @@ sounddevice>=0.4.6             # Real-time audio playback backend
 numpy>=1.24.0                  # Audio array processing for Kokoro ONNX
 pywin32>=306                   # Windows shell integrations
 
-# ── Local LLM Engine (Qwen 3.5 2B Instruct) ───────────────────
+# ── Local LLM Engine (MiniCPM 5 2B) ───────────────────
 llama-cpp-python>=0.2.80       # Local GGUF quantized model inference (CPU/CUDA)
 huggingface-hub>=0.23.0        # Automatic model downloading from HuggingFace
 

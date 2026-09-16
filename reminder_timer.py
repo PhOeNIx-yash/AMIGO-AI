@@ -50,12 +50,13 @@ def show_desktop_notification(title: str, message: str) -> None:
 # ---------------------------------------------------------------------------
 
 def parse_relative_seconds(text: str) -> Optional[float]:
-    """Parses natural time expressions (e.g. '10s', '5 minutes', '1 hour 30 mins', 'half an hour')."""
+    """Parses natural time expressions (e.g. '10s', '5 minutes', '1 hour 30 mins', 'half an hour', '15-minute')."""
     if not text:
         return None
     clean = str(text).lower().replace("an hour", "1 hour").replace("half an hour", "30 minutes").replace("a minute", "1 minute")
+    clean = clean.replace("-", " ")
     total = 0.0
-    for num, unit in re.findall(r"(\d+(?:\.\d+)?)\s*(days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)", clean):
+    for num, unit in re.findall(r"(\d+(?:\.\d+)?)\s*(days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b", clean):
         try:
             val = float(num)
             mult = 86400 if unit.startswith("d") else (3600 if unit.startswith("h") else (60 if unit.startswith("m") else 1))
@@ -65,12 +66,14 @@ def parse_relative_seconds(text: str) -> Optional[float]:
     if total > 0:
         return total
 
-    # Raw number fallback (e.g. "10")
+    # Raw number fallback (e.g. "10") ONLY if input is purely numeric
     num_only = re.sub(r"[^\d.]", "", clean)
-    try:
-        return float(num_only) if num_only else None
-    except ValueError:
-        return None
+    if num_only and re.fullmatch(r"\s*\d+(?:\.\d+)?\s*", clean):
+        try:
+            return float(num_only)
+        except ValueError:
+            pass
+    return None
 
 
 def parse_target_datetime(time_str: str, now: Optional[datetime.datetime] = None) -> Optional[datetime.datetime]:
@@ -183,6 +186,12 @@ def init_reminders(speak_callback=None, broadcast_callback=None) -> None:
 def handle_set_timer(params: dict, query: str = "") -> str:
     """Sets a countdown timer."""
     label = str(params.get("label") or "").strip()
+    if not label or label in ("timer", "countdown", "stopwatch"):
+        if m := re.search(r"\b(?:for|to)\s+([a-zA-Z0-9_\s]+)$", query, re.IGNORECASE):
+            cand = m.group(1).strip()
+            if not parse_relative_seconds(cand):
+                label = cand
+
     dur = parse_relative_seconds(query) or parse_relative_seconds(str(params.get("duration") or params.get("seconds") or label))
     if not dur or dur <= 0:
         return "Please specify a duration for the timer, like 1 minute or 30 seconds."

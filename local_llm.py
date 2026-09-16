@@ -1,9 +1,10 @@
 """
 Local LLM Module for Amigo Voice Assistant.
-Executes Qwen 3.5 2B Instruct locally via llama-cpp-python on Windows.
+Executes MiniCPM 5 2B locally via llama-cpp-python on Windows.
 """
 
 import base64
+import contextvars
 import datetime
 import io
 import json
@@ -40,43 +41,36 @@ def get_clipboard_text() -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Qwen 3.5 2B Model Configuration
+# Model Configuration (MiniCPM 5 2B)
 # ---------------------------------------------------------------------------
 MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "models"))
-MODEL_NAME = "Qwen 3.5 2B Instruct"
-MODEL_FILENAME = "qwen3.5-2b-instruct-q4_k_m.gguf"
+
+MODEL_NAME = "MiniCPM 5 2B"
+MODEL_FILENAME = "MiniCPM5-2B-Q4_K_M.gguf"
 MODEL_PATH = os.path.join(MODEL_DIR, MODEL_FILENAME)
-
 MODEL_TARGETS = [
-    ("bartowski/Qwen_Qwen3.5-2B-GGUF", "Qwen3.5-2B-Q4_K_M.gguf"),
-    ("unsloth/Qwen3.5-2B-GGUF", "Qwen3.5-2B-Q4_K_M.gguf"),
-    ("daniloreddy/Qwen3.5-2B_GGUF", "Qwen3.5-2B-Q4_K_M.gguf"),
+    ("openbmb/MiniCPM5-2B-GGUF", "MiniCPM5-2B-Q4_K_M.gguf"),
+    ("bartowski/MiniCPM5-2B-GGUF", "MiniCPM5-2B-Q4_K_M.gguf"),
+    ("Abiray/MiniCPM5-2B-GGUF", "MiniCPM5-2B-Q4_K_M.gguf"),
 ]
 
-# Multimodal Projector (Vision) Configuration
-MMPROJ_FILENAME = "qwen3.5-2b-mmproj.gguf"
-MMPROJ_PATH = os.path.join(MODEL_DIR, MMPROJ_FILENAME)
-MMPROJ_TARGETS = [
-    ("bartowski/Qwen_Qwen3.5-2B-GGUF", "mmproj-Qwen_Qwen3.5-2B-bf16.gguf"),
-    ("unsloth/Qwen3.5-2B-GGUF", "mmproj-BF16.gguf"),
-    ("bartowski/Qwen_Qwen3.5-2B-GGUF", "mmproj-Qwen_Qwen3.5-2B-f16.gguf"),
-]
-
-STOP_TOKENS = ["<|im_end|>", "<|endoftext|>", "<|im_start|>", "User:", "Human:"]
+STOP_TOKENS = ["<|im_end|>", "<|endoftext|>", "<|im_start|>", "User:", "Human:", "Assistant:"]
 
 AVAILABLE_MODELS = {
-    "qwen-3.5-2b": {
-        "key": "qwen-3.5-2b",
+    "minicpm5-2b": {
+        "key": "minicpm5-2b",
         "name": MODEL_NAME,
         "filename": MODEL_FILENAME,
         "path": MODEL_PATH,
         "targets": MODEL_TARGETS,
         "downloaded": os.path.exists(MODEL_PATH) and os.path.getsize(MODEL_PATH) > 500_000_000,
-        "size_gb": 1.45,
-    }
+        "size_gb": 1.56,
+        "has_mmproj": False,
+    },
 }
 
-_active_model_key = "qwen-3.5-2b"
+_active_model_key = "minicpm5-2b"
+
 _local_llm_instance = None
 _llm_lock = threading.Lock()
 _devnull = open(os.devnull, "w")
@@ -84,13 +78,16 @@ _devnull = open(os.devnull, "w")
 
 def get_available_models() -> dict:
     """Return dictionary of available models and their download status."""
+    for m in AVAILABLE_MODELS.values():
+        m["downloaded"] = os.path.exists(m["path"]) and os.path.getsize(m["path"]) > 500_000_000
     return AVAILABLE_MODELS
 
 
-def set_active_model(model_key: str = "qwen-3.5-2b") -> bool:
+def set_active_model(model_key: str = "minicpm5-2b") -> bool:
     """Sets the active model key and reloads instance if needed."""
     global _active_model_key, _local_llm_instance
-    _active_model_key = model_key
+    if model_key in AVAILABLE_MODELS:
+        _active_model_key = model_key
     with _llm_lock:
         _local_llm_instance = None
     init_local_llm(force_reload=True)
@@ -99,7 +96,7 @@ def set_active_model(model_key: str = "qwen-3.5-2b") -> bool:
 
 def get_active_model_info() -> dict:
     """Return metadata for the currently active model."""
-    m_info = AVAILABLE_MODELS.get(_active_model_key, AVAILABLE_MODELS["qwen-3.5-2b"])
+    m_info = AVAILABLE_MODELS.get(_active_model_key, AVAILABLE_MODELS["minicpm5-2b"])
     m_path = m_info["path"]
     return {
         "key": _active_model_key,
@@ -107,7 +104,8 @@ def get_active_model_info() -> dict:
         "filename": m_info["filename"],
         "path": m_path,
         "downloaded": os.path.exists(m_path) and os.path.getsize(m_path) > 500_000_000,
-        "size_gb": m_info.get("size_gb", 1.45),
+        "size_gb": m_info.get("size_gb", 1.56),
+        "has_mmproj": m_info.get("has_mmproj", False),
         "vision_ready": is_vision_ready(),
     }
 
@@ -166,7 +164,7 @@ def _download_hf_file(targets: list[tuple[str, str]], target_path: str, min_size
 
 def get_model_path() -> str:
     """Ensure active model weights exist locally; download if needed."""
-    active_info = AVAILABLE_MODELS.get(_active_model_key, AVAILABLE_MODELS["qwen-3.5-2b"])
+    active_info = AVAILABLE_MODELS.get(_active_model_key, AVAILABLE_MODELS["minicpm5-2b"])
     target_path = active_info["path"]
     target_name = active_info["name"]
     target_list = active_info.get("targets", MODEL_TARGETS)
@@ -174,27 +172,18 @@ def get_model_path() -> str:
 
 
 def get_mmproj_path() -> str | None:
-    """Returns local path to multimodal vision projector, or None if not yet downloaded."""
-    if os.path.exists(MMPROJ_PATH) and os.path.getsize(MMPROJ_PATH) > 50_000_000:
-        return MMPROJ_PATH
-    for _, fname in MMPROJ_TARGETS:
-        alt_path = os.path.join(MODEL_DIR, fname)
-        if os.path.exists(alt_path) and os.path.getsize(alt_path) > 50_000_000:
-            return alt_path
+    """MiniCPM 5 2B is a dense text model and does not use mmproj."""
     return None
 
 
 def ensure_mmproj_downloaded() -> str | None:
-    """Explicit helper to trigger and verify download of Qwen 3.5 2B vision projector."""
-    res = _download_hf_file(MMPROJ_TARGETS, MMPROJ_PATH, 50_000_000, "Qwen 3.5 2B Vision Projector")
-    if res and os.path.exists(res) and os.path.getsize(res) > 50_000_000:
-        return res
+    """MiniCPM 5 2B is a dense text model and does not use mmproj."""
     return None
 
 
 def is_vision_ready() -> bool:
-    """Checks if native multimodal vision is available."""
-    return get_mmproj_path() is not None
+    """Checks if native multimodal vision is available (MiniCPM 5 2B uses Windows Media OCR)."""
+    return False
 
 
 def ensure_model_downloaded() -> str:
@@ -240,12 +229,68 @@ def init_local_llm(force_reload: bool = False):
                     pass
 
             if _local_llm_instance:
+                _setup_chat_formatter(_local_llm_instance)
                 logger.info(f"[Local AI Engine] {MODEL_NAME} loaded.")
                 return _local_llm_instance
         except Exception as e:
             logger.error(f"[Local AI Engine] Load error: {e}")
             return None
     return None
+
+
+# ---------------------------------------------------------------------------
+# Deep Thinking / Reasoning Mode Control
+# ---------------------------------------------------------------------------
+_thinking_ctx: contextvars.ContextVar[bool | None] = contextvars.ContextVar("thinking_ctx", default=None)
+_thinking_enabled: bool = False
+
+
+def set_thinking_enabled(enabled: bool) -> None:
+    """Enable or disable deep thinking / step-by-step reasoning mode."""
+    global _thinking_enabled
+    _thinking_enabled = bool(enabled)
+    logger.info("[AI Config] Deep Thinking Mode: %s", "ENABLED" if _thinking_enabled else "DISABLED")
+
+
+def is_thinking_enabled() -> bool:
+    """Return whether deep thinking mode is currently active."""
+    return _thinking_enabled
+
+
+def get_current_thinking_enabled() -> bool:
+    """Return effective thinking state considering context overrides."""
+    ctx_val = _thinking_ctx.get()
+    if ctx_val is not None:
+        return ctx_val
+    return _thinking_enabled
+
+
+def _setup_chat_formatter(llm) -> None:
+    """Wraps Jinja2ChatFormatter to dynamically pass enable_thinking to the GGUF template."""
+    try:
+        from llama_cpp import llama_chat_format
+        handler = llm.chat_handler or (llm._chat_handlers.get(llm.chat_format) if hasattr(llm, "_chat_handlers") else None)
+        if not handler and hasattr(llm, "_chat_handlers"):
+            handler = llm._chat_handlers.get("chat_template.default")
+        if handler and hasattr(handler, "__closure__") and handler.__closure__:
+            formatters = [c.cell_contents for c in handler.__closure__ if hasattr(c.cell_contents, "template")]
+            if formatters:
+                base_formatter = formatters[0]
+
+                class ThinkingJinja2ChatFormatter:
+                    def __init__(self, base):
+                        self.base = base
+
+                    def __call__(self, *args, **kwargs):
+                        if "enable_thinking" not in kwargs:
+                            kwargs["enable_thinking"] = get_current_thinking_enabled()
+                        return self.base(*args, **kwargs)
+
+                llm.chat_handler = llama_chat_format.chat_formatter_to_chat_completion_handler(
+                    ThinkingJinja2ChatFormatter(base_formatter)
+                )
+    except Exception as e:
+        logger.warning(f"[Chat Formatter Setup Warning]: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -268,9 +313,14 @@ def strip_markdown_for_tts(text: str) -> str:
     if "</think>" in text:
         text = text.split("</think>")[-1].strip()
     elif "<think>" in text:
-        # If <think> was never closed (token limit hit during thinking),
-        # keep only what came before <think>, never leak internal thoughts
-        text = text.split("<think>")[0].strip()
+        prefix = text.split("<think>")[0].strip()
+        if prefix:
+            text = prefix
+        else:
+            # Token limit hit while thinking; extract the reasoning's final thoughts or answer draft
+            thought_body = text.split("<think>", 1)[-1].strip()
+            sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', thought_body) if len(s.strip()) > 5]
+            text = sentences[-1] if sentences else thought_body
     text = text.replace("₹", " rupees ").replace("$", " dollars ").replace("€", " euros ").replace("£", " pounds ")
     text = _RE_CODE_BLOCK.sub(r"\1", text)
     text = _RE_MD_MARKS.sub("", text)
@@ -310,10 +360,15 @@ def query_local_llm(
     system_prompt: str = "You are Amigo, a helpful voice assistant. Speak in clear, plain sentences.",
     max_tokens: int = 512,
     temperature: float = 0.6,
+    thinking: bool | None = None,
+    sanitize: bool = True,
 ) -> str:
     """Queries local LLM and returns clean spoken output."""
     llm = init_local_llm()
     if llm:
+        token = None
+        if thinking is not None:
+            token = _thinking_ctx.set(thinking)
         try:
             messages = _prepare_chat_messages(system_prompt, prompt)
             res = llm.create_chat_completion(
@@ -326,9 +381,14 @@ def query_local_llm(
             output = res["choices"][0]["message"]["content"]
             for tok in STOP_TOKENS:
                 output = output.split(tok)[0]
-            return sanitize_for_tts(output.strip()) or output.strip()
+            if sanitize:
+                return sanitize_for_tts(output.strip()) or output.strip()
+            return output.strip()
         except Exception as e:
             logger.error(f"[LLM Query Error]: {e}")
+        finally:
+            if token is not None:
+                _thinking_ctx.reset(token)
     return "I am here and ready to help."
 
 
@@ -338,10 +398,14 @@ def query_local_llm_stream(
     max_tokens: int = 512,
     interruption_event: threading.Event | None = None,
     temperature: float = 0.6,
+    thinking: bool | None = None,
 ) -> Generator[str, None, None]:
     """Streams raw tokens in real-time from the local LLM."""
     llm = init_local_llm()
     if llm:
+        token = None
+        if thinking is not None:
+            token = _thinking_ctx.set(thinking)
         try:
             messages = _prepare_chat_messages(system_prompt, prompt)
             stream_res = llm.create_chat_completion(
@@ -355,12 +419,15 @@ def query_local_llm_stream(
             for chunk in stream_res:
                 if interruption_event and interruption_event.is_set():
                     return
-                token = chunk["choices"][0].get("delta", {}).get("content", "")
-                if token:
-                    yield token
+                delta = chunk["choices"][0].get("delta", {}).get("content", "")
+                if delta:
+                    yield delta
             return
         except Exception as e:
             logger.error(f"[LLM Stream Error]: {e}")
+        finally:
+            if token is not None:
+                _thinking_ctx.reset(token)
     yield "I am here and ready to help."
 
 
@@ -371,11 +438,23 @@ _RE_TITLE_ABBREV = re.compile(r'\b(mr|mrs|ms|dr|vs|eg|ie|etc)\.$', re.IGNORECASE
 def stream_sentence_chunks(token_generator, interruption_event: threading.Event | None = None) -> Generator[str, None, None]:
     """Buffers token stream and yields complete sentence chunks immediately for TTS."""
     buffer = ""
+    in_think = False
 
     for token in token_generator:
         if interruption_event and interruption_event.is_set():
             return
         buffer += token
+
+        if "<think>" in buffer:
+            in_think = True
+
+        if in_think:
+            if "</think>" in buffer:
+                buffer = buffer.split("</think>", 1)[1]
+                in_think = False
+            else:
+                continue
+
         for tok in STOP_TOKENS:
             if tok in buffer:
                 buffer = buffer.split(tok)[0]
@@ -390,14 +469,14 @@ def stream_sentence_chunks(token_generator, interruption_event: threading.Event 
                         yield clean
             buffer = splits[-1]
 
-    if buffer.strip() and not (interruption_event and interruption_event.is_set()):
+    if not in_think and buffer.strip() and not (interruption_event and interruption_event.is_set()):
         clean = sanitize_for_tts(buffer.strip())
         if clean:
             yield clean
 
 
 # ---------------------------------------------------------------------------
-# Multimodal Native Vision Inference (Qwen 3.5 2B Native Vision)
+# Image Encoding & Vision Utilities
 # ---------------------------------------------------------------------------
 
 def _pil_to_base64_url(img) -> str:
@@ -440,51 +519,8 @@ def query_local_vision(
     max_tokens: int = 350,
     temperature: float = 0.5,
 ) -> str | None:
-    """
-    Executes native vision inference directly on an image/screenshot using Qwen 3.5 2B.
-    Returns spoken plain text, or None if vision is not ready or encounters an error.
-    """
-    llm = init_local_llm()
-    if not llm:
-        return None
-
-    v_handler = get_vision_chat_handler()
-    if not v_handler:
-        return None
-
-    data_url = _image_to_base64_url(image_input)
-    if not data_url:
-        return None
-
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": data_url}},
-            ],
-        },
-    ]
-
-    llm.chat_handler = v_handler
-    try:
-        res = llm.create_chat_completion(
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            repeat_penalty=1.1,
-            stop=STOP_TOKENS,
-        )
-        output = res["choices"][0]["message"]["content"]
-        for tok in STOP_TOKENS:
-            output = output.split(tok)[0]
-        return sanitize_for_tts(output.strip()) or output.strip()
-    except Exception as e:
-        logger.error(f"[Vision Query Error]: {e}")
-        return None
-    finally:
-        llm.chat_handler = None
+    """Executes native vision inference if available; returns None for text-only models like MiniCPM 5 2B."""
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -498,9 +534,14 @@ _RE_PROBE_GUARD = re.compile(
 )
 
 # Pre-compiled exact patterns for Tier 1
-_RE_VOL_LEVEL = re.compile(r"\bvolume\s+(?:up\s+to\s+|down\s+to\s+|to\s+|at\s+)?(\d{1,3})\s*%?", re.IGNORECASE)
+_RE_VOL_LEVEL = re.compile(r"^(?:set\s+)?(?:(?:my|the|system|pc|computer|device)\s+)*volume\s+(?:up\s+to\s+|down\s+to\s+|to\s+|at\s+)?(\d{1,3})\s*%?$", re.IGNORECASE)
 _RE_BRIGHT_LEVEL = re.compile(r"^(?:set\s+)?brightness\s+(?:to\s+)?(\d{1,3})(?:\s*%)?$", re.IGNORECASE)
-_RE_TIMER_SIMPLE = re.compile(r"^(?:set\s+(?:a\s+)?)?timer\s+(?:for\s+)?(\d+)\s*(mins?|minutes?|secs?|seconds?|hrs?|hours?)$", re.IGNORECASE)
+_RE_TIMER_FLEX = re.compile(
+    r"^(?:set\s+(?:a\s+)?)?(?:(\d+)\s*[-]?\s*(days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\s+)?(?:countdown\s+)?timer(?:\s+(?:for\s+)?(\d+)\s*[-]?\s*(days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s))?(?:\s+(?:for|to)\s+(.+))?$",
+    re.IGNORECASE,
+)
+_RE_APP_LAUNCH = re.compile(r"^(?:open|launch|start)\s+(?:the\s+|an?\s+)?([a-zA-Z0-9_\s.-]+)$", re.IGNORECASE)
+_RE_COMPOUND_SPLIT = re.compile(r"\s+(?:and\s+then|then|and|\&)\s+", re.IGNORECASE)
 _RE_CONTEXTUAL_REFERENCE = re.compile(
     r"^(?:that|this|it|them|those|these|the\s+same)(?:\s+(?:one|song|video|track|file|doc|document|app|tab|site|website|link|page|media|audio|playback))?$",
     re.IGNORECASE,
@@ -552,6 +593,7 @@ _EXACT_TIME = frozenset({"what time is it", "what's the time", "whats the time",
 _EXACT_DATE = frozenset({"what is today's date", "what's today's date", "whats the date", "what date is it", "current date", "today's date", "todays date", "date"})
 
 
+
 def clean_spoken_query(query: str) -> str:
     """Normalizes spoken query by stripping conversational filler prefixes."""
     q = (query or "").lower().strip()
@@ -568,6 +610,7 @@ def parse_user_intent_fast(query: str) -> dict[str, Any] | None:
     text = clean_spoken_query(query)
     if not text:
         return {"tool": "chat", "params": {}, "speak": ""}
+
 
     # 1. Exact System & Power Actions
     if text in _EXACT_EXIT:
@@ -586,7 +629,7 @@ def parse_user_intent_fast(query: str) -> dict[str, Any] | None:
         return {"tool": "cancel_reminder", "params": {}, "speak": ""}
 
     # 2. Exact Volume / Brightness levels (prioritize explicit percentage)
-    if m := _RE_VOL_LEVEL.search(text):
+    if m := _RE_VOL_LEVEL.match(text):
         return {"tool": "set_volume", "params": {"level": m.group(1)}, "speak": f"Setting volume to {m.group(1)} percent."}
     if m := _RE_BRIGHT_LEVEL.match(text):
         return {"tool": "set_brightness", "params": {"level": m.group(1)}, "speak": f"Setting brightness to {m.group(1)} percent."}
@@ -632,11 +675,16 @@ def parse_user_intent_fast(query: str) -> dict[str, Any] | None:
     # 6. Exact Timer / Stopwatch Shortcuts
     if text in _EXACT_STOPWATCH:
         return {"tool": "stopwatch", "params": {"mode": "stopwatch"}, "speak": "Starting stopwatch."}
-    if m := _RE_TIMER_SIMPLE.match(text):
-        qty = int(m.group(1))
-        unit = m.group(2).lower()
-        secs = qty * 3600 if "h" in unit else qty * 60 if "m" in unit else qty
-        return {"tool": "set_timer", "params": {"duration": secs, "seconds": secs}, "speak": f"Setting a {qty} {unit} timer."}
+    if m := _RE_TIMER_FLEX.match(text):
+        qty_str = m.group(1) or m.group(3)
+        unit_str = (m.group(2) or m.group(4) or "").lower()
+        lbl = (m.group(5) or "").strip()
+        if qty_str and unit_str:
+            qty = int(qty_str)
+            secs = qty * 86400 if unit_str.startswith("d") else (qty * 3600 if unit_str.startswith("h") else (qty * 60 if unit_str.startswith("m") else qty))
+            dur_disp = f"{qty} {unit_str}"
+            clean_lbl = f" for {lbl}" if lbl and not any(lbl.lower().endswith(x) for x in ("s", "sec", "secs", "seconds", "min", "mins", "minute", "minutes", "hour", "hours")) else ""
+            return {"tool": "set_timer", "params": {"duration": secs, "seconds": secs, "label": lbl}, "speak": f"Setting a {dur_disp} timer{clean_lbl}."}
 
     # 7. Exact System Folder & Explorer Shortcuts
     if text in _EXACT_EXPLORER:
@@ -657,6 +705,12 @@ def parse_user_intent_fast(query: str) -> dict[str, Any] | None:
     # 8. Follow-up File Choice Selection (e.g. "open number 1", "open the second one")
     if _RE_OPEN_CHOICE.match(text):
         return {"tool": "open_file", "params": {"name": text}, "speak": ""}
+
+    # 9. Direct Application Launch (e.g. "launch Spotify", "open Chrome", "start Notepad")
+    if m := _RE_APP_LAUNCH.match(text):
+        target = m.group(1).strip()
+        if target.lower() not in ("folder", "app", "application", "file", "document", "website", "window", "tab", "first", "second", "third", "number"):
+            return {"tool": "open_app", "params": {"name": target.title()}, "speak": f"Opening {target.title()}."}
 
     # No exact shortcut matched -> Allow fallthrough to Tier 2 LLM tool calling
     return None
@@ -823,6 +877,7 @@ _PRECOMPUTED_RULES_DOC = (
     "- For 'play_youtube', extract the target song, video, or artist in 'query'.\n"
     "- When the user asks to OPEN or VIEW a specific file, document, PDF, or report, use 'open_file' with the target name.\n"
     "- For extracting specific numbers, PAN, PIN, dates, amounts, or details inside user documents, invoices, or files (even if the user says 'find' or 'search' for a detail in a document), ALWAYS use 'ask_document', NEVER use 'find_document'. Use 'find_document' ONLY when the user asks to locate or browse files themselves on disk.\n"
+    "- Multi-Action & Compound Requests: If the user asks to perform multiple distinct actions (e.g. 'Launch Spotify and set volume to 40%'), return ALL corresponding action objects in the JSON array in execution order.\n"
     "- Output strictly valid JSON."
 )
 
@@ -874,37 +929,52 @@ def resolve_intent_via_llm(user_query: str, conversation_history: list | None = 
 
         if conversation_history:
             recent = conversation_history[-4:]
-            turns = [f"User: {c.get('user', '')}\nAssistant: {c.get('assistant', '')}" for c in recent if isinstance(c, dict) and (c.get("user") or c.get("assistant"))]
+            turns = [
+                f"User: {c.get('user', '')}\nAssistant: {c.get('assistant', '')}"
+                for c in recent
+                if isinstance(c, dict) and (c.get("user") or c.get("assistant")) and c.get("assistant") != "I am here and ready to help."
+            ]
             if turns:
                 system_prompt += "\n\n[Recent Conversation Context]:\n" + "\n".join(turns)
 
         user_prompt = f"User Request: {user_query}\nJSON Output:"
 
-        res = llm.create_chat_completion(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            max_tokens=350,
-            temperature=0.05,
-            stop=STOP_TOKENS,
-        )
+        token = _thinking_ctx.set(False)
+        try:
+            res = llm.create_chat_completion(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                max_tokens=512,
+                temperature=0.05,
+                stop=STOP_TOKENS,
+            )
+        finally:
+            _thinking_ctx.reset(token)
 
         raw = res["choices"][0]["message"]["content"].strip()
         if raw:
+            # Strip thought block if present so we isolate the JSON payload
+            if "</think>" in raw:
+                raw = raw.split("</think>")[-1].strip()
+            elif "<think>" in raw:
+                raw = ""
+
             # Strip markdown fences if wrapped in ```json ... ```
             clean_raw = re.sub(r"^```(?:json)?\s*", "", raw)
             clean_raw = re.sub(r"\s*```$", "", clean_raw).strip()
 
             parsed = None
             # Direct parse
-            try:
-                parsed = json.loads(clean_raw)
-            except Exception:
-                pass
+            if clean_raw:
+                try:
+                    parsed = json.loads(clean_raw)
+                except Exception:
+                    pass
 
             # Try finding [ ... ] with balanced/greedy brackets
-            if parsed is None:
+            if parsed is None and clean_raw:
                 start_bracket = clean_raw.find("[")
                 end_bracket = clean_raw.rfind("]")
                 if start_bracket != -1 and end_bracket > start_bracket:
@@ -914,7 +984,7 @@ def resolve_intent_via_llm(user_query: str, conversation_history: list | None = 
                         pass
 
             # Try finding { ... }
-            if parsed is None:
+            if parsed is None and clean_raw:
                 start_brace = clean_raw.find("{")
                 end_brace = clean_raw.rfind("}")
                 if start_brace != -1 and end_brace > start_brace:
@@ -923,10 +993,11 @@ def resolve_intent_via_llm(user_query: str, conversation_history: list | None = 
                     except Exception:
                         pass
 
-            # Regex extraction fallback: extract "tool" and optional "question"/"query"/"filepath"/"name"
-            if parsed is None:
+            # Regex extraction fallback: extract "tool" and optional parameters
+            valid_tools = {t["name"] for t in AGENT_TOOL_DEFINITIONS}
+            if parsed is None and clean_raw:
                 tool_match = re.search(r'"tool"\s*:\s*"([a-zA-Z0-9_]+)"', clean_raw)
-                if tool_match:
+                if tool_match and tool_match.group(1) in valid_tools:
                     tool_name = tool_match.group(1)
                     fallback_params = {}
                     for key in ("question", "query", "filepath", "name", "action"):
@@ -943,7 +1014,9 @@ def resolve_intent_via_llm(user_query: str, conversation_history: list | None = 
                 for a in parsed:
                     if isinstance(a, dict):
                         t = str(a.get("tool", "chat")).strip()
-                        spk = "" if t == "chat" else sanitize_for_tts(str(a.get("speak") or (a.get("params", {}).get("speak") if isinstance(a.get("params"), dict) else "") or ""))
+                        if t not in valid_tools:
+                            t = "chat"
+                        spk = sanitize_for_tts(str(a.get("speak") or (a.get("params", {}).get("speak") if isinstance(a.get("params"), dict) else "") or ""))
                         results.append({
                             "tool": t,
                             "params": a.get("params", {}) if isinstance(a.get("params"), dict) else {},
@@ -972,6 +1045,23 @@ def get_agent_action(user_query: str, conversation_history: list | None = None) 
     # Security & Guardrail Check
     if _RE_PROBE_GUARD.search(user_query):
         return [{"tool": "chat", "params": {}, "speak": ""}]
+
+    # Compound Command Handling (e.g. "Launch Spotify and set my system volume to 40%")
+    q_lower = user_query.lower().strip()
+    if any(conj in q_lower for conj in (" and ", " then ", " & ")) and not any(q_lower.startswith(p) for p in ("search ", "google ", "play ", "stream ", "watch ", "ask ", "tell me ", "what ", "who ", "why ", "how ")):
+        sub_queries = [p.strip().rstrip(".!?,") for p in _RE_COMPOUND_SPLIT.split(user_query) if p.strip()]
+        if len(sub_queries) > 1:
+            compound_actions = []
+            all_resolved = True
+            for sq in sub_queries:
+                act = parse_user_intent_fast(sq)
+                if act is not None:
+                    compound_actions.append(act)
+                else:
+                    all_resolved = False
+                    break
+            if all_resolved and compound_actions:
+                return compound_actions
 
     # Tier 1: Fast-Path Regex (Instant <0.1ms for unambiguous shortcuts)
     fast_action = parse_user_intent_fast(user_query)

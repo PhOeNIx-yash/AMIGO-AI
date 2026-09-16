@@ -1,6 +1,6 @@
 # Amigo Voice Assistant 🎙️✨
 
-A private, intelligent, and agentic personal voice assistant powered locally by the **Qwen 3.5 2B Instruct** GGUF model, **Sherpa-ONNX** real-time neural speech recognition, and **Kokoro ONNX** 24kHz studio neural speech synthesis. 
+A private, intelligent, and agentic personal voice assistant powered locally by the **MiniCPM 5 2B** GGUF model, **Sherpa-ONNX** real-time neural speech recognition, and **Kokoro ONNX** 24kHz studio neural speech synthesis. 
 
 Amigo provides desktop automation, document intelligence (invoices, PDFs, spreadsheets), live interactive action widgets (countdown timers, stopwatches, weather telemetry), deep web browsing, app management, and an adaptive RAG-powered vector memory system — completely offline, with **zero API keys and zero cloud dependencies**.
 
@@ -8,7 +8,7 @@ Amigo provides desktop automation, document intelligence (invoices, PDFs, spread
 
 ## 🌟 Key Capabilities & Features
 
-- **100% Offline Local AI** — Powered by `Qwen 3.5 2B Instruct` via `llama-cpp-python` with optional CUDA GPU acceleration for near-instant inference.
+- **100% Offline Local AI** — Powered by `MiniCPM 5 2B` via `llama-cpp-python` with optional CUDA GPU acceleration for near-instant inference.
 - **Offline Speech-to-Text (STT)** — Powered by `Sherpa-ONNX` (`streaming Zipformer`) for ultra-low latency (<50ms) streaming voice command recognition, lightweight memory footprint (~80MB RAM), and zero CPU saturation.
 - **24kHz Studio Neural TTS** — `Kokoro ONNX` delivers expressive, studio-grade speech synthesis with 10 curated voices (5 Female: *Nicole, Sarah, Heart, Sky, Bella*; 5 Male: *Adam, Michael, Echo, Liam, George*), low-latency audio streaming, and built-in phonetic text expansion for numbers, acronyms, scores, dates, and currency.
 - **Curated High-End Kinetic Typography** — 4 luxury, fluid animation styles designed with Apple and Linear aesthetics:
@@ -26,7 +26,7 @@ Amigo provides desktop automation, document intelligence (invoices, PDFs, spread
 - **Intent Bridge HUD** — Streamlined single-pill intent router showing live agentic tool execution status (e.g. YouTube playback, application launching, system volume adjustments).
 - **Desktop & OS Automation** — Native app launcher, system sleep/restart, window management, screen brightness, volume master control, screenshot capture, and clipboard intelligence.
 - **Global System-Wide Wake Hotkey (`Alt + V`)** — Wake Amigo from ANY active Windows application (VS Code, Word, Excel, games, or browser). Instantly captures the foreground screen context and listens for your voice command without ever needing the browser open.
-- **Native Multimodal Screen & Image Vision** — Natively powered by Qwen 3.5 2B multimodal projector (`mmproj`) to comprehend desktop screens, graphs, UI layouts, and uploaded images directly without relying solely on OCR, with automatic fallback to Windows Media OCR (`winocr`).
+- **Intelligent Screen & Image Vision** — Comprehend desktop screens, graphs, UI layouts, and uploaded images directly via native Windows Media OCR (`winocr`) and visual analysis.
 
 ---
 
@@ -60,13 +60,13 @@ amigo-main/
 ├── rag_indexer.py          # Background file crawling & incremental hash indexer
 ├── mail_integration.py     # Outlook email integration & RAG indexing
 ├── calendar_integration.py # Outlook calendar events & schedule RAG
-├── local_llm.py            # Qwen 3.5 2B GGUF engine & agentic tool caller
+├── local_llm.py            # MiniCPM 5 2B GGUF engine & agentic tool caller
 ├── reminder_timer.py       # Background timer & reminder scheduling engine
 ├── ai.py                   # RAG memory bridge & voice prompt constructor
 ├── weather.py              # Keyless dynamic weather telemetry
 ├── app_opener.py           # Dynamic Windows application resolver & launcher
 ├── os_automation.py        # System volume, brightness, screenshots & shortcuts
-├── screen_vision.py        # Native multimodal screen vision & Windows OCR fallback
+├── screen_vision.py        # Screen vision & Windows OCR fallback
 ├── Searchnow.py            # Web search & YouTube playback integration
 ├── Calculatenumbers.py     # Fast arithmetic & mathematical evaluator
 ├── settings_resolver.py    # Windows Settings ms-settings: URI resolver
@@ -96,7 +96,7 @@ Double-click **`setup.bat`** in the repository root.
 This automatically:
 1. Installs all Python dependencies via `pip install -r requirements.txt`.
 2. Downloads the `Kokoro ONNX` neural voice models (`kokoro-v1.0.onnx` & `voices-v1.0.bin`).
-3. Downloads the `Qwen 3.5 2B Instruct` quantized GGUF model (~1.45 GB).
+3. Downloads the `MiniCPM 5 2B` quantized GGUF model (~1.56 GB).
 4. Initializes RAG vector data storage directories and default profile.
 5. Verifies or compiles the Web Dashboard production build (`ui_app/dist`).
 

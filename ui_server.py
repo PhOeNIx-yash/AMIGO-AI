@@ -50,6 +50,7 @@ from ai import (
 )
 from local_llm import (
     get_active_model_info as get_llm_model_info,
+    get_available_models as get_llm_available_models,
     get_agent_action,
     get_clipboard_text,
     init_local_llm,
@@ -181,35 +182,48 @@ def get_active_model_info():
     try:
         info = get_llm_model_info()
         vision_ok = is_vision_ready()
+        name = info.get("name", "MiniCPM 5 2B")
         return {
-            "key": info.get("key", "qwen-3.5-2b"),
-            "name": info.get("name", "Qwen 3.5 2B Instruct"),
+            "key": info.get("key", "minicpm5-2b"),
+            "name": name,
             "type": "local_gguf",
             "context_length": 8192,
             "tts_engine": get_tts_engine_name(),
             "vision_ready": vision_ok,
-            "vision_mode": "Native Multimodal (Qwen 3.5 2B)" if vision_ok else "OCR Fallback (Windows Media OCR)",
+            "vision_mode": f"Native Multimodal ({name})" if vision_ok else "OCR Fallback (Windows Media OCR)",
             "hotkey": "Alt+V",
         }
     except Exception:
         vision_ok = is_vision_ready()
         return {
-            "key": "qwen-3.5-2b",
-            "name": "Qwen 3.5 2B Instruct",
+            "key": "minicpm5-2b",
+            "name": "MiniCPM 5 2B",
             "type": "local_gguf",
             "context_length": 8192,
             "tts_engine": get_tts_engine_name(),
             "vision_ready": vision_ok,
-            "vision_mode": "Native Multimodal (Qwen 3.5 2B)" if vision_ok else "OCR Fallback (Windows Media OCR)",
+            "vision_mode": "OCR Fallback (Windows Media OCR)",
             "hotkey": "Alt+V",
         }
 
 
 def get_available_models():
-    return [
-        {"key": "qwen-3.5-2b", "name": "Qwen 3.5 2B Instruct", "status": "active", "type": "local"},
-        {"key": "llama-3.2-3b", "name": "Llama 3.2 3B Instruct", "status": "available", "type": "local"},
-    ]
+    try:
+        active_key = get_active_model_info().get("key", "minicpm5-2b")
+        models_dict = get_llm_available_models()
+        return [
+            {
+                "key": k,
+                "name": v["name"],
+                "status": "active" if k == active_key else ("downloaded" if v.get("downloaded") else "available"),
+                "type": "local",
+            }
+            for k, v in models_dict.items()
+        ]
+    except Exception:
+        return [
+            {"key": "minicpm5-2b", "name": "MiniCPM 5 2B", "status": "active", "type": "local"},
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -374,7 +388,7 @@ def index():
     return jsonify({
         "status": "online",
         "service": "Amigo AI Engine & Windows 11 Voice Assistant Backend",
-        "model": info.get("name", "Qwen 3.5 2B Instruct"),
+        "model": info.get("name", "MiniCPM 5 2B"),
         "endpoints": {
             "assistant_process": "/api/assistant/process",
             "action_execute": "/api/action/execute",
@@ -492,7 +506,7 @@ def api_upload():
             ocr_text = ""
             with Image.open(saved_path) as img:
                 ocr_text = read_text_from_image(img) or ""
-            # Native visual comprehension with Qwen 3.5 2B
+            # Visual comprehension with image description and OCR
             visual_desc = analyze_image(saved_path, question="Summarize and describe what is visible in this image.")
             extracted_preview = visual_desc or ocr_text.strip()[:800]
             rag_engine.update_active_state("active_file", {
@@ -532,7 +546,7 @@ def api_assistant_process():
         return jsonify({
             "status": "online",
             "message": "Amigo AI Engine online",
-            "model": info.get("name", "Qwen 3.5 2B Instruct"),
+            "model": info.get("name", "MiniCPM 5 2B"),
             "version": "Windows 11 Voice Assistant",
         })
 
@@ -832,8 +846,8 @@ def handle_settings():
     return jsonify({
         "ui_settings": memory.get("ui_settings", {}),
         "user_profile": memory.get("user_profile", {}),
-        "model": info.get("key", "qwen-3.5-2b"),
-        "model_name": info.get("name", "Qwen 3.5 2B Instruct"),
+        "model": info.get("key", "minicpm5-2b"),
+        "model_name": info.get("name", "MiniCPM 5 2B"),
         "thinking_enabled": is_thinking_enabled(),
         "available_models": get_available_models(),
     })

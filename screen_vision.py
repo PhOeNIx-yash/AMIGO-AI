@@ -191,7 +191,7 @@ def answer_screen_question(question: str) -> str:
     window_title = get_active_window_title()
     screenshot = capture_screen_image()
 
-    # Strategy 1: Native Multimodal Vision with Qwen 3.5 2B
+    # Strategy 1: Multimodal Vision (when available)
     try:
         from local_llm import is_vision_ready, query_local_vision, sanitize_for_tts
         if is_vision_ready() and screenshot is not None:
