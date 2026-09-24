@@ -82,11 +82,12 @@ def _tool_web_search(params, query, spoken):
 
     if snippets:
         response = get_ai_response(query, web_context=snippets)
-        if any(kw in query.lower() for kw in ("google", "browser", "open google", "search google", "show in browser")):
+        if any(kw in query.lower() for kw in ("browser", "open google", "search google", "show in browser", "open browser")):
             searchGoogle(target)
         return response, search_url
 
-    searchGoogle(target)
+    if any(kw in query.lower() for kw in ("browser", "open google", "search google", "show in browser", "open browser")):
+        searchGoogle(target)
     response = get_ai_response(query)
     return response, search_url
 

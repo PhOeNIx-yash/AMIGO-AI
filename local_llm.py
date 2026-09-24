@@ -582,11 +582,10 @@ def get_agent_action(user_query: str, conversation_history: list | None = None) 
 
     # Tier 2: Laya System 1 Neural Decision Router (Every action goes through Laya!)
     try:
-        from laya_router import is_laya_ready, route_intent_via_laya
-        if is_laya_ready():
-            laya_action = route_intent_via_laya(user_query)
-            if laya_action and laya_action.get("tool") not in ("chat", None):
-                return [laya_action]
+        from laya_router import route_intent_via_laya
+        laya_action = route_intent_via_laya(user_query, conversation_history=conversation_history)
+        if laya_action and laya_action.get("tool") not in ("chat", None):
+            return [laya_action]
     except Exception as e:
         logger.debug("[Laya Router Exception]: %s", e)
 
