@@ -245,7 +245,7 @@ const WeatherCardPalette: React.FC<{
       }`}
     >
       <div
-        className="absolute -right-6 -top-6 w-32 h-32 rounded-full blur-2xl pointer-events-none opacity-40 transition-colors duration-700"
+        className="absolute -right-6 -top-6 w-32 h-32 rounded-full pointer-events-none opacity-25"
         style={{ background: `radial-gradient(circle, ${palette.glowColor} 0%, transparent 70%)` }}
       />
 
@@ -491,7 +491,7 @@ const TimerCardPalette: React.FC<{
     >
       {/* Ambient Fluid Glow */}
       <div
-        className="absolute -right-6 -top-6 w-32 h-32 rounded-full blur-2xl pointer-events-none opacity-40 transition-colors duration-500"
+        className="absolute -right-6 -top-6 w-32 h-32 rounded-full pointer-events-none opacity-25"
         style={{
           background: isCompleted
             ? "radial-gradient(circle, #f59e0b 0%, #ef4444 60%, transparent 100%)"
@@ -571,7 +571,7 @@ const TimerCardPalette: React.FC<{
                 strokeDashoffset={strokeDashoffset}
                 strokeLinecap="round"
                 fill="transparent"
-                className="transition-all duration-1000 ease-linear"
+                className="transition-[stroke-dashoffset] duration-500 ease-linear"
               />
             </svg>
             <div className="absolute inset-0 flex items-center justify-center">
@@ -788,28 +788,27 @@ export const ActionCard: React.FC<ActionCardProps> = ({
   return (
     <motion.div
       id="fluent-action-card-container"
-      initial={{ opacity: 0, y: 28, scale: 0.94 }}
+      initial={{ opacity: 0, y: 16, scale: 0.96 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: -20, scale: 0.95 }}
-      transition={{ type: "spring", stiffness: 280, damping: 24 }}
-      className="w-full max-w-lg mx-auto relative px-4"
+      exit={{ opacity: 0, y: -12, scale: 0.96 }}
+      transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+      className="w-full max-w-lg mx-auto relative px-4 transform-gpu will-change-[transform,opacity]"
     >
       {/* Ambient Fluid Glow Behind Card */}
       <div
-        className="absolute -inset-1.5 rounded-3xl opacity-40 blur-xl pointer-events-none transition-opacity duration-300"
+        className="absolute -inset-1.5 rounded-3xl opacity-30 pointer-events-none"
         style={{
-          background: `radial-gradient(circle, ${theme.primary}55 0%, ${theme.secondary}22 70%, transparent 100%)`,
+          background: `radial-gradient(circle, ${theme.primary}44 0%, ${theme.secondary}15 70%, transparent 100%)`,
           transform: "translateZ(0)",
-          willChange: "opacity",
         }}
       />
 
       {/* Fluent Frosted Mica Card */}
       <div
-        className={`card-bracket relative rounded-2xl p-4 sm:p-5 shadow-2xl transition-all duration-300 border backdrop-blur-xl ${
+        className={`card-bracket relative rounded-2xl p-4 sm:p-5 shadow-2xl transition-colors duration-150 border transform-gpu ${
           isDark
-            ? "acrylic-glass text-slate-100 border-white/10 shadow-indigo-950/40"
-            : "acrylic-glass-light text-slate-900 border-black/10 shadow-indigo-200/50"
+            ? "acrylic-glass text-slate-100 border-white/10 shadow-black/40"
+            : "acrylic-glass-light text-slate-900 border-black/10 shadow-slate-300/40"
         }`}
       >
         {/* Clean Header with Quick Actions Title & Close Button */}
@@ -851,7 +850,7 @@ export const ActionCard: React.FC<ActionCardProps> = ({
                 payload: { tool: action === "open" ? "open_file" : action === "reveal" ? "reveal_file" : "copy_file_path", action, path: file.path },
               });
               return (
-                <motion.div key={item.id} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: idx * 0.06 + 0.05, duration: 0.3 }} className={`rounded-xl border p-3 ${isDark ? "border-white/10 bg-white/[0.04]" : "border-black/10 bg-white/80"}`}>
+                <motion.div key={item.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.16, ease: "easeOut" }} className={`rounded-xl border p-3 transform-gpu transition-colors duration-150 ${isDark ? "border-white/10 bg-white/[0.04]" : "border-black/10 bg-white/80"}`}>
                   <div className="flex min-w-0 items-start gap-3">
                     <FileText className="mt-0.5 h-4 w-4 flex-shrink-0" style={{ color: theme.accent }} />
                     <div className="min-w-0 flex-1">
@@ -881,9 +880,10 @@ export const ActionCard: React.FC<ActionCardProps> = ({
               return (
                 <motion.div
                   key={item.id}
-                  initial={{ opacity: 0, y: 12 }}
+                  initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: idx * 0.06 + 0.05, duration: 0.3 }}
+                  transition={{ duration: 0.16, ease: "easeOut" }}
+                  className="transform-gpu"
                 >
                   <TimerCardPalette item={item} isDark={isDark} theme={theme} />
                 </motion.div>
@@ -894,9 +894,10 @@ export const ActionCard: React.FC<ActionCardProps> = ({
               return (
                 <motion.div
                   key={item.id}
-                  initial={{ opacity: 0, y: 12 }}
+                  initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: idx * 0.06 + 0.05, duration: 0.3 }}
+                  transition={{ duration: 0.16, ease: "easeOut" }}
+                  className="transform-gpu"
                 >
                   <WeatherCardPalette item={item} isDark={isDark} theme={theme} />
                 </motion.div>
@@ -910,11 +911,11 @@ export const ActionCard: React.FC<ActionCardProps> = ({
             return (
               <motion.div
                 key={item.id}
-                initial={{ opacity: 0, x: -16 }}
+                initial={{ opacity: 0, x: -8 }}
                 animate={{ opacity: 1, x: 0 }}
-                whileHover={{ scale: 1.012, y: -1 }}
-                whileTap={{ scale: 0.985 }}
-                transition={{ delay: idx * 0.06 + 0.05, duration: 0.25, ease: "easeOut" }}
+                whileHover={{ scale: 1.01 }}
+                whileTap={{ scale: 0.99 }}
+                transition={{ duration: 0.15, ease: "easeOut" }}
                 onClick={() => {
                   sfx.playClick();
                   if (item.actionType === "button" && onExecuteSingleItem) {
@@ -923,7 +924,7 @@ export const ActionCard: React.FC<ActionCardProps> = ({
                     onToggleItem(item.id);
                   }
                 }}
-                className={`flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all duration-200 border ${
+                className={`flex items-center justify-between p-3 rounded-xl cursor-pointer transition-colors duration-150 border transform-gpu ${
                   item.selected
                     ? isDark
                       ? "bg-white/10 border-white/15 shadow-sm"
@@ -977,9 +978,9 @@ export const ActionCard: React.FC<ActionCardProps> = ({
                 </a>
               ) : (
                 <motion.div
-                  animate={{ scale: item.selected ? [1, 1.15, 1] : 1 }}
-                  transition={{ duration: 0.2 }}
-                  className={`w-5 h-5 rounded-full flex items-center justify-center transition-all ${
+                  animate={{ scale: item.selected ? [1, 1.12, 1] : 1 }}
+                  transition={{ duration: 0.15 }}
+                  className={`w-5 h-5 rounded-full flex items-center justify-center transition-colors duration-150 transform-gpu ${
                     item.selected
                       ? "text-white shadow-sm"
                       : "border border-white/30 dark:border-white/20"
@@ -1005,7 +1006,7 @@ export const ActionCard: React.FC<ActionCardProps> = ({
             id="action-cancel-button"
             type="button"
             onClick={onCancel}
-            className={`w-full py-2 px-4 rounded-xl text-xs font-semibold transition-all duration-200 border active:scale-95 flex items-center justify-center space-x-1.5 ${
+            className={`w-full py-2 px-4 rounded-xl text-xs font-semibold transition-colors duration-150 border active:scale-95 flex items-center justify-center space-x-1.5 ${
               isDark
                 ? "bg-white/5 hover:bg-white/10 text-slate-300 border-white/10 hover:border-white/20"
                 : "bg-black/5 hover:bg-black/10 text-slate-700 border-black/10 hover:border-black/20"

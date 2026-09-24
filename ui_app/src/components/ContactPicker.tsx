@@ -44,7 +44,7 @@ export const ContactPicker: React.FC<ContactPickerProps> = ({
 
       {/* Frosted Mica Glass Card */}
       <div
-        className={`card-bracket relative rounded-2xl p-2.5 sm:p-3 shadow-2xl transition-all duration-300 border ${
+        className={`card-bracket relative rounded-2xl p-2.5 sm:p-3 shadow-2xl transition-colors duration-150 border transform-gpu ${
           isDark
             ? "acrylic-glass text-slate-100 border-white/10 shadow-black/40"
             : "acrylic-glass-light text-slate-900 border-black/10 shadow-slate-300/40"
@@ -54,14 +54,14 @@ export const ContactPicker: React.FC<ContactPickerProps> = ({
           {contacts.map((contact, index) => (
             <motion.div
               key={contact.id}
-              initial={{ opacity: 0, x: -12 }}
+              initial={{ opacity: 0, x: -8 }}
               animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: index * 0.07 + 0.15, duration: 0.3 }}
+              transition={{ duration: 0.16, ease: "easeOut" }}
               onClick={() => {
                 sfx.playClick();
                 onSelectContact(contact);
               }}
-              className={`flex items-center justify-between p-2.5 sm:p-3 rounded-xl cursor-pointer transition-all duration-200 border ${
+              className={`flex items-center justify-between p-2.5 sm:p-3 rounded-xl cursor-pointer transition-colors duration-150 border transform-gpu ${
                 isDark
                   ? "bg-white/5 hover:bg-white/12 border-white/5 hover:border-white/20 active:scale-[0.99]"
                   : "bg-black/5 hover:bg-black/10 border-black/5 hover:border-black/15 active:scale-[0.99]"

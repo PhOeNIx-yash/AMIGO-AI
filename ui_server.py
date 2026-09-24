@@ -672,13 +672,19 @@ def api_action_execute():
     if handler:
         try:
             handler_result = handler(payload, data.get("title", ""), "")
+            metadata = {}
             if isinstance(handler_result, tuple):
                 spoken = handler_result[0] if len(handler_result) > 0 else ""
                 url = handler_result[1] if len(handler_result) > 1 else None
+                metadata = handler_result[2] if len(handler_result) > 2 and isinstance(handler_result[2], dict) else {}
             else:
                 spoken = str(handler_result)
                 url = None
-            return jsonify({"success": True, "message": spoken or "Executed", "url": url})
+            success = metadata.get("status") not in {"blocked", "failed"}
+            result = {"success": success, "message": spoken or "Executed", "url": url}
+            if metadata:
+                result["metadata"] = metadata
+            return jsonify(result), (403 if not success else 200)
         except Exception as err:
             logger.exception("[Action Execute Error]: %s", err)
             return jsonify({"success": False, "error": str(err)}), 500

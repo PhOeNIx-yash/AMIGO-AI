@@ -21,7 +21,7 @@ import {
   Minimize2,
   Maximize2,
   Clock,
-  Waves,
+  Orbit,
   Database,
   RefreshCw,
   FileText,
@@ -713,39 +713,37 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                   </div>
                 </div>
 
-                {/* Waveform Visualizer Style */}
+                {/* Thinking Orb Visual States */}
                 <div
                   className={`p-4 rounded-2xl border ${
                     isDark ? "bg-white/[0.03] border-white/10" : "bg-white border-black/10"
                   }`}
                 >
-                  <div className="text-xs font-semibold uppercase tracking-wider opacity-60 mb-3">Audio Waveform Style</div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {[
-                      { id: "ribbon", name: "Ribbon Wave", desc: "Fluid listening wave" },
-                      { id: "orb", name: "Particle Orb", desc: "Thinking & working 3D core" },
-                    ].map((v) => {
-                      const isSelected = visualizerMode === v.id;
-                      return (
-                        <button
-                          key={v.id}
-                          onClick={() => onChangeVisualizerMode(v.id as VisualizerMode)}
-                          className={`p-2.5 rounded-xl border text-left transition-all ${
-                            isSelected
-                              ? "border-emerald-500 ring-1 ring-emerald-500/40 bg-emerald-500/5 shadow-sm"
-                              : isDark
-                              ? "border-white/10 bg-white/[0.02] hover:bg-white/5"
-                              : "border-black/10 bg-white hover:bg-slate-50"
-                          }`}
-                        >
-                          <div className="flex items-center space-x-1.5 mb-0.5">
-                            <Waves className="w-3.5 h-3.5" style={{ color: theme.accent }} />
-                            <div className="text-xs font-semibold">{v.name}</div>
-                          </div>
-                          <div className="text-[10px] opacity-60">{v.desc}</div>
-                        </button>
-                      );
-                    })}
+                  <div className="flex items-start gap-3">
+                    <div
+                      className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl border"
+                      style={{ color: theme.accent, borderColor: `${theme.accent}55`, backgroundColor: `${theme.accent}12` }}
+                    >
+                      <Orbit className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <div className="text-xs font-semibold uppercase tracking-wider opacity-60">Thinking Orb States</div>
+                      <p className="mt-1 text-[11px] leading-relaxed opacity-60">
+                        Amigo uses a distinct orb motion for ready, listening, thinking, working, choices, and completed states.
+                      </p>
+                      <div className="mt-3 flex flex-wrap gap-1.5">
+                        {["Breathing", "Listening", "Solving", "Working", "Connecting", "Weaving"].map((label) => (
+                          <span
+                            key={label}
+                            className={`rounded-full border px-2 py-1 text-[10px] ${
+                              isDark ? "border-white/10 bg-white/[0.03]" : "border-black/10 bg-black/[0.02]"
+                            }`}
+                          >
+                            {label}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
                   </div>
                 </div>
 

@@ -14,10 +14,12 @@
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
     "express": "^4.21.2",
+    "liquid-gooey": "^0.2.2",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
+    "thinking-orbs": "^0.3.2",
     "vite": "^6.2.3"
   },
   "devDependencies": {

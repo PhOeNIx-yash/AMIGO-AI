@@ -57,7 +57,7 @@ export default function App() {
       const saved = localStorage.getItem("windows11_voice_assistant_visualizer_mode");
       if (saved) return saved as VisualizerMode;
     }
-    return "ribbon";
+    return "orb";
   });
 
   const [textAnimationStyle, setTextAnimationStyle] = useState<TextAnimationStyle>(() => {
@@ -807,22 +807,30 @@ export default function App() {
                 colorTheme={colorTheme}
               />
 
-              {/* Canvas Visualizer Canvas Layer (Ribbon Wave, Particle Orb) */}
-              <CanvasVisualizer
-                mode={visualizerMode}
-                state={state}
-                colorTheme={colorTheme}
-                isDark={isDark}
-                compact={state !== "idle" && state !== "listening"}
-                isPaused={showSettings || showBackendModal}
-              />
+              {/* State-driven Thinking Orb layer */}
+              {(() => {
+                // Strictly keep the 3D Orb and spoken text centralized overlapping each other for all chat, voice responses, and queries.
+                // Only compact when an interactive card (action card checklist or contact picker) needs stage space.
+                const isCompact = state === "action_card" || state === "contact_picker";
+                return (
+                  <div className="relative flex-1 w-full min-h-0 flex flex-col items-center justify-center overflow-hidden">
+                    <CanvasVisualizer
+                      mode={visualizerMode}
+                      state={state}
+                      colorTheme={colorTheme}
+                      isDark={isDark}
+                      compact={isCompact}
+                      isPaused={showSettings || showBackendModal}
+                    />
 
-              {/* Central Display & Animated State Cards with 60fps Hardware-Accelerated Smooth Scrolling */}
-              <div
-                id="central-display-area"
-                className="relative z-20 flex-1 min-h-0 w-full max-w-4xl flex flex-col items-center px-4 py-3 sm:py-5 overflow-y-auto smooth-scroll-container bg-transparent"
-              >
-                <div className="w-full my-auto flex flex-col items-center justify-center py-2">
+                    {/* Central Display & Animated State Cards with 60fps Hardware-Accelerated Smooth Scrolling */}
+                    <div
+                      id="central-display-area"
+                      className="relative z-20 flex-1 min-h-0 w-full max-w-4xl flex flex-col items-center justify-center px-4 py-3 sm:py-5 overflow-y-auto smooth-scroll-container bg-transparent"
+                    >
+                      <div className={`w-full flex flex-col items-center justify-center py-2 transition-all duration-300 ${
+                        isCompact ? "mt-12 sm:mt-16 my-auto" : "my-auto"
+                      }`}>
                   {/* State Pill Badge (Only for listening or interactive pickers) */}
                   {(state === "listening" || isListening) && (
                     <div className="mb-2 sm:mb-3">
@@ -837,7 +845,7 @@ export default function App() {
 
                   {/* Main Central Spoken / Heading Text */}
                   {state !== "action_card" && (
-                    <div className="text-center max-w-2xl sm:max-w-3xl md:max-w-4xl mx-auto mb-4 sm:mb-6 px-4">
+                    <div className="text-center max-w-2xl sm:max-w-3xl md:max-w-4xl mx-auto px-4 drop-shadow-[0_4px_24px_rgba(0,0,0,0.85)] pointer-events-auto">
                       {(state === "listening" || isListening) && liveTranscript ? (
                         <div className="flex min-w-0 w-full flex-col items-center px-2">
                           <p className="w-full min-w-0 max-w-2xl break-words text-center text-xl font-semibold leading-snug text-slate-100 sm:text-2xl md:text-3xl">
@@ -959,6 +967,9 @@ export default function App() {
                   </div>
                 </div>
               </div>
+                  </div>
+                );
+              })()}
 
               {/* Bottom Interactive Voice & Text Bar with Chips */}
               <VoiceControls

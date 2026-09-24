@@ -34,7 +34,7 @@ _RE_SEARCH_PREFIX = re.compile(
     re.IGNORECASE,
 )
 _RE_SEARCH_SUFFIX = re.compile(r"\s+(?:please|for\s+me|right\s+now|now|today|online|on\s+the\s+web|on\s+google)$", re.IGNORECASE)
-_RE_STOCK_CLEAN = re.compile(r"\b(stock|price|share|shares|quote|trading|today|current|what is|what's|the|of)\b", re.IGNORECASE)
+_RE_STOCK_CLEAN = re.compile(r"\b(stock|stocks|price|prices|share|shares|quote|quotes|trading|today|current|live|latest|value|how much is|can you tell me|tell me|what is|what's|the|of|at)\b", re.IGNORECASE)
 _RE_GOOGLE_CLEAN = re.compile(r"^(show me|open|search|find|look up|what is|google)\s+", re.IGNORECASE)
 _RE_YT_PREFIX = re.compile(r"^(?:(?:hey\s+|hi\s+|hello\s+)?amigo\s*)?(?:please\s+|can\s+(?:you|u)\s+|could\s+(?:you|u)\s+)?(?:open youtube|play|listen to|put on|stream|watch|search youtube for)?\s*", re.IGNORECASE)
 _RE_YT_SUFFIX = re.compile(r"\s+(?:on youtube|in youtube|youtube|for me|please|now|right now)$", re.IGNORECASE)
@@ -110,37 +110,39 @@ def scrape_web_info(query: str, max_results: int = 4) -> str:
 
     snippets: list[str] = []
 
-    # 1. Stock / Financial check if relevant
-    if any(w in query.lower() for w in ("stock", "share price", "nasdaq", "nyse", "market price")):
-        subject = _RE_STOCK_CLEAN.sub("", search_term).strip()
-        if len(subject) >= 2:
-            if price_fact := get_stock_price(subject):
+    # 1. Check Yahoo Finance dynamically if financial or market terms are mentioned
+    if any(w in query.lower() for w in ("stock", "share", "shares", "ticker", "trading at", "market cap")):
+        cleaned_subject = clean_search_query(search_term)
+        candidate = _RE_STOCK_CLEAN.sub("", cleaned_subject).strip()
+        if len(candidate) >= 2:
+            if price_fact := get_stock_price(candidate):
                 snippets.append(price_fact)
 
-    # 2. DDGS Web Search (Filtered to exclude Wikipedia)
+    # 2. Web Search for broad online facts & news
     try:
-        from ddgs import DDGS
-        ddgs_client = DDGS(timeout=6)
-        # Explicitly exclude wikipedia from results
-        ddgs_query = f"{search_term} -site:wikipedia.org"
-        results = list(ddgs_client.text(ddgs_query, max_results=max_results + 2))
-        for r in results:
-            href = (r.get("href") or "").lower()
-            title = (r.get("title") or "").strip()
-            body = (r.get("body") or "").strip()
+        try:
+            from duckduckgo_search import DDGS
+        except ImportError:
+            from ddgs import DDGS
+        with DDGS() as ddgs_client:
+            results = list(ddgs_client.text(search_term, max_results=max_results + 4))
+            for r in results:
+                href = (r.get("href") or "").lower()
+                title = (r.get("title") or "").strip()
+                body = (r.get("body") or "").strip()
 
-            # Strict guard against Wikipedia articles
-            if "wikipedia.org" in href or "wikipedia" in title.lower():
-                continue
+                # Guard against bloated Wikipedia article dumps
+                if "wikipedia.org" in href or "wikipedia" in title.lower():
+                    continue
 
-            if body and len(body) > 30:
-                snippet = f"{title}: {body}" if title else body
-                if snippet not in snippets:
-                    snippets.append(snippet)
-            if len(snippets) >= max_results:
-                break
+                if body and len(body) > 25:
+                    snippet = f"{title}: {body}" if title else body
+                    if snippet not in snippets:
+                        snippets.append(snippet)
+                if len(snippets) >= max_results:
+                    break
     except Exception as e:
-        logger.debug(f"[DDGS Error]: {e}")
+        logger.debug(f"[Search Error]: {e}")
 
     return " | ".join(snippets)[:3000] if snippets else ""
 

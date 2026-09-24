@@ -30,15 +30,15 @@ _laya_load_attempted = False
 LAYA_QUESTIONS = {
     "intent": {
         "type": "choice",
-        "instructions": "Determine if `request` is a computer/device action command or conversational chat.",
+        "instructions": "Determine if `request` is a computer/device action, online lookup, or conversational chat.",
         "criteria": {
-            "action": "A command to launch an app, control windows, browse tabs, play music, adjust volume, take screenshot, set timer, or check emails",
-            "chat": "General conversation, asking questions, seeking explanations, facts, math, jokes, greetings, or chit-chat",
+            "action": "A command to launch an app, control windows, browse tabs, play music, adjust volume, take screenshot, set timer, check emails, search the web, or look up live stock prices and financial market quotes",
+            "chat": "General conversation, asking questions, seeking explanations, history, static facts, math, jokes, greetings, or chit-chat",
         },
     },
     "tool": {
         "type": "choice",
-        "instructions": "If `request` is an action, which tool should execute it?",
+        "instructions": "If `request` is an action or lookup, which tool should execute it?",
         "criteria": {
             "open_app": "Launch, start, run, or open an application or program",
             "close_app": "Close, quit, exit, or terminate an application or window",
@@ -49,7 +49,7 @@ LAYA_QUESTIONS = {
             "set_volume": "Adjust volume, mute sound, raise volume, lower volume",
             "system_control": "Take screenshot, read screen, system status, lock PC, sleep PC, restart PC",
             "workspace": "Check emails, calendar events, search local files, set timer or reminder",
-            "web_search": "Search Google or browse the web for information",
+            "web_search": "Search Google, browse the web, check stock prices, ticker quotes, market data, shares, sports scores, live news, or online information",
             "chat": "No action needed: pure conversational reply, knowledge, math, or explanation",
         },
     },
@@ -67,6 +67,13 @@ _RE_PRESS = re.compile(r"^(?:please\s+)?(?:press|hit)\s+['\"]?(.+?)['\"]?$", re.
 _RE_TYPE = re.compile(r"^(?:please\s+)?(?:type|write)\s+['\"]?(.+?)['\"]?(?:\s+(?:in|into|on)\s+(?:the\s+)?(.+))?$", re.I)
 _RE_VOL_NUM = re.compile(r"\b(\d{1,3})\s*(?:%|percent)?\b", re.I)
 _RE_TIMER_SECS = re.compile(r"(\d+)\s*(days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)", re.I)
+
+# Real-time online lookup & market matchers (<1ms fast paths)
+_RE_FINANCE = re.compile(r"\b(?:stocks?|shares?|tickers?|market\s*caps?|trading\s*at)\b", re.I)
+_RE_WEB_SEARCH = re.compile(
+    r"^(?:(?:can|could|would)\s+(?:you|u)\s+)?(?:please\s+)?(?:search(?:\s+(?:the\s+web|online|google))?|google|look\s*up|browse(?:\s+online)?)\s+",
+    re.I,
+)
 
 
 def is_laya_ready() -> bool:
@@ -161,7 +168,7 @@ def extract_parameters_and_tool(tool: str, query: str) -> tuple[str, dict[str, A
             text = m_type.group(1).strip() if m_type else q
             app = m_type.group(2).strip() if (m_type and m_type.group(2)) else ""
             return "type_text", {"text": text, "app": app}
-        return "press_key", {"keys": "enter"}
+        return "chat", {}
 
     if tool == "play_youtube":
         clean = re.sub(r"^(?:(?:can|could|would)\s+(?:you|u)\s+)?(?:please\s+)?(?:play|listen to|stream|put on|watch)\s+(?:the\s+|a\s+|some\s+)?", "", q, flags=re.I)
@@ -224,7 +231,12 @@ def route_intent_via_laya(user_query: str) -> dict[str, Any] | None:
 
     q_low = q.lower()
 
-    # Fast-path shortcuts for unambiguous device utilities
+    # Fast-path shortcuts for unambiguous device utilities & real-time lookups
+    if _RE_FINANCE.search(q_low) or _RE_WEB_SEARCH.search(q_low):
+        clean_q = _RE_WEB_SEARCH.sub("", q).strip()
+        clean_q = re.sub(r"\s+(?:on\s+google|online|please)$", "", clean_q, flags=re.I).strip()
+        return {"tool": "web_search", "params": {"query": clean_q or q}, "speak": "", "source": "laya"}
+
     if _RE_WEATHER.search(q_low):
         m_city = re.search(r"\b(?:in|for|at|of)\s+([a-zA-Z\s.-]+)$", q, re.I)
         city = m_city.group(1).strip() if m_city else ""
@@ -293,24 +305,14 @@ def route_intent_via_laya(user_query: str) -> dict[str, Any] | None:
         raw_tool = tool_info.get("choice", "chat")
 
         # Clean conversational escalation to MiniCPM 5 2B
-        if intent == "chat" or conf < 0.35:
+        if intent == "chat" or raw_tool == "chat":
             logger.info("[Laya Router] Evaluated '%s' -> chat (conf=%.3f) in %.1f ms", q[:35], conf, elapsed_ms)
             return {"tool": "chat", "params": {}, "speak": "", "source": "laya", "confidence": conf}
 
-        if raw_tool == "chat":
-            # If intent was action but tool argmax split over multiple action tools, pick best action tool
-            tool_probs = tool_info.get("probabilities", {})
-            non_chat_tools = {k: v for k, v in tool_probs.items() if k != "chat"}
-            if non_chat_tools:
-                best_action = max(non_chat_tools, key=non_chat_tools.get)
-                if non_chat_tools[best_action] >= 0.15:
-                    raw_tool = best_action
-                else:
-                    return {"tool": "chat", "params": {}, "speak": "", "source": "laya", "confidence": conf}
-            else:
-                return {"tool": "chat", "params": {}, "speak": "", "source": "laya", "confidence": conf}
-
         final_tool, params = extract_parameters_and_tool(raw_tool, q)
+        if final_tool == "chat":
+            logger.info("[Laya Router] Extracted parameters evaluated '%s' -> chat in %.1f ms", q[:35], elapsed_ms)
+            return {"tool": "chat", "params": {}, "speak": "", "source": "laya", "confidence": conf}
         logger.info(
             "[Laya Router] Evaluated '%s' -> tool='%s' (conf=%.3f) in %.1f ms",
             q[:35], final_tool, conf, elapsed_ms,

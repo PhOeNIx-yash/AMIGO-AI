@@ -1,10 +1,21 @@
 import React, { useEffect, useRef } from "react";
-import { VisualizerMode, AssistantState, ColorTheme } from "../types";
+import {
+  MODE_FRAMES,
+  paintFrame,
+  resolvePreset,
+  makeProj,
+  radiusScale,
+  finalizeFrame,
+  Dot,
+  OrbFrame,
+} from "thinking-orbs/engine";
+import { fibDir, scaleCounts, scaleRadii, OrbState } from "thinking-orbs";
+import { AssistantState, ColorTheme, VisualizerMode } from "../types";
 import { COLOR_THEMES } from "../data/presets";
 import { audioBus } from "../utils/audioBus";
 
 interface CanvasVisualizerProps {
-  mode: VisualizerMode;
+  mode?: VisualizerMode;
   state: AssistantState;
   colorTheme: ColorTheme;
   isDark: boolean;
@@ -12,560 +23,283 @@ interface CanvasVisualizerProps {
   isPaused?: boolean;
 }
 
-function createOffscreenBuffer(width: number, height: number): HTMLCanvasElement | OffscreenCanvas {
-  if (typeof OffscreenCanvas !== "undefined") {
-    return new OffscreenCanvas(width, height);
-  }
-  const c = document.createElement("canvas");
-  c.width = width;
-  c.height = height;
-  return c;
+// 3D Spherical & harmonic state mapping:
+// idle: 'weaving' (3D braided strands + 150 ghost sphere particles)
+// listening: custom harmonic voice wave sphere with real-time audio reactivity
+// processing: 'solving' (3D rotating puzzle bands)
+// working: 'working' (3D particle orbits around sphere)
+// completed: 'composing' (3D flowing harmonic ribbon)
+const ORB_STATES: Record<AssistantState, OrbState> = {
+  idle: "weaving",
+  listening: "listening",
+  processing: "solving",
+  action_card: "shaping",
+  contact_picker: "connecting",
+  working: "working",
+  completed: "composing",
+};
+
+const ORB_LABELS: Record<AssistantState, string> = {
+  idle: "Amigo is ready",
+  listening: "Amigo is listening",
+  processing: "Amigo is thinking",
+  action_card: "Amigo is preparing choices",
+  contact_picker: "Amigo is connecting details",
+  working: "Amigo is working",
+  completed: "Amigo completed the task",
+};
+
+const ORB_RENDER_SIZE = 256;
+
+function parseOrbTint(color: string) {
+  const match = color.trim().match(/^#([\da-f]{3}|[\da-f]{6})$/i);
+  if (!match) return undefined;
+  const hex = match[1].length === 3
+    ? match[1].split("").map((character) => character + character).join("")
+    : match[1];
+  return {
+    r: parseInt(hex.slice(0, 2), 16),
+    g: parseInt(hex.slice(2, 4), 16),
+    b: parseInt(hex.slice(4, 6), 16),
+  };
 }
 
 /**
- * Clean Two-Mode High Performance Canvas Visualizer
- * Seamlessly morphs between:
- *  1. Fluid Waveform (Listening state)
- *  2. 3D Fibonacci Particle Orb (Processing & Working states)
+ * 3D Harmonic Voice Listening Frame Renderer
+ * Designed for rock-solid 60 FPS, silky-smooth voice amplitude reactivity,
+ * zero z-fighting/flicker, and seamless continuity with the idle Fibonacci particle sphere.
  */
+function frameListening(
+  size: number,
+  t: number,
+  audioLevel: number,
+  rBase: number = 1.15,
+  rDepth: number = 1.65
+): OrbFrame {
+  const cx = size / 2;
+  const cy = size / 2;
+  const R = (size / 2) * 0.76;
+  const camTilt = 0.32;
+  const pt = makeProj(t * 0.35, camTilt, cx, cy, 1);
+  const rs = radiusScale(size, 0.6);
+  const dots: Dot[] = [];
+
+  // 1. 3D Fibonacci Ghost Hull: 84 sparkling particles forming the sphere's translucent body
+  const ghostN = 84;
+  const audioPulse = 1 + audioLevel * 0.10;
+  for (let i = 0; i < ghostN; i++) {
+    const d = fibDir(i, ghostN);
+    const rG = R * audioPulse * (1 + 0.025 * Math.sin(t * 1.5 + i * 0.7));
+    const [px, py, z] = pt(d[0] * rG, d[1] * rG, d[2] * rG);
+    const depth = (z / R + 1) / 2;
+    dots.push({
+      x: px,
+      y: py,
+      z,
+      r: (0.75 + 0.35 * audioLevel) * rs,
+      white: 0.76 + 0.18 * audioLevel,
+      a: 0.15 + 0.32 * depth + 0.12 * audioLevel,
+    });
+  }
+
+  // 2. Harmonic Fluid Voice Strands: 3 continuous flowing wave ribbons wrapped around the sphere
+  const strands = 3;
+  const strandPoints = 42;
+  const waveAmp = 0.04 + audioLevel * 0.16;
+  for (let s = 0; s < strands; s++) {
+    const phase = (s / strands) * Math.PI * 2;
+    for (let i = 0; i < strandPoints; i++) {
+      const u = (i / strandPoints) * 2 - 1; // -1 to 1 latitude
+      const lat = u * (Math.PI * 0.44);
+      const cosLat = Math.cos(lat);
+      const sinLat = Math.sin(lat);
+      const lon = u * Math.PI * 3.0 + t * 0.5 + phase;
+
+      // Smooth organic harmonic wave equation
+      const wave = 1 + waveAmp * Math.sin(u * 4.2 - t * 2.2 + phase * 2);
+      const rr = R * wave * audioPulse;
+      const x = cosLat * Math.cos(lon) * rr;
+      const y = sinLat * rr;
+      const z0 = cosLat * Math.sin(lon) * rr;
+
+      const [px, py, z] = pt(x, y, z0);
+      const depth = (z / R + 1) / 2;
+      const endFade = 1 - Math.abs(u) * 0.45;
+      dots.push({
+        x: px,
+        y: py,
+        z,
+        r: ((rBase + rDepth * depth) * (1 + 0.3 * audioLevel)) * rs,
+        white: Math.max(0, 0.58 - 0.48 * depth + 0.28 * audioLevel),
+        a: endFade * (0.42 + 0.58 * depth),
+      });
+    }
+  }
+
+  return finalizeFrame(dots, [], 0.3);
+}
+
+interface HighResolutionOrbProps {
+  state: AssistantState;
+  orbState: OrbState;
+  color: string;
+  isDark: boolean;
+  speed: number;
+  paused: boolean;
+  ariaLabel: string;
+  haloRef: React.RefObject<HTMLDivElement | null>;
+  coreRef: React.RefObject<HTMLDivElement | null>;
+}
+
+const HighResolutionOrb: React.FC<HighResolutionOrbProps> = ({
+  state,
+  orbState,
+  color,
+  isDark,
+  speed,
+  paused,
+  ariaLabel,
+  haloRef,
+  coreRef,
+}) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const audioTargetRef = useRef(0);
+  const audioSmoothRef = useRef(0);
+  const simTimeRef = useRef(0);
+  const lastTimeRef = useRef(0);
+
+  // Subscribe to live audio levels with smooth decay
+  useEffect(() => {
+    return audioBus.subscribe((level) => {
+      audioTargetRef.current = Math.min(Math.max(level, 0), 1);
+    });
+  }, []);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    canvas.width = ORB_RENDER_SIZE * dpr;
+    canvas.height = ORB_RENDER_SIZE * dpr;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+
+    const { mode, speed: baseSpeed, opts } = resolvePreset(orbState, 64);
+    // Moderate, high-performance scaling to maintain rock-solid 60fps with rich 3D density
+    const scaledOpts = scaleCounts(scaleRadii(opts, 1.15), 1.25);
+    const frameRenderer = MODE_FRAMES[mode];
+    const tint = parseOrbTint(color);
+    let animationFrame = 0;
+    let running = true;
+
+    lastTimeRef.current = performance.now();
+
+    const loop = (now: number) => {
+      if (!running) return;
+
+      // Delta time in seconds, capped at 40ms to prevent jumps on tab resume
+      const dt = Math.min(Math.max((now - lastTimeRef.current) / 1000, 0), 0.04);
+      lastTimeRef.current = now;
+
+      // Asymmetric DSP envelope follower: fast attack (24ms), graceful natural decay (60ms)
+      const targetAudio = state === "listening" ? audioTargetRef.current : 0;
+      const attack = 0.24;
+      const decay = 0.06;
+      const k = targetAudio > audioSmoothRef.current ? attack : decay;
+      audioSmoothRef.current += (targetAudio - audioSmoothRef.current) * k;
+      const smoothAudio = audioSmoothRef.current;
+
+      // STABLE CLOCK: Uniform time progression ensures silky-smooth 60fps with ZERO stutter or tearing
+      // Base speed is steady and calm across all states (normalized listening speed)
+      const effSpeed = state === "listening" ? 1.62 : baseSpeed;
+      simTimeRef.current += dt * effSpeed * speed;
+
+      // Direct zero-overhead hardware-accelerated halo & core breathing (no React state updates)
+      if (haloRef.current) {
+        const haloScale = 1.0 + smoothAudio * 0.22;
+        const haloOpacity = isDark
+          ? 0.30 + smoothAudio * 0.25
+          : 0.22 + smoothAudio * 0.18;
+        haloRef.current.style.setProperty("--amigo-orb-scale", haloScale.toFixed(3));
+        haloRef.current.style.opacity = haloOpacity.toFixed(3);
+      }
+      if (coreRef.current) {
+        const coreScale = 1.0 + smoothAudio * 0.06;
+        coreRef.current.style.setProperty("--amigo-orb-core-scale", coreScale.toFixed(3));
+      }
+
+      // Render frame
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+      context.clearRect(0, 0, ORB_RENDER_SIZE, ORB_RENDER_SIZE);
+
+      const frame = state === "listening"
+        ? frameListening(ORB_RENDER_SIZE, simTimeRef.current, smoothAudio)
+        : frameRenderer(ORB_RENDER_SIZE, simTimeRef.current, scaledOpts);
+
+      paintFrame(context, frame, isDark, tint);
+
+      if (!paused) {
+        animationFrame = requestAnimationFrame(loop);
+      }
+    };
+
+    if (!paused) {
+      animationFrame = requestAnimationFrame(loop);
+    }
+
+    return () => {
+      running = false;
+      cancelAnimationFrame(animationFrame);
+    };
+  }, [color, coreRef, haloRef, isDark, orbState, paused, speed, state]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      role="img"
+      aria-label={ariaLabel}
+      className="amigo-high-resolution-orb"
+      width={ORB_RENDER_SIZE}
+      height={ORB_RENDER_SIZE}
+    />
+  );
+};
+
 export const CanvasVisualizer: React.FC<CanvasVisualizerProps> = React.memo(({
-  mode,
   state,
   colorTheme,
   isDark,
   compact = false,
   isPaused = false,
 }) => {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const animFrameRef = useRef<number | null>(null);
-  const audioLevelSmooth = useRef<number>(0);
-  const isPausedRef = useRef<boolean>(isPaused);
-  isPausedRef.current = isPaused;
-
-  // Continuous two-mode smooth transition weights (0.0 to 1.0)
-  const ribbonWeightRef = useRef<number>(state === "listening" || mode === "ribbon" ? 1.0 : 0.0);
-  const orbWeightRef = useRef<number>(state === "processing" || state === "working" || mode === "orb" ? 1.0 : 0.0);
-
-  // Keep state/mode/theme in mutable refs so RAF never tears down
-  const stateRef = useRef({ mode, state, colorTheme, isDark });
-  stateRef.current = { mode, state, colorTheme, isDark };
-
-  // Precalculated Fibonacci sphere dot mesh for Orb mode (130 precision dots)
-  const sphereDotsRef = useRef<{ x: number; y: number; z: number; baseSize: number }[]>([]);
-
-  // Pre-calculated Lookup Tables (LUT) for Waveform
-  const steps = 48;
-  const envLUTRef = useRef<Float32Array>(new Float32Array(steps + 1));
-  const uLUTRef = useRef<Float32Array>(new Float32Array(steps + 1));
-
-  // Offscreen Canvas Buffers for hardware-accelerated texture blitting
-  const ambientGlowCanvasRef = useRef<HTMLCanvasElement | OffscreenCanvas | null>(null);
-  const centerNodeCanvasRef = useRef<HTMLCanvasElement | OffscreenCanvas | null>(null);
-
-  // Cache tracking keys
-  const cachedThemeKeyRef = useRef<string>("");
-  const cachedIsDarkRef = useRef<boolean>(isDark);
-
-  // Initialize particles & lookup tables once
-  useEffect(() => {
-    // 1. Precalculate Envelope & U LUTs for Waveform
-    for (let i = 0; i <= steps; i++) {
-      const u = i / steps;
-      uLUTRef.current[i] = u;
-      const envelope = Math.sin(u * Math.PI);
-      envLUTRef.current[i] = Math.pow(envelope, 1.4);
-    }
-
-    // 2. 130 sphere dots for 3D Fibonacci Particle Orb
-    const count = 130;
-    const phi = Math.PI * (3 - Math.sqrt(5));
-    const dots: { x: number; y: number; z: number; baseSize: number }[] = [];
-
-    for (let i = 0; i < count; i++) {
-      const y = 1 - (i / (count - 1)) * 2;
-      const radius = Math.sqrt(Math.max(0, 1 - y * y));
-      const theta = phi * i;
-
-      dots.push({
-        x: Math.cos(theta) * radius,
-        y,
-        z: Math.sin(theta) * radius,
-        baseSize: (i % 3 === 0 ? 1.8 : 1.2) + (i % 5 === 0 ? 0.6 : 0),
-      });
-    }
-    sphereDotsRef.current = dots;
-  }, []);
-
-  // Function to bake offscreen canvas textures
-  const bakeOffscreenTextures = (themeKey: string, dark: boolean) => {
-    const theme = COLOR_THEMES[themeKey] || COLOR_THEMES.violet;
-    const { primary, secondary, accent } = theme;
-
-    // 1. Ambient Wave Glow Sprite (192x192 offscreen buffer)
-    const glowSize = 192;
-    const glowCanvas = createOffscreenBuffer(glowSize, glowSize);
-    const glowCtx = glowCanvas.getContext("2d") as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
-    if (glowCtx) {
-      const hSize = glowSize / 2;
-      const grad = glowCtx.createRadialGradient(hSize, hSize, 2, hSize, hSize, hSize);
-      grad.addColorStop(0, dark ? `${accent}40` : `${primary}28`);
-      grad.addColorStop(0.4, dark ? `${primary}20` : `${secondary}14`);
-      grad.addColorStop(0.8, dark ? `${secondary}08` : `${accent}06`);
-      grad.addColorStop(1, "rgba(0,0,0,0)");
-      glowCtx.fillStyle = grad;
-      glowCtx.beginPath();
-      glowCtx.arc(hSize, hSize, hSize, 0, Math.PI * 2);
-      glowCtx.fill();
-    }
-    ambientGlowCanvasRef.current = glowCanvas;
-
-    // 2. Center Focal Pulse Node Sprite (48x48 offscreen buffer)
-    const nodeSize = 48;
-    const nodeCanvas = createOffscreenBuffer(nodeSize, nodeSize);
-    const nodeCtx = nodeCanvas.getContext("2d") as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
-    if (nodeCtx) {
-      const hSize = nodeSize / 2;
-      const grad = nodeCtx.createRadialGradient(hSize, hSize, 0, hSize, hSize, hSize);
-      grad.addColorStop(0, dark ? "rgba(255,255,255,0.95)" : `${accent}ff`);
-      grad.addColorStop(0.35, dark ? `${accent}aa` : `${primary}88`);
-      grad.addColorStop(0.7, dark ? `${primary}44` : `${secondary}33`);
-      grad.addColorStop(1, "rgba(0,0,0,0)");
-      nodeCtx.fillStyle = grad;
-      nodeCtx.beginPath();
-      nodeCtx.arc(hSize, hSize, hSize, 0, Math.PI * 2);
-      nodeCtx.fill();
-    }
-    centerNodeCanvasRef.current = nodeCanvas;
-
-    cachedThemeKeyRef.current = themeKey;
-    cachedIsDarkRef.current = dark;
-  };
-
-  // Main Rendering Loop
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d", { alpha: true });
-    if (!ctx) return;
-
-    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
-    let width = 0;
-    let height = 0;
-
-    const resize = () => {
-      if (!canvas || !canvas.parentElement) return;
-      const rect = canvas.parentElement.getBoundingClientRect();
-      const newWidth = rect.width;
-      const newHeight = rect.height;
-      if (newWidth <= 0 || newHeight <= 0) return;
-
-      const targetW = Math.floor(newWidth * dpr);
-      const targetH = Math.floor(newHeight * dpr);
-
-      if (canvas.width !== targetW || canvas.height !== targetH) {
-        width = newWidth;
-        height = newHeight;
-        canvas.width = targetW;
-        canvas.height = targetH;
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      } else {
-        width = newWidth;
-        height = newHeight;
-      }
-    };
-
-    resize();
-    const resizeObserver = new ResizeObserver(resize);
-    if (canvas.parentElement) {
-      resizeObserver.observe(canvas.parentElement);
-    }
-
-    let time = 0;
-    let lastTimestamp = performance.now();
-
-    // Reusable buckets for 3D sphere render
-    const frontGlowBucket: { px: number; py: number; radius: number }[] = [];
-    const frontCyanBucket: { px: number; py: number; radius: number }[] = [];
-    const midVioletBucket: { px: number; py: number; radius: number }[] = [];
-    const backDarkBucket: { px: number; py: number; radius: number }[] = [];
-
-    const render = (now: number) => {
-      if (isPausedRef.current) {
-        lastTimestamp = now;
-        animFrameRef.current = requestAnimationFrame(render);
-        return;
-      }
-
-      const deltaSec = Math.min(0.033, Math.max(0.001, (now - lastTimestamp) / 1000));
-      lastTimestamp = now;
-      time += deltaSec;
-
-      const currentAudio = audioBus.getLevel();
-      const audioSmoothing = currentAudio > audioLevelSmooth.current ? 0.35 : 0.12;
-      audioLevelSmooth.current += (currentAudio - audioLevelSmooth.current) * audioSmoothing;
-
-      const {
-        mode: currentMode,
-        state: currentState,
-        colorTheme: currentThemeKey,
-        isDark: currentIsDark,
-      } = stateRef.current;
-
-      // Two-Mode Target Weights:
-      // Listening -> Waveform (Ribbon)
-      // Processing (Thinking) & Working -> 3D Particle Orb
-      let targetRibbon = 0.0;
-      let targetOrb = 0.0;
-
-      if (currentState === "listening") {
-        targetRibbon = 1.0;
-        targetOrb = 0.0;
-      } else if (currentState === "processing" || currentState === "working") {
-        targetRibbon = 0.0;
-        targetOrb = 1.0;
-      } else {
-        // Idle or other states: follow user preference
-        if (currentMode === "ribbon") {
-          targetRibbon = currentState === "idle" ? 0.0 : 0.85;
-          targetOrb = 0.0;
-        } else {
-          targetRibbon = 0.0;
-          targetOrb = 0.85;
-        }
-      }
-
-      const transitionRate = 1 - Math.exp(-deltaSec * 14.0);
-      ribbonWeightRef.current += (targetRibbon - ribbonWeightRef.current) * transitionRate;
-      orbWeightRef.current += (targetOrb - orbWeightRef.current) * transitionRate;
-
-      const rw = ribbonWeightRef.current;
-      const ow = orbWeightRef.current;
-
-      const effectiveAudio = Math.max(
-        audioLevelSmooth.current,
-        currentState === "listening" ? 0.22 : 0.0
-      );
-
-      if (
-        cachedThemeKeyRef.current !== currentThemeKey ||
-        cachedIsDarkRef.current !== currentIsDark ||
-        !ambientGlowCanvasRef.current
-      ) {
-        bakeOffscreenTextures(currentThemeKey, currentIsDark);
-      }
-
-      ctx.clearRect(0, 0, width, height);
-
-      if (rw <= 0.002 && ow <= 0.002) {
-        animFrameRef.current = requestAnimationFrame(render);
-        return;
-      }
-
-      const theme = COLOR_THEMES[currentThemeKey] || COLOR_THEMES.violet;
-      const primaryHex = theme.primary;
-      const secondaryHex = theme.secondary;
-      const accentHex = theme.accent;
-
-      // 1. Waveform Mode (Listening)
-      if (rw > 0.002) {
-        drawSimpleSleekWaveFast(
-          ctx,
-          width,
-          height,
-          time,
-          effectiveAudio,
-          primaryHex,
-          secondaryHex,
-          accentHex,
-          currentIsDark,
-          rw,
-          ow,
-          envLUTRef.current,
-          uLUTRef.current,
-          steps,
-          ambientGlowCanvasRef.current,
-          centerNodeCanvasRef.current
-        );
-      }
-
-      // 2. 3D Particle Orb Mode (Processing / Working)
-      if (ow > 0.002) {
-        drawGlebParticleOrbFast(
-          ctx,
-          width,
-          height,
-          time,
-          effectiveAudio,
-          primaryHex,
-          secondaryHex,
-          accentHex,
-          currentIsDark,
-          sphereDotsRef.current,
-          frontGlowBucket,
-          frontCyanBucket,
-          midVioletBucket,
-          backDarkBucket,
-          ow,
-          rw,
-          currentState === "processing" || currentState === "working"
-        );
-      }
-
-      animFrameRef.current = requestAnimationFrame(render);
-    };
-
-    animFrameRef.current = requestAnimationFrame(render);
-
-    return () => {
-      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-      resizeObserver.disconnect();
-    };
-  }, []);
+  const theme = COLOR_THEMES[colorTheme] || COLOR_THEMES.violet;
+  const orbState = ORB_STATES[state] || "weaving";
+  const orbColor = isDark ? theme.accent : theme.primary;
+  const haloRef = useRef<HTMLDivElement>(null);
+  const coreRef = useRef<HTMLDivElement>(null);
 
   return (
     <div
-      className={`absolute inset-0 pointer-events-none overflow-hidden transition-opacity duration-500 ${
-        compact ? "opacity-75" : "opacity-100"
+      className={`amigo-orb-stage absolute inset-0 z-0 pointer-events-none overflow-hidden transition-all duration-500 ${
+        compact ? "compact opacity-85" : "opacity-100"
       }`}
-      style={{ willChange: "transform" }}
+      aria-hidden="true"
     >
-      <canvas
-        ref={canvasRef}
-        className="w-full h-full block"
-        style={{ willChange: "contents" }}
-      />
+      <div ref={haloRef} className="amigo-orb-halo" style={{ background: theme.glow }} />
+      <div ref={coreRef} className="amigo-orb-core">
+        <HighResolutionOrb
+          state={state}
+          orbState={orbState}
+          color={orbColor}
+          speed={state === "processing" || state === "working" ? 1.25 : 0.95}
+          paused={isPaused}
+          isDark={isDark}
+          ariaLabel={ORB_LABELS[state] || ORB_LABELS.idle}
+          haloRef={haloRef}
+          coreRef={coreRef}
+        />
+      </div>
     </div>
   );
 });
-
-// =========================================================================================
-// HIGH-PERFORMANCE 60FPS WAVEFORM (ZERO ALLOCATION, OFFSCREEN TEXTURES)
-// =========================================================================================
-function drawSimpleSleekWaveFast(
-  ctx: CanvasRenderingContext2D,
-  width: number,
-  height: number,
-  time: number,
-  audio: number,
-  primaryColor: string,
-  secondaryColor: string,
-  accentColor: string,
-  isDark: boolean,
-  ribbonWeight: number,
-  orbWeight: number,
-  envLUT: Float32Array,
-  uLUT: Float32Array,
-  steps: number,
-  ambientGlowCanvas: HTMLCanvasElement | OffscreenCanvas | null,
-  centerNodeCanvas: HTMLCanvasElement | OffscreenCanvas | null
-) {
-  const blend = Math.max(0, Math.min(1.0, ribbonWeight));
-  if (blend <= 0.002) return;
-
-  const centerX = width / 2;
-  const centerY = height * 0.56;
-
-  const widthCollapse = 0.25 + 0.75 * Math.min(1.0, blend / (blend + orbWeight * 0.8 + 0.001));
-  const waveWidth = Math.min(width * 0.78, 560) * widthCollapse;
-  const startX = centerX - waveWidth / 2;
-
-  // 1. Offscreen Ambient Glow GPU Blit
-  if (ambientGlowCanvas) {
-    const glowDiameter = Math.min(waveWidth * 0.7, 240) * (0.85 + audio * 0.35) * blend;
-    ctx.globalCompositeOperation = isDark ? "screen" : "source-over";
-    ctx.globalAlpha = blend * 0.55 * (1.0 - orbWeight * 0.5);
-    ctx.drawImage(
-      ambientGlowCanvas as CanvasImageSource,
-      centerX - glowDiameter / 2,
-      centerY - glowDiameter / 2,
-      glowDiameter,
-      glowDiameter
-    );
-  }
-
-  // 2. Render Harmonic Waves
-  const baseAmplitude = (16 + audio * 42) * blend * (0.3 + 0.7 * widthCollapse);
-  ctx.globalCompositeOperation = isDark ? "screen" : "source-over";
-
-  const waveConfigs = [
-    { speed: 2.2, freq: 2.5, phase: 0, ampMult: 1.0, color: isDark ? "#ffffff" : primaryColor, lineWidth: 1.8, alpha: 0.55 * blend },
-    { speed: -1.8, freq: 3.2, phase: 1.2, ampMult: 0.7, color: "#38bdf8", lineWidth: 1.4, alpha: 0.4 * blend },
-    { speed: 2.8, freq: 4.1, phase: 2.4, ampMult: 0.5, color: secondaryColor, lineWidth: 1.2, alpha: 0.32 * blend },
-  ];
-
-  for (let c = 0; c < waveConfigs.length; c++) {
-    const cfg = waveConfigs[c];
-    ctx.beginPath();
-    ctx.strokeStyle = cfg.color;
-    ctx.lineWidth = cfg.lineWidth;
-    ctx.globalAlpha = cfg.alpha;
-
-    const waveTime = time * cfg.speed;
-    const effAmp = baseAmplitude * cfg.ampMult;
-
-    for (let i = 0; i <= steps; i++) {
-      const u = uLUT[i];
-      const x = startX + u * waveWidth;
-      const shapedEnv = envLUT[i];
-      const mainWave = Math.sin(u * Math.PI * cfg.freq - waveTime + cfg.phase);
-      const y = centerY + mainWave * effAmp * shapedEnv;
-
-      if (i === 0) {
-        ctx.moveTo(x, y);
-      } else {
-        ctx.lineTo(x, y);
-      }
-    }
-    ctx.stroke();
-  }
-
-  // 3. Center Focal Node
-  if (centerNodeCanvas) {
-    const centerAmp = Math.sin(time * 2.2) * 3 * blend;
-    const nodeDiameter = (22 + audio * 28) * blend + (orbWeight * 18 * (1 - blend));
-    ctx.globalAlpha = Math.max(blend, orbWeight * 0.6) * (isDark ? 0.9 : 0.75);
-    ctx.drawImage(
-      centerNodeCanvas as CanvasImageSource,
-      centerX - nodeDiameter / 2,
-      centerY + centerAmp - nodeDiameter / 2,
-      nodeDiameter,
-      nodeDiameter
-    );
-  }
-}
-
-// =========================================================================================
-// 3D FIBONACCI PARTICLE ORB (OPTIMIZED 130 DOTS, FAST BATCHING)
-// =========================================================================================
-function drawGlebParticleOrbFast(
-  ctx: CanvasRenderingContext2D,
-  width: number,
-  height: number,
-  time: number,
-  audio: number,
-  color1: string,
-  color2: string,
-  accentColor: string,
-  isDark: boolean,
-  sphereDots: { x: number; y: number; z: number; baseSize: number }[],
-  frontGlowBucket: { px: number; py: number; radius: number }[],
-  frontCyanBucket: { px: number; py: number; radius: number }[],
-  midVioletBucket: { px: number; py: number; radius: number }[],
-  backDarkBucket: { px: number; py: number; radius: number }[],
-  orbWeight: number = 1.0,
-  ribbonWeight: number = 0.0,
-  isActiveOrb: boolean = false
-) {
-  const blend = Math.max(0, Math.min(1.0, orbWeight));
-  if (blend <= 0.002) return;
-
-  const centerX = width / 2;
-  const centerY = height * 0.46;
-
-  const morphRatio = Math.min(1.0, Math.max(0.0, blend / (blend + ribbonWeight * 0.6 + 0.0001)));
-  const morphEase = Math.sin((morphRatio * Math.PI) / 2);
-
-  const speedMultiplier = isActiveOrb ? 1.35 : 1.0;
-  const pulseAmp = isActiveOrb ? Math.sin(time * 3.6) * 0.08 : 0.0;
-  const baseRadius = (Math.min(width, height) * 0.22 + audio * 36) * (0.28 + 0.72 * morphEase) * (1.0 + pulseAmp);
-
-  const rotY = time * (0.45 * speedMultiplier);
-  const rotX = Math.sin(time * 0.35 * speedMultiplier) * 0.35 + 0.25;
-
-  const cosY = Math.cos(rotY);
-  const sinY = Math.sin(rotY);
-  const cosX = Math.cos(rotX);
-  const sinX = Math.sin(rotX);
-
-  frontGlowBucket.length = 0;
-  frontCyanBucket.length = 0;
-  midVioletBucket.length = 0;
-  backDarkBucket.length = 0;
-
-  const fov = 3.2;
-  const len = sphereDots.length;
-
-  for (let i = 0; i < len; i++) {
-    const dot = sphereDots[i];
-
-    const waveX = dot.x * 2.2;
-    const waveY = dot.y * 0.12 + Math.sin(dot.x * 3.8 + time * 3.0) * 0.16;
-    const waveZ = dot.z * 0.22;
-
-    const curX = waveX + (dot.x - waveX) * morphEase;
-    const curY = waveY + (dot.y - waveY) * morphEase;
-    const curZ = waveZ + (dot.z - waveZ) * morphEase;
-
-    const x1 = curX * cosY - curZ * sinY;
-    const z1 = curZ * cosY + curX * sinY;
-    const y2 = curY * cosX - z1 * sinX;
-    const z2 = z1 * cosX + curY * sinX;
-
-    const scale = fov / (fov + z2);
-    const px = centerX + x1 * baseRadius * scale;
-    const py = centerY + y2 * baseRadius * scale;
-    const normDepth = (z2 + 1) * 0.5;
-    const radius = dot.baseSize * scale * (0.7 + normDepth * 0.8) * (0.5 + 0.5 * morphEase);
-
-    if (normDepth > 0.8) {
-      frontGlowBucket.push({ px, py, radius });
-    } else if (normDepth > 0.55) {
-      frontCyanBucket.push({ px, py, radius });
-    } else if (normDepth > 0.3) {
-      midVioletBucket.push({ px, py, radius });
-    } else {
-      backDarkBucket.push({ px, py, radius });
-    }
-  }
-
-  // Batched renders
-  ctx.globalCompositeOperation = isDark ? "screen" : "source-over";
-
-  if (backDarkBucket.length > 0) {
-    ctx.globalAlpha = 0.3 * blend;
-    ctx.fillStyle = color1;
-    ctx.beginPath();
-    for (let i = 0; i < backDarkBucket.length; i++) {
-      const p = backDarkBucket[i];
-      ctx.moveTo(p.px + p.radius, p.py);
-      ctx.arc(p.px, p.py, p.radius, 0, Math.PI * 2);
-    }
-    ctx.fill();
-  }
-
-  if (midVioletBucket.length > 0) {
-    ctx.globalAlpha = 0.65 * blend;
-    ctx.fillStyle = color2;
-    ctx.beginPath();
-    for (let i = 0; i < midVioletBucket.length; i++) {
-      const p = midVioletBucket[i];
-      ctx.moveTo(p.px + p.radius, p.py);
-      ctx.arc(p.px, p.py, p.radius, 0, Math.PI * 2);
-    }
-    ctx.fill();
-  }
-
-  if (frontCyanBucket.length > 0) {
-    ctx.globalAlpha = 0.9 * blend;
-    ctx.fillStyle = "#38bdf8";
-    ctx.beginPath();
-    for (let i = 0; i < frontCyanBucket.length; i++) {
-      const p = frontCyanBucket[i];
-      ctx.moveTo(p.px + p.radius, p.py);
-      ctx.arc(p.px, p.py, p.radius, 0, Math.PI * 2);
-    }
-    ctx.fill();
-  }
-
-  if (frontGlowBucket.length > 0) {
-    ctx.globalAlpha = 1.0 * blend;
-    ctx.fillStyle = "#ffffff";
-    ctx.beginPath();
-    for (let i = 0; i < frontGlowBucket.length; i++) {
-      const p = frontGlowBucket[i];
-      ctx.moveTo(p.px + p.radius, p.py);
-      ctx.arc(p.px, p.py, p.radius, 0, Math.PI * 2);
-    }
-    ctx.fill();
-  }
-}

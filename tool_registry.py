@@ -376,9 +376,16 @@ def _tool_pause_media(params, query, spoken):
         stop_speaking()
     except Exception:
         pass
+
     state = get_active_state(clean_expired=True)
-    media = state.get("current_media")
-    os_automation.play_pause_media()
+    media = state.get("current_media") if isinstance(state, dict) else None
+    has_tracked_media = bool(media and isinstance(media, dict))
+
+    try:
+        os_automation.play_pause_media()
+    except Exception:
+        pass
+
     if _media_update_cb:
         _media_update_cb({"status": "paused"})
     if has_tracked_media and isinstance(media, dict):
@@ -389,10 +396,14 @@ def _tool_pause_media(params, query, spoken):
 
 def _tool_play_media(params, query, spoken):
     state = get_active_state(clean_expired=False)
-    media = state.get("current_media")
+    media = state.get("current_media") if isinstance(state, dict) else None
     has_tracked_media = bool(media and isinstance(media, dict))
 
-    os_automation.play_pause_media()
+    try:
+        os_automation.play_pause_media()
+    except Exception:
+        pass
+
     if _media_update_cb:
         _media_update_cb({"status": "playing"})
     if has_tracked_media and isinstance(media, dict):

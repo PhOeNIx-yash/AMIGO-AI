@@ -8,6 +8,7 @@ import {
   Radio,
   Sparkles,
   Plus,
+  File as FileIcon,
   FileText,
   Image as ImageIcon,
   Folder,
@@ -16,11 +17,23 @@ import {
   AlertCircle,
   FileCode,
 } from "lucide-react";
+import { Liquid } from "liquid-gooey";
 import { sfx } from "../utils/audio";
 import { transcribeAudio, uploadFileToBackend } from "../services/assistantApi";
 import { BackendConfig, ColorTheme, AttachmentItem } from "../types";
 import { COLOR_THEMES } from "../data/presets";
 import { audioBus } from "../utils/audioBus";
+
+// Theme-adapted deep liquid surface palettes matching capsule & dark glass aesthetics
+const THEME_LIQUID_COLORS: Record<string, { dark: string; light: string }> = {
+  cobalt: { dark: "#0c1730", light: "#f0f6ff" },
+  violet: { dark: "#150f2e", light: "#f5f0ff" },
+  emerald: { dark: "#081c15", light: "#f0fdf4" },
+  sunset: { dark: "#22120b", light: "#fff7ed" },
+  cyan: { dark: "#061a26", light: "#ecfeff" },
+  weather: { dark: "#071f33", light: "#f0f9ff" },
+  noir: { dark: "#141416", light: "#ffffff" },
+};
 
 interface VoiceControlsProps {
   onProcessCommand: (prompt: string, attachment?: AttachmentItem) => void;
@@ -61,18 +74,34 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
   const fileInputImgRef = useRef<HTMLInputElement | null>(null);
   const fileInputAllRef = useRef<HTMLInputElement | null>(null);
 
-  // Close attachment menu on outside click
+  // Theme-adapted liquid gooey fills & glow shadows
+  const liquidFill = isDark
+    ? (THEME_LIQUID_COLORS[colorTheme]?.dark || "#0c1730")
+    : (THEME_LIQUID_COLORS[colorTheme]?.light || "#ffffff");
+
+  const liquidShadow = isDark
+    ? `0 8px 24px ${theme.glow}, 0 2px 8px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.18)`
+    : `0 8px 20px ${theme.glow}, inset 0 1px 0 rgba(255,255,255,0.95)`;
+
+  // Close attachment menu on outside click or Escape key
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setIsMenuOpen(false);
       }
     };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setIsMenuOpen(false);
+      }
+    };
     if (isMenuOpen) {
       document.addEventListener("mousedown", handleClickOutside);
+      document.addEventListener("keydown", handleKeyDown);
     }
     return () => {
       document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleKeyDown);
     };
   }, [isMenuOpen]);
 
@@ -250,7 +279,6 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
   const animFrameRef = useRef<number | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const speechRecognitionRef = useRef<any>(null);
-  const miniCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const interimTimerRef = useRef<any>(null);
   const webSpeechActiveRef = useRef<boolean>(false);
 
@@ -351,7 +379,7 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
       });
       streamRef.current = stream;
 
-      // Set up AudioContext for real-time visualizer waveform
+      // Set up AudioContext for real-time microphone level analysis
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       const audioCtx = new AudioCtx();
       audioContextRef.current = audioCtx;
@@ -378,32 +406,6 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
 
         // Fast zero-overhead broadcast to Canvas Visualizer via AudioBus (prevents 60fps React state re-render thrashing)
         audioBus.emit(normalized, dataArray);
-
-        // Render mini canvas waveform directly with zero React re-render overhead
-        if (miniCanvasRef.current) {
-          const mCanvas = miniCanvasRef.current;
-          const mCtx = mCanvas.getContext("2d");
-          if (mCtx) {
-            mCtx.clearRect(0, 0, mCanvas.width, mCanvas.height);
-            const numBars = 6;
-            const barWidth = 2.5;
-            const gap = 2;
-            const totalW = numBars * (barWidth + gap);
-            const startX = (mCanvas.width - totalW) / 2;
-
-            for (let b = 0; b < numBars; b++) {
-              const val = (dataArray[b * 2] || 0) / 255;
-              const barH = Math.max(3, val * mCanvas.height * 0.85);
-              const x = startX + b * (barWidth + gap);
-              const y = (mCanvas.height - barH) / 2;
-
-              mCtx.fillStyle = b % 2 === 0 ? theme.primary : theme.accent;
-              mCtx.beginPath();
-              mCtx.roundRect(x, y, barWidth, barH, 1.5);
-              mCtx.fill();
-            }
-          }
-        }
 
         animFrameRef.current = requestAnimationFrame(checkVolume);
       };
@@ -767,124 +769,163 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
           autoComplete="off"
           className="flex-1 flex items-center min-w-0"
         >
-          {/* Plus (+) Attachment Button & Popover */}
-          <div className="relative flex items-center pl-1 sm:pl-1.5 flex-shrink-0" ref={menuRef}>
-            <button
-              id="attach-file-button"
-              type="button"
-              onClick={() => {
-                sfx.playClick?.();
-                setIsMenuOpen(!isMenuOpen);
-              }}
-              disabled={disabled || isListening || isTranscribing}
-              className={`relative w-8 h-8 sm:w-9 sm:h-9 rounded-full transition-all duration-200 flex items-center justify-center active:scale-95 hover:scale-105 border ${
-                isMenuOpen
-                  ? "shadow-md border-transparent text-white"
-                  : isDark
-                  ? "hover:bg-white/10 text-slate-300 border-white/10"
-                  : "hover:bg-black/5 text-slate-700 border-black/10"
-              }`}
-              style={
-                isMenuOpen
-                  ? {
-                      background: theme.gradient,
-                      boxShadow: `0 0 14px ${theme.glow}`,
-                      transform: "rotate(45deg)",
-                    }
-                  : undefined
-              }
-              title="Attach files, PDFs, or images"
+          {/* Liquid Gooey Morphing Attachment Menu */}
+          <div className="relative z-30 flex items-center pl-1 sm:pl-1.5 flex-shrink-0" ref={menuRef}>
+            <Liquid
+              blur={5}
+              contrast={19}
+              fill={liquidFill}
+              shadow={liquidShadow}
+              filterPadding={100}
+              className="relative w-9 h-9"
             >
-              <Plus className="w-4 h-4 sm:w-4.5 sm:h-4.5 transition-transform duration-200" />
-            </button>
-
-            {/* Popover Flyout Menu */}
-            <AnimatePresence>
-              {isMenuOpen && (
-                <motion.div
-                  initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                  animate={{ opacity: 1, y: -8, scale: 1 }}
-                  exit={{ opacity: 0, y: 8, scale: 0.95 }}
-                  transition={{ duration: 0.16, ease: "easeOut" }}
-                  className={`absolute bottom-full left-0 mb-2 w-64 rounded-2xl p-1.5 shadow-2xl backdrop-blur-2xl border z-50 ${
-                    isDark
-                      ? "bg-slate-900/95 border-white/15 text-slate-100"
-                      : "bg-white/95 border-black/10 text-slate-900"
-                  }`}
-                  style={{
-                    boxShadow: isDark
-                      ? "0 12px 36px rgba(0,0,0,0.6), 0 0 1px rgba(255,255,255,0.2)"
-                      : "0 12px 36px rgba(0,0,0,0.15), 0 0 1px rgba(0,0,0,0.1)",
+              {/* Bottom Circle: Trigger (+ morphs to X with theme gradient) */}
+              <Liquid.Item
+                x={0}
+                y={0}
+                scale={1}
+                transition="bouncy"
+                radius={18}
+                className="w-9 h-9"
+              >
+                <button
+                  id="attach-file-button"
+                  type="button"
+                  onClick={() => {
+                    sfx.playClick?.();
+                    setIsMenuOpen(!isMenuOpen);
                   }}
+                  disabled={disabled || isListening || isTranscribing}
+                  className={`w-9 h-9 rounded-full flex items-center justify-center transition-all duration-300 active:scale-95 focus:outline-none cursor-pointer border ${
+                    isMenuOpen
+                      ? "border-transparent text-white shadow-lg"
+                      : isDark
+                      ? "border-white/15 text-slate-200 hover:text-white hover:bg-white/10"
+                      : "border-black/10 text-slate-700 hover:text-black hover:bg-black/5"
+                  }`}
+                  style={
+                    isMenuOpen
+                      ? {
+                          background: theme.gradient,
+                          boxShadow: `0 0 16px ${theme.glow}`,
+                        }
+                      : undefined
+                  }
+                  title={isMenuOpen ? "Close attachment menu" : "Attach image, document, or files"}
+                  aria-label={isMenuOpen ? "Close attachment menu" : "Attach files"}
                 >
-                  <div className="px-2.5 py-1.5 border-b border-white/10 mb-1">
-                    <p className="text-[11px] font-semibold tracking-wider uppercase opacity-60">
-                      Add to message
-                    </p>
-                  </div>
-
-                  {/* 1. Document / PDF */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      fileInputDocRef.current?.click();
-                      setIsMenuOpen(false);
+                  <Plus
+                    className="w-4.5 h-4.5 transition-transform duration-300 ease-out"
+                    style={{
+                      transform: isMenuOpen ? "rotate(45deg)" : "rotate(0deg)",
                     }}
-                    className={`w-full flex items-center space-x-3 px-2.5 py-2 rounded-xl transition-all text-left ${
-                      isDark ? "hover:bg-white/10" : "hover:bg-black/5"
-                    }`}
-                  >
-                    <div className="w-8 h-8 rounded-lg bg-rose-500/20 text-rose-400 flex items-center justify-center flex-shrink-0 border border-rose-500/30">
-                      <FileText className="w-4 h-4" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs sm:text-sm font-medium">Document / PDF</p>
-                      <p className="text-[10px] sm:text-[11px] opacity-60 truncate">PDF, Word, TXT, CSV, Code</p>
-                    </div>
-                  </button>
+                    strokeWidth={2}
+                  />
+                </button>
+              </Liquid.Item>
 
-                  {/* 2. Image */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      fileInputImgRef.current?.click();
-                      setIsMenuOpen(false);
-                    }}
-                    className={`w-full flex items-center space-x-3 px-2.5 py-2 rounded-xl transition-all text-left ${
-                      isDark ? "hover:bg-white/10" : "hover:bg-black/5"
-                    }`}
-                  >
-                    <div className="w-8 h-8 rounded-lg bg-sky-500/20 text-sky-400 flex items-center justify-center flex-shrink-0 border border-sky-500/30">
-                      <ImageIcon className="w-4 h-4" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs sm:text-sm font-medium">Image or Photo</p>
-                      <p className="text-[10px] sm:text-[11px] opacity-60 truncate">PNG, JPG, WEBP, Diagrams</p>
-                    </div>
-                  </button>
+              {/* Top Circle: Image / Photo (Sky / Cyan accent) */}
+              <Liquid.Item
+                x={0}
+                y={isMenuOpen ? -64 : 0}
+                scale={isMenuOpen ? 1 : 0.01}
+                transition="bouncy"
+                delay={isMenuOpen ? 15 : 0}
+                radius={18}
+                className="absolute top-0 left-0 w-9 h-9"
+                style={{
+                  pointerEvents: isMenuOpen ? "auto" : "none",
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    sfx.playClick?.();
+                    fileInputImgRef.current?.click();
+                    setIsMenuOpen(false);
+                  }}
+                  tabIndex={isMenuOpen ? 0 : -1}
+                  disabled={!isMenuOpen}
+                  className={`w-9 h-9 rounded-full flex items-center justify-center transition-all duration-200 hover:scale-110 active:scale-95 focus:outline-none cursor-pointer border ${
+                    isDark
+                      ? "border-sky-500/40 bg-sky-500/15 text-sky-400 hover:bg-sky-500/25 hover:text-sky-300 hover:border-sky-400 hover:shadow-[0_0_12px_rgba(56,189,248,0.4)]"
+                      : "border-sky-500/30 bg-sky-500/10 text-sky-600 hover:bg-sky-500/20 hover:text-sky-700"
+                  } ${isMenuOpen ? "opacity-100" : "opacity-0"}`}
+                  title="Attach Image or Photo (PNG, JPG, WEBP, SVG)"
+                  aria-label="Attach Image"
+                >
+                  <ImageIcon className="w-4.5 h-4.5" strokeWidth={1.8} />
+                </button>
+              </Liquid.Item>
 
-                  {/* 3. All Files */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      fileInputAllRef.current?.click();
-                      setIsMenuOpen(false);
-                    }}
-                    className={`w-full flex items-center space-x-3 px-2.5 py-2 rounded-xl transition-all text-left ${
-                      isDark ? "hover:bg-white/10" : "hover:bg-black/5"
-                    }`}
-                  >
-                    <div className="w-8 h-8 rounded-lg bg-violet-500/20 text-violet-400 flex items-center justify-center flex-shrink-0 border border-violet-500/30">
-                      <Folder className="w-4 h-4" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs sm:text-sm font-medium">Browse All Files</p>
-                      <p className="text-[10px] sm:text-[11px] opacity-60 truncate">Any local file</p>
-                    </div>
-                  </button>
-                </motion.div>
-              )}
-            </AnimatePresence>
+              {/* Left Circle: Document / PDF (Rose / Red accent) */}
+              <Liquid.Item
+                x={isMenuOpen ? -32 : 0}
+                y={isMenuOpen ? -32 : 0}
+                scale={isMenuOpen ? 1 : 0.01}
+                transition="bouncy"
+                delay={isMenuOpen ? 30 : 0}
+                radius={18}
+                className="absolute top-0 left-0 w-9 h-9"
+                style={{
+                  pointerEvents: isMenuOpen ? "auto" : "none",
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    sfx.playClick?.();
+                    fileInputDocRef.current?.click();
+                    setIsMenuOpen(false);
+                  }}
+                  tabIndex={isMenuOpen ? 0 : -1}
+                  disabled={!isMenuOpen}
+                  className={`w-9 h-9 rounded-full flex items-center justify-center transition-all duration-200 hover:scale-110 active:scale-95 focus:outline-none cursor-pointer border ${
+                    isDark
+                      ? "border-rose-500/40 bg-rose-500/15 text-rose-400 hover:bg-rose-500/25 hover:text-rose-300 hover:border-rose-400 hover:shadow-[0_0_12px_rgba(244,63,94,0.4)]"
+                      : "border-rose-500/30 bg-rose-500/10 text-rose-600 hover:bg-rose-500/20 hover:text-rose-700"
+                  } ${isMenuOpen ? "opacity-100" : "opacity-0"}`}
+                  title="Attach Document or PDF (PDF, DOCX, TXT, Code)"
+                  aria-label="Attach Document"
+                >
+                  <FileIcon className="w-4.5 h-4.5" strokeWidth={1.8} />
+                </button>
+              </Liquid.Item>
+
+              {/* Right Circle: Browse All Files (Violet / Purple accent) */}
+              <Liquid.Item
+                x={isMenuOpen ? 32 : 0}
+                y={isMenuOpen ? -32 : 0}
+                scale={isMenuOpen ? 1 : 0.01}
+                transition="bouncy"
+                delay={isMenuOpen ? 0 : 25}
+                radius={18}
+                className="absolute top-0 left-0 w-9 h-9"
+                style={{
+                  pointerEvents: isMenuOpen ? "auto" : "none",
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    sfx.playClick?.();
+                    fileInputAllRef.current?.click();
+                    setIsMenuOpen(false);
+                  }}
+                  tabIndex={isMenuOpen ? 0 : -1}
+                  disabled={!isMenuOpen}
+                  className={`w-9 h-9 rounded-full flex items-center justify-center transition-all duration-200 hover:scale-110 active:scale-95 focus:outline-none cursor-pointer border ${
+                    isDark
+                      ? "border-violet-500/40 bg-violet-500/15 text-violet-400 hover:bg-violet-500/25 hover:text-violet-300 hover:border-violet-400 hover:shadow-[0_0_12px_rgba(167,139,250,0.4)]"
+                      : "border-violet-500/30 bg-violet-500/10 text-violet-600 hover:bg-violet-500/20 hover:text-violet-700"
+                  } ${isMenuOpen ? "opacity-100" : "opacity-0"}`}
+                  title="Browse All Files (Any local file)"
+                  aria-label="Browse All Files"
+                >
+                  <Folder className="w-4.5 h-4.5" strokeWidth={1.8} />
+                </button>
+              </Liquid.Item>
+            </Liquid>
           </div>
 
           <div className="relative flex-1 min-w-0">
@@ -907,12 +948,10 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
                     </div>
                   )}
                 </div>
-                {/* Zero-overhead 60fps mini waveform canvas */}
-                <canvas
-                  ref={miniCanvasRef}
-                  width={40}
-                  height={22}
-                  className="w-10 h-5 flex-shrink-0"
+                <span
+                  className="amigo-listening-dot h-2.5 w-2.5 flex-shrink-0 rounded-full"
+                  style={{ backgroundColor: theme.accent, boxShadow: `0 0 14px ${theme.accent}` }}
+                  aria-hidden="true"
                 />
               </div>
             ) : (

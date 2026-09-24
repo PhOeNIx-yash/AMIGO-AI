@@ -155,6 +155,8 @@ def _build_voice_prompt(query: str = "", is_voice: bool = True, has_web_context:
             "CRITICAL FACTUAL INTEGRITY RULES:\n"
             "- Rely strictly and ONLY on the provided [Web Search Facts].\n"
             "- State ONLY facts that are explicitly mentioned in the provided text.\n"
+            "- Synthesize and present the verified facts, numbers, dates, or live figures directly to the user.\n"
+            "- Never state that you lack real-time access or current information when relevant facts and data are provided in the search results above.\n"
             "- NEVER extrapolate, guess, or invent acquisitions, dates, founders, or owners from other companies or external memory.\n"
             "- If a detail is not in the search results, do not make it up. State only what is verified.\n"
         )
