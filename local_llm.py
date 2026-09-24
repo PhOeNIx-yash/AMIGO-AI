@@ -171,19 +171,10 @@ def get_model_path() -> str:
     return _download_hf_file(target_list, target_path, 500_000_000, target_name)
 
 
-def get_mmproj_path() -> str | None:
-    """MiniCPM 5 2B is a dense text model and does not use mmproj."""
-    return None
-
-
-def ensure_mmproj_downloaded() -> str | None:
-    """MiniCPM 5 2B is a dense text model and does not use mmproj."""
-    return None
-
-
 def is_vision_ready() -> bool:
     """Checks if native multimodal vision is available (MiniCPM 5 2B uses Windows Media OCR)."""
     return False
+
 
 
 def ensure_model_downloaded() -> str:
@@ -476,55 +467,18 @@ def stream_sentence_chunks(token_generator, interruption_event: threading.Event 
 
 
 # ---------------------------------------------------------------------------
-# Image Encoding & Vision Utilities
+# Multimodal Vision Stub (MiniCPM 5 2B uses native Windows Media OCR in screen_vision.py)
 # ---------------------------------------------------------------------------
 
-def _pil_to_base64_url(img) -> str:
-    """Converts PIL image to JPEG base64 data URL, downsampling to 768px max dimension for fast multimodal inference."""
-    if img.mode not in ("RGB", "L"):
-        img = img.convert("RGB")
-    max_dim = 768
-    if max(img.size) > max_dim:
-        img = img.copy()
-        img.thumbnail((max_dim, max_dim))
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=85)
-    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-    return f"data:image/jpeg;base64,{b64}"
-
-
-def _image_to_base64_url(image_input) -> str | None:
-    """Encodes PIL Image, file path, or raw bytes into a data URL for multimodal LLM ingestion."""
-    try:
-        from PIL import Image
-        if isinstance(image_input, str):
-            if not os.path.exists(image_input):
-                return None
-            with Image.open(image_input) as img:
-                return _pil_to_base64_url(img)
-        elif isinstance(image_input, bytes):
-            with Image.open(io.BytesIO(image_input)) as img:
-                return _pil_to_base64_url(img)
-        elif hasattr(image_input, "save"):  # PIL Image instance
-            return _pil_to_base64_url(image_input)
-    except Exception as e:
-        logger.error(f"[Vision] Image encoding error: {e}")
+def query_local_vision(*args, **kwargs) -> str | None:
+    """MiniCPM 5 2B is a text model; screen vision is powered by native Windows OCR."""
     return None
 
 
-def query_local_vision(
-    image_input,
-    prompt: str = "Describe what you see on the screen in clear detail.",
-    system_prompt: str = "You are Amigo, a helpful voice assistant with screen vision. Speak in natural plain English without markdown or bullet points.",
-    max_tokens: int = 350,
-    temperature: float = 0.5,
-) -> str | None:
-    """Executes native vision inference if available; returns None for text-only models like MiniCPM 5 2B."""
-    return None
-
 
 # ---------------------------------------------------------------------------
-# Tier 1: Fast-Path Regex Router (High-frequency, exact shortcuts only)
+# ---------------------------------------------------------------------------
+# Tier 0: Emergency Stop & Fast Math Command Matcher
 # ---------------------------------------------------------------------------
 
 _RE_PROBE_GUARD = re.compile(
@@ -533,65 +487,15 @@ _RE_PROBE_GUARD = re.compile(
     re.I
 )
 
-# Pre-compiled exact patterns for Tier 1
-_RE_VOL_LEVEL = re.compile(r"^(?:set\s+)?(?:(?:my|the|system|pc|computer|device)\s+)*volume\s+(?:up\s+to\s+|down\s+to\s+|to\s+|at\s+)?(\d{1,3})\s*%?$", re.IGNORECASE)
-_RE_BRIGHT_LEVEL = re.compile(r"^(?:set\s+)?brightness\s+(?:to\s+)?(\d{1,3})(?:\s*%)?$", re.IGNORECASE)
-_RE_TIMER_FLEX = re.compile(
-    r"^(?:set\s+(?:a\s+)?)?(?:(\d+)\s*[-]?\s*(days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\s+)?(?:countdown\s+)?timer(?:\s+(?:for\s+)?(\d+)\s*[-]?\s*(days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s))?(?:\s+(?:for|to)\s+(.+))?$",
-    re.IGNORECASE,
-)
-_RE_APP_LAUNCH = re.compile(r"^(?:open|launch|start)\s+(?:the\s+|an?\s+)?([a-zA-Z0-9_\s.-]+)$", re.IGNORECASE)
-_RE_COMPOUND_SPLIT = re.compile(r"\s+(?:and\s+then|then|and|\&)\s+", re.IGNORECASE)
-_RE_CONTEXTUAL_REFERENCE = re.compile(
-    r"^(?:that|this|it|them|those|these|the\s+same)(?:\s+(?:one|song|video|track|file|doc|document|app|tab|site|website|link|page|media|audio|playback))?$",
-    re.IGNORECASE,
-)
-_RE_OPEN_CHOICE = re.compile(
-    r"^(?:open|show|display|view|launch)\s+(?:the\s+first\s+one|first\s+one|the\s+second\s+one|the\s+third\s+one|first|second|third|fourth|fifth|number\s+\d+|\d+)$",
-    re.IGNORECASE,
-)
+_EXACT_EXIT = frozenset({"exit", "quit", "goodbye", "bye", "close amigo", "shutdown pc"})
+_EXACT_STOP = frozenset({"stop", "shut up", "be quiet", "stop talking", "stop speaking", "quiet", "silence"})
+_RE_CALC_COMMAND = re.compile(r"^(?:calculate|compute|solve|evaluate)\s+(.+)$", re.IGNORECASE)
 
 _RE_SPOKEN_PREFIX = re.compile(
     r"^(?:(?:hey\s+|hi\s+|hello\s+)?amigo\s*)?(?:could\s+(?:you|u)\s+|can\s+(?:you|u)\s+|would\s+(?:you|u)\s+)?(?:please\s+)?(?:i\s+want\s+to\s+|tell\s+me\s+)?",
     re.IGNORECASE,
 )
 _RE_SPOKEN_SUFFIX = re.compile(r"\s+(?:please|for\s+me|boss|amigo)$", re.IGNORECASE)
-_RE_PLAY_YOUTUBE = re.compile(r"^(?:play|stream|listen to|watch|put on)\s+(?:a\s+|the\s+|some\s+)?(.+)$", re.IGNORECASE)
-
-_EXACT_EXIT = frozenset({"exit", "quit", "goodbye", "bye", "close amigo", "shutdown pc"})
-_EXACT_STOP = frozenset({"stop", "shut up", "be quiet", "stop talking", "stop speaking", "quiet", "silence"})
-_EXACT_LOCK = frozenset({"lock pc", "lock my pc", "lock computer", "lock screen", "lock workstation"})
-_EXACT_SLEEP = frozenset({"sleep pc", "sleep computer", "put pc to sleep", "sleep"})
-_EXACT_CANCEL_SHUTDOWN = frozenset({"cancel shutdown", "cancel restart"})
-_EXACT_EMPTY_BIN = frozenset({"empty recycle bin", "empty trash", "clear recycle bin", "clear trash"})
-_EXACT_CANCEL_REMINDER = frozenset({"cancel reminder", "cancel reminders", "cancel my reminders", "cancel timers"})
-_EXACT_VOL_UP = frozenset({"volume up", "increase volume", "louder"})
-_EXACT_VOL_DOWN = frozenset({"volume down", "decrease volume", "quieter"})
-_EXACT_MUTE = frozenset({"mute", "unmute", "silence", "mute audio", "unmute audio"})
-_EXACT_NEXT_TRACK = frozenset({"next track", "next song", "skip song", "skip track", "next"})
-_EXACT_PREV_TRACK = frozenset({"previous track", "prev track", "prev song", "previous song", "previous"})
-_EXACT_PAUSE_MEDIA = frozenset({"pause", "pause music", "pause playback", "stop music", "stop playback"})
-_EXACT_RESUME_MEDIA = frozenset({"resume", "unpause", "continue music", "play music", "resume playback"})
-_EXACT_SYS_STATUS = frozenset({"system status", "cpu usage", "ram usage", "memory usage", "battery status", "hardware metrics"})
-_EXACT_CALENDAR = frozenset({"today's calendar", "today's schedule", "my calendar", "my schedule", "what's on my calendar today"})
-_EXACT_EMAILS = frozenset({"unread emails", "check unread emails", "any unread emails", "new emails", "check new emails"})
-_EXACT_STOPWATCH = frozenset({"stopwatch", "start stopwatch", "open stopwatch"})
-_EXACT_EXPLORER = frozenset({"windows explorer", "file explorer", "explorer", "open windows explorer", "open file explorer", "open explorer", "open this pc", "this pc", "my computer"})
-_EXACT_DOWNLOADS = frozenset({"open downloads", "open my downloads", "downloads", "downloads folder", "open downloads folder"})
-_EXACT_DESKTOP = frozenset({"open desktop", "open my desktop", "desktop", "desktop folder", "open desktop folder"})
-_EXACT_DOCUMENTS = frozenset({"open documents", "open my documents", "documents", "documents folder", "open documents folder"})
-_EXACT_PICTURES = frozenset({"open pictures", "open my pictures", "pictures", "pictures folder", "open pictures folder", "photos"})
-_EXACT_MUSIC = frozenset({"open music", "open my music", "music folder", "open music folder"})
-_EXACT_VIDEOS = frozenset({"open videos", "open my videos", "videos folder", "open videos folder"})
-_EXACT_CURRENT_MEDIA = frozenset({
-    "what is playing", "what's playing", "whats playing",
-    "what song is this", "what song is playing", "what are you playing",
-    "current song", "current track", "what is this song", "what video is this",
-    "what is currently playing", "what media is playing", "now playing", "playing now",
-})
-_EXACT_TIME = frozenset({"what time is it", "what's the time", "whats the time", "current time", "the time", "tell me the time", "time"})
-_EXACT_DATE = frozenset({"what is today's date", "what's today's date", "whats the date", "what date is it", "current date", "today's date", "todays date", "date"})
-
 
 
 def clean_spoken_query(query: str) -> str:
@@ -604,440 +508,35 @@ def clean_spoken_query(query: str) -> str:
 
 def parse_user_intent_fast(query: str) -> dict[str, Any] | None:
     """
-    Tier 1: Ultra-fast (<0.05ms) matcher for exact, unambiguous shortcuts.
-    Returns None immediately if the command requires natural language understanding.
+    Tier 0: Sub-millisecond matcher strictly for immediate safety exits, stops, and explicit math.
+    All device actions and tool decisions are routed through Laya System 1.
     """
     text = clean_spoken_query(query)
     if not text:
         return {"tool": "chat", "params": {}, "speak": ""}
 
-
-    # 1. Exact System & Power Actions
     if text in _EXACT_EXIT:
         return {"tool": "exit", "params": {}, "speak": "Goodbye!"}
     if text in _EXACT_STOP:
         return {"tool": "stop", "params": {}, "speak": "Stopped."}
-    if text in _EXACT_LOCK:
-        return {"tool": "lock_pc", "params": {}, "speak": "Locking your PC."}
-    if text in _EXACT_SLEEP:
-        return {"tool": "sleep_pc", "params": {}, "speak": "Putting system to sleep."}
-    if text in _EXACT_CANCEL_SHUTDOWN:
-        return {"tool": "cancel_shutdown", "params": {}, "speak": "Shutdown cancelled."}
-    if text in _EXACT_EMPTY_BIN:
-        return {"tool": "empty_recycle_bin", "params": {}, "speak": "Recycle bin emptied."}
-    if text in _EXACT_CANCEL_REMINDER:
-        return {"tool": "cancel_reminder", "params": {}, "speak": ""}
 
-    # 2. Exact Volume / Brightness levels (prioritize explicit percentage)
-    if m := _RE_VOL_LEVEL.match(text):
-        return {"tool": "set_volume", "params": {"level": m.group(1)}, "speak": f"Setting volume to {m.group(1)} percent."}
-    if m := _RE_BRIGHT_LEVEL.match(text):
-        return {"tool": "set_brightness", "params": {"level": m.group(1)}, "speak": f"Setting brightness to {m.group(1)} percent."}
+    if m := _RE_CALC_COMMAND.match(text):
+        expr = m.group(1).strip()
+        if expr:
+            return {"tool": "calculate", "params": {"expression": expr}, "speak": ""}
 
-    # 3. Exact Media & Audio Shortcuts
-    if text in _EXACT_VOL_UP:
-        return {"tool": "volume_up", "params": {}, "speak": "Volume increased."}
-    if text in _EXACT_VOL_DOWN:
-        return {"tool": "volume_down", "params": {}, "speak": "Volume decreased."}
-    if text in _EXACT_MUTE:
-        return {"tool": "mute", "params": {}, "speak": "Audio toggled."}
-    if text in _EXACT_NEXT_TRACK:
-        return {"tool": "next_track", "params": {}, "speak": "Next track."}
-    if text in _EXACT_PREV_TRACK:
-        return {"tool": "prev_track", "params": {}, "speak": "Previous track."}
-    if text in _EXACT_PAUSE_MEDIA:
-        return {"tool": "pause_media", "params": {}, "speak": "Media paused."}
-    if text in _EXACT_RESUME_MEDIA:
-        return {"tool": "play_media", "params": {}, "speak": "Media resumed."}
-    if text in _EXACT_CURRENT_MEDIA:
-        return {"tool": "get_current_media", "params": {}, "speak": ""}
-    if text in _EXACT_TIME:
-        return {"tool": "get_time", "params": {}, "speak": ""}
-    if text in _EXACT_DATE:
-        return {"tool": "get_date", "params": {}, "speak": ""}
-    if m := _RE_PLAY_YOUTUBE.match(text):
-        target = m.group(1).strip()
-        if target.lower() in ("youtube", "open youtube"):
-            return {"tool": "open_website", "params": {"url": "https://www.youtube.com"}, "speak": "Opening YouTube."}
-        if target and not _RE_CONTEXTUAL_REFERENCE.match(target) and target.lower() not in ("media", "playback", "audio", "again"):
-            return {"tool": "play_youtube", "params": {"query": target}, "speak": f"Playing {target}."}
-
-    # 4. Exact Hardware Metrics
-    if text in _EXACT_SYS_STATUS:
-        return {"tool": "system_status", "params": {}, "speak": "Checking system status."}
-
-    # 5. Exact Calendar & Email Shortcuts
-    if text in _EXACT_CALENDAR:
-        return {"tool": "get_calendar", "params": {"days": 1}, "speak": "Checking today's schedule."}
-    if text in _EXACT_EMAILS:
-        return {"tool": "unread_emails", "params": {}, "speak": "Checking unread emails."}
-
-    # 6. Exact Timer / Stopwatch Shortcuts
-    if text in _EXACT_STOPWATCH:
-        return {"tool": "stopwatch", "params": {"mode": "stopwatch"}, "speak": "Starting stopwatch."}
-    if m := _RE_TIMER_FLEX.match(text):
-        qty_str = m.group(1) or m.group(3)
-        unit_str = (m.group(2) or m.group(4) or "").lower()
-        lbl = (m.group(5) or "").strip()
-        if qty_str and unit_str:
-            qty = int(qty_str)
-            secs = qty * 86400 if unit_str.startswith("d") else (qty * 3600 if unit_str.startswith("h") else (qty * 60 if unit_str.startswith("m") else qty))
-            dur_disp = f"{qty} {unit_str}"
-            clean_lbl = f" for {lbl}" if lbl and not any(lbl.lower().endswith(x) for x in ("s", "sec", "secs", "seconds", "min", "mins", "minute", "minutes", "hour", "hours")) else ""
-            return {"tool": "set_timer", "params": {"duration": secs, "seconds": secs, "label": lbl}, "speak": f"Setting a {dur_disp} timer{clean_lbl}."}
-
-    # 7. Exact System Folder & Explorer Shortcuts
-    if text in _EXACT_EXPLORER:
-        return {"tool": "open_folder", "params": {"name": "explorer"}, "speak": "Opening File Explorer."}
-    if text in _EXACT_DOWNLOADS:
-        return {"tool": "open_folder", "params": {"name": "downloads"}, "speak": "Opening Downloads."}
-    if text in _EXACT_DESKTOP:
-        return {"tool": "open_folder", "params": {"name": "desktop"}, "speak": "Opening Desktop."}
-    if text in _EXACT_DOCUMENTS:
-        return {"tool": "open_folder", "params": {"name": "documents"}, "speak": "Opening Documents."}
-    if text in _EXACT_PICTURES:
-        return {"tool": "open_folder", "params": {"name": "pictures"}, "speak": "Opening Pictures."}
-    if text in _EXACT_MUSIC:
-        return {"tool": "open_folder", "params": {"name": "music"}, "speak": "Opening Music."}
-    if text in _EXACT_VIDEOS:
-        return {"tool": "open_folder", "params": {"name": "videos"}, "speak": "Opening Videos."}
-
-    # 8. Follow-up File Choice Selection (e.g. "open number 1", "open the second one")
-    if _RE_OPEN_CHOICE.match(text):
-        return {"tool": "open_file", "params": {"name": text}, "speak": ""}
-
-    # 9. Direct Application Launch (e.g. "launch Spotify", "open Chrome", "start Notepad")
-    if m := _RE_APP_LAUNCH.match(text):
-        target = m.group(1).strip()
-        if target.lower() not in ("folder", "app", "application", "file", "document", "website", "window", "tab", "first", "second", "third", "number"):
-            return {"tool": "open_app", "params": {"name": target.title()}, "speak": f"Opening {target.title()}."}
-
-    # No exact shortcut matched -> Allow fallthrough to Tier 2 LLM tool calling
     return None
 
 
-
-
-
-
 # ---------------------------------------------------------------------------
-# Tier 2: LLM Tool Calling & Structured Function Schema
-# ---------------------------------------------------------------------------
-
-AGENT_TOOL_DEFINITIONS = [
-    {
-        "name": "chat",
-        "description": "General conversation, banter, games, humor, brainstorming, open-ended talk (e.g. 'let\\'s do something fun', 'tell me a joke', 'I\\'m bored', 'what can we do?'), and questions about yourself or your capabilities.",
-        "parameters": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "web_search",
-        "description": "Search the web for entities, people, organizations, facts, current news, stock prices, definitions, or real-time information.",
-        "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Web search query"}}, "required": ["query"]},
-    },
-    {
-        "name": "ask_document",
-        "description": "Answer user questions, extract numbers, PANs, PINs, totals, dates, or retrieve facts from local documents, invoices, PDFs, spreadsheets, reports, notes, or files.",
-        "parameters": {"type": "object", "properties": {"question": {"type": "string", "description": "The question to answer based on document contents"}}, "required": ["question"]},
-    },
-    {
-        "name": "find_document",
-        "description": "Discover and list file paths on disk when the user explicitly asks to locate, browse, or list files.",
-        "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Search concept or keywords"}}, "required": ["query"]},
-    },
-    {
-        "name": "open_file",
-        "description": "Open a local document, report, PDF, spreadsheet, or follow-up selection in Windows.",
-        "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "Filename or document title to open"}}, "required": ["name"]},
-    },
-    {
-        "name": "summarize_document",
-        "description": "Summarize the contents of a local document or report.",
-        "parameters": {"type": "object", "properties": {"filepath": {"type": "string", "description": "File path or name to summarize"}}},
-    },
-    {
-        "name": "open_app",
-        "description": "Launch installed Windows desktop software ONLY when the user explicitly requests to open, launch, or start a specific named application (e.g. 'open Spotify', 'launch Chrome', 'open Notepad'). Never use for vague or conversational requests.",
-        "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "Name of the application"}}, "required": ["name"]},
-    },
-    {
-        "name": "close_app",
-        "description": "Close a running desktop application or active window.",
-        "parameters": {"type": "object", "properties": {"app_name": {"type": "string", "description": "Name of the application or 'window'"}}, "required": ["app_name"]},
-    },
-    {
-        "name": "play_youtube",
-        "description": "Play a song, artist, album, or video on YouTube.",
-        "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Song title, artist, or video search term"}}, "required": ["query"]},
-    },
-    {
-        "name": "get_current_media",
-        "description": "Check what song, video, or media is currently playing.",
-        "parameters": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "get_time",
-        "description": "Get the current time.",
-        "parameters": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "get_date",
-        "description": "Get today's current date.",
-        "parameters": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "open_website",
-        "description": "Open a specific URL or web domain in the default browser.",
-        "parameters": {"type": "object", "properties": {"url": {"type": "string", "description": "Full URL or domain to open"}}, "required": ["url"]},
-    },
-    {
-        "name": "get_weather",
-        "description": "Get current weather conditions and forecast for a city or local area.",
-        "parameters": {"type": "object", "properties": {"city": {"type": "string", "description": "City name, or empty for local area"}}},
-    },
-    {
-        "name": "open_folder",
-        "description": "Open a system directory in Windows Explorer (downloads, desktop, documents, pictures, music, etc.).",
-        "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "Folder name"}}, "required": ["name"]},
-    },
-    {
-        "name": "read_emails",
-        "description": "Read and summarize recent emails from Outlook.",
-        "parameters": {"type": "object", "properties": {"count": {"type": "integer", "description": "Number of emails to read (default: 5)"}}},
-    },
-    {
-        "name": "search_emails",
-        "description": "Search Outlook emails by keyword, sender, or subject.",
-        "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Keyword to search in emails"}}, "required": ["query"]},
-    },
-    {
-        "name": "draft_email",
-        "description": "Draft a new email with recipient, subject, and body.",
-        "parameters": {"type": "object", "properties": {"to": {"type": "string"}, "subject": {"type": "string"}, "prompt": {"type": "string"}}},
-    },
-    {
-        "name": "get_calendar",
-        "description": "Get calendar appointments and upcoming meetings from Outlook.",
-        "parameters": {"type": "object", "properties": {"days": {"type": "integer", "description": "Days ahead (1=today, 7=this week)"}}},
-    },
-    {
-        "name": "search_calendar",
-        "description": "Search Outlook calendar events by keyword.",
-        "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Meeting keyword or person"}}, "required": ["query"]},
-    },
-    {
-        "name": "search_knowledge",
-        "description": "Search indexed local documents, files, records, memory, and personal knowledge base for information or user-specific facts.",
-        "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Search question or keywords"}}, "required": ["query"]},
-    },
-    {
-        "name": "set_timer",
-        "description": "Set a countdown timer.",
-        "parameters": {"type": "object", "properties": {"duration": {"type": "integer", "description": "Seconds"}}, "required": ["duration"]},
-    },
-    {
-        "name": "set_reminder",
-        "description": "Schedule a reminder for a future time.",
-        "parameters": {"type": "object", "properties": {"time": {"type": "string"}, "message": {"type": "string"}}, "required": ["message"]},
-    },
-    {
-        "name": "take_screenshot",
-        "description": "Capture the desktop screen.",
-        "parameters": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "read_screen",
-        "description": "Analyze what is currently visible on the screen.",
-        "parameters": {"type": "object", "properties": {"question": {"type": "string"}}},
-    },
-    {
-        "name": "calculate",
-        "description": "Evaluate a mathematical calculation.",
-        "parameters": {"type": "object", "properties": {"expression": {"type": "string"}}, "required": ["expression"]},
-    },
-]
-
-
-# Pre-render static tool specifications and rules once at module load
-_PRECOMPUTED_TOOLS_DOC = "\n".join(
-    f"- {t['name']} " + "{" + ", ".join(f'"{p}": "..."' for p in t["parameters"].get("properties", {}).keys()) + "} : " + t["description"]
-    for t in AGENT_TOOL_DEFINITIONS
-)
-
-_PRECOMPUTED_RULES_DOC = (
-    "Rules:\n"
-    "- Context & Coreference Resolution: When the user refers to previously mentioned entities, topics, files, songs, videos, apps, or items using demonstratives or pronouns (e.g. 'that song', 'open that file', 'play it', 'search for that', 'what about it', 'open that app', 'tell me more about that'), ALWAYS resolve the exact target entity, title, or name from [Recent Conversation Context]. Never output literal placeholders like 'that song', 'that file', or 'it' in tool parameters.\n"
-    "- When Internet Status is Connected (Online), ALWAYS route live real-time lookups, entity questions (e.g. 'tell me about X', 'who is X', 'what is X'), stock prices, latest news, live scores, current weather, and web lookups to 'web_search'. Disregard any past turns in conversation history that mentioned being offline.\n"
-    "- When Internet Status is Disconnected (Offline) and the user requests an online action (like 'web_search' or looking up online info), route to 'chat' so you can explain to the user that you are not connected to the internet.\n"
-    "- For conversation, banter, humor, playful remarks, brainstorming, or open-ended talk (e.g. 'let\\'s do something fun', 'tell me a joke', 'I\\'m bored', 'what should we do?'), ALWAYS use 'chat'.\n"
-    "- For questions about your capabilities, abilities, or what you can do (e.g. 'can you web search?', 'can you search for me?', 'what can you do?'), ALWAYS use 'chat'.\n"
-    "- For general conceptual queries and advice, use 'chat'. For any queries about real-world facts, people, companies, or things, use 'web_search'.\n"
-    "- ONLY use 'open_app' when the user explicitly asks to launch/open a named application (e.g. 'open Spotify', 'launch Chrome'). Never launch an app on vague requests.\n"
-    "- For real-time online lookups and specific search topics (e.g. stock prices, latest news, live scores, 'search for Python tutorials'), use 'web_search'. Never use 'web_search' without an actual subject to search.\n"
-    "- For 'play_youtube', extract the target song, video, or artist in 'query'.\n"
-    "- When the user asks to OPEN or VIEW a specific file, document, PDF, or report, use 'open_file' with the target name.\n"
-    "- For extracting specific numbers, PAN, PIN, dates, amounts, or details inside user documents, invoices, or files (even if the user says 'find' or 'search' for a detail in a document), ALWAYS use 'ask_document', NEVER use 'find_document'. Use 'find_document' ONLY when the user asks to locate or browse files themselves on disk.\n"
-    "- Multi-Action & Compound Requests: If the user asks to perform multiple distinct actions (e.g. 'Launch Spotify and set volume to 40%'), return ALL corresponding action objects in the JSON array in execution order.\n"
-    "- Output strictly valid JSON."
-)
-
-_RE_JSON_ARRAY = re.compile(r"\[\s*\{.*?\}\s*\]", re.DOTALL)
-_RE_JSON_OBJECT = re.compile(r"\{[^{}]*\"tool\"\s*:\s*\"[^\"]+\"[^{}]*\}", re.DOTALL)
-
-
-def _build_tier2_system_prompt() -> str:
-    """Builds clean tool specification system prompt for Tier 2 LLM routing with zero string rebuild overhead."""
-    now = datetime.datetime.now()
-    date_ctx = now.strftime("%A, %B %d, %Y at %I:%M %p")
-    online = is_internet_connected()
-    net_status = "Connected (Online)" if online else "Disconnected (Offline)"
-    net_directive = (
-        "Active Internet Connectivity: ONLINE.\n"
-        "- The system is currently connected to the internet.\n"
-        "- Any past messages in conversation history mentioning being offline or disconnected are obsolete because the device is now connected.\n"
-        "- For any requests requiring real-time facts, stock quotes, market prices, latest news, or online info, route to 'web_search'."
-        if online else
-        "Active Internet Connectivity: OFFLINE.\n"
-        "- No internet connection is currently available.\n"
-        "- Route online queries (like web searches, YouTube streaming, or live data lookups) to 'chat' so you can inform the user."
-    )
-
-    return (
-        "You are Amigo's intent router. Select the best tool for the user's request.\n"
-        "Return ONLY a JSON array containing the action object:\n"
-        '[{"tool": "tool_name", "params": {"param": "value"}, "speak": ""}]\n\n'
-        "Do not output <think> tags, internal reasoning, or conversational commentary. Immediately return the JSON array.\n\n"
-        f"Current Time: {date_ctx}\n"
-        f"Internet Status: {net_status}\n"
-        f"{net_directive}\n\n"
-        f"Available Tools:\n{_PRECOMPUTED_TOOLS_DOC}\n\n"
-        f"{_PRECOMPUTED_RULES_DOC}"
-    )
-
-
-def resolve_intent_via_llm(user_query: str, conversation_history: list | None = None) -> list[dict]:
-    """
-    Tier 2: Robust LLM function calling fallback for natural language, multi-keyword extraction,
-    and fuzzy intent resolution.
-    """
-    llm = init_local_llm()
-    if not llm:
-        return [{"tool": "chat", "params": {}, "speak": ""}]
-
-    try:
-        system_prompt = _build_tier2_system_prompt()
-
-        if conversation_history:
-            recent = conversation_history[-4:]
-            turns = [
-                f"User: {c.get('user', '')}\nAssistant: {c.get('assistant', '')}"
-                for c in recent
-                if isinstance(c, dict) and (c.get("user") or c.get("assistant")) and c.get("assistant") != "I am here and ready to help."
-            ]
-            if turns:
-                system_prompt += "\n\n[Recent Conversation Context]:\n" + "\n".join(turns)
-
-        user_prompt = f"User Request: {user_query}\nJSON Output:"
-
-        token = _thinking_ctx.set(False)
-        try:
-            res = llm.create_chat_completion(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                max_tokens=512,
-                temperature=0.05,
-                stop=STOP_TOKENS,
-            )
-        finally:
-            _thinking_ctx.reset(token)
-
-        raw = res["choices"][0]["message"]["content"].strip()
-        if raw:
-            # Strip thought block if present so we isolate the JSON payload
-            if "</think>" in raw:
-                raw = raw.split("</think>")[-1].strip()
-            elif "<think>" in raw:
-                raw = ""
-
-            # Strip markdown fences if wrapped in ```json ... ```
-            clean_raw = re.sub(r"^```(?:json)?\s*", "", raw)
-            clean_raw = re.sub(r"\s*```$", "", clean_raw).strip()
-
-            parsed = None
-            # Direct parse
-            if clean_raw:
-                try:
-                    parsed = json.loads(clean_raw)
-                except Exception:
-                    pass
-
-            # Try finding [ ... ] with balanced/greedy brackets
-            if parsed is None and clean_raw:
-                start_bracket = clean_raw.find("[")
-                end_bracket = clean_raw.rfind("]")
-                if start_bracket != -1 and end_bracket > start_bracket:
-                    try:
-                        parsed = json.loads(clean_raw[start_bracket:end_bracket + 1])
-                    except Exception:
-                        pass
-
-            # Try finding { ... }
-            if parsed is None and clean_raw:
-                start_brace = clean_raw.find("{")
-                end_brace = clean_raw.rfind("}")
-                if start_brace != -1 and end_brace > start_brace:
-                    try:
-                        parsed = json.loads(clean_raw[start_brace:end_brace + 1])
-                    except Exception:
-                        pass
-
-            # Regex extraction fallback: extract "tool" and optional parameters
-            valid_tools = {t["name"] for t in AGENT_TOOL_DEFINITIONS}
-            if parsed is None and clean_raw:
-                tool_match = re.search(r'"tool"\s*:\s*"([a-zA-Z0-9_]+)"', clean_raw)
-                if tool_match and tool_match.group(1) in valid_tools:
-                    tool_name = tool_match.group(1)
-                    fallback_params = {}
-                    for key in ("question", "query", "filepath", "name", "action"):
-                        m_val = re.search(rf'"{key}"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', clean_raw)
-                        if m_val:
-                            fallback_params[key] = m_val.group(1)
-                    parsed = [{"tool": tool_name, "params": fallback_params}]
-
-            if isinstance(parsed, dict):
-                parsed = [parsed]
-
-            if isinstance(parsed, list) and parsed:
-                results = []
-                for a in parsed:
-                    if isinstance(a, dict):
-                        t = str(a.get("tool", "chat")).strip()
-                        if t not in valid_tools:
-                            t = "chat"
-                        spk = sanitize_for_tts(str(a.get("speak") or (a.get("params", {}).get("speak") if isinstance(a.get("params"), dict) else "") or ""))
-                        results.append({
-                            "tool": t,
-                            "params": a.get("params", {}) if isinstance(a.get("params"), dict) else {},
-                            "speak": spk,
-                        })
-                if results:
-                    return results
-
-    except Exception as e:
-        logger.debug("[Tier 2 LLM Routing Fallback Note]: %s", e)
-
-    return [{"tool": "chat", "params": {}, "speak": ""}]
-
-
-# ---------------------------------------------------------------------------
-# Unified Hybrid Intent Entry Point (Tier 1 -> Tier 2)
+# Action & Intent Resolution via Laya System 1 & MiniCPM 5 2B
 # ---------------------------------------------------------------------------
 
 def get_agent_action(user_query: str, conversation_history: list | None = None) -> list[dict]:
     """
-    Unified entry point combining Tier 1 (fast-path regex) and Tier 2 (LLM tool-calling fallback).
+    Primary intent entry point for Amigo Voice Assistant.
+    Coordinates between emergency stops, Task Agent (desktop & browser navigation),
+    Laya System 1 neural decision router (all actions), and MiniCPM 5 2B (conversation).
     """
     if not user_query or not user_query.strip():
         return [{"tool": "chat", "params": {}, "speak": ""}]
@@ -1046,28 +545,54 @@ def get_agent_action(user_query: str, conversation_history: list | None = None) 
     if _RE_PROBE_GUARD.search(user_query):
         return [{"tool": "chat", "params": {}, "speak": ""}]
 
-    # Compound Command Handling (e.g. "Launch Spotify and set my system volume to 40%")
+    # Tier 0: Emergency Safety Stop / Exit
+    fast_stop = parse_user_intent_fast(user_query)
+    if fast_stop is not None:
+        return [fast_stop]
+
     q_lower = user_query.lower().strip()
-    if any(conj in q_lower for conj in (" and ", " then ", " & ")) and not any(q_lower.startswith(p) for p in ("search ", "google ", "play ", "stream ", "watch ", "ask ", "tell me ", "what ", "who ", "why ", "how ")):
-        sub_queries = [p.strip().rstrip(".!?,") for p in _RE_COMPOUND_SPLIT.split(user_query) if p.strip()]
-        if len(sub_queries) > 1:
-            compound_actions = []
-            all_resolved = True
-            for sq in sub_queries:
-                act = parse_user_intent_fast(sq)
-                if act is not None:
-                    compound_actions.append(act)
-                else:
-                    all_resolved = False
-                    break
-            if all_resolved and compound_actions:
-                return compound_actions
 
-    # Tier 1: Fast-Path Regex (Instant <0.1ms for unambiguous shortcuts)
-    fast_action = parse_user_intent_fast(user_query)
-    if fast_action is not None:
-        return [fast_action]
+    # Tier 1: Multi-Step Compound Action Chains (Decompose commands like "open notepad and type Hello World")
+    is_conversational_start = any(q_lower.startswith(p) for p in (
+        "search ", "google ", "play ", "stream ", "watch ", "ask ", "tell me ",
+        "what ", "who ", "why ", "how ", "is ", "are ", "can you explain",
+        "calculate ", "compute ", "solve "
+    ))
+    if not is_conversational_start and any(conj in q_lower for conj in (" and then ", " then ", " after that ", " and ", " & ", ";")):
+        try:
+            import task_agent
+            steps = task_agent.decompose_task(user_query)
+            if len(steps) > 1:
+                context = {}
+                compound_actions = []
+                has_executable_tool = False
+                for sq in steps:
+                    act = task_agent.resolve_step_intent(sq, context)
+                    if act and act.get("tool") not in ("chat", None):
+                        has_executable_tool = True
+                        compound_actions.append(act)
+                        if act.get("tool") == "open_app":
+                            context["last_opened_app"] = act.get("params", {}).get("name", "")
+                    else:
+                        compound_actions.append({"tool": "chat", "params": {}, "speak": ""})
+                if has_executable_tool and compound_actions:
+                    return compound_actions
+        except Exception as e:
+            logger.debug("[Task Agent Decomposition Note]: %s", e)
 
-    # Tier 2: LLM Tool-Calling Fallback (Handles fuzzy queries, complex arguments, semantic routing)
-    return resolve_intent_via_llm(user_query, conversation_history)
+    # Tier 2: Laya System 1 Neural Decision Router (Every action goes through Laya!)
+    try:
+        from laya_router import is_laya_ready, route_intent_via_laya
+        if is_laya_ready():
+            laya_action = route_intent_via_laya(user_query)
+            if laya_action and laya_action.get("tool") not in ("chat", None):
+                return [laya_action]
+    except Exception as e:
+        logger.debug("[Laya Router Exception]: %s", e)
+
+    # Tier 3: Conversational Chat & Reasoning via MiniCPM 5 2B (Amigo Neural Model)
+    return [{"tool": "chat", "params": {}, "speak": ""}]
+
+
+
 

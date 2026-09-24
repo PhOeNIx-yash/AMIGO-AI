@@ -46,7 +46,12 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
 }) => {
   const activeStyle = normalizeAnimationStyle(animationStyle);
   const theme = COLOR_THEMES[colorTheme] || COLOR_THEMES.violet;
-  const words = useMemo(() => (text ? text.trim().split(/\s+/) : []), [text]);
+  const words = useMemo(() => {
+    if (!text) return [];
+    // Ensure tokens have natural break opportunities at punctuation without severing words mid-syllable
+    const formatted = text.replace(/([,:]|(?<=\w)\/)(?=[^\s\d])/g, "$1 ");
+    return formatted.trim().split(/\s+/).filter(Boolean);
+  }, [text]);
   const isLongText = words.length > 12;
 
   const highlightedStyle = useMemo(
@@ -81,10 +86,11 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0, transition: { duration: 0.15 } }}
-        className={`flex min-w-0 w-full max-w-full flex-wrap items-center justify-center gap-x-2 gap-y-1 text-center select-none ${className}`}
+        className={`flex min-w-0 w-full max-w-full flex-wrap items-center justify-center gap-x-2 gap-y-1.5 text-center select-none ${className}`}
         style={{
           willChange: "transform, opacity",
-          overflowWrap: "anywhere",
+          overflowWrap: "break-word",
+          wordBreak: "break-word",
         }}
       >
         {words.map((word, wordIdx) => {
@@ -177,7 +183,8 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
                 willChange: "transform, opacity",
                 ...(isHighlighted ? highlightedStyle : {}),
                 ...customWordStyle,
-                overflowWrap: "anywhere",
+                overflowWrap: "break-word",
+                wordBreak: "break-word",
               }}
             >
               {word}

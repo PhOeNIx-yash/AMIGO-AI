@@ -159,26 +159,14 @@ def _build_voice_prompt(query: str = "", is_voice: bool = True, has_web_context:
             "- If a detail is not in the search results, do not make it up. State only what is verified.\n"
         )
     else:
-        prompt += (
-            "Current Network Status: Connected (Online). You have active internet connectivity right now. "
-            "CRITICAL: If any previous turns in conversation history mention being offline or not connected, ignore them as they are outdated. "
-            "Never tell the user you are offline when your Current Network Status is Connected (Online).\n"
-            "If the user asks whether you can search the web or browse the internet, confirm that yes, you can search the web and open search results for them.\n"
-            "When the user asks about their local files, tickets, reports, documents, or data, answer directly from the provided document context—whether they need a full synopsis/summary or a specific code, PAN, PIN, PNR, date, or detail.\n"
-        )
+        prompt += "Current Network Status: Connected (Online). You have active internet connectivity right now.\n"
 
     prompt += (
-        "Natural Conversation Rules:\n"
-        "- Speak naturally, concisely, and warmly in 1 to 2 spoken sentences like a real human assistant.\n"
-        "- Do NOT repeatedly say 'Hello [Name]!' or greet the user on every turn during an ongoing conversation.\n"
-        "- Do NOT end responses with robotic assistant boilerplate like 'How else can I assist you today?', 'How can I assist you?', or 'What else can I help you with?'.\n"
-        "- Do NOT volunteer unasked pleasantries like 'I am doing well' unless the user explicitly asked how you are doing.\n"
-        "- Never say 'Based on the document you provided' or blurt out resume/biographical details unprompted during casual chat or introductions.\n"
-        "- When the user introduces themselves, confirms something ('yes', 'right', 'agreed'), or makes casual conversation, reply conversationally and warmly without corporate filler.\n"
-        "- Never mention 'Windows PC', 'computer', or operating systems in your greeting or conversation unless the user explicitly asks about system specs.\n"
-        "- You are the user's trusted personal assistant. You have full clearance to recall their personal details, documents, and records when asked.\n"
-        "- NEVER refuse queries with privacy lectures or excuses like 'I cannot provide sensitive personal details'. The user is asking about their own personal data.\n"
-        "- If no document context is provided and a requested detail or document is not present in your records, plainly state that it is not yet in your records. BUT whenever document context IS provided, always answer directly from it.\n"
+        "Conversation Guidelines:\n"
+        "- Answer questions, riddles, math problems, and user requests directly, accurately, and completely.\n"
+        "- When following up on prior discussion, use the conversation history to maintain context.\n"
+        "- Speak naturally, clearly, and concisely without repetitive greetings or robotic boilerplate.\n"
+        "- You are the user's personal assistant; answer their questions and recall their documents and records when asked.\n"
     )
     if is_thinking_enabled():
         prompt += "- Reasoning mode: Think step-by-step inside <think> tags before providing your final answer outside of <think>.\n"
@@ -216,20 +204,16 @@ def _build_ai_messages(
         for c in recent:
             u = (c.get("user", "") or "").strip()
             a = (c.get("assistant", "") or "").strip()
-            if u and a and a != "I am here and ready to help.":
+            if u and a:
                 messages.append({"role": "user", "content": u[:1000]})
                 messages.append({"role": "assistant", "content": a[:1500]})
-
 
     # Build user content with any injected context
     user_parts: list[str] = []
     if web_context:
         user_parts.append(
-            f"[Web Search Facts]:\n{web_context}\n\n"
-            "CRITICAL RULES:\n"
-            "- Answer using ONLY the information stated directly in [Web Search Facts].\n"
-            "- Do NOT borrow, mix, or blend history, owners, or events from other entities or external memory.\n"
-            "- If the facts only state the founders or owners, state only those names and do not invent transactions or years not mentioned."
+            f"[Web Search Information]:\n{web_context}\n\n"
+            "Use the web search information above to answer the user's query accurately."
         )
     elif doc_context:
         user_parts.append(
@@ -281,21 +265,12 @@ def get_ai_response(
         m = re.search(r"<think>([\s\S]*?)(?:</think>|$)", response)
         if m:
             _last_thought = m.group(1).strip()
+        if "</think>" in response:
+            response = response.split("</think>")[-1].strip()
+        else:
+            response = response.split("<think>")[0].strip() or response.strip()
 
-    cleaned = sanitize_for_tts(response)
-    if not cleaned and query:
-        # If output was truncated inside unclosed thinking tags, query model directly for a plain answer
-        retry_res = query_local_llm(
-            f"Respond directly and concisely to: {query}",
-            system_prompt="You are Amigo, a helpful voice assistant. Speak in clear, plain sentences.",
-            max_tokens=256,
-            temperature=0.3,
-            thinking=False,
-            sanitize=False,
-        )
-        cleaned = sanitize_for_tts(retry_res)
-
-    return cleaned or "I am here and ready to help."
+    return response.strip() or "How can I help you today?"
 
 
 def get_ai_response_stream(

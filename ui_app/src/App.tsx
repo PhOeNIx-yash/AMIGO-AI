@@ -837,7 +837,7 @@ export default function App() {
 
                   {/* Main Central Spoken / Heading Text */}
                   {state !== "action_card" && (
-                    <div className="text-center max-w-2xl mx-auto mb-4 sm:mb-6 px-4">
+                    <div className="text-center max-w-2xl sm:max-w-3xl md:max-w-4xl mx-auto mb-4 sm:mb-6 px-4">
                       {(state === "listening" || isListening) && liveTranscript ? (
                         <div className="flex min-w-0 w-full flex-col items-center px-2">
                           <p className="w-full min-w-0 max-w-2xl break-words text-center text-xl font-semibold leading-snug text-slate-100 sm:text-2xl md:text-3xl">
@@ -875,11 +875,18 @@ export default function App() {
                             colorTheme={colorTheme}
                             animationStyle={textAnimationStyle}
                             className={`${
-                              (displayText || "").split(" ").length > 30
-                                ? "text-sm sm:text-base md:text-lg leading-relaxed font-normal"
-                                : (displayText || "").split(" ").length > 14
-                                ? "text-base sm:text-xl md:text-2xl leading-snug font-medium"
-                                : "text-xl sm:text-2xl md:text-3xl font-medium tracking-tight leading-snug"
+                              (() => {
+                                const raw = displayText || "";
+                                const len = raw.length;
+                                const words = raw.trim().split(/\s+/).filter(Boolean).length;
+                                if (words > 22 || len > 90) {
+                                  return "text-sm sm:text-base md:text-lg leading-relaxed font-normal";
+                                }
+                                if (words > 8 || len > 36) {
+                                  return "text-base sm:text-lg md:text-xl leading-relaxed font-medium";
+                                }
+                                return "text-xl sm:text-2xl md:text-3xl font-medium tracking-tight leading-snug";
+                              })()
                             } group-hover:opacity-90 transition-opacity`}
                           />
                           {state === "idle" && (

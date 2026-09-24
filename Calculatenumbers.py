@@ -42,17 +42,40 @@ def _eval_safe_arithmetic(node):
     raise ValueError("Not a simple arithmetic expression")
 
 
+# Normalization mapping for common spoken math terms to standard operators
+_SPOKEN_MATH_MAP = [
+    (re.compile(r"\b(?:what is|calculate|solve|evaluate|how much is|tell me)\b", re.I), ""),
+    (re.compile(r"\bmultiplied\s+by\b", re.I), "*"),
+    (re.compile(r"\bdivided\s+by\b", re.I), "/"),
+    (re.compile(r"\bto\s+the\s+power\s+of\b", re.I), "**"),
+    (re.compile(r"\bpower\s+of\b", re.I), "**"),
+    (re.compile(r"\btimes\b", re.I), "*"),
+    (re.compile(r"\binto\b", re.I), "*"),
+    (re.compile(r"\bplus\b", re.I), "+"),
+    (re.compile(r"\bminus\b", re.I), "-"),
+    (re.compile(r"\bover\b", re.I), "/"),
+    (re.compile(r"\bmod\b", re.I), "%"),
+    (re.compile(r"\bx\b", re.I), "*"),
+    (re.compile(r"\^"), "**"),
+]
+
+
 def Calc(query, speak=None):
     """
     Calculates math queries using safe AST arithmetic evaluation for instant expressions,
-    and the local AI model for word-based / advanced math. Zero API keys, zero hardcoding.
+    and the local AI model only for complex word-based / advanced reasoning problems.
+    Zero API keys, zero hardcoding.
     """
     term = str(query).strip().replace("Amigo", "").replace("amigo", "").strip()
 
-    # Fast path: Try parsing as pure AST arithmetic expression (e.g. "2 + 2", "18 + 19 + 20 * 5")
-    # Only evaluates if the query is strictly valid math syntax with no alphabet characters
+    # Step 1 (Ponytail: Stdlib first): Normalize spoken operators to arithmetic symbols
+    clean_expr = term
+    for pattern, repl in _SPOKEN_MATH_MAP:
+        clean_expr = pattern.sub(repl, clean_expr)
+    clean_expr = clean_expr.strip()
+
+    # Step 2: Try fast-path AST evaluation if no alphabetic characters remain
     try:
-        clean_expr = term.replace("^", "**").strip()
         if clean_expr and not _RE_ALPHA.search(clean_expr):
             parsed = ast.parse(clean_expr, mode="eval")
             res = _eval_safe_arithmetic(parsed.body)
@@ -70,9 +93,9 @@ def Calc(query, speak=None):
                     speak(result_str)
                 return res_str
     except Exception:
-        pass  # Not a pure arithmetic expression — pass full natural query to LLM
+        pass  # Not a simple arithmetic expression — fall through to LLM reasoning
 
-    # Dynamic AI Fallback: Ask local AI model to solve any natural language / advanced math
+    # Step 3: LLM Fallback (Only reached for true natural-language reasoning / word problems)
     prompt = f"Calculate the exact numerical result for the mathematical problem: {term}. Provide a direct, concise spoken answer with the final result."
     ai_answer = query_local_llm(prompt)
 
@@ -88,3 +111,4 @@ def Calc(query, speak=None):
     else:
         print(err)
     return err
+

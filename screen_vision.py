@@ -191,29 +191,7 @@ def answer_screen_question(question: str) -> str:
     window_title = get_active_window_title()
     screenshot = capture_screen_image()
 
-    # Strategy 1: Multimodal Vision (when available)
-    try:
-        from local_llm import is_vision_ready, query_local_vision, sanitize_for_tts
-        if is_vision_ready() and screenshot is not None:
-            vision_prompt = question if question else "Describe what is currently displayed on my computer screen in clear, natural language."
-            if window_title:
-                vision_prompt = f"The active window title is '{window_title}'.\n{vision_prompt}"
-            reply = query_local_vision(
-                screenshot,
-                prompt=vision_prompt,
-                system_prompt=(
-                    "You are Amigo, a helpful voice assistant with screen vision capabilities. "
-                    "Analyze the user's computer screen and answer their question clearly and directly. "
-                    "Do not use markdown, bullet points, or code formatting. Speak in natural plain English."
-                ),
-                max_tokens=350,
-            )
-            if reply and len(reply.strip()) > 10:
-                return sanitize_for_tts(reply)
-    except Exception as e:
-        logger.debug(f"[Screen Vision] Native vision note: {e}")
-
-    # Strategy 2: OCR Fallback (winocr / pytesseract)
+    # Extract visible screen text via native Windows OCR (winocr / pytesseract)
     screen_text = ""
     if screenshot is not None:
         screen_text = read_text_from_image(screenshot)
@@ -254,22 +232,7 @@ def analyze_image(image_input, question: str = "Describe what you see in this im
     """
     Analyzes an arbitrary image file, PIL Image, or screenshot using native vision or OCR fallback.
     """
-    # 1. Native Multimodal Vision
-    try:
-        from local_llm import is_vision_ready, query_local_vision, sanitize_for_tts
-        if is_vision_ready():
-            reply = query_local_vision(
-                image_input,
-                prompt=question,
-                system_prompt="You are Amigo, a helpful assistant with image vision. Describe what is in the image clearly in plain English without markdown.",
-                max_tokens=350,
-            )
-            if reply and len(reply.strip()) > 10:
-                return sanitize_for_tts(reply)
-    except Exception as e:
-        logger.debug(f"[Analyze Image] Native vision note: {e}")
-
-    # 2. OCR Fallback
+    # OCR text extraction fallback
     try:
         from PIL import Image
         img = None

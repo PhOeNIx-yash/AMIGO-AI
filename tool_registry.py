@@ -87,8 +87,7 @@ def _tool_web_search(params, query, spoken):
         return response, search_url
 
     searchGoogle(target)
-    web_ctx = f"Web search for '{target}' was executed and the Google search page has been opened in the browser."
-    response = get_ai_response(query, web_context=web_ctx)
+    response = get_ai_response(query)
     return response, search_url
 
 
@@ -304,17 +303,39 @@ def _tool_read_screen(params, query, spoken):
 
 
 def _tool_type_text(params, query, spoken):
-    if app := params.get("app", "").strip():
+    app = params.get("app", "").strip() if isinstance(params, dict) else ""
+    if app:
         open_windows_app(app)
-    if text := params.get("text", "").strip():
+        import time
+        time.sleep(0.25)
+    text = params.get("text", "").strip() if isinstance(params, dict) else ""
+    if text:
         os_automation.type_text(text)
-    return spoken, None
+    return spoken or (f"Typed text into {app}." if app else f"Typed '{text}'." if text else "Typed text."), None
 
 
 def _tool_press_key(params, query, spoken):
-    if keys := params.get("keys", ""):
+    keys = params.get("keys", "") if isinstance(params, dict) else ""
+    if keys:
         os_automation.press_shortcut(keys)
-    return spoken, None
+    return spoken or (f"Pressed {keys}." if keys else "Done."), None
+
+
+def _tool_click_screen(params, query, spoken):
+    import pyautogui
+    x = params.get("x") if isinstance(params, dict) else None
+    y = params.get("y") if isinstance(params, dict) else None
+    if x is not None and y is not None:
+        try:
+            pyautogui.click(int(x), int(y))
+            return spoken or f"Clicked at ({x}, {y}).", None
+        except Exception as e:
+            return f"Click error: {e}", None
+    try:
+        pyautogui.click()
+        return spoken or "Clicked.", None
+    except Exception as e:
+        return f"Click error: {e}", None
 
 
 def _is_system_audio_playing() -> bool:
@@ -419,9 +440,6 @@ def _tool_calculate(params, query, spoken):
 
 
 def _tool_chat(params, query, spoken):
-    if spoken and spoken.strip():
-        extract_and_open_urls(spoken)
-        return spoken.strip(), None
     response = get_ai_response(query)
     extract_and_open_urls(response)
     return response, None
@@ -574,11 +592,23 @@ def _tool_new_tab(params, query, spoken):
 
 
 def _tool_set_volume(params, query, spoken):
-    _, msg = os_automation.set_volume(params.get("level", "50"))
+    res = os_automation.set_volume(params.get("level", "50"))
+    if isinstance(res, (tuple, list)):
+        _, msg = res
+    elif isinstance(res, str):
+        msg = res
+    else:
+        msg = f"Volume set to {params.get('level', '50')} percent."
     return msg, None
 
 def _tool_set_brightness(params, query, spoken):
-    _, msg = os_automation.set_brightness(params.get("level", "50"))
+    res = os_automation.set_brightness(params.get("level", "50"))
+    if isinstance(res, (tuple, list)):
+        _, msg = res
+    elif isinstance(res, str):
+        msg = res
+    else:
+        msg = f"Brightness set to {params.get('level', '50')} percent."
     return msg, None
 
 def _tool_open_settings(params, query, spoken):
@@ -625,6 +655,7 @@ UI_TOOL_HANDLERS = {
     "type_text":         _tool_type_text,
     "search_and_type":   _tool_search_and_type,
     "press_key":         _tool_press_key,
+    "click_screen":      _tool_click_screen,
     "new_tab":           _tool_new_tab,
     "close_app":         _tool_close_app,
     "window_management": _tool_window_management,

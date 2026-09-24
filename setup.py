@@ -16,7 +16,8 @@ def main():
     os.chdir(base_dir)
 
     print("=" * 60)
-    print("      AMIGO VOICE ASSISTANT - ONE-CLICK EASY SETUP")
+    print("   AMIGO VOICE ASSISTANT v1.3 — ONE-CLICK EASY SETUP")
+    print("   System 1 (Laya Neural Router) + System 2 (MiniCPM 5 2B)")
     print("=" * 60)
 
     # 1. Check Python & Git Environment
@@ -103,11 +104,25 @@ def main():
     except Exception as e:
         print(f"    Sherpa-ONNX model check note: {e}")
 
-    # Local LLM GGUF Model Check
+    # Laya System 1 Neural Router Model Check
+    laya_dir = os.path.join(base_dir, "models", "laya")
+    laya_weights = os.path.join(laya_dir, "model.safetensors")
+    laya_config = os.path.join(laya_dir, "rl_agent_config.json")
+    os.makedirs(laya_dir, exist_ok=True)
+    if os.path.exists(laya_weights) and os.path.getsize(laya_weights) > 500_000_000 and os.path.exists(laya_config):
+        print(" -> Laya System 1 Neural Router: ACTIVE (model.safetensors + rl_agent_config.json found).")
+    else:
+        print(" -> Laya System 1 Neural Router: NOT FOUND (optional).")
+        print("    To enable sub-second action routing, place Laya model files into:")
+        print(f"    {laya_dir}")
+        print("    Required files: model.safetensors  rl_agent_config.json")
+        print("    Without Laya, Amigo falls back gracefully to MiniCPM 5 2B for all queries.")
+
+    # Local LLM GGUF Model Check (MiniCPM 5 2B — System 2)
     try:
         import local_llm
         model_info = local_llm.get_active_model_info()
-        print(f" -> Checking local LLM model: {model_info['name']} (~{model_info.get('size_gb', 1.45)}GB)...")
+        print(f" -> Checking MiniCPM 5 2B (System 2): {model_info['name']} (~{model_info.get('size_gb', 1.45)}GB)...")
         model_path = local_llm.get_model_path()
         if os.path.exists(model_path):
             print(f"    {model_info['name']} is ready at {model_path}.")
@@ -122,6 +137,9 @@ def main():
     print("\n" + "=" * 60)
     print("           AMIGO SETUP COMPLETED SUCCESSFULLY!")
     print("=" * 60)
+    print("\nActive Engine Stack:")
+    print("  System 1 — Laya Neural Router  : sub-second action classification")
+    print("  System 2 — MiniCPM 5 2B        : conversational reasoning & Q&A")
     print("\nHow to launch Amigo:")
     print("  1. Web Dashboard (Recommended):")
     print(f'     {sys.executable} ui_server.py')
@@ -139,7 +157,7 @@ if __name__ == "__main__":
             from setuptools import setup, find_packages
             setup(
                 name="amigo-assistant",
-                version="1.2.0",
+                version="1.3.0",
                 description="Local Offline Agentic AI Voice Assistant for Windows",
                 packages=find_packages(),
             )
