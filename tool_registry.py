@@ -223,6 +223,7 @@ def _tool_open_app(params, query, spoken):
     clean_target = _RE_APP_ARTICLE.sub("", app_name).strip()
 
     # 1. Is it an installed Windows application / System tool?
+
     if open_windows_app(clean_target):
         try:
             update_active_state("active_app", {"name": clean_target})
@@ -238,7 +239,13 @@ def _tool_open_app(params, query, spoken):
             pass
         return f"{clean_target.title()} is already open.", None
 
-    return f"I couldn't find {clean_target.title()} installed on your PC.", None
+    # App not found — return clear status without aggressive disambiguation modal lockup
+    not_found_msg = f"I couldn't find an app called '{clean_target.title()}' installed on your PC."
+    return not_found_msg, None, {
+        "status": "completed",
+        "query": clean_target,
+    }
+
 
 
 
@@ -295,12 +302,82 @@ def _tool_take_screenshot(params, query, spoken):
 
 
 def _tool_read_screen(params, query, spoken):
+    q = params.get("question", query) if isinstance(params, dict) else query
     try:
-        from screen_vision import answer_screen_question
-        return answer_screen_question(params.get("question", query)), None
+        from screen_vision import inspect_screen
+        res = inspect_screen(q)
+        reply = res.get("reply", "I inspected your screen.")
+        meta = {
+            "window_title": res.get("window_title", "Active Window"),
+            "screenshot": res.get("screenshot_path", "amigo_screenshot.png"),
+            "text_snippet": res.get("screen_text", "")[:300],
+        }
+        return reply, None, meta
     except Exception as e:
-        logger.error(f"[Read Screen] Error: {e}")
-        return "Could not read the screen.", None
+        logger.error(f"[Screen Vision] Error: {e}")
+        return "Could not inspect the screen right now.", None
+
+
+def _tool_memory_recall(params, query, spoken):
+    q = params.get("query", query) if isinstance(params, dict) else query
+    q_low = (q or "").lower().strip()
+
+    # 1. Storing / Remembering a new personal fact
+    if any(q_low.startswith(p) for p in ("remember that", "remember this", "save that", "note that", "store that", "keep in mind")):
+        fact = re.sub(
+            r"^(?:please\s+)?(?:remember\s+(?:that|this)?|save\s+(?:that|this)?|note\s+(?:that|this)?|store\s+(?:that|this)?|keep\s+in\s+mind\s+(?:that)?)\s*",
+            "",
+            q,
+            flags=re.I,
+        ).strip()
+        if fact:
+            try:
+                rag_engine.add_user_fact(fact, category="user_memory")
+                return f"I've remembered that: {fact}.", None
+            except Exception as e:
+                return f"Failed to save fact: {e}", None
+
+    # 2. Recalling a stored fact or past conversation
+    recalled_facts = []
+    try:
+        recalled = rag_engine.search(q, target_collections=[rag_engine.USER_FACTS, rag_engine.CONVERSATIONS], top_k=4)
+        for r in recalled:
+            if r.get("score", 0) > 0.05 and r.get("text"):
+                recalled_facts.append(r["text"])
+    except Exception as e:
+        logger.debug(f"[Memory Recall]: {e}")
+
+    try:
+        prof = rag_engine.load_profile()
+        prefs = prof.get("preferences", {})
+        for k, v in prefs.items():
+            if str(k).lower() in q_low or any(w in str(v).lower() for w in q_low.split()):
+                recalled_facts.append(f"{k}: {v}")
+    except Exception:
+        pass
+
+    if recalled_facts:
+        mem_context = "Remembered User Facts & Conversations:\n" + "\n".join(f"- {f}" for f in recalled_facts)
+        prompt = f"The user is asking: '{q}'\nUse the remembered information above to answer directly, naturally, and factually."
+        response = get_ai_response(prompt, doc_context=mem_context)
+        return response, None, {"recalled_facts": recalled_facts[:3]}
+
+    return get_ai_response(q), None
+
+
+def _tool_document_qa(params, query, spoken):
+    q = params.get("query", query) if isinstance(params, dict) else query
+    try:
+        doc_results = rag_engine.search_documents(q, top_k=5)
+        if doc_results:
+            doc_context = "\n---\n".join(d["text"] for d in doc_results if d.get("text"))
+            prompt = f"The user is asking about their local documents: '{q}'\nAnswer accurately using the document context above."
+            response = get_ai_response(prompt, doc_context=doc_context)
+            return response, None, {"matched_docs": [d.get("metadata", {}).get("source", "doc") for d in doc_results[:3]]}
+    except Exception as e:
+        logger.debug(f"[Document QA]: {e}")
+
+    return _tool_ask_document(params, q, spoken)
 
 
 def _tool_type_text(params, query, spoken):
@@ -451,10 +528,71 @@ def _tool_calculate(params, query, spoken):
     return spoken or "Calculation completed.", None
 
 
+def _tool_clarification(params, query, spoken):
+    """Handles clarifying questions when intent or parameters are ambiguous."""
+    candidates = params.get("candidate_tools", []) if isinstance(params, dict) else []
+    q = params.get("query", query) if isinstance(params, dict) else query
+    msg = spoken or f"I'm not completely sure what you'd like to do with '{q}'. Please choose an option below or clarify."
+    return msg, None, {
+        "status": "requires_clarification",
+        "requires_clarification": True,
+        "candidates": candidates,
+        "query": q,
+    }
+
+
 def _tool_chat(params, query, spoken):
     response = get_ai_response(query)
+
+    uncertainty_patterns = (
+        "would you like me to look into",
+        "would you like me to search",
+        "i don't have information",
+        "i do not have information",
+        "i don't have any information",
+        "i do not have any information",
+        "can't provide information",
+        "cannot provide information",
+        "can't find information",
+        "cannot find information",
+        "unable to provide information",
+        "unable to find information",
+        "no information available",
+        "no information about",
+        "don't have details",
+        "do not have details",
+        "i don't know much about",
+        "i do not know much about",
+        "i am not familiar with",
+        "i'm not familiar with",
+        "i am not sure",
+        "i'm not sure",
+        "i don't know",
+        "i do not know",
+        "i don't have access to real-time",
+        "i do not have access to real-time",
+        "i don't have access",
+        "i do not have access",
+        "as an ai, i don't have",
+        "my knowledge is limited",
+        "sorry, i can't provide",
+        "sorry, i cannot provide",
+    )
+    is_uncertain = any(p in response.lower() for p in uncertainty_patterns)
+
+    # If the model expressed uncertainty or lack of information, autonomously search the web
+    if is_uncertain and is_internet_connected():
+        logger.info("[Tool Chat] Model expressed uncertainty about '%s'. Autonomously fetching web knowledge...", query[:40])
+        clean_q = clean_search_query(query)
+        snippets = scrape_web_info(clean_q or query)
+        if snippets:
+            response = get_ai_response(query, web_context=snippets)
+            extract_and_open_urls(response)
+            return response, None
+
     extract_and_open_urls(response)
     return response, None
+
 
 
 
@@ -694,7 +832,14 @@ UI_TOOL_HANDLERS = {
     "open_file":         _tool_file_action,
     "reveal_file":       _tool_file_action,
     "copy_file_path":    _tool_file_action,
+    "screen_vision":     _tool_read_screen,
+    "memory_recall":     _tool_memory_recall,
+    "document_qa":       _tool_document_qa,
+    "ask_document":      _tool_document_qa,
+    "current_media":     _tool_get_current_media,
     "get_current_media": _tool_get_current_media,
+    "clarification":     _tool_clarification,
+    "time_date":         _tool_get_time,
     "exit":              _tool_exit,
     "chat":              _tool_chat,
 }
@@ -1014,5 +1159,102 @@ def build_action_cards(tool: str, params: dict, result_metadata: dict, url: str 
             },
         })
 
+    # 4. Screen Vision Perception Card
+    elif tool in ("screen_vision", "read_screen", "ask_about_screen"):
+        win_title = result_metadata.get("window_title", "Desktop")
+        cards.append({
+            "id": "act-screen-vision",
+            "type": "screen_vision",
+            "title": f"Screen Vision: {win_title}",
+            "subtitle": response_text[:140] + ("..." if len(response_text) > 140 else ""),
+            "selected": True,
+            "badge": "Vision",
+            "payload": {
+                "tool": "screen_vision",
+                "window_title": win_title,
+                "screenshot": result_metadata.get("screenshot", "amigo_screenshot.png"),
+                "snippet": result_metadata.get("text_snippet", ""),
+            },
+        })
+
+    # 5. Neural Memory Recall Card
+    elif tool == "memory_recall" and result_metadata.get("recalled_facts"):
+        facts = result_metadata.get("recalled_facts", [])
+        cards.append({
+            "id": "act-memory",
+            "type": "memory",
+            "title": "Recalled from Memory",
+            "subtitle": facts[0] if facts else response_text[:120],
+            "selected": True,
+            "badge": "Memory",
+            "payload": {
+                "tool": "memory_recall",
+                "facts": facts,
+            },
+        })
+
+    # 6. Document Knowledge QA Card
+    elif tool in ("document_qa", "ask_document") and result_metadata.get("matched_docs"):
+        docs = result_metadata.get("matched_docs", [])
+        first_doc = os.path.basename(docs[0]) if docs else "Local Document"
+        cards.append({
+            "id": "act-doc-qa",
+            "type": "document",
+            "title": f"Document Knowledge: {first_doc}",
+            "subtitle": response_text[:140] + ("..." if len(response_text) > 140 else ""),
+            "selected": True,
+            "badge": "Document",
+            "payload": {
+                "tool": "document_qa",
+                "matched_docs": docs,
+            },
+        })
+
+    # 7. Clarification & Disambiguation Action Cards (User Self-Correction / Choice)
+    elif tool == "clarification" or result_metadata.get("requires_clarification") or result_metadata.get("status") == "requires_clarification":
+        candidates = result_metadata.get("candidates") or params.get("candidate_tools") or ["chat", "web_search"]
+        query_text = result_metadata.get("query") or params.get("query") or prompt
+
+        tool_labels = {
+            "play_youtube": ("Play on YouTube", "Play audio or video stream"),
+            "web_search": ("Search Google Web", "Look up info on the internet"),
+            "chat": ("Explain / Answer Questions", "Get AI explanation and chat"),
+            "open_app": ("Open Application", "Launch desktop application"),
+            "close_app": ("Close Application", "Exit or terminate program"),
+            "window_mgmt": ("Manage Windows", "Minimize, maximize, or switch"),
+            "weather": ("Weather Forecast", "Check current weather"),
+            "time_date": ("Time & Date", "Check current time or date"),
+            "system_control": ("System Control", "Perform PC action"),
+            "screen_vision": ("Inspect Screen", "Analyze screen view"),
+            "memory_recall": ("Check Memory", "Recall saved facts"),
+            "document_qa": ("Search Documents", "Ask about local files"),
+        }
+
+        for idx, cand in enumerate(candidates):
+            title, desc = tool_labels.get(cand, (cand.replace("_", " ").title(), f"Execute {cand.replace('_', ' ')}"))
+            cards.append({
+                "id": f"act-clarify-{idx}",
+                "type": "general",
+                "title": title,
+                "subtitle": f"{desc} for '{query_text}'",
+                "selected": idx == 0,
+                "badge": cand.replace("_", " ").title(),
+                "actionType": "button",
+                "payload": {"tool": cand, "query": query_text, "original_prompt": prompt},
+            })
+
+        if "web_search" not in candidates:
+            cards.append({
+                "id": "act-clarify-web",
+                "type": "general",
+                "title": "Search Google Web",
+                "subtitle": f"Search online for '{query_text}'",
+                "selected": False,
+                "badge": "Web Search",
+                "actionType": "button",
+                "payload": {"tool": "web_search", "query": query_text, "original_prompt": prompt},
+            })
+
     return cards
+
 

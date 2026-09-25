@@ -96,11 +96,33 @@ def get_stock_price(symbol_or_name: str) -> str:
     return ""
 
 
+def search_wikipedia_snippets(query: str, max_results: int = 3) -> list[str]:
+    """Retrieves concise factual encyclopedia snippets via official Wikipedia API."""
+    clean_q = re.sub(r"^(?:tell me about|what is|who is|explain|i am asking about)\s+", "", query, flags=re.I).strip()
+    url = f"https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={urllib.parse.quote(clean_q)}&format=json&utf8=1"
+    req = urllib.request.Request(url, headers={"User-Agent": "AmigoAI/1.0"})
+    snippets = []
+    try:
+        with urllib.request.urlopen(req, timeout=3.5) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            results = data.get("query", {}).get("search", [])
+            for r in results[:max_results]:
+                title = r.get("title", "")
+                snippet_html = r.get("snippet", "")
+                clean_text = re.sub(r"<[^>]+>", "", snippet_html).strip()
+                if clean_text and len(clean_text) > 15:
+                    snippets.append(f"{title}: {clean_text}")
+    except Exception as e:
+        logger.debug("[Wiki Search Error]: %s", e)
+    return snippets
+
+
 def scrape_web_info(query: str, max_results: int = 4) -> str:
     """
     Fast, reliable, free web search & fact collector.
     1. Checks stock ticker / quote if financial keywords are present.
-    2. Uses DDGS to retrieve verified web snippets (excludes Wikipedia articles).
+    2. Uses DDGS to retrieve verified web snippets.
+    3. Falls back to Wikipedia API if DDGS yields no snippets.
     """
     if not query or not query.strip():
         return ""
@@ -131,7 +153,6 @@ def scrape_web_info(query: str, max_results: int = 4) -> str:
                 title = (r.get("title") or "").strip()
                 body = (r.get("body") or "").strip()
 
-                # Guard against bloated Wikipedia article dumps
                 if "wikipedia.org" in href or "wikipedia" in title.lower():
                     continue
 
@@ -144,7 +165,16 @@ def scrape_web_info(query: str, max_results: int = 4) -> str:
     except Exception as e:
         logger.debug(f"[Search Error]: {e}")
 
+    # 3. Wikipedia API Snippet Fallback if DDGS timed out or yielded no snippets
+    if not snippets:
+        try:
+            wiki_snips = search_wikipedia_snippets(search_term, max_results=3)
+            snippets.extend(wiki_snips)
+        except Exception:
+            pass
+
     return " | ".join(snippets)[:3000] if snippets else ""
+
 
 
 def searchGoogle(query: str) -> None:

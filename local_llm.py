@@ -528,6 +528,12 @@ def parse_user_intent_fast(query: str) -> dict[str, Any] | None:
     return None
 
 
+_RE_USER_CORRECTION = re.compile(
+    r"^(?:no\s*,?\s*|actually\s*,?\s*|that'?s\s+(?:wrong|not\s+what\s+i\s+(?:asked|meant))\s*,?\s*|you\s+misunderstood\s*,?\s*|i\s+meant\s+|correction:?\s*)+",
+    re.IGNORECASE,
+)
+
+
 # ---------------------------------------------------------------------------
 # Action & Intent Resolution via Laya System 1 & MiniCPM 5 2B
 # ---------------------------------------------------------------------------
@@ -535,8 +541,9 @@ def parse_user_intent_fast(query: str) -> dict[str, Any] | None:
 def get_agent_action(user_query: str, conversation_history: list | None = None) -> list[dict]:
     """
     Primary intent entry point for Amigo Voice Assistant.
-    Coordinates between emergency stops, Task Agent (desktop & browser navigation),
-    Laya System 1 neural decision router (all actions), and MiniCPM 5 2B (conversation).
+    Coordinates between emergency stops, user self-correction learning,
+    Task Agent (desktop & browser navigation), Laya System 1 neural decision router,
+    and MiniCPM 5 2B (conversation).
     """
     if not user_query or not user_query.strip():
         return [{"tool": "chat", "params": {}, "speak": ""}]
@@ -545,38 +552,71 @@ def get_agent_action(user_query: str, conversation_history: list | None = None) 
     if _RE_PROBE_GUARD.search(user_query):
         return [{"tool": "chat", "params": {}, "speak": ""}]
 
+    # User Self-Correction Learning Loop
+    is_user_correction = False
+    if m := _RE_USER_CORRECTION.search(user_query):
+        cleaned = _RE_USER_CORRECTION.sub("", user_query).strip().lstrip(",; ")
+        if cleaned:
+            is_user_correction = True
+            logger.info("[Correction] User self-correction detected: '%s' -> '%s'", user_query, cleaned)
+            try:
+                import rag_engine
+                prev_turn = conversation_history[-1].get("user", "") if (conversation_history and isinstance(conversation_history, list)) else ""
+                if prev_turn:
+                    rag_engine.add_user_fact(
+                        f"Correction: When user said '{prev_turn}', user clarified: '{cleaned}'",
+                        category="user_correction",
+                    )
+            except Exception as e:
+                logger.debug("[Memory Correction Note]: %s", e)
+            user_query = cleaned
+
     # Tier 0: Emergency Safety Stop / Exit
     fast_stop = parse_user_intent_fast(user_query)
     if fast_stop is not None:
+        if is_user_correction and fast_stop.get("speak"):
+            fast_stop["speak"] = "Got it! " + fast_stop["speak"]
         return [fast_stop]
+
 
     q_lower = user_query.lower().strip()
 
-    # Tier 1: Multi-Step Compound Action Chains (Decompose commands like "open notepad and type Hello World")
-    is_conversational_start = any(q_lower.startswith(p) for p in (
-        "search ", "google ", "play ", "stream ", "watch ", "ask ", "tell me ",
-        "what ", "who ", "why ", "how ", "is ", "are ", "can you explain",
-        "calculate ", "compute ", "solve "
-    ))
-    if not is_conversational_start and any(conj in q_lower for conj in (" and then ", " then ", " after that ", " and ", " & ", ";")):
+    # Tier 1: Multi-Step Compound Action Chains (Decompose commands like "close Chrome and search the web")
+    if any(conj in q_lower for conj in (" and then ", " then ", " after that ", " and also ", " but also ", " as well as ", " and ", " & ", ";")):
         try:
             import task_agent
             steps = task_agent.decompose_task(user_query)
             if len(steps) > 1:
                 context = {}
                 compound_actions = []
-                has_executable_tool = False
                 for sq in steps:
                     act = task_agent.resolve_step_intent(sq, context)
-                    if act and act.get("tool") not in ("chat", None):
-                        has_executable_tool = True
+                    if act and act.get("tool") not in (None, ""):
                         compound_actions.append(act)
                         if act.get("tool") == "open_app":
                             context["last_opened_app"] = act.get("params", {}).get("name", "")
-                    else:
-                        compound_actions.append({"tool": "chat", "params": {}, "speak": ""})
+
+                has_executable_tool = any(a.get("tool") not in ("chat", None) for a in compound_actions)
                 if has_executable_tool and compound_actions:
-                    return compound_actions
+                    # Deduplicate consecutive identical actions (e.g. multiple get_weather or open_app)
+                    deduped_actions = []
+                    for act in compound_actions:
+                        if not deduped_actions:
+                            deduped_actions.append(act)
+                        else:
+                            prev = deduped_actions[-1]
+                            if prev.get("tool") == act.get("tool"):
+                                prev_p = prev.get("params") or {}
+                                act_p = act.get("params") or {}
+                                # If the new act has more informative params, replace prev; otherwise keep prev
+                                if any(act_p.values()) and not any(prev_p.values()):
+                                    deduped_actions[-1] = act
+                            else:
+                                deduped_actions.append(act)
+                    # If we have concrete tools, omit pure empty chat steps
+                    executable_only = [a for a in deduped_actions if a.get("tool") != "chat" or a.get("params", {}).get("query")]
+                    if executable_only:
+                        return executable_only
         except Exception as e:
             logger.debug("[Task Agent Decomposition Note]: %s", e)
 
@@ -585,12 +625,17 @@ def get_agent_action(user_query: str, conversation_history: list | None = None) 
         from laya_router import route_intent_via_laya
         laya_action = route_intent_via_laya(user_query, conversation_history=conversation_history)
         if laya_action and laya_action.get("tool") not in ("chat", None):
+            if is_user_correction:
+                laya_action["speak_prefix"] = "Got it, thanks for correcting me! "
             return [laya_action]
     except Exception as e:
         logger.debug("[Laya Router Exception]: %s", e)
 
     # Tier 3: Conversational Chat & Reasoning via MiniCPM 5 2B (Amigo Neural Model)
-    return [{"tool": "chat", "params": {}, "speak": ""}]
+    chat_action = {"tool": "chat", "params": {"query": user_query}, "speak": ""}
+    if is_user_correction:
+        chat_action["speak_prefix"] = "Got it, thanks for correcting me! "
+    return [chat_action]
 
 
 

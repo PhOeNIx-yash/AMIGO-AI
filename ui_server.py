@@ -92,6 +92,7 @@ print("[ AMIGO UI SERVER ] All imports loaded.", flush=True)
 
 try:
     _init_settings = rag_engine.load_profile().get("ui_settings", {})
+    
     set_thinking_enabled(_init_settings.get("thinkingEnabled", False))
 except Exception:
     pass
@@ -263,6 +264,7 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
         tool = action.get("tool", "chat")
         params = action.get("params", {})
         spoken = action.get("speak", "") or (params.get("speak", "") if isinstance(params, dict) else "")
+        speak_prefix = action.get("speak_prefix", "")
         remember = action.get("remember", "")
 
         if not isinstance(tool, str) or tool not in UI_TOOL_HANDLERS:
@@ -282,7 +284,8 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
 
         handler = UI_TOOL_HANDLERS.get(tool, _tool_chat)
         tool_started = time.perf_counter()
-        handler_result = handler(params, query, spoken)
+        step_query = action.get("step_text") or query
+        handler_result = handler(params, step_query, spoken)
         if isinstance(handler_result, tuple):
             if len(handler_result) == 3:
                 res_spoken, res_url, handler_metadata = handler_result
@@ -302,26 +305,28 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
             request_id or "unknown", tool, (time.perf_counter() - tool_started) * 1000,
         )
 
-        final_to_speak = res_spoken if res_spoken else spoken
+        raw_to_speak = res_spoken if res_spoken else spoken
+        final_to_speak = (speak_prefix + raw_to_speak) if raw_to_speak else speak_prefix
         if final_to_speak:
             speech_to_voice = final_to_speak
             if "matching file" in speech_to_voice and "\n" in speech_to_voice:
                 m_count = _RE_FILE_MATCH_COUNT.search(speech_to_voice)
                 c_num = m_count.group(1) if m_count else "some"
                 speech_to_voice = f"I found {c_num} matching files. Choose one on your screen or say 'Open number 1'."
-            speak(speech_to_voice, request_id=request_id)
-            combined_spoken.append(speech_to_voice)
-
+            if speech_to_voice not in combined_spoken:
+                speak(speech_to_voice, request_id=request_id)
+                combined_spoken.append(speech_to_voice)
 
         if res_url:
             last_url = res_url
 
-    final_reply = " ".join(combined_spoken).strip() or (f"Completed {last_tool.replace('_', ' ')}." if last_tool != "chat" else "")
+    primary_tool = "multi_command" if len(actions) > 1 else last_tool
+    final_reply = " ".join(combined_spoken).strip() or (f"Completed {primary_tool.replace('_', ' ')}." if primary_tool != "chat" else "")
 
     add_to_memory(
         display_prompt or query,
-        final_reply or f"Completed {last_tool.replace('_', ' ')}",
-        tool=last_tool,
+        final_reply or f"Completed {primary_tool.replace('_', ' ')}",
+        tool=primary_tool,
         clipboard_used=clipboard_used,
         remember=last_remember,
     )
@@ -332,13 +337,13 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
 
     broadcaster.broadcast("chat_message", {
         "sender": "assistant",
-        "text": final_reply or f"Completed {last_tool.replace('_', ' ')}",
-        "tool": last_tool,
+        "text": final_reply or f"Completed {primary_tool.replace('_', ' ')}",
+        "tool": primary_tool,
         "url": last_url,
         "thought": last_thought,
     })
 
-    return {"tool": last_tool, "params": last_params, "response": final_reply, "url": last_url, "metadata": response_metadata, "thought": last_thought}
+    return {"tool": primary_tool, "params": last_params, "response": final_reply, "url": last_url, "metadata": response_metadata, "thought": last_thought}
 
 
 def process_query(query: str, is_voice: bool = True, display_prompt: str | None = None) -> dict:
@@ -351,10 +356,12 @@ def process_query(query: str, is_voice: bool = True, display_prompt: str | None 
     try:
         result = _process_query(query, is_voice=is_voice, request_id=request_id, display_prompt=display_prompt)
 
-        request_status = "completed"
         result.setdefault("metadata", {})["request_id"] = request_id
         result["metadata"]["duration_ms"] = round((time.perf_counter() - request_started) * 1000, 1)
-        result["metadata"]["status"] = request_status
+        if result.get("tool") == "clarification" or result["metadata"].get("requires_clarification"):
+            result["metadata"]["status"] = "requires_clarification"
+        elif not result["metadata"].get("status"):
+            result["metadata"]["status"] = "completed"
         return result
     except Exception as exc:
         logger.exception("[Query Error] %s", exc)
@@ -614,7 +621,15 @@ def api_assistant_process():
             prompt=prompt,
         )
 
-    has_multiple_cards = bool(action_cards and len(action_cards) > 1 and any(not c.get("selected") for c in action_cards))
+    has_multiple_cards = bool(
+        action_cards
+        and (
+            tool == "clarification"
+            or result_metadata.get("requires_clarification")
+            or result_metadata.get("status") == "requires_clarification"
+            or (len(action_cards) > 1 and any(not c.get("selected") for c in action_cards))
+        )
+    )
 
     speech_reply = response_text or f"Executing {tool.replace('_', ' ')}"
     if "matching file" in speech_reply and "\n" in speech_reply:
@@ -622,16 +637,21 @@ def api_assistant_process():
         c_num = m_count.group(1) if m_count else "some"
         speech_reply = f"I found {c_num} matching files. Choose one on your screen or say 'Open number 1'."
 
-    status = result_metadata.get("status")
-    if not status:
-        if not is_internet_connected() and ("not connected to the internet" in speech_reply.lower() or "offline" in speech_reply.lower()):
-            status = "offline"
-        elif result_metadata.get("error") or "error" in result_metadata:
-            status = "failed"
-        else:
-            status = "completed"
+    if tool == "clarification" or result_metadata.get("requires_clarification") or result_metadata.get("status") == "requires_clarification":
+        status = "requires_clarification"
+    else:
+        status = result_metadata.get("status")
+        if not status:
+            if not is_internet_connected() and ("not connected to the internet" in speech_reply.lower() or "offline" in speech_reply.lower()):
+                status = "offline"
+            elif result_metadata.get("error") or "error" in result_metadata:
+                status = "failed"
+            else:
+                status = "completed"
 
-    if status == "offline":
+    if status == "requires_clarification":
+        headline = "Clarification Needed"
+    elif status == "offline":
         headline = "Offline"
     elif status == "failed":
         headline = "Action Failed"
@@ -680,6 +700,27 @@ def api_action_execute():
             else:
                 spoken = str(handler_result)
                 url = None
+
+            # Record user clarification selection in RAG neural memory
+            orig_prompt = payload.get("original_prompt") or payload.get("query")
+            if orig_prompt:
+                try:
+                    rag_engine.add_user_fact(
+                        f"User clarification: For request '{orig_prompt}', user explicitly chose tool '{tool}'",
+                        category="user_correction",
+                    )
+                except Exception:
+                    pass
+
+            if spoken:
+                speak(spoken)
+                broadcaster.broadcast("chat_message", {
+                    "sender": "assistant",
+                    "text": spoken,
+                    "tool": tool,
+                    "url": url,
+                })
+
             success = metadata.get("status") not in {"blocked", "failed"}
             result = {"success": success, "message": spoken or "Executed", "url": url}
             if metadata:

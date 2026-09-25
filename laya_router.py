@@ -28,34 +28,59 @@ _laya_load_attempted = False
 
 # Dual-aspect questions evaluated in a single parallel forward pass
 LAYA_QUESTIONS = {
-    "intent": {
-        "type": "choice",
-        "instructions": "Classify user intent: is the user asking the assistant to perform an action/task/lookup, or engaging in conversation/knowledge discussion?",
-        "criteria": {
-            "action": "Commands to perform a computer action: play or control music, launch apps, close windows, adjust settings, search Google, check live weather, set timers, or automate the PC",
-            "chat": "Conceptual questions, asking how things work, seeking explanations, definitions, science, history, general conversation, greetings, math, jokes, stories, or advice",
-        },
-    },
     "tool": {
         "type": "choice",
-        "instructions": "Which tool executes this request? If the request is for explanation, how things work, definitions, jokes, math, or conversation, choose chat.",
+        "instructions": "Which capability executes this request?",
         "criteria": {
-            "open_app": "Launch, start, run, or open an application or program",
-            "close_app": "Close, quit, exit, terminate, or shut down an application, program, or window",
-            "window_mgmt": "Minimize windows, maximize window, restore window, or switch window",
-            "browser_nav": "Open new tab, close tab, switch tab, scroll down or up, visit website or URL",
-            "desktop_input": "Type text into an app, press keys, shortcuts, or click screen",
-            "play_youtube": "Play, replay, repeat, stream, or listen to songs, music, YouTube videos, or audio",
-            "media_control": "Pause music, resume playback, next track, previous track, or stop media",
-            "set_volume": "Adjust volume, mute sound, unmute audio, turn volume up or down",
-            "get_weather": "Check live weather forecast, temperature, or rain for a city or location",
-            "system_control": "Lock computer screen, sleep PC, restart PC, take screenshot, or read screen",
-            "workspace": "Check unread emails, view calendar events, set timer or alarm, or search local files",
-            "web_search": "Search Google, browse web, look up stock prices, live news, or real-time internet info",
-            "chat": "Explanations, how things work, definitions, conceptual knowledge, reasoning, jokes, storytelling, math, or chit-chat",
+            "open_app": "Open, launch, or start an installed application or program on the computer",
+            "close_app": "Close, quit, exit, or terminate a running application or window",
+            "window_mgmt": "Minimize, maximize, restore, or switch desktop windows",
+            "browser_nav": "Navigate browser tabs, open URL, scroll webpage up or down",
+            "desktop_input": "Type text, press keyboard shortcuts, or click on the screen",
+            "play_youtube": "Play music, songs, artists, or videos on YouTube",
+            "media_control": "Pause, resume, skip tracks, or check currently playing media",
+            "set_volume": "Adjust, increase, decrease, mute, or unmute system audio volume",
+            "time_date": "Check the current time or date",
+            "weather": "Check weather forecast, temperature, or conditions for a location",
+            "system_control": "Lock PC, sleep PC, restart system, or capture a screenshot",
+            "screen_vision": "Analyze, read, or answer questions about what is visible on the screen",
+            "memory_recall": "Recall stored personal memories, facts, notes, or past interactions",
+            "document_qa": "Search or ask questions about indexed local documents and files",
+            "workspace": "Check emails, view calendar schedule, or manage timers and alarms",
+            "web_search": "Search the web, google information, look up facts, or browse the internet",
+            "chat": "General conversation, conversational replies, answering questions, or explanations",
         },
     },
 }
+
+
+TOOL_ACTION_PROMPTS = {
+    "play_youtube": "play audio or video on YouTube",
+    "web_search": "search Google on the web",
+    "chat": "explain or tell you about this",
+    "open_app": "open an application on your PC",
+    "close_app": "close an application",
+    "window_mgmt": "manage open windows",
+    "desktop_input": "type or interact with your screen",
+    "media_control": "control media playback",
+    "set_volume": "adjust the volume",
+    "time_date": "check the current time or date",
+    "weather": "check the weather forecast",
+    "system_control": "perform a system control action",
+    "screen_vision": "inspect your screen",
+    "memory_recall": "check your saved memory",
+    "document_qa": "search your documents",
+    "workspace": "check email or calendar",
+    "get_time": "check the current time",
+    "get_date": "check the current date",
+}
+
+
+def format_clarification_prompt(tool_a: str, tool_b: str, query: str) -> str:
+    desc_a = TOOL_ACTION_PROMPTS.get(tool_a, f"use {tool_a.replace('_', ' ')}")
+    desc_b = TOOL_ACTION_PROMPTS.get(tool_b, f"use {tool_b.replace('_', ' ')}")
+    return f"I'm not completely sure — did you want to {desc_a}, or {desc_b}?"
+
 
 # Parameter extraction helpers (used strictly after neural tool decision)
 _RE_SCROLL = re.compile(r"\bscroll\s+(down|up)\b", re.I)
@@ -177,14 +202,31 @@ def extract_parameters_and_tool(tool: str, query: str, conversation_history: lis
     q_low = q.lower()
 
     if tool == "open_app":
-        name = re.sub(r"^(?:(?:can|could|would)\s+(?:you|u)\s+)?(?:please\s+)?(?:open|launch|start|run)\s+(?:the\s+|an?\s+)?", "", q, flags=re.I)
+        # Extract target application entity
+        name = re.sub(r"^(?:(?:can|could|would)\s+(?:you|u)\s+)?(?:please\s+)?(?:open|launch|start|run)(?:\s+(?:the\s+|an?\s+)?)?", "", q, flags=re.I)
         name = re.sub(r"\s+(?:please|for\s+me)$", "", name, flags=re.I).strip()
+
+        # If query contains no opening intent and matches no installed application, treat as general conversation
+        has_open_indicator = bool(re.search(r"\b(?:open|launch|start|run|app|application|program)\b", q_low))
+        if not has_open_indicator:
+            try:
+                from app_opener import _find_best_app
+                if not _find_best_app(q)[0]:
+                    return "chat", {}
+            except Exception:
+                return "chat", {}
+
         return "open_app", {"name": name or "Notepad"}
 
     if tool == "close_app":
-        name = re.sub(r"^(?:(?:can|could|would)\s+(?:you|u)\s+)?(?:please\s+)?(?:close|quit|exit|kill)\s+(?:the\s+|an?\s+)?", "", q, flags=re.I)
+        has_close_indicator = bool(re.search(r"\b(?:close|quit|exit|kill|terminate|shut\s*down)\b", q_low))
+        if not has_close_indicator:
+            return "chat", {}
+        name = re.sub(r"^(?:(?:can|could|would)\s+(?:you|u)\s+)?(?:please\s+)?(?:close|quit|exit|kill)(?:\s+(?:the\s+|an?\s+)?)?", "", q, flags=re.I)
         name = re.sub(r"\s+(?:please|for\s+me)$", "", name, flags=re.I).strip()
         return "close_app", {"name": name}
+
+
 
     if tool == "window_mgmt":
         if "maximize" in q_low:
@@ -193,7 +235,9 @@ def extract_parameters_and_tool(tool: str, query: str, conversation_history: lis
             return "window_management", {"action": "restore"}
         if "switch" in q_low or "alt tab" in q_low:
             return "window_management", {"action": "switch_window"}
-        return "window_management", {"action": "minimize_all"}
+        if "minimize" in q_low:
+            return "window_management", {"action": "minimize_all"}
+        return "chat", {}
 
     if tool == "browser_nav":
         if "close tab" in q_low or "close this tab" in q_low:
@@ -225,6 +269,8 @@ def extract_parameters_and_tool(tool: str, query: str, conversation_history: lis
         return "chat", {}
 
     if tool == "play_youtube":
+        if any(w in q_low for w in ("what song", "what's playing", "what is playing", "current song", "which song")):
+            return "current_media", {}
         clean = re.sub(r"^(?:(?:can|could|would)\s+(?:you|u)\s+)?(?:please\s+)?(?:play|listen to|stream|put on|watch|replay|repeat)\s+(?:the\s+|a\s+|some\s+)?", "", q, flags=re.I)
         clean = re.sub(r"\s+(?:on\s+youtube|please|for\s+me)$", "", clean, flags=re.I).strip()
         clean_norm = clean.lower().rstrip("?!.,;:")
@@ -240,6 +286,8 @@ def extract_parameters_and_tool(tool: str, query: str, conversation_history: lis
         return "play_youtube", {"query": clean or q}
 
     if tool == "media_control":
+        if any(w in q_low for w in ("what song", "what's playing", "what is playing", "current song", "which song")):
+            return "current_media", {}
         if "mute" in q_low or "unmute" in q_low or "silence" in q_low:
             return "mute", {}
         if any(w in q_low for w in ("next", "skip")):
@@ -248,6 +296,9 @@ def extract_parameters_and_tool(tool: str, query: str, conversation_history: lis
             return "prev_track", {}
         if any(w in q_low for w in ("pause", "stop", "freeze", "halt")):
             return "pause_media", {}
+        # If user specified a track or artist to play, route to play_youtube
+        if any(q_low.startswith(p) for p in ("play ", "stream ", "listen to ", "watch ")):
+            return extract_parameters_and_tool("play_youtube", q, conversation_history)
         return "play_media", {}
 
     if tool == "set_volume":
@@ -260,9 +311,23 @@ def extract_parameters_and_tool(tool: str, query: str, conversation_history: lis
         m = _RE_VOL_NUM.search(q)
         return "set_volume", {"level": m.group(1) if m else "50"}
 
-    if tool == "get_weather":
-        m_city = re.search(r"\b(?:in|for|at|of)\s+([a-zA-Z\s.-]+)$", q, re.I)
-        city = m_city.group(1).strip() if m_city else ""
+    if tool == "time_date":
+        if any(w in q_low for w in ("calendar", "schedule", "meeting", "appointment", "event")):
+            return "get_calendar", {}
+        if any(w in q_low for w in ("date", "day", "today", "year", "month")):
+            return "get_date", {}
+        return "get_time", {}
+
+    if tool in ("get_weather", "weather"):
+        m_in = re.search(r"\b(?:in|at)\s+([a-zA-Z\s.-]+?)(?:\s*\?|\s*$|\s+please)", q, re.I)
+        if m_in:
+            city = m_in.group(1).strip()
+        else:
+            m_city = re.search(r"\b(?:for|of)\s+([a-zA-Z\s.-]+?)(?:\s*\?|\s*$)", q, re.I)
+            city = m_city.group(1).strip() if m_city else ""
+            if city.lower().startswith("the weather"):
+                m_sub = re.search(r"\b(?:in|at)\s+([a-zA-Z\s.-]+)", city, re.I)
+                city = m_sub.group(1).strip() if m_sub else ""
         return "get_weather", {"city": city}
 
     if tool == "system_control":
@@ -280,9 +345,20 @@ def extract_parameters_and_tool(tool: str, query: str, conversation_history: lis
             return "pause_media", {}
         if "resume" in q_low:
             return "play_media", {}
-        if "read screen" in q_low or "what is on my screen" in q_low:
-            return "read_screen", {}
-        return "system_status", {}
+        if "read screen" in q_low or "what is on my screen" in q_low or "look at" in q_low:
+            return "screen_vision", {"question": q}
+        if any(w in q_low for w in ("status", "battery", "cpu", "ram", "hardware", "specs", "metrics", "pc status", "system status")):
+            return "system_status", {}
+        return "chat", {}
+
+    if tool in ("screen_vision", "read_screen"):
+        return "screen_vision", {"question": q}
+
+    if tool == "memory_recall":
+        return "memory_recall", {"query": q}
+
+    if tool == "document_qa":
+        return "document_qa", {"query": q}
 
     if tool == "workspace":
         if _RE_EMAIL.search(q_low):
@@ -298,7 +374,7 @@ def extract_parameters_and_tool(tool: str, query: str, conversation_history: lis
         return "find_document", {"query": q}
 
     if tool == "web_search":
-        clean = re.sub(r"^(?:(?:can|could|would)\s+(?:you|u)\s+)?(?:please\s+)?(?:search\s+(?:for|google\s+for|the\s+web\s+for)?|google|look\s+up)\s+", "", q, flags=re.I)
+        clean = re.sub(r"^(?:(?:can|could|would)\s+(?:you|u)\s+)?(?:please\s+)?(?:search(?:\s+(?:the\s+web|online|google))?(?:\s+for)?|google(?:\s+for)?|look\s+up)\s+", "", q, flags=re.I)
         clean = re.sub(r"\s+(?:on\s+google|online|please)$", "", clean, flags=re.I).strip()
         return "web_search", {"query": clean or q}
 
@@ -308,7 +384,8 @@ def extract_parameters_and_tool(tool: str, query: str, conversation_history: lis
 def route_intent_via_laya(user_query: str, conversation_history: list | None = None) -> dict[str, Any] | None:
     """
     Primary Router: High-speed System 1 neural decision routing via Laya.
-    Evaluates intent in a single forward pass with zero latency conflict.
+    Evaluates intent in a single forward pass with zero hardcoded regex or keyword rules.
+    Detects ambiguity and asks the user to clarify or correct when unsure.
     Delegates conversational reasoning cleanly to MiniCPM 5 2B.
     """
     q = (user_query or "").strip()
@@ -323,33 +400,65 @@ def route_intent_via_laya(user_query: str, conversation_history: list | None = N
         t0 = time.perf_counter()
         state = {"request": q}
 
-        # Single parallel forward pass for both intent gating and tool prediction
+        # Single forward pass for neural decision
         res = agent.predict(state, LAYA_QUESTIONS)
         elapsed_ms = (time.perf_counter() - t0) * 1000
 
-        intent_info = res.get("answers", {}).get("intent", {})
         tool_info = res.get("answers", {}).get("tool", {})
-
-        intent = intent_info.get("choice", "chat")
-        intent_conf = float(intent_info.get("confidence", 0.0))
         raw_tool = tool_info.get("choice", "chat")
-        tool_conf = float(tool_info.get("confidence", 0.0))
+        tool_conf = float(tool_info.get("confidence", tool_info.get("answer_confidence", 0.0)))
+        tool_probs = tool_info.get("probabilities", {})
 
-        # Escalation to MiniCPM 5 2B when:
-        # 1. Neural tool choice is 'chat'
-        # 2. Classified as conversational chat AND tool is not a high-confidence lookup or media action
+        # Direct delegation to MiniCPM 5 2B when neural choice is chat
         if raw_tool == "chat":
             logger.info("[Laya Router] Evaluated '%s' -> chat in %.1f ms", q[:35], elapsed_ms)
-            return {"tool": "chat", "params": {}, "speak": "", "source": "laya", "confidence": intent_conf}
+            return {"tool": "chat", "params": {}, "speak": "", "source": "laya", "confidence": tool_conf}
 
-        if intent == "chat" and raw_tool not in ("get_weather", "play_youtube", "media_control", "set_volume"):
-            logger.info("[Laya Router] Delegated '%s' (intent=chat) -> MiniCPM 5 2B in %.1f ms", q[:35], elapsed_ms)
-            return {"tool": "chat", "params": {}, "speak": "", "source": "laya", "confidence": intent_conf}
+        # Neural Ambiguity / Confusion Check:
+        # Clarify ONLY when two concrete non-chat tools are deadlocked with low confidence.
+        # Never interrupt against the conversational 'chat' fallback or when one tool clearly leads.
+        if tool_probs:
+            sorted_candidates = sorted(tool_probs.items(), key=lambda x: x[1], reverse=True)
+            top_tool, top_prob = sorted_candidates[0]
+            second_tool, second_prob = sorted_candidates[1] if len(sorted_candidates) > 1 else ("chat", 0.0)
+
+            resolved_top, _ = extract_parameters_and_tool(top_tool, q, conversation_history=conversation_history)
+            resolved_second, _ = extract_parameters_and_tool(second_tool, q, conversation_history=conversation_history)
+
+            is_ambiguous = (
+                top_tool != "chat"
+                and second_tool != "chat"
+                and top_tool != second_tool
+                and resolved_top != resolved_second
+                and resolved_top != "chat"
+                and resolved_second != "chat"
+                and top_prob < 0.55
+                and abs(top_prob - second_prob) < 0.08
+            )
+            if is_ambiguous:
+
+                logger.info(
+                    "[Laya Router Clarification] Ambiguity for '%s': top=%s (%.3f) vs 2nd=%s (%.3f)",
+                    q[:35], top_tool, top_prob, second_tool, second_prob,
+                )
+                clarification_text = format_clarification_prompt(top_tool, second_tool, q)
+                return {
+                    "tool": "clarification",
+                    "params": {
+                        "candidate_tools": [top_tool, second_tool],
+                        "probabilities": {top_tool: round(top_prob, 3), second_tool: round(second_prob, 3)},
+                        "query": q,
+                    },
+                    "speak": clarification_text,
+                    "source": "laya_disambiguation",
+                    "confidence": top_prob,
+                }
+
 
         final_tool, params = extract_parameters_and_tool(raw_tool, q, conversation_history=conversation_history)
         if final_tool == "chat":
             logger.info("[Laya Router] Extracted parameters evaluated '%s' -> chat in %.1f ms", q[:35], elapsed_ms)
-            return {"tool": "chat", "params": {}, "speak": "", "source": "laya", "confidence": intent_conf}
+            return {"tool": "chat", "params": {}, "speak": "", "source": "laya", "confidence": tool_conf}
 
         logger.info(
             "[Laya Router] Evaluated '%s' -> tool='%s' (conf=%.3f) in %.1f ms",
@@ -367,4 +476,5 @@ def route_intent_via_laya(user_query: str, conversation_history: list | None = N
     except Exception as e:
         logger.debug("[Laya Router Error]: %s", e)
         return {"tool": "chat", "params": {}, "speak": "", "source": "laya_error"}
+
 

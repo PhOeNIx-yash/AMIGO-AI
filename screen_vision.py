@@ -182,50 +182,60 @@ def get_screen_vision_context() -> str:
     return ""
 
 
-def answer_screen_question(question: str) -> str:
+def inspect_screen(question: str = "") -> dict:
     """
-    High-level visual Q&A: captures screen and returns a concise spoken explanation
-    tailored to the user's specific question.
-    Uses native multimodal vision when available, gracefully falling back to OCR text extraction.
+    Captures the desktop screen, extracts visible text and active window info,
+    and returns rich multimodal vision analysis and metadata.
     """
-    window_title = get_active_window_title()
-    screenshot = capture_screen_image()
+    window_title = get_active_window_title() or "Active Window"
+    save_path = "amigo_screenshot.png"
+    screenshot = capture_screen_image(save_path=save_path)
 
-    # Extract visible screen text via native Windows OCR (winocr / pytesseract)
     screen_text = ""
     if screenshot is not None:
         screen_text = read_text_from_image(screenshot)
         if screen_text:
-            screen_text = re.sub(r"\n{3,}", "\n\n", screen_text)[:2500]
-
-    if not screen_text and not window_title:
-        return "I captured the screen, but could not detect readable content in the current window."
+            screen_text = re.sub(r"\n{3,}", "\n\n", screen_text)[:3000]
 
     context_parts = []
     if window_title:
-        context_parts.append(f"Active Window: {window_title}")
+        context_parts.append(f"Active Foreground Window: {window_title}")
     if screen_text:
-        context_parts.append(f"Visible Screen Content:\n{screen_text}")
+        context_parts.append(f"Visible Screen Text & Code:\n{screen_text}")
+    else:
+        context_parts.append("Visual State: The screen is visible but has minimal readable text.")
 
     screen_context = "\n\n".join(context_parts)
 
-    system_prompt = (
-        "You are Amigo, a helpful voice assistant with screen vision capabilities. "
-        "You are given text extracted from the user's active computer screen. "
-        "Do not use markdown, bullet points, or code formatting. Speak in natural plain English."
-    )
-
+    q = (question or "What is currently on my screen?").strip()
     user_prompt = (
-        f"[Screen Context]:\n{screen_context}\n\n"
-        f"User Question: {question if question else 'What is currently on my screen?'}"
+        f"The user is asking about what is on their screen:\n\"{q}\"\n\n"
+        f"Explain what is visible on the screen or in the active window, diagnose any error messages or code, "
+        f"and answer directly in clear, natural English without robotic boilerplate."
     )
 
+    reply = ""
     try:
-        from local_llm import query_local_llm, sanitize_for_tts
-        reply = query_local_llm(user_prompt, system_prompt=system_prompt, max_tokens=300)
-        return sanitize_for_tts(reply) if reply else "I analyzed the screen, but have nothing further to report."
+        from ai import get_ai_response
+        reply = get_ai_response(user_prompt, doc_context=screen_context)
     except Exception as e:
-        return f"I had trouble analyzing the screen content: {e}"
+        reply = f"I captured your screen ({window_title}), but had trouble analyzing it: {e}"
+
+    return {
+        "reply": reply or "I inspected your screen.",
+        "window_title": window_title,
+        "screen_text": screen_text,
+        "screenshot_path": save_path,
+    }
+
+
+def answer_screen_question(question: str) -> str:
+    """
+    High-level visual Q&A: captures screen and returns a concise spoken explanation
+    tailored to the user's specific question.
+    """
+    res = inspect_screen(question)
+    return res.get("reply", "I analyzed your screen.")
 
 
 def analyze_image(image_input, question: str = "Describe what you see in this image in detail.") -> str:

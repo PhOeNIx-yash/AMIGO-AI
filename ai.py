@@ -207,9 +207,12 @@ def _build_ai_messages(
         for c in recent:
             u = (c.get("user", "") or "").strip()
             a = (c.get("assistant", "") or "").strip()
-            if u and a:
+            tool = c.get("tool", "")
+            # Only include genuine conversational dialogue, not media playback or tool confirmations
+            if u and a and tool not in ("play_youtube", "error") and not a.startswith("Playing '"):
                 messages.append({"role": "user", "content": u[:1000]})
                 messages.append({"role": "assistant", "content": a[:1500]})
+
 
     # Build user content with any injected context
     user_parts: list[str] = []

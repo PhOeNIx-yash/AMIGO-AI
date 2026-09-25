@@ -16,11 +16,16 @@ from laya_router import route_intent_via_laya, extract_parameters_and_tool
 
 logger = logging.getLogger("amigo.task_agent")
 
-# Multi-step conjunction splitters
+# Multi-step conjunction splitters based on natural language clause boundaries
 _RE_STEP_SPLIT = re.compile(
-    r"\s*(?:;\s*|\band then\b|\bthen\b|\bafter that\b|\band\b(?=\s*(?:open|launch|start|close|type|write|search|press|hit|click|scroll|save|switch|find|take|lock|mute|set|play|read|check))\s*)\s*",
+    r"\s*(?:;\s*|\band\s+then\b|\bthen\b|\bafter\s+that\b|\band\s+also\b|\bbut\s+also\b|\bas\s+well\s+as\b|\band\b)\s*",
     re.IGNORECASE,
 )
+_RE_STEP_CLEANUP = re.compile(
+    r"^(?:(?:can|could|would)\s+(?:you|u)\s+)?(?:please\s+)?(?:also\s+|and\s+)?",
+    re.IGNORECASE,
+)
+
 
 
 
@@ -151,12 +156,16 @@ def decompose_task(user_prompt: str) -> List[str]:
     if not clean:
         return []
 
-    # Check for conjunction-based compound steps
-    steps = [s.strip().rstrip(".!?,") for s in _RE_STEP_SPLIT.split(clean) if s and s.strip()]
-    if len(steps) > 1:
-        return steps
+    # Check for natural conjunction boundaries
+    raw_steps = [s.strip().rstrip(".!?,") for s in _RE_STEP_SPLIT.split(clean) if s and s.strip()]
+    if len(raw_steps) > 1:
+        steps = [_RE_STEP_CLEANUP.sub("", s).strip() for s in raw_steps]
+        # A valid command step contains at least 2 words (a verb/predicate and object)
+        if all(len(s.split()) >= 2 for s in steps):
+            return steps
 
     return [clean]
+
 
 
 def resolve_step_intent(step: str, context: Dict[str, Any]) -> Dict[str, Any]:
