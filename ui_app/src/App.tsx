@@ -317,6 +317,9 @@ export default function App() {
   const [loading, setLoading] = useState<boolean>(false);
   const loadingRef = useRef<boolean>(false);
   const [hudDismissed, setHudDismissed] = useState<boolean>(false);
+  const [hudActive, setHudActive] = useState<boolean>(false);
+  const [liveIntent, setLiveIntent] = useState<string | null>(null);
+  const [liveParams, setLiveParams] = useState<Record<string, any> | null>(null);
 
   // Real-time bidirectional SSE sync with Amigo Python voice loop & server events
   useEffect(() => {
@@ -349,6 +352,10 @@ export default function App() {
                 activePromptRef.current = data.text;
                 setDisplayText(data.text);
                 setState("processing");
+                setHudDismissed(false);
+                setLiveIntent(null);
+                setLiveParams(null);
+                setHudActive(isActionIntent(data.text));
               } else if (data.sender === "assistant" || data.sender === "amigo") {
                 setDisplayText(data.text);
                 setState("completed");
@@ -378,6 +385,18 @@ export default function App() {
                 fetchBackendHistory();
               }
             } else if (data.type === "intent_detected") {
+              const detected = data.intent || data.tool;
+              if (detected) {
+                const cleanDetected = String(detected).toLowerCase();
+                setLiveIntent(cleanDetected);
+                if (isActionIntent("", cleanDetected)) {
+                  setHudActive(true);
+                  setHudDismissed(false);
+                }
+              }
+              if (data.params) {
+                setLiveParams(data.params);
+              }
               setState("working");
             } else if (data.type === "history_cleared") {
               setHistory([]);
@@ -414,14 +433,12 @@ export default function App() {
 
   // Update greeting text only if currently in idle state and no active response displayed
   useEffect(() => {
-    if (state === "idle") {
-      if (autoCycleGreetings) {
-        const activeText = GREETING_PRESETS[greetingIndex]?.text || GREETING_PRESETS[0].text;
-        setGreetingText(activeText);
-        setDisplayText((current) => (current === greetingText || GREETING_PRESETS.some((g) => g.text === current)) ? activeText : current);
-      }
+    if (state === "idle" && autoCycleGreetings) {
+      const activeText = GREETING_PRESETS[greetingIndex]?.text || GREETING_PRESETS[0].text;
+      setGreetingText(activeText);
+      setDisplayText((current) => (GREETING_PRESETS.some((g) => g.text === current) ? activeText : current));
     }
-  }, [greetingIndex, autoCycleGreetings, state, greetingText]);
+  }, [greetingIndex, autoCycleGreetings, state]);
 
   // Quick cycle to next greeting phrase on click
   const handleShuffleGreeting = () => {
@@ -455,7 +472,10 @@ export default function App() {
     setSelectedContact(undefined);
     setIsListening(false);
     setLoading(false);
-    setHudDismissed(false);
+    setHudDismissed(true);
+    setHudActive(false);
+    setLiveIntent(null);
+    setLiveParams(null);
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
     }
@@ -469,6 +489,9 @@ export default function App() {
     if (!effectivePrompt) return;
 
     setHudDismissed(false);
+    setLiveIntent(null);
+    setLiveParams(null);
+    setHudActive(isActionIntent(effectivePrompt));
     loadingRef.current = true;
     setActivePrompt(effectivePrompt);
     activePromptRef.current = effectivePrompt;
@@ -481,6 +504,13 @@ export default function App() {
       setAssistantData(data);
       setLoading(false);
       loadingRef.current = false;
+
+      const finalIntent = data.intent || liveIntent;
+      if (finalIntent && isActionIntent(effectivePrompt, finalIntent)) {
+        setHudActive(true);
+      } else if (finalIntent && !isActionIntent(effectivePrompt, finalIntent)) {
+        setHudActive(false);
+      }
 
       // Update center stage with the full real assistant response text
       const resultText = data.speechReply || data.executionSummary?.details || data.displayTitle || effectivePrompt;
@@ -938,22 +968,25 @@ export default function App() {
                         />
                       )}
 
-                      {/* 3. Single Unified Gemini Action Pill (From Routing to Executed in ONE Continuous Pill) */}
+                      {/* 3. Single Unified Action Pill (Smooth Continuous Flow from Intent Routing to Executed) */}
                       {state !== "action_card" &&
                         state !== "contact_picker" &&
-                        (state === "processing" || state === "working" || state === "completed") &&
-                        !hudDismissed &&
-                        isActionIntent(activePrompt, assistantData?.intent) && (
+                        hudActive &&
+                        !hudDismissed && (
                         <IntentBridgeHUD
                           key="intent-bridge-hud"
                           prompt={activePrompt}
                           isDark={isDark}
                           colorTheme={colorTheme}
-                          intent={assistantData?.intent}
+                          intent={liveIntent || assistantData?.intent}
+                          params={liveParams || assistantData?.params || assistantData?.metadata?.params}
                           historyCount={history.length}
-                          isCompleted={state === "completed"}
+                          isCompleted={state === "completed" || (!loading && Boolean(assistantData))}
                           status={assistantData?.executionSummary?.status}
-                          onDismiss={() => setHudDismissed(true)}
+                          onDismiss={() => {
+                            setHudDismissed(true);
+                            setHudActive(false);
+                          }}
                           statusText={
                             state === "completed"
                               ? (assistantData?.executionSummary?.headline || "Completed")

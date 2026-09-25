@@ -86,9 +86,11 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0, transition: { duration: 0.15 } }}
-        className={`flex min-w-0 w-full max-w-full flex-wrap items-center justify-center gap-x-2 gap-y-1.5 text-center select-none ${className}`}
+        className={`flex min-w-0 w-full max-w-full flex-wrap items-center justify-center gap-x-2 gap-y-1.5 text-center select-none ${
+          activeStyle === "calm_breathe" ? "animate-calm-float" : ""
+        } ${className}`}
         style={{
-          willChange: "transform, opacity",
+          transform: "translateZ(0)",
           overflowWrap: "break-word",
           wordBreak: "break-word",
         }}
@@ -109,21 +111,21 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
 
           switch (activeStyle) {
             case "silk_blur":
-              // 1. Silk Emerge: Apple-grade optical Gaussian blur dissipation & gentle drift
-              initialProps = { opacity: 0, y: 10, filter: "blur(4px)", scale: 0.98 };
-              animateProps = { opacity: 1, y: 0, filter: "blur(0px)", scale: 1 };
-              transitionProps = { duration: 0.42, delay, ease: [0.16, 1, 0.3, 1] };
+              // 1. Silk Emerge: Optical transform dissipation & gentle drift (zero blur overhead)
+              initialProps = { opacity: 0, y: 8, scale: 0.98 };
+              animateProps = { opacity: 1, y: 0, scale: 1 };
+              transitionProps = { duration: 0.38, delay, ease: [0.16, 1, 0.3, 1] };
               break;
 
             case "fluid_glide":
               // 2. Liquid Glide: Organic critically-damped spring upward glide with zero bounce
-              initialProps = { opacity: 0, y: 16 };
+              initialProps = { opacity: 0, y: 14 };
               animateProps = { opacity: 1, y: 0 };
               transitionProps = {
                 type: "spring",
-                stiffness: 175,
-                damping: 24,
-                mass: 0.85,
+                stiffness: 180,
+                damping: 26,
+                mass: 0.8,
                 delay,
               };
               break;
@@ -132,32 +134,20 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
               // 3. Specular Sheen: Refined metallic light sweep across typography
               initialProps = { opacity: 0, y: 8 };
               animateProps = { opacity: 1, y: 0 };
-              transitionProps = { duration: 0.45, delay, ease: [0.22, 1, 0.36, 1] };
+              transitionProps = { duration: 0.42, delay, ease: [0.22, 1, 0.36, 1] };
               customWordStyle = shimmerStyle;
               break;
 
             case "calm_breathe":
-              // 4. Serene Float: Extremely soft, peaceful anti-gravity hovering
+              // 4. Serene Float: Smooth stagger entrance (continuous float handled on compositor thread)
               initialProps = { opacity: 0, y: 8 };
-              animateProps = {
-                opacity: 1,
-                y: [0, -3.5, 0],
-              };
-              transitionProps = {
-                opacity: { duration: 0.4, delay },
-                y: {
-                  duration: 4.8,
-                  repeat: Infinity,
-                  repeatType: "mirror",
-                  ease: "easeInOut",
-                  delay: delay + wordIdx * 0.07,
-                },
-              };
+              animateProps = { opacity: 1, y: 0 };
+              transitionProps = { duration: 0.45, delay, ease: [0.16, 1, 0.3, 1] };
               break;
 
             default:
-              initialProps = { opacity: 0, y: 8, filter: "blur(3px)" };
-              animateProps = { opacity: 1, y: 0, filter: "blur(0px)" };
+              initialProps = { opacity: 0, y: 8 };
+              animateProps = { opacity: 1, y: 0 };
               transitionProps = { duration: 0.4, delay, ease: [0.16, 1, 0.3, 1] };
               break;
           }

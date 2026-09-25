@@ -38,6 +38,7 @@ export interface AssistantResponse {
   speechReply: string;
   displayTitle: string;
   intent: string;
+  params?: Record<string, any>;
   requiresDisambiguation: boolean;
   disambiguationQuestion?: string;
   actionCards: ActionCardItem[];

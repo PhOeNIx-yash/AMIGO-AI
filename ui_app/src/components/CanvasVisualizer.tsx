@@ -215,18 +215,18 @@ const HighResolutionOrb: React.FC<HighResolutionOrbProps> = ({
       const effSpeed = state === "listening" ? 1.62 : baseSpeed;
       simTimeRef.current += dt * effSpeed * speed;
 
-      // Direct zero-overhead hardware-accelerated halo & core breathing (no React state updates)
+      // Direct zero-overhead hardware-accelerated halo & core breathing (direct GPU transforms, zero CSSOM recalculation)
       if (haloRef.current) {
         const haloScale = 1.0 + smoothAudio * 0.22;
         const haloOpacity = isDark
           ? 0.30 + smoothAudio * 0.25
           : 0.22 + smoothAudio * 0.18;
-        haloRef.current.style.setProperty("--amigo-orb-scale", haloScale.toFixed(3));
+        haloRef.current.style.transform = `scale(${haloScale.toFixed(3)}) translateZ(0)`;
         haloRef.current.style.opacity = haloOpacity.toFixed(3);
       }
       if (coreRef.current) {
         const coreScale = 1.0 + smoothAudio * 0.06;
-        coreRef.current.style.setProperty("--amigo-orb-core-scale", coreScale.toFixed(3));
+        coreRef.current.style.transform = `scale(${coreScale.toFixed(3)}) translateZ(0)`;
       }
 
       // Render frame
@@ -286,7 +286,13 @@ export const CanvasVisualizer: React.FC<CanvasVisualizerProps> = React.memo(({
       }`}
       aria-hidden="true"
     >
-      <div ref={haloRef} className="amigo-orb-halo" style={{ background: theme.glow }} />
+      <div
+        ref={haloRef}
+        className="amigo-orb-halo"
+        style={{
+          background: `radial-gradient(circle, ${theme.glow} 0%, rgba(0,0,0,0) 70%)`,
+        }}
+      />
       <div ref={coreRef} className="amigo-orb-core">
         <HighResolutionOrb
           state={state}

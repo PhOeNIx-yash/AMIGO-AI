@@ -348,6 +348,7 @@ export function normalizeBackendResponse(raw: any, originalPrompt: string): Assi
       speechReply: raw.speechReply || raw.text || raw.message || raw.reply || "",
       displayTitle: raw.displayTitle || originalPrompt,
       intent: raw.intent || "general_task",
+      params: raw.params || raw.metadata?.params,
       requiresDisambiguation: Boolean(raw.requiresDisambiguation),
       disambiguationQuestion: raw.disambiguationQuestion,
       actionCards,

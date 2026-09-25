@@ -533,15 +533,21 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
           exit={{ opacity: 0, scale: 0.96, y: 16 }}
           transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
           className={`absolute inset-0 z-50 flex flex-col backdrop-blur-2xl shadow-2xl overflow-hidden ${
-            isDark ? "bg-[#0b0a17]/98 text-white" : "bg-[#f8f9fc]/98 text-slate-900"
+            isDark ? "text-white" : "text-slate-900"
           }`}
-          style={{ transform: "translateZ(0)" }}
+          style={{
+            transform: "translateZ(0)",
+            background: isDark
+              ? `radial-gradient(ellipse 120% 70% at 50% 0%, ${theme.primary}12 0%, rgba(11, 10, 23, 0.98) 70%)`
+              : `radial-gradient(ellipse 120% 70% at 50% 0%, ${theme.primary}08 0%, rgba(248, 249, 252, 0.98) 70%)`,
+          }}
         >
           {/* Header */}
           <div
             className={`flex items-center justify-between px-4 sm:px-6 py-3 border-b ${
-              isDark ? "border-white/10 bg-black/40" : "border-black/10 bg-white/90"
+              isDark ? "bg-black/40" : "bg-white/90"
             }`}
+            style={{ borderColor: isDark ? `${theme.primary}18` : `${theme.primary}12` }}
           >
             <div className="flex items-center space-x-3">
               <button
@@ -591,8 +597,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
             {/* Simple Tabs Sidebar */}
             <div
               className={`w-full md:w-52 flex-shrink-0 p-2 sm:p-3 border-b md:border-b-0 md:border-r flex md:flex-col space-x-1 md:space-x-0 md:space-y-1 ${
-                isDark ? "border-white/10 bg-black/20" : "border-black/10 bg-slate-50"
+                isDark ? "bg-black/20" : "bg-slate-50"
               }`}
+              style={{ borderColor: isDark ? `${theme.primary}18` : `${theme.primary}12` }}
             >
               {tabs.map((tab) => {
                 const Icon = tab.icon;
@@ -603,14 +610,20 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     onClick={() => setActiveTab(tab.id)}
                     className={`flex items-center space-x-2 px-3 py-2.5 rounded-xl text-xs font-medium transition-all ${
                       isActive
-                        ? isDark
-                          ? "bg-white/10 text-white font-semibold"
-                          : "bg-black/10 text-slate-900 font-semibold"
+                        ? "font-semibold"
                         : isDark
                         ? "text-slate-400 hover:text-white hover:bg-white/5"
                         : "text-slate-600 hover:text-slate-900 hover:bg-black/5"
                     }`}
-                    style={isActive ? { borderLeft: `3px solid ${theme.primary}` } : {}}
+                    style={
+                      isActive
+                        ? {
+                            borderLeft: `3px solid ${theme.primary}`,
+                            backgroundColor: isDark ? `${theme.primary}18` : `${theme.primary}10`,
+                            color: isDark ? (theme.accent || theme.primary) : theme.primary,
+                          }
+                        : {}
+                    }
                   >
                     <Icon className="w-4 h-4 flex-shrink-0" />
                     <span>{tab.label}</span>
@@ -636,8 +649,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 {/* Dark / Light Toggle */}
                 <div
                   className={`p-4 rounded-2xl border ${
-                    isDark ? "bg-white/[0.03] border-white/10" : "bg-white border-black/10"
+                    isDark ? "bg-white/[0.03]" : "bg-white"
                   }`}
+                  style={{ borderColor: isDark ? `${theme.primary}18` : `${theme.primary}12` }}
                 >
                   <div className="text-xs font-semibold uppercase tracking-wider opacity-60 mb-3">Theme Mode</div>
                   <div className="grid grid-cols-2 gap-3">
@@ -648,9 +662,17 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                       }}
                       className={`p-3 rounded-xl border text-left flex items-center space-x-3 transition-all ${
                         !isDark
-                          ? "border-emerald-500 ring-2 ring-emerald-500/30 bg-white text-slate-900 shadow-sm"
+                          ? "bg-white text-slate-900 shadow-sm"
                           : "border-white/10 bg-white/5 opacity-70 hover:opacity-100 text-white"
                       }`}
+                      style={
+                        !isDark
+                          ? {
+                              borderColor: `${theme.primary}80`,
+                              boxShadow: `0 0 0 2px ${theme.primary}30`,
+                            }
+                          : {}
+                      }
                     >
                       <Sun className="w-5 h-5 text-amber-500 flex-shrink-0" />
                       <div>
@@ -666,11 +688,19 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                       }}
                       className={`p-3 rounded-xl border text-left flex items-center space-x-3 transition-all ${
                         isDark
-                          ? "border-emerald-500 ring-2 ring-emerald-500/30 bg-black/60 text-white shadow-sm"
+                          ? "bg-black/60 text-white shadow-sm"
                           : "border-black/10 bg-black/5 opacity-70 hover:opacity-100 text-slate-900"
                       }`}
+                      style={
+                        isDark
+                          ? {
+                              borderColor: `${theme.primary}80`,
+                              boxShadow: `0 0 0 2px ${theme.primary}30`,
+                            }
+                          : {}
+                      }
                     >
-                      <Moon className="w-5 h-5 text-indigo-400 flex-shrink-0" />
+                      <Moon className="w-5 h-5 flex-shrink-0" style={{ color: theme.accent || theme.primary }} />
                       <div>
                         <div className="text-xs font-semibold">Dark</div>
                         <div className="text-[10px] opacity-60">Obsidian fluent</div>
@@ -682,8 +712,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 {/* Color Palette */}
                 <div
                   className={`p-4 rounded-2xl border ${
-                    isDark ? "bg-white/[0.03] border-white/10" : "bg-white border-black/10"
+                    isDark ? "bg-white/[0.03]" : "bg-white"
                   }`}
+                  style={{ borderColor: isDark ? `${theme.primary}18` : `${theme.primary}12` }}
                 >
                   <div className="text-xs font-semibold uppercase tracking-wider opacity-60 mb-3">Accent Color</div>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
@@ -696,11 +727,20 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                           onClick={() => onChangeColorTheme(key)}
                           className={`p-2.5 rounded-xl border flex items-center space-x-2.5 transition-all text-left ${
                             isSelected
-                              ? "border-emerald-500 ring-1 ring-emerald-500/40 bg-emerald-500/5 shadow-sm"
+                              ? "shadow-sm font-medium"
                               : isDark
                               ? "border-white/10 bg-white/[0.02] hover:bg-white/5"
                               : "border-black/10 bg-white hover:bg-slate-50"
                           }`}
+                          style={
+                            isSelected
+                              ? {
+                                  borderColor: ct.primary,
+                                  boxShadow: `0 0 0 1.5px ${ct.primary}40`,
+                                  backgroundColor: `${ct.primary}12`,
+                                }
+                              : {}
+                          }
                         >
                           <span
                             className="w-3.5 h-3.5 rounded-full flex-shrink-0 shadow-sm"
@@ -716,8 +756,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 {/* Thinking Orb Visual States */}
                 <div
                   className={`p-4 rounded-2xl border ${
-                    isDark ? "bg-white/[0.03] border-white/10" : "bg-white border-black/10"
+                    isDark ? "bg-white/[0.03]" : "bg-white"
                   }`}
+                  style={{ borderColor: isDark ? `${theme.primary}18` : `${theme.primary}12` }}
                 >
                   <div className="flex items-start gap-3">
                     <div
@@ -750,8 +791,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 {/* Greeting Headline & Prompt Options */}
                 <div
                   className={`p-4 rounded-2xl border ${
-                    isDark ? "bg-white/[0.03] border-white/10" : "bg-white border-black/10"
+                    isDark ? "bg-white/[0.03]" : "bg-white"
                   } space-y-3`}
+                  style={{ borderColor: isDark ? `${theme.primary}18` : `${theme.primary}12` }}
                 >
                   <div className="flex items-center justify-between">
                     <div>
@@ -763,11 +805,20 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                       onClick={onToggleAutoCycleGreetings}
                       className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-all flex items-center space-x-1.5 ${
                         autoCycleGreetings
-                          ? "border-emerald-500 bg-emerald-500/10 text-emerald-400"
+                          ? ""
                           : isDark
                           ? "border-white/10 bg-white/5 text-slate-400 hover:text-slate-200"
                           : "border-black/10 bg-black/5 text-slate-600 hover:text-slate-900"
                       }`}
+                      style={
+                        autoCycleGreetings
+                          ? {
+                              borderColor: `${theme.primary}80`,
+                              backgroundColor: `${theme.primary}15`,
+                              color: theme.accent || theme.primary,
+                            }
+                          : {}
+                      }
                       title="Automatically cycle through greeting phrases when idle"
                     >
                       <RotateCcw className={`w-3 h-3 ${autoCycleGreetings ? "animate-spin" : ""}`} />
@@ -779,8 +830,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                   {autoCycleGreetings && onChangeAutoCycleInterval && (
                     <div
                       className={`p-3 rounded-xl border space-y-2.5 ${
-                        isDark ? "bg-white/[0.02] border-white/10" : "bg-black/[0.02] border-black/10"
+                        isDark ? "bg-white/[0.02]" : "bg-black/[0.02]"
                       }`}
+                      style={{ borderColor: isDark ? `${theme.primary}18` : `${theme.primary}12` }}
                     >
                       <div className="flex items-center justify-between text-xs">
                         <span className="font-medium opacity-80 flex items-center space-x-1.5">
@@ -842,9 +894,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                       placeholder="Enter custom greeting phrase..."
                       className={`w-full py-2 px-3 rounded-xl border text-xs outline-none transition-all ${
                         isDark
-                          ? "bg-black/40 border-white/10 text-white focus:border-indigo-500"
-                          : "bg-slate-50 border-black/10 text-slate-900 focus:border-indigo-500"
+                          ? "bg-black/40 border-white/10 text-white"
+                          : "bg-slate-50 border-black/10 text-slate-900"
                       }`}
+                      style={{ borderColor: isDark ? `${theme.primary}22` : `${theme.primary}18` }}
                     />
                   </div>
 
@@ -860,14 +913,28 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                             onClick={() => onChangeGreetingText(preset.text)}
                             className={`px-2.5 py-1 rounded-lg text-xs transition-all text-left flex items-center space-x-1.5 border ${
                               isSelected
-                                ? "border-emerald-500 bg-emerald-500/10 text-emerald-400 font-medium"
+                                ? "font-medium"
                                 : isDark
                                 ? "border-white/[0.08] bg-white/[0.02] text-slate-300 hover:bg-white/5 hover:text-white"
                                 : "border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
                             }`}
+                            style={
+                              isSelected
+                                ? {
+                                    borderColor: `${theme.primary}80`,
+                                    backgroundColor: `${theme.primary}15`,
+                                    color: isDark ? (theme.accent || theme.primary) : theme.primary,
+                                  }
+                                : {}
+                            }
                           >
                             <span className="truncate max-w-[200px]">{preset.text}</span>
-                            {isSelected && <Check className="w-3 h-3 text-emerald-400 flex-shrink-0" />}
+                            {isSelected && (
+                              <Check
+                                className="w-3 h-3 flex-shrink-0"
+                                style={{ color: theme.accent || theme.primary }}
+                              />
+                            )}
                           </button>
                         );
                       })}
@@ -878,22 +945,33 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 {/* Text Animation Style (AmazingUI) */}
                 <div
                   className={`p-4 rounded-2xl border ${
-                    isDark ? "bg-white/[0.03] border-white/10" : "bg-white border-black/10"
+                    isDark ? "bg-white/[0.03]" : "bg-white"
                   }`}
+                  style={{ borderColor: isDark ? `${theme.primary}18` : `${theme.primary}12` }}
                 >
                   <div className="flex items-center justify-between mb-3">
                     <div>
                       <div className="text-xs font-semibold uppercase tracking-wider opacity-60">Typography & Animation Style</div>
                       <div className="text-[11px] opacity-60">Curated, fluid kinetic animations for headings and voice responses</div>
                     </div>
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 font-medium border border-emerald-500/20">4 Curated Styles</span>
+                    <span
+                      className="text-[10px] px-2 py-0.5 rounded-full font-medium border"
+                      style={{
+                        backgroundColor: `${theme.primary}15`,
+                        color: theme.accent || theme.primary,
+                        borderColor: `${theme.primary}30`,
+                      }}
+                    >
+                      4 Curated Styles
+                    </span>
                   </div>
 
                   {/* Live Interactive Kinetic Preview Box */}
                   <div
                     className={`mb-3.5 p-4 rounded-xl border flex flex-col items-center justify-center min-h-[76px] transition-all overflow-hidden ${
-                      isDark ? "bg-black/40 border-white/10" : "bg-slate-50 border-black/10"
+                      isDark ? "bg-black/40" : "bg-slate-50"
                     }`}
+                    style={{ borderColor: isDark ? `${theme.primary}18` : `${theme.primary}12` }}
                   >
                     <div className="text-[9px] font-mono uppercase tracking-widest opacity-40 mb-1.5">
                       Live Kinetic Physics Preview
@@ -940,27 +1018,48 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                           onClick={() => onChangeTextAnimationStyle(styleItem.id as TextAnimationStyle)}
                           className={`p-3 rounded-xl border text-left transition-all relative overflow-hidden ${
                             isSelected
-                              ? "border-emerald-500 ring-1 ring-emerald-500/40 bg-emerald-500/10 shadow-sm"
+                              ? "shadow-sm"
                               : isDark
                               ? "border-white/10 bg-white/[0.02] hover:bg-white/5"
                               : "border-black/10 bg-white hover:bg-slate-50"
                           }`}
+                          style={
+                            isSelected
+                              ? {
+                                  borderColor: `${theme.primary}80`,
+                                  boxShadow: `0 0 0 1px ${theme.primary}30`,
+                                  backgroundColor: `${theme.primary}12`,
+                                }
+                              : {}
+                          }
                         >
                           <div className="flex items-center justify-between mb-1">
                             <div className="flex items-center space-x-2 text-xs font-semibold">
                               <Type className="w-3.5 h-3.5" style={{ color: theme.accent }} />
                               <span>{styleItem.label}</span>
                               <span
-                                className={`text-[9px] px-1.5 py-0.5 rounded font-mono ${
+                                className="text-[9px] px-1.5 py-0.5 rounded font-mono"
+                                style={
                                   isSelected
-                                    ? "bg-emerald-500/20 text-emerald-300"
-                                    : "bg-white/10 text-white/60"
-                                }`}
+                                    ? {
+                                        backgroundColor: `${theme.primary}25`,
+                                        color: isDark ? (theme.accent || theme.primary) : theme.primary,
+                                      }
+                                    : {
+                                        backgroundColor: isDark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.08)",
+                                        color: isDark ? "rgba(255,255,255,0.6)" : "rgba(0,0,0,0.6)",
+                                      }
+                                }
                               >
                                 {styleItem.badge}
                               </span>
                             </div>
-                            {isSelected && <Check className="w-4 h-4 text-emerald-400 flex-shrink-0" />}
+                            {isSelected && (
+                              <Check
+                                className="w-4 h-4 flex-shrink-0"
+                                style={{ color: theme.accent || theme.primary }}
+                              />
+                            )}
                           </div>
                           <div className="text-[11px] leading-snug opacity-60">{styleItem.desc}</div>
                         </button>
@@ -972,8 +1071,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 {/* Plugin Docking / Window Layout */}
                 <div
                   className={`p-4 rounded-2xl border ${
-                    isDark ? "bg-white/[0.03] border-white/10" : "bg-white border-black/10"
+                    isDark ? "bg-white/[0.03]" : "bg-white"
                   }`}
+                  style={{ borderColor: isDark ? `${theme.primary}18` : `${theme.primary}12` }}
                 >
                   <div className="text-xs font-semibold uppercase tracking-wider opacity-60 mb-3">Plugin Window Layout</div>
                   <div className="grid grid-cols-2 gap-2">
@@ -991,11 +1091,20 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                           onClick={() => onChangePluginMode(modeItem.id as PluginMode)}
                           className={`p-2.5 rounded-xl border text-left transition-all ${
                             isSelected
-                              ? "border-emerald-500 ring-1 ring-emerald-500/40 bg-emerald-500/5 shadow-sm"
+                              ? "shadow-sm"
                               : isDark
                               ? "border-white/10 bg-white/[0.02] hover:bg-white/5"
                               : "border-black/10 bg-white hover:bg-slate-50"
                           }`}
+                          style={
+                            isSelected
+                              ? {
+                                  borderColor: `${theme.primary}80`,
+                                  boxShadow: `0 0 0 1px ${theme.primary}30`,
+                                  backgroundColor: `${theme.primary}12`,
+                                }
+                              : {}
+                          }
                         >
                           <div className="flex items-center space-x-1.5 mb-0.5">
                             <Icon className="w-3.5 h-3.5" style={{ color: theme.accent }} />
@@ -1019,8 +1128,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                   return (
                     <div
                       className={`p-4 rounded-2xl border relative overflow-hidden transition-all ${
-                        isDark ? "bg-white/[0.03] border-white/10" : "bg-white border-black/10 shadow-sm"
+                        isDark ? "bg-white/[0.03]" : "bg-white shadow-sm"
                       }`}
+                      style={{ borderColor: isDark ? `${theme.primary}18` : `${theme.primary}12` }}
                     >
                       <div className="flex items-center justify-between">
                         <div className="flex items-center space-x-3.5">
@@ -1045,7 +1155,14 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                               >
                                 {activeVoice.engine} Neural
                               </span>
-                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-mono bg-emerald-500/15 text-emerald-400 border border-emerald-500/25">
+                              <span
+                                className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-mono border"
+                                style={{
+                                  backgroundColor: `${theme.primary}18`,
+                                  color: isDark ? (theme.accent || theme.primary) : theme.primary,
+                                  borderColor: `${theme.primary}30`,
+                                }}
+                              >
                                 Active Voice
                               </span>
                             </div>
@@ -1081,8 +1198,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                   <div className="text-xs font-semibold uppercase tracking-wider opacity-60">Studio Neural Voices (24kHz)</div>
                   <div
                     className={`inline-flex p-1 rounded-xl border ${
-                      isDark ? "bg-black/30 border-white/10" : "bg-slate-100 border-black/10"
+                      isDark ? "bg-black/30" : "bg-slate-100"
                     }`}
+                    style={{ borderColor: isDark ? `${theme.primary}18` : `${theme.primary}12` }}
                   >
                     {(
                       [
@@ -1121,11 +1239,20 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                         onClick={() => handleSelectVoice(voice.id)}
                         className={`group relative p-3.5 rounded-2xl border text-left transition-all cursor-pointer select-none flex flex-col justify-between ${
                           isSelected
-                            ? "border-emerald-500/80 bg-emerald-500/[0.08] ring-1 ring-emerald-500/40 shadow-sm"
+                            ? "shadow-sm"
                             : isDark
                             ? "border-white/10 bg-white/[0.02] hover:bg-white/[0.05] hover:border-white/20"
                             : "border-black/10 bg-white hover:bg-slate-50 hover:border-black/20 shadow-sm"
                         }`}
+                        style={
+                          isSelected
+                            ? {
+                                borderColor: `${theme.primary}80`,
+                                backgroundColor: `${theme.primary}10`,
+                                boxShadow: `0 0 0 1px ${theme.primary}30`,
+                              }
+                            : {}
+                        }
                       >
                         <div>
                           <div className="flex items-start justify-between mb-2.5">
@@ -1143,7 +1270,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                                 <div className="text-xs font-semibold tracking-tight flex items-center space-x-1.5">
                                   <span>{voice.name}</span>
                                   {isSelected && (
-                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 fill-emerald-400/20" />
+                                    <CheckCircle2
+                                      className="w-3.5 h-3.5"
+                                      style={{ color: theme.accent || theme.primary }}
+                                    />
                                   )}
                                 </div>
                                 <div className="text-[10px] opacity-60">
@@ -1190,8 +1320,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
 
                           <span
                             className={`text-[10px] font-medium ${
-                              isSelected ? "text-emerald-400 font-semibold" : "opacity-40"
+                              isSelected ? "font-semibold" : "opacity-40"
                             }`}
+                            style={isSelected ? { color: isDark ? (theme.accent || theme.primary) : theme.primary } : {}}
                           >
                             {isSelected ? "Selected" : "Click to select"}
                           </span>
@@ -1207,8 +1338,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
             {activeTab === "backend" && (
               <div
                 className={`p-4 rounded-2xl border ${
-                  isDark ? "bg-white/[0.03] border-white/10" : "bg-white border-black/10"
+                  isDark ? "bg-white/[0.03]" : "bg-white"
                 } space-y-4`}
+                style={{ borderColor: isDark ? `${theme.primary}18` : `${theme.primary}12` }}
               >
                 <div className="text-xs font-semibold uppercase tracking-wider opacity-60">Assistant Gateway</div>
 
@@ -1222,6 +1354,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     className={`w-full p-2.5 rounded-xl border text-xs font-mono outline-none ${
                       isDark ? "bg-black/40 border-white/10 text-white" : "bg-slate-50 border-black/10 text-slate-900"
                     }`}
+                    style={{ borderColor: isDark ? `${theme.primary}22` : `${theme.primary}18` }}
                   />
                   <p className="text-[10px] opacity-50 mt-1">Default local route handles Gemini 2.5 Flash processing</p>
                 </div>
@@ -1236,6 +1369,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     className={`w-full p-2.5 rounded-xl border text-xs font-mono outline-none ${
                       isDark ? "bg-black/40 border-white/10 text-white" : "bg-slate-50 border-black/10 text-slate-900"
                     }`}
+                    style={{ borderColor: isDark ? `${theme.primary}22` : `${theme.primary}18` }}
                   />
                 </div>
 
@@ -1249,6 +1383,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     className={`w-full p-2.5 rounded-xl border text-xs font-mono outline-none ${
                       isDark ? "bg-black/40 border-white/10 text-white" : "bg-slate-50 border-black/10 text-slate-900"
                     }`}
+                    style={{ borderColor: isDark ? `${theme.primary}22` : `${theme.primary}18` }}
                   />
                 </div>
 
@@ -1263,17 +1398,19 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                       ? "bg-white/[0.02] border-white/10"
                       : "bg-slate-50 border-black/10"
                   }`}
+                  style={thinkingEnabled ? { borderColor: `${theme.primary}50` } : {}}
                 >
                   <div className="flex items-center justify-between">
                     <div className="flex items-center space-x-2.5">
                       <div
                         className={`w-7 h-7 rounded-lg flex items-center justify-center ${
                           thinkingEnabled
-                            ? "bg-purple-500 text-white shadow-sm"
+                            ? "text-white shadow-sm"
                             : isDark
                             ? "bg-white/10 text-slate-400"
                             : "bg-slate-200 text-slate-600"
                         }`}
+                        style={thinkingEnabled ? { backgroundColor: theme.primary } : {}}
                       >
                         <Brain className="w-4 h-4" />
                       </div>
@@ -1292,8 +1429,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                       type="button"
                       onClick={() => setThinkingEnabled(!thinkingEnabled)}
                       className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${
-                        thinkingEnabled ? "bg-purple-600" : isDark ? "bg-white/20" : "bg-slate-300"
+                        isDark && !thinkingEnabled ? "bg-white/20" : !thinkingEnabled ? "bg-slate-300" : ""
                       }`}
+                      style={thinkingEnabled ? { backgroundColor: theme.primary } : {}}
                     >
                       <span
                         className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
@@ -1312,7 +1450,12 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                   <button
                     onClick={handleTestBackend}
                     disabled={testing}
-                    className="px-3.5 py-1.5 rounded-xl text-xs font-semibold border border-indigo-500/30 bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500/20 transition-colors flex items-center space-x-1.5"
+                    className="px-3.5 py-1.5 rounded-xl text-xs font-semibold border transition-colors flex items-center space-x-1.5"
+                    style={{
+                      borderColor: `${theme.primary}40`,
+                      backgroundColor: `${theme.primary}15`,
+                      color: isDark ? (theme.accent || theme.primary) : theme.primary,
+                    }}
                   >
                     <Activity className="w-3.5 h-3.5" />
                     <span>{testing ? "Testing..." : "Test Connection"}</span>
@@ -1340,8 +1483,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
             {activeTab === "data" && (
               <div
                 className={`p-4 rounded-2xl border ${
-                  isDark ? "bg-white/[0.03] border-white/10" : "bg-white border-black/10"
+                  isDark ? "bg-white/[0.03]" : "bg-white"
                 } space-y-4`}
+                style={{ borderColor: isDark ? `${theme.primary}18` : `${theme.primary}12` }}
               >
                 <div className="text-xs font-semibold uppercase tracking-wider opacity-60">Knowledge & Data Management</div>
 
@@ -1350,7 +1494,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                   <div className="flex items-center justify-between">
                     <div>
                       <div className="text-xs font-semibold flex items-center space-x-1.5">
-                        <Database className="w-3.5 h-3.5 text-indigo-400" />
+                        <Database className="w-3.5 h-3.5" style={{ color: theme.accent || theme.primary }} />
                         <span>Knowledge Base & Document Index</span>
                       </div>
                       <div className="text-[11px] opacity-60 mt-0.5">
@@ -1360,7 +1504,12 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     <button
                       onClick={handleTriggerReindex}
                       disabled={isReindexing || Boolean(ragStatus?.indexer?.is_indexing) || Boolean(indexingProgress?.is_indexing)}
-                      className="px-3 py-1.5 rounded-xl text-xs font-semibold border border-indigo-500/30 bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500/20 disabled:opacity-50 transition-colors flex items-center space-x-1.5 shadow-sm"
+                      className="px-3 py-1.5 rounded-xl text-xs font-semibold border disabled:opacity-50 transition-colors flex items-center space-x-1.5 shadow-sm"
+                      style={{
+                        borderColor: `${theme.primary}40`,
+                        backgroundColor: `${theme.primary}15`,
+                        color: isDark ? (theme.accent || theme.primary) : theme.primary,
+                      }}
                     >
                       <RefreshCw className={`w-3.5 h-3.5 ${isReindexing || Boolean(ragStatus?.indexer?.is_indexing) || Boolean(indexingProgress?.is_indexing) ? "animate-spin" : ""}`} />
                       <span>{isReindexing || Boolean(ragStatus?.indexer?.is_indexing) || Boolean(indexingProgress?.is_indexing) ? "Indexing..." : "Re-index Files"}</span>
@@ -1369,9 +1518,18 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
 
                   {/* Live Progress Bar (when active or recently run) */}
                   {(isReindexing || Boolean(ragStatus?.indexer?.is_indexing) || Boolean(indexingProgress)) && (
-                    <div className="p-3 rounded-lg bg-indigo-500/[0.07] border border-indigo-500/20 space-y-2">
+                    <div
+                      className="p-3 rounded-lg space-y-2 border"
+                      style={{
+                        backgroundColor: `${theme.primary}10`,
+                        borderColor: `${theme.primary}25`,
+                      }}
+                    >
                       <div className="flex items-center justify-between text-xs">
-                        <div className="flex items-center space-x-1.5 text-indigo-400 font-medium">
+                        <div
+                          className="flex items-center space-x-1.5 font-medium"
+                          style={{ color: isDark ? (theme.accent || theme.primary) : theme.primary }}
+                        >
                           {indexingProgress?.completed ? (
                             <>
                               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
@@ -1379,12 +1537,18 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                             </>
                           ) : (
                             <>
-                              <span className="w-2 h-2 rounded-full bg-indigo-400 animate-ping" />
+                              <span
+                                className="w-2 h-2 rounded-full animate-ping"
+                                style={{ backgroundColor: theme.primary }}
+                              />
                               <span>Indexing Documents in Background...</span>
                             </>
                           )}
                         </div>
-                        <span className="font-mono font-semibold text-indigo-300">
+                        <span
+                          className="font-mono font-semibold"
+                          style={{ color: isDark ? (theme.accent || theme.primary) : theme.primary }}
+                        >
                           {indexingProgress?.percent != null
                             ? `${indexingProgress.percent}%`
                             : ragStatus?.indexer?.progress_percent != null
@@ -1396,8 +1560,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                       {/* Progress Bar Track */}
                       <div className="w-full h-2 rounded-full bg-black/40 overflow-hidden border border-white/5">
                         <div
-                          className={`h-full ${indexingProgress?.completed ? "bg-emerald-500" : "bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500"} rounded-full transition-all duration-300 ease-out`}
+                          className={`h-full ${indexingProgress?.completed ? "bg-emerald-500" : ""} rounded-full transition-all duration-300 ease-out`}
                           style={{
+                            background: indexingProgress?.completed ? undefined : theme.gradient,
                             width: `${Math.max(
                               4,
                               Math.min(100, indexingProgress?.percent ?? ragStatus?.indexer?.progress_percent ?? 0)
@@ -1442,7 +1607,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     </div>
 
                     <div className={`p-2.5 rounded-lg border text-center ${isDark ? "bg-white/[0.02] border-white/5" : "bg-white border-black/5"}`}>
-                      <div className="text-[10px] font-medium uppercase tracking-wider text-indigo-400 flex items-center justify-center space-x-1">
+                      <div
+                        className="text-[10px] font-medium uppercase tracking-wider flex items-center justify-center space-x-1"
+                        style={{ color: isDark ? (theme.accent || theme.primary) : theme.primary }}
+                      >
                         <Layers className="w-3 h-3" />
                         <span>Total Scanned</span>
                       </div>

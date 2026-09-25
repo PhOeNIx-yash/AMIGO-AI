@@ -17,23 +17,11 @@ import {
   AlertCircle,
   FileCode,
 } from "lucide-react";
-import { Liquid } from "liquid-gooey";
 import { sfx } from "../utils/audio";
 import { transcribeAudio, uploadFileToBackend } from "../services/assistantApi";
 import { BackendConfig, ColorTheme, AttachmentItem } from "../types";
 import { COLOR_THEMES } from "../data/presets";
 import { audioBus } from "../utils/audioBus";
-
-// Theme-adapted deep liquid surface palettes matching capsule & dark glass aesthetics
-const THEME_LIQUID_COLORS: Record<string, { dark: string; light: string }> = {
-  cobalt: { dark: "#0c1730", light: "#f0f6ff" },
-  violet: { dark: "#150f2e", light: "#f5f0ff" },
-  emerald: { dark: "#081c15", light: "#f0fdf4" },
-  sunset: { dark: "#22120b", light: "#fff7ed" },
-  cyan: { dark: "#061a26", light: "#ecfeff" },
-  weather: { dark: "#071f33", light: "#f0f9ff" },
-  noir: { dark: "#141416", light: "#ffffff" },
-};
 
 interface VoiceControlsProps {
   onProcessCommand: (prompt: string, attachment?: AttachmentItem) => void;
@@ -73,15 +61,6 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
   const fileInputDocRef = useRef<HTMLInputElement | null>(null);
   const fileInputImgRef = useRef<HTMLInputElement | null>(null);
   const fileInputAllRef = useRef<HTMLInputElement | null>(null);
-
-  // Theme-adapted liquid gooey fills & glow shadows
-  const liquidFill = isDark
-    ? (THEME_LIQUID_COLORS[colorTheme]?.dark || "#0c1730")
-    : (THEME_LIQUID_COLORS[colorTheme]?.light || "#ffffff");
-
-  const liquidShadow = isDark
-    ? `0 8px 24px ${theme.glow}, 0 2px 8px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.18)`
-    : `0 8px 20px ${theme.glow}, inset 0 1px 0 rgba(255,255,255,0.95)`;
 
   // Close attachment menu on outside click or Escape key
   useEffect(() => {
@@ -769,163 +748,134 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
           autoComplete="off"
           className="flex-1 flex items-center min-w-0"
         >
-          {/* Liquid Gooey Morphing Attachment Menu */}
+          {/* GPU-composited Spring-animated Attachment Menu */}
           <div className="relative z-30 flex items-center pl-1 sm:pl-1.5 flex-shrink-0" ref={menuRef}>
-            <Liquid
-              blur={5}
-              contrast={19}
-              fill={liquidFill}
-              shadow={liquidShadow}
-              filterPadding={100}
-              className="relative w-9 h-9"
+            {/* Popout buttons */}
+            <AnimatePresence>
+              {isMenuOpen && (
+                <>
+                  {/* Top Circle: Image / Photo */}
+                  <motion.div
+                    key="attach-img"
+                    initial={{ opacity: 0, scale: 0.3, x: 0, y: 0 }}
+                    animate={{ opacity: 1, scale: 1, x: 0, y: -54 }}
+                    exit={{ opacity: 0, scale: 0.3, x: 0, y: 0 }}
+                    transition={{ type: "spring", stiffness: 500, damping: 28, mass: 0.8 }}
+                    className="absolute top-0 left-0 w-9 h-9 pointer-events-auto"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        sfx.playClick?.();
+                        fileInputImgRef.current?.click();
+                        setIsMenuOpen(false);
+                      }}
+                      className={`w-9 h-9 rounded-full flex items-center justify-center transition-transform duration-150 hover:scale-110 active:scale-95 focus:outline-none cursor-pointer border shadow-lg backdrop-blur-md ${
+                        isDark
+                          ? "border-sky-500/40 bg-slate-900/90 text-sky-400 hover:bg-sky-500/20 hover:text-sky-300 hover:border-sky-400 hover:shadow-[0_0_14px_rgba(56,189,248,0.4)]"
+                          : "border-sky-500/30 bg-white/95 text-sky-600 hover:bg-sky-500/15 hover:text-sky-700 shadow-sky-500/10"
+                      }`}
+                      title="Attach Image or Photo (PNG, JPG, WEBP, SVG)"
+                      aria-label="Attach Image"
+                    >
+                      <ImageIcon className="w-4.5 h-4.5" strokeWidth={1.8} />
+                    </button>
+                  </motion.div>
+
+                  {/* Left Circle: Document / PDF */}
+                  <motion.div
+                    key="attach-doc"
+                    initial={{ opacity: 0, scale: 0.3, x: 0, y: 0 }}
+                    animate={{ opacity: 1, scale: 1, x: -34, y: -28 }}
+                    exit={{ opacity: 0, scale: 0.3, x: 0, y: 0 }}
+                    transition={{ type: "spring", stiffness: 500, damping: 28, mass: 0.8, delay: 0.02 }}
+                    className="absolute top-0 left-0 w-9 h-9 pointer-events-auto"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        sfx.playClick?.();
+                        fileInputDocRef.current?.click();
+                        setIsMenuOpen(false);
+                      }}
+                      className={`w-9 h-9 rounded-full flex items-center justify-center transition-transform duration-150 hover:scale-110 active:scale-95 focus:outline-none cursor-pointer border shadow-lg backdrop-blur-md ${
+                        isDark
+                          ? "border-rose-500/40 bg-slate-900/90 text-rose-400 hover:bg-rose-500/20 hover:text-rose-300 hover:border-rose-400 hover:shadow-[0_0_14px_rgba(244,63,94,0.4)]"
+                          : "border-rose-500/30 bg-white/95 text-rose-600 hover:bg-rose-500/15 hover:text-rose-700 shadow-rose-500/10"
+                      }`}
+                      title="Attach Document or PDF (PDF, DOCX, TXT, Code)"
+                      aria-label="Attach Document"
+                    >
+                      <FileIcon className="w-4.5 h-4.5" strokeWidth={1.8} />
+                    </button>
+                  </motion.div>
+
+                  {/* Right Circle: Browse All Files */}
+                  <motion.div
+                    key="attach-all"
+                    initial={{ opacity: 0, scale: 0.3, x: 0, y: 0 }}
+                    animate={{ opacity: 1, scale: 1, x: 34, y: -28 }}
+                    exit={{ opacity: 0, scale: 0.3, x: 0, y: 0 }}
+                    transition={{ type: "spring", stiffness: 500, damping: 28, mass: 0.8, delay: 0.04 }}
+                    className="absolute top-0 left-0 w-9 h-9 pointer-events-auto"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        sfx.playClick?.();
+                        fileInputAllRef.current?.click();
+                        setIsMenuOpen(false);
+                      }}
+                      className={`w-9 h-9 rounded-full flex items-center justify-center transition-transform duration-150 hover:scale-110 active:scale-95 focus:outline-none cursor-pointer border shadow-lg backdrop-blur-md ${
+                        isDark
+                          ? "border-violet-500/40 bg-slate-900/90 text-violet-400 hover:bg-violet-500/20 hover:text-violet-300 hover:border-violet-400 hover:shadow-[0_0_14px_rgba(167,139,250,0.4)]"
+                          : "border-violet-500/30 bg-white/95 text-violet-600 hover:bg-violet-500/15 hover:text-violet-700 shadow-violet-500/10"
+                      }`}
+                      title="Browse All Files (Any local file)"
+                      aria-label="Browse All Files"
+                    >
+                      <Folder className="w-4.5 h-4.5" strokeWidth={1.8} />
+                    </button>
+                  </motion.div>
+                </>
+              )}
+            </AnimatePresence>
+
+            {/* Trigger Button (+ morphs to X with theme gradient) */}
+            <button
+              id="attach-file-button"
+              type="button"
+              onClick={() => {
+                sfx.playClick?.();
+                setIsMenuOpen(!isMenuOpen);
+              }}
+              disabled={disabled || isListening || isTranscribing}
+              className={`relative z-10 w-9 h-9 rounded-full flex items-center justify-center transition-all duration-200 active:scale-95 focus:outline-none cursor-pointer border ${
+                isMenuOpen
+                  ? "border-transparent text-white shadow-lg"
+                  : isDark
+                  ? "border-white/15 text-slate-200 hover:text-white hover:bg-white/10"
+                  : "border-black/10 text-slate-700 hover:text-black hover:bg-black/5"
+              }`}
+              style={
+                isMenuOpen
+                  ? {
+                      background: theme.gradient,
+                      boxShadow: `0 0 16px ${theme.glow}`,
+                    }
+                  : undefined
+              }
+              title={isMenuOpen ? "Close attachment menu" : "Attach image, document, or files"}
+              aria-label={isMenuOpen ? "Close attachment menu" : "Attach files"}
             >
-              {/* Bottom Circle: Trigger (+ morphs to X with theme gradient) */}
-              <Liquid.Item
-                x={0}
-                y={0}
-                scale={1}
-                transition="bouncy"
-                radius={18}
-                className="w-9 h-9"
-              >
-                <button
-                  id="attach-file-button"
-                  type="button"
-                  onClick={() => {
-                    sfx.playClick?.();
-                    setIsMenuOpen(!isMenuOpen);
-                  }}
-                  disabled={disabled || isListening || isTranscribing}
-                  className={`w-9 h-9 rounded-full flex items-center justify-center transition-all duration-300 active:scale-95 focus:outline-none cursor-pointer border ${
-                    isMenuOpen
-                      ? "border-transparent text-white shadow-lg"
-                      : isDark
-                      ? "border-white/15 text-slate-200 hover:text-white hover:bg-white/10"
-                      : "border-black/10 text-slate-700 hover:text-black hover:bg-black/5"
-                  }`}
-                  style={
-                    isMenuOpen
-                      ? {
-                          background: theme.gradient,
-                          boxShadow: `0 0 16px ${theme.glow}`,
-                        }
-                      : undefined
-                  }
-                  title={isMenuOpen ? "Close attachment menu" : "Attach image, document, or files"}
-                  aria-label={isMenuOpen ? "Close attachment menu" : "Attach files"}
-                >
-                  <Plus
-                    className="w-4.5 h-4.5 transition-transform duration-300 ease-out"
-                    style={{
-                      transform: isMenuOpen ? "rotate(45deg)" : "rotate(0deg)",
-                    }}
-                    strokeWidth={2}
-                  />
-                </button>
-              </Liquid.Item>
-
-              {/* Top Circle: Image / Photo (Sky / Cyan accent) */}
-              <Liquid.Item
-                x={0}
-                y={isMenuOpen ? -64 : 0}
-                scale={isMenuOpen ? 1 : 0.01}
-                transition="bouncy"
-                delay={isMenuOpen ? 15 : 0}
-                radius={18}
-                className="absolute top-0 left-0 w-9 h-9"
+              <Plus
+                className="w-4.5 h-4.5 transition-transform duration-200 ease-out"
                 style={{
-                  pointerEvents: isMenuOpen ? "auto" : "none",
+                  transform: isMenuOpen ? "rotate(45deg)" : "rotate(0deg)",
                 }}
-              >
-                <button
-                  type="button"
-                  onClick={() => {
-                    sfx.playClick?.();
-                    fileInputImgRef.current?.click();
-                    setIsMenuOpen(false);
-                  }}
-                  tabIndex={isMenuOpen ? 0 : -1}
-                  disabled={!isMenuOpen}
-                  className={`w-9 h-9 rounded-full flex items-center justify-center transition-all duration-200 hover:scale-110 active:scale-95 focus:outline-none cursor-pointer border ${
-                    isDark
-                      ? "border-sky-500/40 bg-sky-500/15 text-sky-400 hover:bg-sky-500/25 hover:text-sky-300 hover:border-sky-400 hover:shadow-[0_0_12px_rgba(56,189,248,0.4)]"
-                      : "border-sky-500/30 bg-sky-500/10 text-sky-600 hover:bg-sky-500/20 hover:text-sky-700"
-                  } ${isMenuOpen ? "opacity-100" : "opacity-0"}`}
-                  title="Attach Image or Photo (PNG, JPG, WEBP, SVG)"
-                  aria-label="Attach Image"
-                >
-                  <ImageIcon className="w-4.5 h-4.5" strokeWidth={1.8} />
-                </button>
-              </Liquid.Item>
-
-              {/* Left Circle: Document / PDF (Rose / Red accent) */}
-              <Liquid.Item
-                x={isMenuOpen ? -32 : 0}
-                y={isMenuOpen ? -32 : 0}
-                scale={isMenuOpen ? 1 : 0.01}
-                transition="bouncy"
-                delay={isMenuOpen ? 30 : 0}
-                radius={18}
-                className="absolute top-0 left-0 w-9 h-9"
-                style={{
-                  pointerEvents: isMenuOpen ? "auto" : "none",
-                }}
-              >
-                <button
-                  type="button"
-                  onClick={() => {
-                    sfx.playClick?.();
-                    fileInputDocRef.current?.click();
-                    setIsMenuOpen(false);
-                  }}
-                  tabIndex={isMenuOpen ? 0 : -1}
-                  disabled={!isMenuOpen}
-                  className={`w-9 h-9 rounded-full flex items-center justify-center transition-all duration-200 hover:scale-110 active:scale-95 focus:outline-none cursor-pointer border ${
-                    isDark
-                      ? "border-rose-500/40 bg-rose-500/15 text-rose-400 hover:bg-rose-500/25 hover:text-rose-300 hover:border-rose-400 hover:shadow-[0_0_12px_rgba(244,63,94,0.4)]"
-                      : "border-rose-500/30 bg-rose-500/10 text-rose-600 hover:bg-rose-500/20 hover:text-rose-700"
-                  } ${isMenuOpen ? "opacity-100" : "opacity-0"}`}
-                  title="Attach Document or PDF (PDF, DOCX, TXT, Code)"
-                  aria-label="Attach Document"
-                >
-                  <FileIcon className="w-4.5 h-4.5" strokeWidth={1.8} />
-                </button>
-              </Liquid.Item>
-
-              {/* Right Circle: Browse All Files (Violet / Purple accent) */}
-              <Liquid.Item
-                x={isMenuOpen ? 32 : 0}
-                y={isMenuOpen ? -32 : 0}
-                scale={isMenuOpen ? 1 : 0.01}
-                transition="bouncy"
-                delay={isMenuOpen ? 0 : 25}
-                radius={18}
-                className="absolute top-0 left-0 w-9 h-9"
-                style={{
-                  pointerEvents: isMenuOpen ? "auto" : "none",
-                }}
-              >
-                <button
-                  type="button"
-                  onClick={() => {
-                    sfx.playClick?.();
-                    fileInputAllRef.current?.click();
-                    setIsMenuOpen(false);
-                  }}
-                  tabIndex={isMenuOpen ? 0 : -1}
-                  disabled={!isMenuOpen}
-                  className={`w-9 h-9 rounded-full flex items-center justify-center transition-all duration-200 hover:scale-110 active:scale-95 focus:outline-none cursor-pointer border ${
-                    isDark
-                      ? "border-violet-500/40 bg-violet-500/15 text-violet-400 hover:bg-violet-500/25 hover:text-violet-300 hover:border-violet-400 hover:shadow-[0_0_12px_rgba(167,139,250,0.4)]"
-                      : "border-violet-500/30 bg-violet-500/10 text-violet-600 hover:bg-violet-500/20 hover:text-violet-700"
-                  } ${isMenuOpen ? "opacity-100" : "opacity-0"}`}
-                  title="Browse All Files (Any local file)"
-                  aria-label="Browse All Files"
-                >
-                  <Folder className="w-4.5 h-4.5" strokeWidth={1.8} />
-                </button>
-              </Liquid.Item>
-            </Liquid>
+                strokeWidth={2}
+              />
+            </button>
           </div>
 
           <div className="relative flex-1 min-w-0">

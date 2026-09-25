@@ -800,7 +800,9 @@ def build_rag_context(query: str, top_k: int = 5) -> str:
     if not query or not query.strip():
         return ""
 
-    results = search(query, target_collections=[DOCUMENTS, USER_FACTS], top_k=top_k)
+    # Retrieve candidate pool from documents and facts to prevent duplicate chunks of 1 file from crowding out others
+    candidate_k = max(top_k * 4, 20)
+    results = search(query, target_collections=[DOCUMENTS, USER_FACTS], top_k=candidate_k)
     if not results:
         return ""
 
@@ -809,19 +811,42 @@ def build_rag_context(query: str, top_k: int = 5) -> str:
     if not relevant:
         return ""
 
+    # Hybrid keyword ranking: prioritize documents containing specific content query tokens
+    stopwords = {"can", "you", "tell", "me", "what", "is", "my", "the", "a", "an", "in", "on", "at", "to", "for", "of", "this", "that"}
+    query_tokens = [w.lower() for w in re.findall(r"\b[a-zA-Z0-9_-]{2,}\b", query) if w.lower() not in stopwords]
+
+    def _hybrid_rank(r: dict) -> tuple:
+        text_lower = r.get("text", "").lower()
+        kw_hits = sum(1 for tok in query_tokens if tok in text_lower) if query_tokens else 0
+        return (kw_hits, r.get("score", 0))
+
+    relevant.sort(key=_hybrid_rank, reverse=True)
+
     parts: list[str] = []
     top_doc = None
+    seen_files: set[str] = set()
+
     for r in relevant:
+        if len(seen_files) >= top_k:
+            break
         src = r.get("source", "")
-        text = r.get("text", "")[:1000]
         if src == DOCUMENTS:
             meta = r.get("metadata", {})
             fname = meta.get("filename", "document")
             fpath = meta.get("filepath", "")
             if not top_doc and fpath and os.path.exists(fpath):
                 top_doc = {"path": fpath, "name": fname}
-            parts.append(f"[From document '{fname}']:\n{text}")
+            if fpath and fpath not in seen_files:
+                seen_files.add(fpath)
+                if os.path.exists(fpath):
+                    full_doc = extract_text(fpath)
+                    if full_doc and len(full_doc) <= 6000:
+                        parts.append(f"[From document '{fname}']:\n{full_doc}")
+                        continue
+                text = r.get("text", "")[:1000]
+                parts.append(f"[From document '{fname}']:\n{text}")
         elif src == USER_FACTS:
+            text = r.get("text", "")[:1000]
             parts.append(f"[Known fact]: {text}")
 
     if top_doc:

@@ -37,18 +37,18 @@ LAYA_QUESTIONS = {
             "window_mgmt": "Minimize, maximize, restore, or switch desktop windows",
             "browser_nav": "Navigate browser tabs, open URL, scroll webpage up or down",
             "desktop_input": "Type text, press keyboard shortcuts, or click on the screen",
-            "play_youtube": "Play music, songs, artists, or videos on YouTube",
+            "play_youtube": "Play or stream music, songs, artists, or videos on YouTube",
             "media_control": "Pause, resume, skip tracks, or check currently playing media",
             "set_volume": "Adjust, increase, decrease, mute, or unmute system audio volume",
             "time_date": "Check the current time or date",
-            "weather": "Check weather forecast, temperature, or conditions for a location",
+            "weather": "Check the meteorological weather forecast, rain, or outdoor temperature for a location or city",
             "system_control": "Lock PC, sleep PC, restart system, or capture a screenshot",
             "screen_vision": "Analyze, read, or answer questions about what is visible on the screen",
             "memory_recall": "Recall stored personal memories, facts, notes, or past interactions",
             "document_qa": "Search or ask questions about indexed local documents and files",
             "workspace": "Check emails, view calendar schedule, or manage timers and alarms",
             "web_search": "Search the web, google information, look up facts, or browse the internet",
-            "chat": "General conversation, conversational replies, answering questions, or explanations",
+            "chat": "General conversation, small talk, casual remarks, opinions, compliments, discussing music or songs, storytelling, or general questions",
         },
     },
 }
@@ -248,9 +248,11 @@ def extract_parameters_and_tool(tool: str, query: str, conversation_history: lis
             return "prev_tab", {}
         if m := _RE_SCROLL.search(q_low):
             return f"scroll_{m.group(1)}", {"amount": 600}
-        m_url = re.search(r"\b(?:for|to|with)\s+(\S+)", q, re.I)
-        url = m_url.group(1) if m_url else ""
-        return "new_tab", {"url": url}
+        if any(w in q_low for w in ("tab", "browser", "website", "url", "webpage", "scroll")):
+            m_url = re.search(r"\b(?:for|to|with)\s+(\S+)", q, re.I)
+            url = m_url.group(1) if m_url else ""
+            return "new_tab", {"url": url}
+        return "chat", {}
 
     if tool == "desktop_input":
         if re.search(r"\b(?:press|hit)\b", q_low):
@@ -271,8 +273,22 @@ def extract_parameters_and_tool(tool: str, query: str, conversation_history: lis
     if tool == "play_youtube":
         if any(w in q_low for w in ("what song", "what's playing", "what is playing", "current song", "which song")):
             return "current_media", {}
-        clean = re.sub(r"^(?:(?:can|could|would)\s+(?:you|u)\s+)?(?:please\s+)?(?:play|listen to|stream|put on|watch|replay|repeat)\s+(?:the\s+|a\s+|some\s+)?", "", q, flags=re.I)
-        clean = re.sub(r"\s+(?:on\s+youtube|please|for\s+me)$", "", clean, flags=re.I).strip()
+
+        # Requires a genuine play/stream/watch action directive; casual statements, comments, or praise ("this song is very good") are chat
+        has_play_action = bool(re.search(
+            r"\b(?:play|listen(?:\s+to)?|stream|put\s+on|watch|replay|repeat|queue)\b",
+            q_low,
+        ))
+        if not has_play_action:
+            return "chat", {}
+
+        clean = re.sub(
+            r"^(?:(?:can|could|would)\s+(?:you|u)\s+)?(?:please\s+)?(?:play|listen(?:\s+to)?|stream|put\s+on|watch|replay|repeat)\s+(?:the\s+|a\s+|some\s+)?(?:song\s+|music\s+|track\s+|video\s+)?(?:called\s+|titled\s+|named\s+)?",
+            "",
+            q,
+            flags=re.I,
+        )
+        clean = re.sub(r"\s+(?:on\s+youtube|from\s+youtube|please|for\s+me)$", "", clean, flags=re.I).strip()
         clean_norm = clean.lower().rstrip("?!.,;:")
         # Anaphoric reference resolution for replay/repeat/again
         if not clean_norm or clean_norm in (
@@ -296,10 +312,9 @@ def extract_parameters_and_tool(tool: str, query: str, conversation_history: lis
             return "prev_track", {}
         if any(w in q_low for w in ("pause", "stop", "freeze", "halt")):
             return "pause_media", {}
-        # If user specified a track or artist to play, route to play_youtube
-        if any(q_low.startswith(p) for p in ("play ", "stream ", "listen to ", "watch ")):
-            return extract_parameters_and_tool("play_youtube", q, conversation_history)
-        return "play_media", {}
+        if any(w in q_low for w in ("resume", "unpause", "continue", "play")):
+            return "play_media", {}
+        return "chat", {}
 
     if tool == "set_volume":
         if "mute" in q_low or "unmute" in q_low or "silence" in q_low:
@@ -308,26 +323,26 @@ def extract_parameters_and_tool(tool: str, query: str, conversation_history: lis
             return "volume_up", {}
         if "quieter" in q_low or "decrease" in q_low or "turn down" in q_low:
             return "volume_down", {}
-        m = _RE_VOL_NUM.search(q)
-        return "set_volume", {"level": m.group(1) if m else "50"}
+        if any(w in q_low for w in ("volume", "sound", "audio", "loudness")):
+            m = _RE_VOL_NUM.search(q)
+            return "set_volume", {"level": m.group(1) if m else "50"}
+        return "chat", {}
 
     if tool == "time_date":
         if any(w in q_low for w in ("calendar", "schedule", "meeting", "appointment", "event")):
             return "get_calendar", {}
-        if any(w in q_low for w in ("date", "day", "today", "year", "month")):
+        if any(w in q_low for w in ("date", "day", "today", "year", "month", "tomorrow", "yesterday")):
             return "get_date", {}
-        return "get_time", {}
+        if any(w in q_low for w in ("time", "clock", "hour", "minute", "now", "current", "o'clock", "am", "pm")):
+            return "get_time", {}
+        return "chat", {}
 
     if tool in ("get_weather", "weather"):
-        m_in = re.search(r"\b(?:in|at)\s+([a-zA-Z\s.-]+?)(?:\s*\?|\s*$|\s+please)", q, re.I)
-        if m_in:
-            city = m_in.group(1).strip()
-        else:
-            m_city = re.search(r"\b(?:for|of)\s+([a-zA-Z\s.-]+?)(?:\s*\?|\s*$)", q, re.I)
-            city = m_city.group(1).strip() if m_city else ""
-            if city.lower().startswith("the weather"):
-                m_sub = re.search(r"\b(?:in|at)\s+([a-zA-Z\s.-]+)", city, re.I)
-                city = m_sub.group(1).strip() if m_sub else ""
+        m_in = re.search(r"\b(?:in|at|for|of)\s+([a-zA-Z\s.-]+?)(?:\s*\?|\s*$|\s+please)", q, re.I)
+        city = m_in.group(1).strip() if m_in else ""
+        if city.lower().startswith("the weather"):
+            m_sub = re.search(r"\b(?:in|at|for)\s+([a-zA-Z\s.-]+)", city, re.I)
+            city = m_sub.group(1).strip() if m_sub else ""
         return "get_weather", {"city": city}
 
     if tool == "system_control":
@@ -352,7 +367,9 @@ def extract_parameters_and_tool(tool: str, query: str, conversation_history: lis
         return "chat", {}
 
     if tool in ("screen_vision", "read_screen"):
-        return "screen_vision", {"question": q}
+        if any(w in q_low for w in ("screen", "display", "monitor", "look at", "what am i looking at", "read this", "see on", "visible", "what is this", "what's this", "active window", "window")):
+            return "screen_vision", {"question": q}
+        return "chat", {}
 
     if tool == "memory_recall":
         return "memory_recall", {"query": q}

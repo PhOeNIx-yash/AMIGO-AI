@@ -542,7 +542,13 @@ def _tool_clarification(params, query, spoken):
 
 
 def _tool_chat(params, query, spoken):
-    response = get_ai_response(query)
+    # Check if local indexed documents or remembered facts contain relevant knowledge
+    rag_ctx = rag_engine.build_rag_context(query, top_k=5)
+    if rag_ctx:
+        logger.info("[Tool Chat] Local RAG context found for query '%s'", query[:40])
+        response = get_ai_response(query, doc_context=rag_ctx)
+    else:
+        response = get_ai_response(query)
 
     uncertainty_patterns = (
         "would you like me to look into",

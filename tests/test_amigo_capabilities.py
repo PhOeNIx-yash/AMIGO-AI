@@ -143,6 +143,27 @@ class TestAmigoCapabilities(unittest.TestCase):
         self.assertIn("open an application", lower)
         self.assertIn("search google", lower)
 
+    def test_process_query_preserves_params(self):
+        import ui_server
+        with patch.object(ui_server, "get_agent_action", return_value=[{"tool": "open_app", "params": {"app_name": "notepad"}, "speak": "Opening Notepad."}]):
+            res = ui_server.process_query("open notepad", is_voice=False)
+            self.assertEqual(res["tool"], "open_app")
+            self.assertEqual(res["params"], {"app_name": "notepad"})
+
+    def test_song_opinion_resolves_to_chat(self):
+        tool, params = laya_router.extract_parameters_and_tool("play_youtube", "this song is very good")
+        self.assertEqual(tool, "chat")
+
+    def test_play_song_with_sun_extracts_title(self):
+        tool, params = laya_router.extract_parameters_and_tool("play_youtube", "Play song if the sun burns out tonight.")
+        self.assertEqual(tool, "play_youtube")
+        self.assertEqual(params.get("query"), "if the sun burns out tonight")
+
+    def test_current_media_query_detected(self):
+        tool, params = laya_router.extract_parameters_and_tool("media_control", "what song is currently playing")
+        self.assertEqual(tool, "current_media")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

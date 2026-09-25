@@ -280,7 +280,11 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
             spoken = ""
 
         logger.info(f"[Query Action] tool={tool!r} params={params}")
-        broadcaster.broadcast("intent_detected", {"intent": tool.upper(), "params": params})
+        broadcaster.broadcast("intent_detected", {
+            "intent": tool.lower(),
+            "tool": tool.lower(),
+            "params": params,
+        })
 
         handler = UI_TOOL_HANDLERS.get(tool, _tool_chat)
         tool_started = time.perf_counter()
@@ -662,6 +666,7 @@ def api_assistant_process():
         "speechReply": speech_reply,
         "displayTitle": prompt,
         "intent": tool,
+        "params": params,
         "requiresDisambiguation": has_multiple_cards,
         "actionCards": action_cards,
         "contactMatches": [],
@@ -671,7 +676,7 @@ def api_assistant_process():
             "details": response_text or f"{headline}: {tool.replace('_', ' ')}.",
             "secondaryDetails": url if url else "",
         },
-        "metadata": result_metadata,
+        "metadata": {**result_metadata, "params": params},
         "url": url,
     }
     return jsonify(formatted_response)

@@ -33,12 +33,6 @@ _is_processing = False
 _lock = threading.Lock()
 _broadcast_callback = None
 
-VISION_KEYWORDS = (
-    "screen", "look", "see", "this", "read", "error", "code", "window",
-    "page", "image", "what is this", "what's this", "explain this", "summarize",
-    "display", "active", "inspect", "app", "ui", "button", "browser"
-)
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CUSTOM_CHIME = os.path.join(BASE_DIR, "assets", "soothing_chime.wav")
 CUSTOM_OFF = os.path.join(BASE_DIR, "assets", "soothing_off.wav")
@@ -133,12 +127,6 @@ def _play_soothing_off_sound():
         pass
 
 
-def _is_vision_query(query: str) -> bool:
-    """Detect if the spoken voice command is asking about screen content."""
-    q = query.lower()
-    return any(k in q for k in VISION_KEYWORDS)
-
-
 def _handle_wake_action():
     """Handles the Alt+V wake event: captures screen first, updates UI state, then listens and executes."""
     global _is_processing
@@ -188,8 +176,7 @@ def _handle_wake_action():
             logger.info("[Hotkey Wake] Defaulting to general screen description.")
 
         # Update UI with user's query and set state to 'processing'
-        is_vision = _is_vision_query(query)
-        tool_name = "read_screen" if is_vision else "hotkey"
+        tool_name = "hotkey"
         _broadcast("chat_message", {
             "sender": "user",
             "text": query,
@@ -197,56 +184,44 @@ def _handle_wake_action():
         })
         _broadcast("state_change", {"state": "processing"})
 
-        # Step 4: Dispatch Query (Vision vs General Agent Action)
+        # Step 4: Dispatch Query via Intelligent Agent Action Router
         from tts import speak
         import local_llm
 
         reply = ""
 
-        # Check if query is vision-oriented
-        if is_vision and screenshot is not None:
-            prompt = query
-            if window_title:
-                prompt = f"The user is viewing '{window_title}'. Question: {query}"
+        try:
+            from local_llm import get_agent_action
+            from tool_registry import execute_tool
+            actions = get_agent_action(query)
+            for act in actions:
+                tool = act.get("tool", "chat")
+                params = act.get("params", {})
+                spoken = act.get("speak", "")
 
-            # Try native multimodal vision if available
-            reply = local_llm.query_local_vision(
-                screenshot,
-                prompt=prompt,
-                system_prompt=(
-                    "You are Amigo, a helpful voice assistant with screen vision capabilities. "
-                    "Analyze the user's active computer screen and answer their question clearly and directly. "
-                    "Do not use markdown, bullet points, or code formatting. Speak in natural plain English."
-                ),
-                max_tokens=350,
-            )
+                if tool in ("read_screen", "screen_vision") and screenshot is not None:
+                    prompt = query
+                    if window_title:
+                        prompt = f"The user is viewing '{window_title}'. Question: {query}"
+                    reply = local_llm.query_local_vision(
+                        screenshot,
+                        prompt=prompt,
+                        system_prompt=(
+                            "You are Amigo, a helpful voice assistant with screen vision capabilities. "
+                            "Analyze the user's active computer screen and answer their question clearly and directly. "
+                            "Do not use markdown, bullet points, or code formatting. Speak in natural plain English."
+                        ),
+                        max_tokens=350,
+                    ) or screen_vision.answer_screen_question(query)
+                else:
+                    res_spoken, _, _ = execute_tool(tool, params, query, spoken)
+                    reply = res_spoken or spoken
 
-            # Fallback to OCR if needed
-            if not reply or len(reply.strip()) < 5:
-                reply = screen_vision.answer_screen_question(query)
-
-        # Non-vision or general agent action (apps, volume, weather, YouTube, etc.)
-        if not reply:
-            try:
-                from local_llm import get_agent_action
-                from tool_registry import execute_tool
-                actions = get_agent_action(query)
-                for act in actions:
-                    tool = act.get("tool", "chat")
-                    params = act.get("params", {})
-                    spoken = act.get("speak", "")
-
-                    if tool == "read_screen" and screenshot is not None:
-                        reply = local_llm.query_local_vision(screenshot, prompt=query) or screen_vision.answer_screen_question(query)
-                    else:
-                        res_spoken, _, _ = execute_tool(tool, params, query, spoken)
-                        reply = res_spoken or spoken
-
-                    if reply:
-                        tool_name = tool
-                        break
-            except Exception as e:
-                logger.error(f"[Hotkey Wake] Action error: {e}")
+                if reply:
+                    tool_name = tool
+                    break
+        except Exception as e:
+            logger.error(f"[Hotkey Wake] Action error: {e}")
 
         # Fallback to general LLM response
         if not reply:

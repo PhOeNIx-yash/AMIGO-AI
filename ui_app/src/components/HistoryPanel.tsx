@@ -135,7 +135,7 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
       case "schedule":
         return <Calendar className="w-3.5 h-3.5 text-amber-400" />;
       default:
-        return <Sparkles className="w-3.5 h-3.5 text-indigo-400" />;
+        return <Sparkles className="w-3.5 h-3.5" style={{ color: theme.accent || theme.primary }} />;
     }
   };
 
@@ -151,12 +151,21 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
         transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
         className={`absolute top-0 left-0 bottom-0 z-40 w-80 sm:w-96 flex flex-col border-r shadow-2xl backdrop-blur-2xl transition-colors duration-300 ${
           isDark
-            ? "bg-[#0c0c18]/95 border-white/10 text-white"
-            : "bg-white/95 border-black/10 text-slate-900"
+            ? "border-white/10 text-white"
+            : "border-black/10 text-slate-900"
         }`}
+        style={{
+          background: isDark
+            ? `radial-gradient(ellipse 120% 70% at 0% 0%, ${theme.primary}12 0%, rgba(12, 12, 24, 0.96) 65%)`
+            : `radial-gradient(ellipse 120% 70% at 0% 0%, ${theme.primary}08 0%, rgba(255, 255, 255, 0.97) 65%)`,
+          borderColor: isDark ? `${theme.primary}22` : `${theme.primary}15`,
+        }}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3.5 border-b border-white/5 dark:border-white/10">
+        <div
+          className="flex items-center justify-between px-4 py-3.5 border-b"
+          style={{ borderColor: isDark ? `${theme.primary}18` : `${theme.primary}12` }}
+        >
           <div className="flex items-center space-x-2">
             <div
               className="p-1.5 rounded-lg text-white"
@@ -197,13 +206,17 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
 
         {/* Search Filter Bar */}
         {history.length > 0 && (
-          <div className="p-3 pb-1 border-b border-white/5 dark:border-white/10">
+          <div
+            className="p-3 pb-1 border-b"
+            style={{ borderColor: isDark ? `${theme.primary}18` : `${theme.primary}12` }}
+          >
             <div
               className={`flex items-center space-x-2 px-3 py-1.5 rounded-lg text-xs border ${
                 isDark
-                  ? "bg-white/5 border-white/10 text-white"
-                  : "bg-black/5 border-black/10 text-slate-900"
+                  ? "bg-white/5 text-white"
+                  : "bg-black/5 text-slate-900"
               }`}
+              style={{ borderColor: isDark ? `${theme.primary}22` : `${theme.primary}18` }}
             >
               <Search className="w-3.5 h-3.5 opacity-40 flex-shrink-0" />
               <input
@@ -227,9 +240,18 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
                 onClick={() => setIsDropdownOpen(!isDropdownOpen)}
                 className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium border transition-all duration-200 ${
                   isDark
-                    ? "bg-white/[0.04] hover:bg-white/[0.08] border-white/10 text-slate-200"
-                    : "bg-black/[0.04] hover:bg-black/[0.07] border-black/10 text-slate-800"
-                } ${isDropdownOpen ? (isDark ? "border-indigo-500/60 ring-2 ring-indigo-500/25 bg-white/[0.07]" : "border-indigo-500 ring-2 ring-indigo-500/20 bg-black/[0.06]") : ""}`}
+                    ? "bg-white/[0.04] hover:bg-white/[0.08] text-slate-200"
+                    : "bg-black/[0.04] hover:bg-black/[0.07] text-slate-800"
+                }`}
+                style={
+                  isDropdownOpen
+                    ? {
+                        borderColor: `${theme.primary}70`,
+                        boxShadow: `0 0 0 2px ${theme.primary}25`,
+                        backgroundColor: isDark ? `${theme.primary}10` : `${theme.primary}08`,
+                      }
+                    : { borderColor: isDark ? `${theme.primary}20` : `${theme.primary}15` }
+                }
               >
                 <div className="flex items-center space-x-2 truncate">
                   <span className="opacity-50 text-[11px]">Filter:</span>
@@ -254,9 +276,10 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
                     transition={{ duration: 0.15, ease: "easeOut" }}
                     className={`absolute left-0 right-0 top-full mt-1.5 z-50 rounded-xl p-1.5 shadow-2xl border backdrop-blur-2xl max-h-56 overflow-y-auto ${
                       isDark
-                        ? "bg-[#111022]/98 border-white/15 text-slate-200 shadow-black/80 ring-1 ring-white/10"
-                        : "bg-white/98 border-black/10 text-slate-800 shadow-slate-400/40 ring-1 ring-black/5"
+                        ? "bg-[#111022]/98 text-slate-200 shadow-black/80 ring-1 ring-white/10"
+                        : "bg-white/98 text-slate-800 shadow-slate-400/40 ring-1 ring-black/5"
                     }`}
+                    style={{ borderColor: isDark ? `${theme.primary}30` : `${theme.primary}20` }}
                   >
                     <button
                       type="button"
@@ -266,16 +289,24 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
                       }}
                       className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs transition-colors ${
                         intentFilter === "all"
-                          ? isDark
-                            ? "bg-indigo-500/20 text-indigo-300 font-semibold"
-                            : "bg-indigo-50 text-indigo-700 font-semibold"
+                          ? "font-semibold"
                           : isDark
                           ? "hover:bg-white/10 text-slate-300"
                           : "hover:bg-black/5 text-slate-700"
                       }`}
+                      style={
+                        intentFilter === "all"
+                          ? {
+                              backgroundColor: isDark ? `${theme.primary}22` : `${theme.primary}12`,
+                              color: isDark ? (theme.accent || theme.primary) : theme.primary,
+                            }
+                          : {}
+                      }
                     >
                       <span>All activity</span>
-                      {intentFilter === "all" && <Check className="w-3.5 h-3.5 text-indigo-400 flex-shrink-0" />}
+                      {intentFilter === "all" && (
+                        <Check className="w-3.5 h-3.5 flex-shrink-0" style={{ color: theme.accent || theme.primary }} />
+                      )}
                     </button>
 
                     {intentOptions.map((intent) => {
@@ -290,16 +321,24 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
                           }}
                           className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs capitalize transition-colors ${
                             isSelected
-                              ? isDark
-                                ? "bg-indigo-500/20 text-indigo-300 font-semibold"
-                                : "bg-indigo-50 text-indigo-700 font-semibold"
+                              ? "font-semibold"
                               : isDark
                               ? "hover:bg-white/10 text-slate-300"
                               : "hover:bg-black/5 text-slate-700"
                           }`}
+                          style={
+                            isSelected
+                              ? {
+                                  backgroundColor: isDark ? `${theme.primary}22` : `${theme.primary}12`,
+                                  color: isDark ? (theme.accent || theme.primary) : theme.primary,
+                                }
+                              : {}
+                          }
                         >
                           <span className="truncate">{intent.replaceAll("_", " ")}</span>
-                          {isSelected && <Check className="w-3.5 h-3.5 text-indigo-400 flex-shrink-0" />}
+                          {isSelected && (
+                            <Check className="w-3.5 h-3.5 flex-shrink-0" style={{ color: theme.accent || theme.primary }} />
+                          )}
                         </button>
                       );
                     })}
@@ -315,7 +354,7 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
           {filteredHistory.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-center p-6 space-y-3 opacity-60">
               <div className="p-3 rounded-full bg-white/5">
-                <Clock className="w-6 h-6 text-indigo-400 opacity-80" />
+                <Clock className="w-6 h-6 opacity-80" style={{ color: theme.accent || theme.primary }} />
               </div>
               <div>
                 <p className="text-xs font-medium">No commands found</p>
@@ -344,12 +383,20 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
                   className={`group relative rounded-xl p-3 border transition-all duration-200 cursor-pointer ${
                     isDark
                       ? isExpanded
-                        ? "bg-white/[0.08] border-indigo-500/50 shadow-lg"
-                        : "bg-white/[0.04] hover:bg-white/[0.07] border-white/10 hover:border-indigo-500/30"
+                        ? "bg-white/[0.08] shadow-lg"
+                        : "bg-white/[0.04] hover:bg-white/[0.07]"
                       : isExpanded
-                      ? "bg-white border-indigo-400 shadow-md"
-                      : "bg-white/80 hover:bg-white border-black/10 hover:border-indigo-300 shadow-sm"
+                      ? "bg-white shadow-md"
+                      : "bg-white/80 hover:bg-white shadow-sm"
                   }`}
+                  style={{
+                    borderColor: isExpanded
+                      ? `${theme.primary}60`
+                      : isDark
+                      ? `${theme.primary}20`
+                      : `${theme.primary}18`,
+                    boxShadow: isExpanded ? `0 4px 20px -2px ${theme.primary}20` : undefined,
+                  }}
                   onClick={() => toggleExpand(item.id)}
                 >
                   {/* Top Row: Intent & Time */}
@@ -405,7 +452,10 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
                         transition={{ duration: 0.2 }}
                         className="mt-2.5 pt-2.5 border-t border-white/10 text-xs space-y-2"
                       >
-                        <div className="p-2.5 rounded-lg bg-black/20 dark:bg-white/5 border border-white/5 leading-relaxed text-[11px] opacity-90">
+                        <div
+                          className="p-2.5 rounded-lg bg-black/20 dark:bg-white/5 border leading-relaxed text-[11px] opacity-90"
+                          style={{ borderColor: isDark ? `${theme.primary}20` : `${theme.primary}15` }}
+                        >
                           {detailsText || "Command executed successfully."}
                         </div>
 
@@ -457,7 +507,10 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
         </div>
 
         {/* Footer info */}
-        <div className="p-3 border-t border-white/5 dark:border-white/10 text-center text-[10px] opacity-40">
+        <div
+          className="p-3 border-t text-center text-[10px] opacity-40"
+          style={{ borderColor: isDark ? `${theme.primary}18` : `${theme.primary}12` }}
+        >
           History auto-syncs with Amigo Memory
         </div>
       </motion.aside>
