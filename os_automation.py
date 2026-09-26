@@ -166,7 +166,38 @@ def close_app(app_name: str = "") -> bool:
 
     closed = False
 
-    # 1. Close via matching running process names (e.g. systemsettings, valorant, chrome, notepad)
+    # 1. Graceful close via matching top-level window titles (e.g. "Settings", "Notepad", "Spotify")
+    try:
+        import win32gui, win32con
+        def _close_win_enum(hwnd, _):
+            nonlocal closed
+            if win32gui.IsWindowVisible(hwnd):
+                title = (win32gui.GetWindowText(hwnd) or "").lower()
+                if clean in title:
+                    win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+                    closed = True
+        win32gui.EnumWindows(_close_win_enum, None)
+        if closed:
+            print(f"[OS Automation] Sent WM_CLOSE to window matching '{clean}'")
+            return True
+    except Exception:
+        pass
+
+    # 2. Fast taskkill for exact process name (kills process tree in one native OS call)
+    try:
+        import subprocess
+        target = f"{clean}.exe" if not clean.endswith(".exe") else clean
+        r = subprocess.run(
+            ["taskkill", "/IM", target, "/T", "/F"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1
+        )
+        if r.returncode == 0:
+            print(f"[OS Automation] Taskkill closed '{target}'")
+            return True
+    except Exception:
+        pass
+
+    # 3. Fallback scan via psutil for partial/fuzzy process names
     try:
         import psutil
         for proc in psutil.process_iter(['pid', 'name']):
@@ -178,42 +209,15 @@ def close_app(app_name: str = "") -> bool:
                     closed = True
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 pass
+            if closed and (clean == stem or clean == pname):
+                # Found and terminated target process; avoid scanning rest of system
+                break
         if closed:
             print(f"[OS Automation] Closed process matching '{clean}'")
+            return True
     except Exception as e:
         print(f"[OS Automation] psutil close note: {e}")
 
-    # 2. Close via matching top-level window titles (e.g. "Settings", "VALORANT", "Notepad")
-    try:
-        import win32gui, win32con
-        def _close_win_enum(hwnd, _):
-            nonlocal closed
-            if win32gui.IsWindowVisible(hwnd):
-                title = (win32gui.GetWindowText(hwnd) or "").lower()
-                if clean in title:
-                    win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
-                    closed = True
-        win32gui.EnumWindows(_close_win_enum, None)
-    except Exception:
-        pass
-
-    # 3. Taskkill fallback for stubborn games / applications
-    if not closed:
-        try:
-            import subprocess
-            target = f"{clean}.exe" if not clean.endswith(".exe") else clean
-            r = subprocess.run(
-                ["taskkill", "/IM", target, "/T", "/F"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2
-            )
-            if r.returncode == 0:
-                closed = True
-                print(f"[OS Automation] Taskkill closed '{target}'")
-        except Exception:
-            pass
-
-    # IMPORTANT: Never send Alt+F4 when a specific app name was requested,
-    # to avoid closing Amigo itself or the user's currently focused window!
     return closed
 
 

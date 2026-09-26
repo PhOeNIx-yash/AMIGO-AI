@@ -129,15 +129,21 @@ def resolve_setting(setting: str) -> tuple:
     if best_score > 0:
         return best_label, best_uri
 
-    # Substring containment fallback on full phrase
+    # Word-bounded fallback on full phrase
+    query_tokens = set(re.findall(r"\b[a-z0-9]+\b", s))
     for label, uri in _SETTINGS_TABLE:
         lbl = label.lower()
-        if lbl in s or any(w in s for w in lbl.split()):
+        lbl_tokens = re.findall(r"\b[a-z0-9]+\b", lbl)
+        if not lbl_tokens:
+            continue
+        if len(lbl_tokens) > 1 and re.search(r"\b" + re.escape(lbl) + r"\b", s):
+            return label, uri
+        if any(w in query_tokens for w in lbl_tokens if len(w) >= 3):
             return label, uri
 
-    # Alias substring fallback
+    # Alias word-bounded fallback
     for alias, (label, uri) in _ALIASES.items():
-        if alias in s:
+        if re.search(r"\b" + re.escape(alias) + r"\b", s):
             return label, uri
 
     return "Windows", "ms-settings:"

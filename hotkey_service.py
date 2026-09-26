@@ -59,33 +59,27 @@ def set_broadcast_callback(callback):
 
 
 def _broadcast(event_type: str, data: dict = None):
-    """Sends event to Web UI dashboard via SSE callback, in-memory reference, and HTTP bridge."""
+    """Sends event to Web UI dashboard via registered SSE callback or HTTP bridge if external."""
     payload = data or {}
 
     # 1. Direct in-memory callback (registered via set_broadcast_callback)
     if _broadcast_callback:
         try:
             _broadcast_callback(event_type, payload)
+            return
         except Exception as e:
             logger.debug(f"[Broadcast Callback] {e}")
 
-    # 2. Check if running inside __main__ of ui_server
+    # 2. Check if running in same process with ui_server module
     try:
-        main_mod = sys.modules.get("__main__")
-        if main_mod and hasattr(main_mod, "broadcaster") and main_mod.broadcaster != _broadcast_callback:
-            main_mod.broadcaster.broadcast(event_type, payload)
-    except Exception:
-        pass
-
-    # 3. Check if ui_server is in sys.modules
-    try:
-        ui_mod = sys.modules.get("ui_server")
-        if ui_mod and hasattr(ui_mod, "broadcaster"):
+        ui_mod = sys.modules.get("ui_server") or sys.modules.get("__main__")
+        if ui_mod and hasattr(ui_mod, "broadcaster") and hasattr(ui_mod.broadcaster, "broadcast"):
             ui_mod.broadcaster.broadcast(event_type, payload)
+            return
     except Exception:
         pass
 
-    # 4. HTTP Bridge to UI Server (cross-process sync to http://127.0.0.1:5000)
+    # 3. HTTP Bridge to UI Server (only for separate external process when no in-process broadcaster is found)
     def _post_http():
         try:
             import json
@@ -137,11 +131,17 @@ def _handle_wake_action():
         _is_processing = True
 
     try:
-        # Step 1: Capture screen & active window IMMEDIATELY before any dialog or sound
+        # Step 1: Note active window title immediately (<1ms)
         import screen_vision
         window_title = screen_vision.get_active_window_title()
-        screenshot = screen_vision.capture_screen_image()
-        logger.info(f"[Hotkey Wake] Screen captured. Active Window: '{window_title}'")
+        screenshot = None
+
+        def _get_screenshot():
+            nonlocal screenshot
+            if screenshot is None:
+                screenshot = screen_vision.capture_screen_image(save_path=None)
+                logger.info(f"[Hotkey Wake] Screen captured on-demand. Active Window: '{window_title}'")
+            return screenshot
 
         # Step 2: Play soothing chime and update UI state to 'listening'
         _play_soothing_wake_sound()
@@ -199,20 +199,22 @@ def _handle_wake_action():
                 params = act.get("params", {})
                 spoken = act.get("speak", "")
 
-                if tool in ("read_screen", "screen_vision") and screenshot is not None:
-                    prompt = query
-                    if window_title:
-                        prompt = f"The user is viewing '{window_title}'. Question: {query}"
-                    reply = local_llm.query_local_vision(
-                        screenshot,
-                        prompt=prompt,
-                        system_prompt=(
-                            "You are Amigo, a helpful voice assistant with screen vision capabilities. "
-                            "Analyze the user's active computer screen and answer their question clearly and directly. "
-                            "Do not use markdown, bullet points, or code formatting. Speak in natural plain English."
-                        ),
-                        max_tokens=350,
-                    ) or screen_vision.answer_screen_question(query)
+                if tool in ("read_screen", "screen_vision"):
+                    shot = _get_screenshot()
+                    if shot is not None:
+                        prompt = query
+                        if window_title:
+                            prompt = f"The user is viewing '{window_title}'. Question: {query}"
+                        reply = local_llm.query_local_vision(
+                            shot,
+                            prompt=prompt,
+                            system_prompt=(
+                                "You are Amigo, a helpful voice assistant with screen vision capabilities. "
+                                "Analyze the user's active computer screen and answer their question clearly and directly. "
+                                "Do not use markdown, bullet points, or code formatting. Speak in natural plain English."
+                            ),
+                            max_tokens=350,
+                        ) or screen_vision.answer_screen_question(query)
                 else:
                     res_spoken, _, _ = execute_tool(tool, params, query, spoken)
                     reply = res_spoken or spoken

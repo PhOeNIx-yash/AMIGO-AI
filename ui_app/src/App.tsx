@@ -856,11 +856,9 @@ export default function App() {
                     {/* Central Display & Animated State Cards with 60fps Hardware-Accelerated Smooth Scrolling */}
                     <div
                       id="central-display-area"
-                      className="relative z-20 flex-1 min-h-0 w-full max-w-4xl flex flex-col items-center justify-center px-4 py-3 sm:py-5 overflow-y-auto smooth-scroll-container bg-transparent"
+                      className="relative z-20 flex-1 min-h-0 w-full max-w-4xl flex flex-col items-center justify-center px-4 py-4 sm:py-6 overflow-y-auto smooth-scroll-container bg-transparent transition-all duration-300"
                     >
-                      <div className={`w-full flex flex-col items-center justify-center py-2 transition-all duration-300 ${
-                        isCompact ? "mt-12 sm:mt-16 my-auto" : "my-auto"
-                      }`}>
+                      <div className="w-full flex flex-col items-center justify-center my-auto transition-all duration-300 max-w-2xl">
                   {/* State Pill Badge (Only for listening or interactive pickers) */}
                   {(state === "listening" || isListening) && (
                     <div className="mb-2 sm:mb-3">
@@ -873,8 +871,23 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Main Central Spoken / Heading Text */}
-                  {state !== "action_card" && (
+                  {/* Dedicated Action Card Spoken Context */}
+                  {state === "action_card" && displayText && displayText !== greetingText && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -6 }}
+                      transition={{ duration: 0.2 }}
+                      className="text-center px-4 max-w-xl mx-auto mb-3 pointer-events-auto"
+                    >
+                      <p className="text-base sm:text-lg md:text-xl font-medium tracking-tight leading-snug drop-shadow-[0_2px_12px_rgba(0,0,0,0.8)] text-slate-100">
+                        {displayText}
+                      </p>
+                    </motion.div>
+                  )}
+
+                  {/* Main Central Spoken / Heading Text (for idle, listening, processing, working, completed) */}
+                  {!isCompact && (
                     <div className="text-center max-w-2xl sm:max-w-3xl md:max-w-4xl mx-auto px-4 drop-shadow-[0_4px_24px_rgba(0,0,0,0.85)] pointer-events-auto">
                       {(state === "listening" || isListening) && liveTranscript ? (
                         <div className="flex min-w-0 w-full flex-col items-center px-2">

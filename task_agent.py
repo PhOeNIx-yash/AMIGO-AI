@@ -16,11 +16,19 @@ from laya_router import route_intent_via_laya, extract_parameters_and_tool
 
 logger = logging.getLogger("amigo.task_agent")
 
-# Multi-step conjunction splitters based on natural language clause boundaries
-_RE_STEP_SPLIT = re.compile(
-    r"\s*(?:;\s*|\band\s+then\b|\bthen\b|\bafter\s+that\b|\band\s+also\b|\bbut\s+also\b|\bas\s+well\s+as\b|\band\b)\s*",
+# Strong sequential conjunctions that inherently divide multi-action commands
+_RE_SEQUENTIAL_CONJ = re.compile(
+    r"\s*(?:;\s*|\band\s+then\b|\bthen\b|\bafter\s+that\b|\band\s+also\b|\bbut\s+also\b|\bas\s+well\s+as\b)\s*",
     re.IGNORECASE,
 )
+
+# Common command imperative verbs that indicate the start of a distinct action clause
+_RE_ACTION_START = re.compile(
+    r"^(?:(?:can|could|would)\s+(?:you|u)\s+)?(?:please\s+)?(?:also\s+)?"
+    r"(?:open|launch|start|run|close|quit|exit|kill|play|stream|listen|watch|replay|repeat|search|google|look\s+up|find|type|write|input|press|hit|click|scroll|set|turn|mute|unmute|lock|sleep|restart|reboot|check|show|tell|read|summarize)\b",
+    re.IGNORECASE,
+)
+
 _RE_STEP_CLEANUP = re.compile(
     r"^(?:(?:can|could|would)\s+(?:you|u)\s+)?(?:please\s+)?(?:also\s+|and\s+)?",
     re.IGNORECASE,
@@ -151,18 +159,44 @@ def execute_browser_action(action: str, params: Dict[str, Any]) -> tuple[bool, s
 # ---------------------------------------------------------------------------
 
 def decompose_task(user_prompt: str) -> List[str]:
-    """Decomposes a compound voice command into sequential action steps."""
+    """Decomposes a compound voice command into sequential action steps without splitting natural phrases."""
     clean = (user_prompt or "").strip()
     if not clean:
         return []
 
-    # Check for natural conjunction boundaries
-    raw_steps = [s.strip().rstrip(".!?,") for s in _RE_STEP_SPLIT.split(clean) if s and s.strip()]
-    if len(raw_steps) > 1:
-        steps = [_RE_STEP_CLEANUP.sub("", s).strip() for s in raw_steps]
-        # A valid command step contains at least 2 words (a verb/predicate and object)
-        if all(len(s.split()) >= 2 for s in steps):
-            return steps
+    # 1. Split on explicit sequential markers (; then, and then, after that, and also, but also, as well as)
+    initial_segments = [s.strip().rstrip(".!?,") for s in _RE_SEQUENTIAL_CONJ.split(clean) if s and s.strip()]
+    if not initial_segments:
+        initial_segments = [clean]
+
+    # 2. For segments containing 'and' or '&', only split if the clause after 'and' starts with an imperative action verb
+    refined_steps: List[str] = []
+    for seg in initial_segments:
+        parts = re.split(r"\s+(?:and|&)\s+", seg, flags=re.IGNORECASE)
+        if len(parts) > 1:
+            current = parts[0].strip()
+            for following in parts[1:]:
+                following_clean = following.strip()
+                if _RE_ACTION_START.search(following_clean):
+                    if current:
+                        refined_steps.append(current)
+                    current = following_clean
+                else:
+                    # 'and' is part of a phrase (e.g. 'bed and breakfast', 'rock and roll', 'tom and jerry')
+                    current = f"{current} and {following_clean}"
+            if current:
+                refined_steps.append(current)
+        else:
+            refined_steps.append(seg)
+
+    # 3. Validation: a multi-step decomposition is valid only if each step has substance and an action directive
+    if len(refined_steps) > 1:
+        cleaned_steps = [_RE_STEP_CLEANUP.sub("", s).strip() for s in refined_steps if s.strip()]
+        if len(cleaned_steps) > 1 and all(
+            len(s.split()) >= 2 and (_RE_ACTION_START.search(s) or any(w in s.lower() for w in ("weather", "time", "date", "battery")))
+            for s in cleaned_steps
+        ):
+            return cleaned_steps
 
     return [clean]
 

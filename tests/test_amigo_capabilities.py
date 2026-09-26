@@ -14,8 +14,10 @@ class FakeLayaAgent:
             "chat": max(0.05, (1.0 - confidence) / 2),
             "web_search": max(0.05, (1.0 - confidence) / 2),
         }
+        self.last_state = None
 
     def predict(self, state, questions):
+        self.last_state = state
         return {
             "answers": {
                 "tool": {
@@ -25,6 +27,7 @@ class FakeLayaAgent:
                 }
             }
         }
+
 
 
 CONFUSING_PROMPTS = [
@@ -163,7 +166,70 @@ class TestAmigoCapabilities(unittest.TestCase):
         tool, params = laya_router.extract_parameters_and_tool("media_control", "what song is currently playing")
         self.assertEqual(tool, "current_media")
 
+    def test_laya_router_includes_history_in_state(self):
+        fake_agent = FakeLayaAgent("close_app", 0.95)
+        history = [
+            {"user": "open Chrome", "assistant": "Opening Google Chrome", "tool": "open_app"},
+        ]
+        with patch.object(laya_router, "get_laya_agent", return_value=fake_agent):
+            result = laya_router.route_intent_via_laya("close it", conversation_history=history)
+
+        self.assertIsNotNone(fake_agent.last_state)
+        self.assertEqual(fake_agent.last_state["request"], "close it")
+        self.assertIn("history", fake_agent.last_state)
+        self.assertEqual(len(fake_agent.last_state["history"]), 1)
+        self.assertEqual(fake_agent.last_state["history"][0]["user"], "open Chrome")
+        self.assertEqual(fake_agent.last_state["history"][0]["tool"], "open_app")
+        self.assertEqual(result["tool"], "close_app")
+        self.assertEqual(result["params"].get("app_name"), "chrome")
+
+    def test_weather_follow_up_inherits_city_from_history(self):
+        history = [
+            {"user": "what is the weather in Mumbai?", "assistant": "In Mumbai it is 30°C", "tool": "weather"}
+        ]
+        tool, params = laya_router.extract_parameters_and_tool("weather", "what about tomorrow?", conversation_history=history)
+        self.assertEqual(tool, "get_weather")
+        self.assertEqual(params.get("city"), "Mumbai")
+
+    def test_play_it_again_resolves_previous_song(self):
+        history = [
+            {"user": "play Believer by Imagine Dragons", "assistant": "Playing Believer", "tool": "play_youtube"}
+        ]
+        tool, params = laya_router.extract_parameters_and_tool("play_youtube", "play it again", conversation_history=history)
+        self.assertEqual(tool, "play_youtube")
+        self.assertEqual(params.get("query"), "Believer by Imagine Dragons")
+
+    def test_spoken_math_multiplication_x(self):
+        import Calculatenumbers
+        res = Calculatenumbers.Calc("what is 4 x 5")
+        self.assertEqual(res, "20")
+
+    def test_settings_resolver_word_boundary(self):
+        import settings_resolver
+        label, uri = settings_resolver.resolve_setting("opened files in background")
+        self.assertNotIn("Pen", label)
+
+    def test_task_agent_decompose_preserves_natural_phrases(self):
+        import task_agent
+        single = task_agent.decompose_task("search for bed and breakfast")
+        self.assertEqual(single, ["search for bed and breakfast"])
+
+        compound = task_agent.decompose_task("close Chrome and search the web")
+        self.assertEqual(compound, ["close Chrome", "search the web"])
+
+    def test_reminder_dedup_does_not_swallow_distinct_reminders(self):
+        import reminder_timer
+        with reminder_timer._reminders_lock:
+            reminder_timer._scheduled_reminders.clear()
+
+        r1 = reminder_timer.handle_set_reminder({"message": "call mom", "time": "in 10 minutes"})
+        r2 = reminder_timer.handle_set_reminder({"message": "call mom's doctor", "time": "in 10 minutes"})
+        self.assertIn("remind you", r1.lower())
+        self.assertIn("remind you", r2.lower())
+        self.assertNotEqual(r2, "That reminder is already scheduled.")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
 

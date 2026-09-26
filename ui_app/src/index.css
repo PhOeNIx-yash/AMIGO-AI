@@ -140,12 +140,14 @@
   display: grid;
   place-items: center;
   isolation: isolate;
-  transition: transform 0.45s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.4s ease;
-  will-change: transform;
+  transition: transform 0.45s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.35s ease;
+  will-change: transform, opacity;
 }
 
 .amigo-orb-stage.compact {
-  transform: translateY(-5rem) scale(0.68);
+  opacity: 0 !important;
+  transform: scale(0.82) translateZ(0);
+  pointer-events: none;
 }
 
 /* High-performance GPU-native radial gradient halo (replaces costly 52px blur shader) */
@@ -158,7 +160,7 @@
   pointer-events: none;
   background: radial-gradient(circle, var(--theme-glow, rgba(124, 58, 237, 0.45)) 0%, rgba(124, 58, 237, 0.12) 40%, transparent 70%);
   transform: translate3d(0, 0, 0);
-  transition: opacity 0.3s ease;
+  transition: opacity 0.3s ease, transform 0.45s cubic-bezier(0.16, 1, 0.3, 1);
   will-change: transform, opacity;
 }
 

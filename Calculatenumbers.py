@@ -47,15 +47,14 @@ _SPOKEN_MATH_MAP = [
     (re.compile(r"\b(?:what is|calculate|solve|evaluate|how much is|tell me)\b", re.I), ""),
     (re.compile(r"\bmultiplied\s+by\b", re.I), "*"),
     (re.compile(r"\bdivided\s+by\b", re.I), "/"),
-    (re.compile(r"\bto\s+the\s+power\s+of\b", re.I), "**"),
-    (re.compile(r"\bpower\s+of\b", re.I), "**"),
+    (re.compile(r"\b(?:to\s+the\s+)?power\s+of\b", re.I), "**"),
     (re.compile(r"\btimes\b", re.I), "*"),
     (re.compile(r"\binto\b", re.I), "*"),
     (re.compile(r"\bplus\b", re.I), "+"),
     (re.compile(r"\bminus\b", re.I), "-"),
     (re.compile(r"\bover\b", re.I), "/"),
     (re.compile(r"\bmod\b", re.I), "%"),
-    (re.compile(r"\bx\b", re.I), "*"),
+    (re.compile(r"(?<=\d)\s*[xX]\s*(?=\d)"), " * "),
     (re.compile(r"\^"), "**"),
 ]
 

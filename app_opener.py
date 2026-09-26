@@ -39,10 +39,19 @@ _CLEAN_WORDS = frozenset({
     "for", "in", "on", "at", "to", "from", "with", "about", "of", "by", "is", "was", "are",
 })
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+APP_CACHE_FILE = os.path.join(BASE_DIR, "app_index.json")
+FILE_CACHE_FILE = os.path.join(BASE_DIR, "file_index.json")
+
 _app_dict: Dict[str, str] = {}
 _index_built: bool = False
 _build_lock = threading.Lock()
 _build_thread: Optional[threading.Thread] = None
+
+_file_index: List[Tuple[str, str, float]] = []  # (full_path, fname_lower, mtime)
+_file_index_built: bool = False
+_file_index_lock = threading.Lock()
+_file_index_thread: Optional[threading.Thread] = None
 
 
 # ---------------------------------------------------------------------------
@@ -239,8 +248,34 @@ def _src_common_exes() -> Dict[str, str]:
     return out
 
 
+def _load_cached_app_index() -> bool:
+    """Load previously built app index from disk for sub-5ms startup."""
+    global _app_dict, _index_built
+    if os.path.exists(APP_CACHE_FILE):
+        try:
+            with open(APP_CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            apps = data.get("apps", {})
+            if apps and isinstance(apps, dict):
+                with _build_lock:
+                    _app_dict = apps
+                    _index_built = True
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _save_cached_app_index(apps: Dict[str, str]) -> None:
+    try:
+        with open(APP_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"timestamp": time.time(), "apps": apps}, f, indent=2)
+    except Exception:
+        pass
+
+
 def _build_index() -> None:
-    """Builds the in-memory app lookup dictionary."""
+    """Builds the in-memory app lookup dictionary and persists to disk."""
     global _app_dict, _index_built
     t0 = time.time()
     idx = {}
@@ -253,15 +288,19 @@ def _build_index() -> None:
     with _build_lock:
         _app_dict = idx
         _index_built = True
+    _save_cached_app_index(idx)
     print(f"[AppIndex] Ready — {len(_app_dict)} apps indexed in {time.time()-t0:.1f}s", flush=True)
 
 
-
 def ensure_built() -> None:
-    """Starts background index build if not already running."""
+    """Starts background index build if not already running or loaded from disk."""
     global _build_thread
     with _build_lock:
-        if _index_built or (_build_thread and _build_thread.is_alive()):
+        if _index_built:
+            return
+        if _load_cached_app_index():
+            return
+        if _build_thread and _build_thread.is_alive():
             return
         _build_thread = threading.Thread(target=_build_index, daemon=True, name="AppIndex-Build")
         _build_thread.start()
@@ -273,6 +312,103 @@ def refresh_app_index() -> None:
     with _build_lock:
         _index_built = False
     ensure_built()
+
+
+# ---------------------------------------------------------------------------
+# Background File Indexing & Caching (Zero Live Walk Overhead)
+# ---------------------------------------------------------------------------
+
+def _load_cached_file_index() -> bool:
+    """Load cached file index from disk."""
+    global _file_index, _file_index_built
+    if os.path.exists(FILE_CACHE_FILE):
+        try:
+            with open(FILE_CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            files = data.get("files", [])
+            if files and isinstance(files, list):
+                with _file_index_lock:
+                    _file_index = [tuple(item) for item in files]
+                    _file_index_built = True
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _save_cached_file_index(files: List[Tuple[str, str, float]]) -> None:
+    try:
+        with open(FILE_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"timestamp": time.time(), "files": files}, f)
+    except Exception:
+        pass
+
+
+def _build_file_index() -> None:
+    """Background indexer for user files to eliminate live disk walks."""
+    global _file_index, _file_index_built
+    t0 = time.time()
+    collected: List[Tuple[str, str, float]] = []
+    seen = set()
+
+    # Prioritize user directories (Desktop, Documents, Downloads, Music, Pictures, Videos, OneDrive)
+    user_roots = []
+    for sub in ("Desktop", "Documents", "Downloads", "Pictures", "Videos", "Music", "OneDrive"):
+        p = os.path.join(_USER_HOME, sub)
+        if os.path.isdir(p):
+            user_roots.append((p, 4))
+    user_roots.append((_USER_HOME, 2))
+
+    for base, max_depth in user_roots:
+        if not os.path.isdir(base):
+            continue
+        try:
+            for root, dirs, files in os.walk(base, topdown=True):
+                dirs[:] = [d for d in dirs if not d.startswith((".", "$")) and d.lower() not in _SKIP_DIRS]
+                rel_depth = len(os.path.relpath(root, base).split(os.sep))
+                if rel_depth > max_depth:
+                    dirs.clear()
+                    continue
+                for fname in files:
+                    full = os.path.join(root, fname)
+                    if full not in seen:
+                        seen.add(full)
+                        try:
+                            mtime = os.path.getmtime(full)
+                        except OSError:
+                            mtime = 0
+                        collected.append((full, fname.lower(), mtime))
+        except Exception:
+            pass
+
+    with _file_index_lock:
+        _file_index = collected
+        _file_index_built = True
+    _save_cached_file_index(collected)
+    print(f"[FileIndex] Ready — {len(collected)} files indexed in {time.time()-t0:.1f}s", flush=True)
+
+
+def ensure_file_index_built() -> None:
+    """Starts background file indexing if not loaded."""
+    global _file_index_thread
+    with _file_index_lock:
+        if _file_index_built:
+            return
+        if _load_cached_file_index():
+            return
+        if _file_index_thread and _file_index_thread.is_alive():
+            return
+        _file_index_thread = threading.Thread(target=_build_file_index, daemon=True, name="FileIndex-Build")
+        _file_index_thread.start()
+
+
+def refresh_file_index() -> None:
+    """Forces background file index rebuild."""
+    global _file_index_built
+    with _file_index_lock:
+        _file_index_built = False
+    ensure_file_index_built()
+
 
 
 def _normalize(name: str) -> str:
@@ -329,32 +465,48 @@ def _score_file(path: str, filename: str, keywords: List[str]) -> int:
 
 
 def _search_files_fallback(keywords: List[str], max_results: int = 10) -> List[str]:
-    results = []
-    roots = [_USER_HOME]
-    for d in _get_all_drives():
-        if d not in roots and os.path.isdir(d):
-            roots.append(d)
+    ensure_file_index_built()
+    with _file_index_lock:
+        cached = list(_file_index)
 
-    seen = set()
-    for root in roots:
-        for dirpath, dirnames, filenames in os.walk(root, topdown=True):
-            dirnames[:] = [d for d in dirnames if not d.startswith((".", "$")) and d.lower() not in _SKIP_DIRS]
-            rel_depth = len(os.path.relpath(dirpath, root).split(os.sep))
-            if rel_depth > 4:
-                dirnames.clear()
+    results = []
+    # 1. Fast in-memory search over cached file index (<5ms)
+    if cached:
+        for full, fname_lower, mtime in cached:
+            score = _score_file(full, fname_lower, keywords)
+            if score > 0:
+                results.append((score, mtime, full))
+                if len(results) >= max_results * 5:
+                    break
+
+    # 2. If cached index is not ready or gave no hits, do a fast targeted scan of primary user directories only
+    if not results:
+        target_roots = [
+            os.path.join(_USER_HOME, "Documents"),
+            os.path.join(_USER_HOME, "Downloads"),
+            os.path.join(_USER_HOME, "Desktop"),
+        ]
+        seen = set()
+        for root in target_roots:
+            if not os.path.isdir(root):
                 continue
-            for fname in filenames:
-                full = os.path.join(dirpath, fname)
-                if full in seen:
+            for dirpath, dirnames, filenames in os.walk(root, topdown=True):
+                dirnames[:] = [d for d in dirnames if not d.startswith((".", "$")) and d.lower() not in _SKIP_DIRS]
+                rel_depth = len(os.path.relpath(dirpath, root).split(os.sep))
+                if rel_depth > 3:
+                    dirnames.clear()
                     continue
-                score = _score_file(full, fname, keywords)
-                if score > 0:
-                    results.append((score, os.path.getmtime(full) if os.path.exists(full) else 0, full))
-                    seen.add(full)
-                    if len(results) >= max_results * 3:
-                        break
-        if len(results) >= max_results * 3:
-            break
+                for fname in filenames:
+                    full = os.path.join(dirpath, fname)
+                    if full not in seen:
+                        seen.add(full)
+                        score = _score_file(full, fname, keywords)
+                        if score > 0:
+                            try:
+                                mtime = os.path.getmtime(full)
+                            except OSError:
+                                mtime = 0
+                            results.append((score, mtime, full))
 
     results.sort(key=lambda x: (x[0], x[1]), reverse=True)
     return [r[2] for r in results[:max_results]]

@@ -111,9 +111,9 @@ def extract_user_profile_updates(user_query: str, remember: str = "") -> None:
     rag_engine.extract_user_profile_updates(user_query, remember=remember)
 
 
-def get_user_profile_prompt() -> str:
+def get_user_profile_prompt(query: str = "") -> str:
     """Format user profile for prompt context."""
-    return rag_engine.get_user_profile_prompt()
+    return rag_engine.get_user_profile_prompt(query=query)
 
 
 def get_active_context_prompt() -> str:
@@ -125,11 +125,11 @@ def get_active_context_prompt() -> str:
 #  LLM Prompt Building  (now RAG-enhanced)
 # ═══════════════════════════════════════════════════════════════
 
-_last_thought: str = ""
+_thread_local = threading.local()
 
 def get_last_thought() -> str:
-    """Return the most recent reasoning/thought block, if any."""
-    return _last_thought
+    """Return the most recent reasoning/thought block for the current request thread, if any."""
+    return getattr(_thread_local, "last_thought", "")
 
 
 def _build_voice_prompt(query: str = "", is_voice: bool = True, has_web_context: bool = False) -> str:
@@ -152,13 +152,10 @@ def _build_voice_prompt(query: str = "", is_voice: bool = True, has_web_context:
     elif has_web_context:
         prompt += (
             "Current Network Status: Connected (Online). You are synthesizing online web search results to answer the user's query accurately.\n"
-            "CRITICAL FACTUAL INTEGRITY RULES:\n"
-            "- Rely strictly and ONLY on the provided [Web Search Facts].\n"
-            "- State ONLY facts that are explicitly mentioned in the provided text.\n"
-            "- Synthesize and present the verified facts, numbers, dates, or live figures directly to the user.\n"
-            "- Never state that you lack real-time access or current information when relevant facts and data are provided in the search results above.\n"
-            "- NEVER extrapolate, guess, or invent acquisitions, dates, founders, or owners from other companies or external memory.\n"
-            "- If a detail is not in the search results, do not make it up. State only what is verified.\n"
+            "Guidelines:\n"
+            "- Rely strictly on the provided web search information to answer the user's query.\n"
+            "- State verified facts, numbers, dates, or figures directly and accurately.\n"
+            "- If a requested detail is not found in the search results, state what is available and clarify what is not provided, rather than guessing.\n"
         )
     else:
         prompt += "Current Network Status: Connected (Online). You have active internet connectivity right now.\n"
@@ -168,6 +165,7 @@ def _build_voice_prompt(query: str = "", is_voice: bool = True, has_web_context:
         "- Answer questions, riddles, math problems, and user requests directly, accurately, and completely.\n"
         "- When following up on prior discussion, use the conversation history to maintain context.\n"
         "- Speak naturally, clearly, and concisely without repetitive greetings or robotic boilerplate.\n"
+        "- Only reference remembered user facts or personal notes when the user explicitly asks about them or when directly relevant to what they are asking. NEVER blurt out or awkwardly append remembered facts to unrelated answers.\n"
         "- You are Amigo, a fully capable desktop AI assistant equipped to play music, stream audio on YouTube, launch programs, manage windows, and control system volume. NEVER state that you cannot play music, cannot access YouTube, or cannot execute actions, because the system executes these capabilities on your behalf.\n"
         "- You are the user's personal assistant; answer their questions and recall their documents and records when asked.\n"
     )
@@ -178,7 +176,7 @@ def _build_voice_prompt(query: str = "", is_voice: bool = True, has_web_context:
 
     if active_ctx := get_active_context_prompt():
         prompt += f"\n{active_ctx}"
-    if user_prof := get_user_profile_prompt():
+    if user_prof := get_user_profile_prompt(query):
         prompt += f"\n{user_prof}"
     if clip := get_clipboard_text():
         prompt += f"\n[Clipboard: '{clip[:200]}']"
@@ -198,21 +196,16 @@ def _build_ai_messages(
     Pulls recent turns from RAG and injects document/web context."""
     messages: list[dict] = []
 
-    # When web_context or doc_context is provided, disable memory injection so old hallucinations, prior refusals, or off-topic history don't bleed in
-    if web_context or doc_context:
-        use_memory = False
-
     if use_memory:
-        recent = rag_engine.get_recent_conversations(count=8)
+        recent = rag_engine.get_recent_conversations(count=6)
         for c in recent:
             u = (c.get("user", "") or "").strip()
             a = (c.get("assistant", "") or "").strip()
             tool = c.get("tool", "")
-            # Only include genuine conversational dialogue, not media playback or tool confirmations
-            if u and a and tool not in ("play_youtube", "error") and not a.startswith("Playing '"):
+            # Include dialogue turns, skipping internal error states
+            if u and a and tool != "error":
                 messages.append({"role": "user", "content": u[:1000]})
                 messages.append({"role": "assistant", "content": a[:1500]})
-
 
     # Build user content with any injected context
     user_parts: list[str] = []
@@ -224,12 +217,12 @@ def _build_ai_messages(
     elif doc_context:
         user_parts.append(
             f"[Relevant Local Document Context]:\n{doc_context}\n\n"
-            "CRITICAL RULES FOR LOCAL DOCUMENT QUERIES:\n"
-            "- The document content is provided above. You have DIRECT ACCESS to this document right now.\n"
-            "- When the user asks for a synopsis, summary, overview, explanation, or key findings, provide a clear, comprehensive synopsis directly from the text above.\n"
-            "- When the user asks for a specific detail, number, date, PAN, PIN, PNR, name, or fact, provide the exact detail accurately and concisely.\n"
-            "- NEVER state that you do not have access to the document, never say you cannot view it, and NEVER ask the user to share or upload the file, because the text is already right here above.\n"
-            "- Synthesize your response entirely from the provided document context."
+            "Guidelines for Document Questions:\n"
+            "- You have direct access to the relevant document text provided above.\n"
+            "- Answer the user's question accurately using the provided document context.\n"
+            "- If the user asks for a summary or key points, synthesize the main takeaways directly from the text.\n"
+            "- If the user asks for specific data or facts, provide them clearly and concisely.\n"
+            "- If the requested information is not mentioned in the text, state that it is not found in the provided document."
         )
     user_parts.append(query)
 
@@ -252,9 +245,8 @@ def get_ai_response(
     is_voice: bool = True,
 ) -> str:
     """Query local AI model with RAG-enhanced context and return plain speech text."""
-    global _last_thought
+    _thread_local.last_thought = ""
     if not query or not query.strip():
-        _last_thought = ""
         return "How can I help you today?"
 
     messages = _build_ai_messages(query, use_memory=use_memory, web_context=web_context, doc_context=doc_context)
@@ -265,12 +257,11 @@ def get_ai_response(
     response = query_local_llm(messages, system_prompt=prompt, max_tokens=max_tokens, temperature=temp, thinking=thinking_active, sanitize=False)
     response = _RE_SPEAKER_PREFIX.sub("", response).strip()
 
-    # Extract thought block if present
-    _last_thought = ""
+    # Extract thought block if present into thread-local state
     if "<think>" in response:
         m = re.search(r"<think>([\s\S]*?)(?:</think>|$)", response)
         if m:
-            _last_thought = m.group(1).strip()
+            _thread_local.last_thought = m.group(1).strip()
         if "</think>" in response:
             response = response.split("</think>")[-1].strip()
         else:

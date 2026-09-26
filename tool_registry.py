@@ -871,11 +871,10 @@ def _tool_ask_document(params, query, spoken):
     else:
         ctx = rag_engine.build_rag_context(question, top_k=6)
 
-    target_prompt = query if (query and any(k in query.lower() for k in ("synopsis", "summary", "summarize", "overview", "detail", "explain", "pan", "pin", "what", "how", "who"))) else question
+    target_prompt = (query or question).strip()
     if ctx:
         return get_ai_response(target_prompt, doc_context=ctx), None
     return get_ai_response(target_prompt), None
-
 
 
 def _tool_summarize_document(params, query, spoken):
@@ -893,7 +892,7 @@ def _tool_summarize_document(params, query, spoken):
         ctx = rag_engine.build_rag_context(query, top_k=6)
 
     if ctx:
-        target_prompt = query if query and any(k in query.lower() for k in ("synopsis", "summary", "summarize", "overview", "brief")) else f"Summarize this document concisely:\n{query}"
+        target_prompt = query.strip() if query.strip() else "Summarize this document concisely."
         return get_ai_response(target_prompt, doc_context=ctx), None
     return "I couldn't find that document to summarize.", None
 

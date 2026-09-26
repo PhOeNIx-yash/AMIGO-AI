@@ -226,6 +226,30 @@ def _profile_writer_worker():
 
 threading.Thread(target=_profile_writer_worker, daemon=True, name="ProfileWriter").start()
 
+_conv_write_queue: queue.Queue = queue.Queue()
+
+
+def _conv_writer_worker():
+    """Background worker that stores conversation embedding in ChromaDB asynchronously."""
+    while True:
+        item = _conv_write_queue.get()
+        try:
+            col = _col(CONVERSATIONS)
+            if col:
+                col.add(
+                    ids=[item["doc_id"]],
+                    documents=[item["doc_text"]],
+                    metadatas=[item["metadata"]],
+                )
+        except Exception as e:
+            logger.error("[RAG] Async error storing conversation: %s", e)
+        finally:
+            _conv_write_queue.task_done()
+
+
+threading.Thread(target=_conv_writer_worker, daemon=True, name="ConvWriter").start()
+
+
 
 def save_profile(profile: dict) -> None:
     """Update RAM cache and asynchronously persist profile to disk via background queue."""
@@ -299,27 +323,50 @@ def update_active_state(slot: str, data: dict) -> None:
 #  Document Text Extraction
 # ═══════════════════════════════════════════════════════════════
 
+_extracted_text_cache: dict[tuple[str, float], str] = {}
+_extracted_text_lock = threading.Lock()
+
+
 def extract_text(filepath: str) -> str:
-    """Extract text from a supported document (PDF, DOCX, XLSX, PPTX, TXT, MD, CSV)."""
+    """Extract text from a supported document with mtime-based RAM caching."""
     if not os.path.exists(filepath):
         return ""
+
+    cache_key = None
+    try:
+        mtime = os.path.getmtime(filepath)
+        cache_key = (os.path.normpath(filepath), mtime)
+        with _extracted_text_lock:
+            if cache_key in _extracted_text_cache:
+                return _extracted_text_cache[cache_key]
+    except Exception:
+        pass
+
     ext = os.path.splitext(filepath)[1].lower()
     if ext not in SUPPORTED_EXTENSIONS:
         return ""
+    extracted = ""
     try:
         if ext == ".pdf":
-            return _extract_pdf(filepath)
+            extracted = _extract_pdf(filepath)
         elif ext in (".docx", ".doc"):
-            return _extract_docx(filepath)
+            extracted = _extract_docx(filepath)
         elif ext == ".xlsx":
-            return _extract_xlsx(filepath)
+            extracted = _extract_xlsx(filepath)
         elif ext == ".pptx":
-            return _extract_pptx(filepath)
+            extracted = _extract_pptx(filepath)
         elif ext in (".txt", ".md", ".csv"):
-            return _extract_plain(filepath)
+            extracted = _extract_plain(filepath)
     except Exception as e:
         logger.debug("[RAG] Extraction error for %s: %s", filepath, e)
-    return ""
+
+    if cache_key and extracted:
+        with _extracted_text_lock:
+            if len(_extracted_text_cache) > 100:
+                _extracted_text_cache.clear()
+            _extracted_text_cache[cache_key] = extracted
+
+    return extracted
 
 
 def _extract_pdf(filepath: str) -> str:
@@ -506,23 +553,21 @@ def add_conversation(
     doc_text = f"User: {user_msg}\nAssistant: {assistant_msg}"
     doc_id = f"conv-{uuid.uuid4().hex[:12]}"
 
-    # ── 1. Store in ChromaDB ──
+    # ── 1. Queue ChromaDB storage asynchronously (avoids synchronous embedding inference blocking response) ──
     try:
-        col = _col(CONVERSATIONS)
-        if col:
-            col.add(
-                ids=[doc_id],
-                documents=[doc_text],
-                metadatas=[{
-                    "user_msg": user_msg,
-                    "assistant_msg": assistant_msg,
-                    "tool": tool,
-                    "timestamp": timestamp,
-                    "type": "conversation",
-                }],
-            )
+        _conv_write_queue.put({
+            "doc_id": doc_id,
+            "doc_text": doc_text,
+            "metadata": {
+                "user_msg": user_msg,
+                "assistant_msg": assistant_msg,
+                "tool": tool,
+                "timestamp": timestamp,
+                "type": "conversation",
+            },
+        })
     except Exception as e:
-        logger.error("[RAG] Error storing conversation: %s", e)
+        logger.error("[RAG] Error queueing conversation: %s", e)
 
     # ── 2. Update in-memory buffer and conversation cache ──
     turn_item = {
@@ -1063,8 +1108,8 @@ def extract_user_profile_updates(user_query: str, remember: str = "") -> None:
         save_profile(profile)
 
 
-def get_user_profile_prompt() -> str:
-    """Format user profile for LLM prompt injection."""
+def get_user_profile_prompt(query: str = "") -> str:
+    """Format user profile for LLM prompt injection with semantic fact retrieval."""
     profile = load_profile()
     parts: list[str] = []
     user_name = profile.get("identity", {}).get("name")
@@ -1075,11 +1120,26 @@ def get_user_profile_prompt() -> str:
     if city := profile.get("preferences", {}).get("favorite_city"):
         parts.append(f"User lives in: {city}.")
 
-    # Pull latest user facts from RAG (skip redundant name facts and image dumps)
-    facts = get_all_user_facts()
-    for f in facts[-5:]:
-        if f and not (user_name and f.lower().startswith("user's name is")) and not f.startswith("Uploaded image"):
-            parts.append(f"Remembered fact: {f}")
+    # Only inject specific remembered facts when semantically relevant to the current user query,
+    # skipping embedding search for short greetings, trivial commands, or non-memory small talk.
+    if query and query.strip():
+        q_clean = query.strip().lower()
+        words = q_clean.split()
+        is_memory_signal = any(kw in q_clean for kw in ("remember", "recall", "my ", "favorite", "about me", "note", "prefer", "know about me", "where do i", "who is", "what is my"))
+        should_search_facts = (is_memory_signal or len(words) >= 4) and not any(
+            q_clean.startswith(prefix) for prefix in ("open ", "launch ", "close ", "play ", "pause", "mute", "unmute", "volume ", "set timer", "scroll ", "click ")
+        )
+        if should_search_facts:
+            try:
+                matched_facts = search(query, target_collections=[USER_FACTS], top_k=2)
+                for mf in matched_facts:
+                    doc = mf.get("document", "").strip()
+                    dist = mf.get("distance", 1.0)
+                    # Ensure high semantic relevance threshold (L2 distance < 0.85)
+                    if doc and dist < 0.85 and not (user_name and doc.lower().startswith("user's name is")) and not doc.startswith("Uploaded image"):
+                        parts.append(f"Relevant remembered fact: {doc}")
+            except Exception as e:
+                logger.debug("[RAG Profile Facts]: %s", e)
 
     return "\n".join(parts) if parts else ""
 

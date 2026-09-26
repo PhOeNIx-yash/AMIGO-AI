@@ -46,8 +46,8 @@ LAYA_QUESTIONS = {
             "screen_vision": "Analyze, read, or answer questions about what is visible on the screen",
             "memory_recall": "Recall stored personal memories, facts, notes, or past interactions",
             "document_qa": "Search or ask questions about indexed local documents and files",
-            "workspace": "Check emails, view calendar schedule, or manage timers and alarms",
-            "web_search": "Search the web, google information, look up facts, or browse the internet",
+            "workspace": "Check user's personal Outlook emails, personal calendar meetings/schedule, or manage timers and alarms",
+            "web_search": "Search the web, google information, look up facts, esports or sports match schedules, live events, or browse the internet",
             "chat": "General conversation, small talk, casual remarks, opinions, compliments, discussing music or songs, storytelling, or general questions",
         },
     },
@@ -140,17 +140,41 @@ def get_last_played_song(conversation_history: list | None = None) -> dict | Non
                 continue
             tool = turn.get("tool")
             assistant = turn.get("assistant") or turn.get("response") or ""
+            turn_params = turn.get("params") if isinstance(turn.get("params"), dict) else {}
+            if turn_params.get("query"):
+                return {"title": turn_params["query"], "query": turn_params["query"], "url": ""}
+
+            # Extract from user query if this turn ran play_youtube (preserves full artist and track specification)
+            if tool == "play_youtube":
+                u = turn.get("user") or turn.get("query") or ""
+                if u:
+                    clean_u = re.sub(
+                        r"^(?:(?:can|could|would)\s+(?:you|u)\s+)?(?:please\s+)?(?:play|listen(?:\s+to)?|stream|put\s+on|watch|replay|repeat)\s+(?:the\s+|a\s+|some\s+)?(?:song\s+|music\s+|track\s+|video\s+)?(?:called\s+|titled\s+|named\s+)?",
+                        "",
+                        u,
+                        flags=re.I,
+                    )
+                    clean_u = re.sub(r"\s+(?:on\s+youtube|from\s+youtube|please|for\s+me)$", "", clean_u, flags=re.I).strip().rstrip("?!.,;:")
+                    if clean_u:
+                        return {"title": clean_u, "query": clean_u, "url": ""}
+
             # Match tool or spoken confirmation
-            if tool == "play_youtube" or "on YouTube" in assistant:
-                m = re.search(r"Playing ['\"](.+?)['\"]", assistant)
+            if tool == "play_youtube" or "on YouTube" in assistant or "Playing" in assistant:
+                m = re.search(r"Playing\s+['\"](.+?)['\"]", assistant, re.I)
+                if not m:
+                    m = re.search(r"Playing\s+(.+?)(?:\s+on\s+YouTube|\.|$)", assistant, re.I)
                 if m:
-                    song_name = m.group(1).strip()
-                    return {"title": song_name, "query": song_name, "url": ""}
+                    song_name = m.group(1).strip().strip("'\"")
+                    if song_name:
+                        return {"title": song_name, "query": song_name, "url": ""}
+
             # Or match assistant describing the song
-            m2 = re.search(r"(?:song\s+(?:I\s+played\s+)?was|looked\s+up\s+the\s+song)\s+['\"](.+?)['\"]", assistant, re.I)
+            m2 = re.search(r"(?:song\s+(?:I\s+played\s+)?was|looked\s+up\s+the\s+song)\s+['\"]?(.+?)['\"]?(?:\.|$)", assistant, re.I)
             if m2:
-                song_name = m2.group(1).strip()
-                return {"title": song_name, "query": song_name, "url": ""}
+                song_name = m2.group(1).strip().strip("'\"")
+                if song_name:
+                    return {"title": song_name, "query": song_name, "url": ""}
+
 
     return None
 
@@ -206,6 +230,16 @@ def extract_parameters_and_tool(tool: str, query: str, conversation_history: lis
         name = re.sub(r"^(?:(?:can|could|would)\s+(?:you|u)\s+)?(?:please\s+)?(?:open|launch|start|run)(?:\s+(?:the\s+|an?\s+)?)?", "", q, flags=re.I)
         name = re.sub(r"\s+(?:please|for\s+me)$", "", name, flags=re.I).strip()
 
+        # If name is anaphoric ("it", "this", "the app") and history is available, resolve from previous turns
+        if (not name or name.lower() in ("it", "this", "that", "the app", "this app")) and conversation_history:
+            for turn in reversed(conversation_history):
+                if isinstance(turn, dict):
+                    prev_u = turn.get("user") or turn.get("query") or ""
+                    m_app = re.search(r"\b(?:open|launch|start|run|close|quit)\s+(?:the\s+|an?\s+)?(.+)", prev_u, re.I)
+                    if m_app:
+                        name = m_app.group(1).strip()
+                        break
+
         # If query contains no opening intent and matches no installed application, treat as general conversation
         has_open_indicator = bool(re.search(r"\b(?:open|launch|start|run|app|application|program)\b", q_low))
         if not has_open_indicator:
@@ -216,7 +250,7 @@ def extract_parameters_and_tool(tool: str, query: str, conversation_history: lis
             except Exception:
                 return "chat", {}
 
-        return "open_app", {"name": name or "Notepad"}
+        return "open_app", {"name": name, "app_name": name}
 
     if tool == "close_app":
         has_close_indicator = bool(re.search(r"\b(?:close|quit|exit|kill|terminate|shut\s*down)\b", q_low))
@@ -224,7 +258,16 @@ def extract_parameters_and_tool(tool: str, query: str, conversation_history: lis
             return "chat", {}
         name = re.sub(r"^(?:(?:can|could|would)\s+(?:you|u)\s+)?(?:please\s+)?(?:close|quit|exit|kill)(?:\s+(?:the\s+|an?\s+)?)?", "", q, flags=re.I)
         name = re.sub(r"\s+(?:please|for\s+me)$", "", name, flags=re.I).strip()
-        return "close_app", {"name": name}
+        if (not name or name.lower() in ("it", "this", "that", "the app", "this app")) and conversation_history:
+            for turn in reversed(conversation_history):
+                if isinstance(turn, dict):
+                    prev_u = turn.get("user") or turn.get("query") or ""
+                    m_open = re.search(r"\b(?:open|launch|start|run)\s+(?:the\s+|an?\s+)?(.+)", prev_u, re.I)
+                    if m_open:
+                        name = m_open.group(1).strip()
+                        break
+        return "close_app", {"name": name, "app_name": name.lower() if name else ""}
+
 
 
 
@@ -289,7 +332,8 @@ def extract_parameters_and_tool(tool: str, query: str, conversation_history: lis
             flags=re.I,
         )
         clean = re.sub(r"\s+(?:on\s+youtube|from\s+youtube|please|for\s+me)$", "", clean, flags=re.I).strip()
-        clean_norm = clean.lower().rstrip("?!.,;:")
+        clean = clean.rstrip("?!.,;:").strip()
+        clean_norm = clean.lower()
         # Anaphoric reference resolution for replay/repeat/again
         if not clean_norm or clean_norm in (
             "it again", "that again", "again", "it", "this", "that",
@@ -343,6 +387,14 @@ def extract_parameters_and_tool(tool: str, query: str, conversation_history: lis
         if city.lower().startswith("the weather"):
             m_sub = re.search(r"\b(?:in|at|for)\s+([a-zA-Z\s.-]+)", city, re.I)
             city = m_sub.group(1).strip() if m_sub else ""
+        if not city and conversation_history:
+            for turn in reversed(conversation_history):
+                if isinstance(turn, dict):
+                    prev_u = turn.get("user") or turn.get("query") or ""
+                    m_prev = re.search(r"\b(?:in|at|for|of)\s+([a-zA-Z\s.-]+?)(?:\s*\?|\s*$|\s+please)", prev_u, re.I)
+                    if m_prev:
+                        city = m_prev.group(1).strip()
+                        break
         return "get_weather", {"city": city}
 
     if tool == "system_control":
@@ -388,7 +440,7 @@ def extract_parameters_and_tool(tool: str, query: str, conversation_history: lis
                 val, unit = int(m.group(1)), m.group(2).lower()
                 total_secs = val * 86400 if unit.startswith("d") else (val * 3600 if unit.startswith("h") else (val * 60 if unit.startswith("m") else val))
             return "set_timer", {"duration": total_secs, "seconds": total_secs}
-        return "find_document", {"query": q}
+        return "chat", {}
 
     if tool == "web_search":
         clean = re.sub(r"^(?:(?:can|could|would)\s+(?:you|u)\s+)?(?:please\s+)?(?:search(?:\s+(?:the\s+web|online|google))?(?:\s+for)?|google(?:\s+for)?|look\s+up)\s+", "", q, flags=re.I)
@@ -415,7 +467,36 @@ def route_intent_via_laya(user_query: str, conversation_history: list | None = N
 
     try:
         t0 = time.perf_counter()
-        state = {"request": q}
+
+        # Contextual history injection: include the last 2-3 turns of dialogue in Laya's state payload
+        hist = conversation_history
+        if hist is None:
+            try:
+                from rag_engine import get_recent_conversations
+                hist = get_recent_conversations(count=3)
+            except Exception:
+                hist = []
+
+        recent_history = []
+        if hist and isinstance(hist, list):
+            for turn in hist[-3:]:
+                if isinstance(turn, dict):
+                    user_msg = (turn.get("user") or turn.get("query") or "").strip()
+                    assistant_msg = (turn.get("assistant") or turn.get("response") or "").strip()
+                    tool_used = (turn.get("tool") or "").strip()
+                    turn_data = {}
+                    if user_msg:
+                        turn_data["user"] = user_msg
+                    if assistant_msg:
+                        turn_data["assistant"] = assistant_msg[:140]
+                    if tool_used and tool_used != "chat":
+                        turn_data["tool"] = tool_used
+                    if turn_data:
+                        recent_history.append(turn_data)
+
+        state: dict[str, Any] = {"request": q}
+        if recent_history:
+            state["history"] = recent_history
 
         # Single forward pass for neural decision
         res = agent.predict(state, LAYA_QUESTIONS)

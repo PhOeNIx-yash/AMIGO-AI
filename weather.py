@@ -40,15 +40,17 @@ def get_weather_data(city=""):
                 area_names = nearest.get("areaName", [{}])
                 resolved_city = area_names[0].get("value", "Local") if area_names else "Local"
 
-            temp_c = current.get("temp_C", "0")
-            temp_f = current.get("temp_F", "32")
-            feels_like_c = current.get("FeelsLikeC", temp_c)
-            humidity = current.get("humidity", "0")
-            wind_kmph = current.get("windspeedKmph", "0")
-            uv_index = current.get("uvIndex", "0")
+            temp_c = str(current.get("temp_C", "0"))
+            temp_f = str(current.get("temp_F", "32"))
+            feels_like_c = str(current.get("FeelsLikeC", temp_c))
+            humidity = str(current.get("humidity", "0"))
+            wind_kmph = str(current.get("windspeedKmph", "0"))
+            uv_raw = current.get("uvIndex", "0")
+            uv_index = str(int(uv_raw)) if str(uv_raw).isdigit() else "0"
+            weather_desc_list = current.get("weatherDesc", [{}])
             weather_desc = (
-                current.get("weatherDesc", [{}])[0].get("value", "Clear")
-                if current.get("weatherDesc")
+                weather_desc_list[0].get("value", "Clear")
+                if isinstance(weather_desc_list, list) and weather_desc_list and isinstance(weather_desc_list[0], dict)
                 else "Clear"
             )
             weather_code = current.get("weatherCode", "113")
@@ -67,14 +69,15 @@ def get_weather_data(city=""):
             elif code_int in (176, 263, 266, 281, 284, 293, 296, 299, 302, 305, 308, 311, 314, 353, 356, 359):
                 icon_type = "rain"
 
-            # Extract real diurnal period forecast from weather array
-            forecast_today = data.get("weather", [{}])[0]
-            hourly = forecast_today.get("hourly", [])
-            morning_c = hourly[2].get("tempC") if len(hourly) > 2 else temp_c
-            midday_c = hourly[4].get("tempC") if len(hourly) > 4 else temp_c
-            evening_c = hourly[6].get("tempC") if len(hourly) > 6 else temp_c
-            min_c = forecast_today.get("mintempC", temp_c)
-            max_c = forecast_today.get("maxtempC", temp_c)
+            # Extract real diurnal period forecast from weather array defensively
+            weather_list = data.get("weather", [])
+            forecast_today = weather_list[0] if (isinstance(weather_list, list) and weather_list and isinstance(weather_list[0], dict)) else {}
+            hourly = forecast_today.get("hourly", []) if isinstance(forecast_today, dict) else []
+            morning_c = hourly[2].get("tempC", temp_c) if (len(hourly) > 2 and isinstance(hourly[2], dict)) else temp_c
+            midday_c = hourly[4].get("tempC", temp_c) if (len(hourly) > 4 and isinstance(hourly[4], dict)) else temp_c
+            evening_c = hourly[6].get("tempC", temp_c) if (len(hourly) > 6 and isinstance(hourly[6], dict)) else temp_c
+            min_c = forecast_today.get("mintempC", temp_c) if isinstance(forecast_today, dict) else temp_c
+            max_c = forecast_today.get("maxtempC", temp_c) if isinstance(forecast_today, dict) else temp_c
 
             res = {
                 "success": True,

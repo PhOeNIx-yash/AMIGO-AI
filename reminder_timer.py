@@ -12,6 +12,7 @@ import logging
 import datetime
 import threading
 import subprocess
+import difflib
 from typing import Callable, Dict, List, Optional
 import dateutil.parser
 
@@ -248,7 +249,10 @@ def handle_set_reminder(params: dict, query: str = "") -> str:
             try:
                 e_time = datetime.datetime.fromisoformat(existing["target_time"])
                 e_msg = str(existing.get("message", "")).strip().lower()
-                if (norm_msg in e_msg or e_msg in norm_msg) and abs((e_time - target_dt).total_seconds()) <= 120:
+                is_duplicate_text = (norm_msg == e_msg) or (
+                    len(norm_msg) > 6 and difflib.SequenceMatcher(None, norm_msg, e_msg).ratio() >= 0.90
+                )
+                if is_duplicate_text and abs((e_time - target_dt).total_seconds()) <= 120:
                     return "That reminder is already scheduled."
             except Exception:
                 pass

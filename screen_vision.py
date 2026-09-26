@@ -127,6 +127,20 @@ def capture_screen_image(save_path: str | None = "amigo_screenshot.png"):
     return screenshot
 
 
+import threading
+
+_ocr_loop: asyncio.AbstractEventLoop | None = None
+_ocr_loop_lock = threading.Lock()
+
+
+def _get_ocr_loop() -> asyncio.AbstractEventLoop:
+    global _ocr_loop
+    with _ocr_loop_lock:
+        if _ocr_loop is None or _ocr_loop.is_closed():
+            _ocr_loop = asyncio.new_event_loop()
+        return _ocr_loop
+
+
 def read_text_from_image(image) -> str:
     """Extracts text from a PIL Image using native Windows OCR (winocr) or pytesseract."""
     if image is None:
@@ -140,11 +154,9 @@ def read_text_from_image(image) -> str:
 
     if winocr is not None:
         try:
-            async def _ocr():
-                res = await winocr.recognize_pil(image)
-                return res.text
-
-            text = asyncio.run(_ocr())
+            loop = _get_ocr_loop()
+            res = loop.run_until_complete(winocr.recognize_pil(image))
+            text = res.text if hasattr(res, "text") else str(res)
             if text and len(text.strip()) > 3:
                 return text.strip()
         except Exception:

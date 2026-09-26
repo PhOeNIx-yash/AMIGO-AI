@@ -240,25 +240,45 @@ const WeatherCardPalette: React.FC<{
 
   return (
     <div
-      className={`relative overflow-hidden rounded-2xl p-4 sm:p-5 border transition-all shadow-xl bg-gradient-to-br ${palette.bgGradient} ${palette.borderColor} ${
+      className={`relative overflow-hidden rounded-2xl p-4 sm:p-5 border transition-all shadow-xl ${
         isDark ? "text-white" : "text-slate-900"
       }`}
+      style={{
+        background: isDark
+          ? `linear-gradient(135deg, rgba(15, 23, 42, 0.94) 0%, ${theme.primary}22 50%, rgba(10, 15, 30, 0.96) 100%)`
+          : `linear-gradient(135deg, rgba(255, 255, 255, 0.96) 0%, ${theme.primary}14 50%, rgba(240, 245, 255, 0.94) 100%)`,
+        borderColor: `${theme.primary}45`,
+        boxShadow: `0 12px 32px rgba(0, 0, 0, 0.25), 0 0 24px ${theme.glow}`,
+      }}
     >
       <div
         className="absolute -right-6 -top-6 w-32 h-32 rounded-full pointer-events-none opacity-25"
-        style={{ background: `radial-gradient(circle, ${palette.glowColor} 0%, transparent 70%)` }}
+        style={{ background: `radial-gradient(circle, ${theme.primary}60 0%, transparent 70%)` }}
       />
 
       <div className="flex items-center justify-between mb-3 relative z-10">
         <div className="flex items-center space-x-2 min-w-0">
           <span className="relative flex h-2 w-2 flex-shrink-0">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75" />
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-sky-500" />
+            <span
+              className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75"
+              style={{ backgroundColor: theme.accent }}
+            />
+            <span
+              className="relative inline-flex rounded-full h-2 w-2"
+              style={{ backgroundColor: theme.primary }}
+            />
           </span>
           <span className="text-xs font-semibold uppercase tracking-wider opacity-85 truncate">
             {city}
           </span>
-          <span className="text-[10px] px-1.5 py-0.5 rounded-full font-mono bg-sky-500/20 text-sky-400 border border-sky-500/30 flex-shrink-0">
+          <span
+            className="text-[10px] px-1.5 py-0.5 rounded-full font-mono border flex-shrink-0"
+            style={{
+              backgroundColor: `${theme.primary}20`,
+              color: theme.accent,
+              borderColor: `${theme.primary}40`,
+            }}
+          >
             Live
           </span>
         </div>
@@ -267,7 +287,8 @@ const WeatherCardPalette: React.FC<{
           <button
             type="button"
             onClick={() => setShowSearch(!showSearch)}
-            className="p-1 rounded-lg bg-white/10 hover:bg-white/20 transition-all border border-white/10"
+            className="p-1 rounded-lg bg-white/10 hover:bg-white/20 transition-all border"
+            style={{ borderColor: `${theme.primary}30` }}
             title="Search another city"
           >
             <Search className="w-3.5 h-3.5" />
@@ -276,9 +297,10 @@ const WeatherCardPalette: React.FC<{
           <button
             type="button"
             onClick={() => fetchLiveWeather(city)}
-            className={`p-1 rounded-lg bg-white/10 hover:bg-white/20 transition-all border border-white/10 ${
-              loading ? "animate-spin text-sky-400" : ""
+            className={`p-1 rounded-lg bg-white/10 hover:bg-white/20 transition-all border ${
+              loading ? "animate-spin" : ""
             }`}
+            style={{ borderColor: `${theme.primary}30`, color: loading ? theme.accent : undefined }}
             title="Refresh live telemetry"
           >
             <RotateCw className="w-3.5 h-3.5" />
@@ -287,7 +309,8 @@ const WeatherCardPalette: React.FC<{
           <button
             type="button"
             onClick={() => setUnit(unit === "C" ? "F" : "C")}
-            className="px-2 py-0.5 rounded-lg text-xs font-mono font-semibold bg-white/10 hover:bg-white/20 transition-all border border-white/10"
+            className="px-2 py-0.5 rounded-lg text-xs font-mono font-semibold bg-white/10 hover:bg-white/20 transition-all border"
+            style={{ borderColor: `${theme.primary}30` }}
             title="Toggle Celsius / Fahrenheit"
           >
             °{unit}
@@ -306,13 +329,15 @@ const WeatherCardPalette: React.FC<{
               autoFocus
               className={`w-full px-3 py-1.5 rounded-xl text-xs border outline-none transition-all ${
                 isDark
-                  ? "bg-black/40 border-white/20 text-white placeholder:text-white/40 focus:border-sky-400"
-                  : "bg-white/80 border-black/20 text-slate-900 placeholder:text-black/40 focus:border-sky-600"
+                  ? "bg-black/40 text-white placeholder:text-white/40"
+                  : "bg-white/80 text-slate-900 placeholder:text-black/40"
               }`}
+              style={{ borderColor: `${theme.primary}40` }}
             />
             <button
               type="submit"
-              className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-sky-500 text-white hover:bg-sky-600 transition-colors shadow-sm flex-shrink-0"
+              className="px-3 py-1.5 rounded-xl text-xs font-semibold text-white transition-transform hover:scale-105 shadow-sm flex-shrink-0"
+              style={{ background: theme.gradient }}
             >
               Go
             </button>
@@ -324,7 +349,12 @@ const WeatherCardPalette: React.FC<{
         <div className="flex items-center space-x-3.5">
           <AnimatedWeatherIcon iconType={iconType} isDark={isDark} />
           <div>
-            <div className={`text-3xl sm:text-4xl font-bold tracking-tight bg-gradient-to-r ${palette.tempGradient} bg-clip-text text-transparent`}>
+            <div
+              className="text-3xl sm:text-4xl font-bold tracking-tight bg-clip-text text-transparent"
+              style={{
+                backgroundImage: `linear-gradient(135deg, ${theme.accent} 0%, #f59e0b 100%)`,
+              }}
+            >
               {displayTemp}
             </div>
             <div className="text-xs sm:text-sm font-medium opacity-80 mt-0.5">
@@ -334,34 +364,64 @@ const WeatherCardPalette: React.FC<{
         </div>
       </div>
 
-      <div className="grid grid-cols-4 gap-2 mt-3.5 pt-3 border-t border-sky-500/15 relative z-10">
-        <div className="flex flex-col items-center p-1.5 rounded-xl bg-sky-500/10 border border-sky-500/15">
-          <Droplets className="w-3.5 h-3.5 text-sky-400 mb-1" />
+      <div
+        className="grid grid-cols-4 gap-2 mt-3.5 pt-3 border-t relative z-10"
+        style={{ borderColor: `${theme.primary}25` }}
+      >
+        <div
+          className="flex flex-col items-center p-1.5 rounded-xl border transition-colors"
+          style={{
+            backgroundColor: `${theme.primary}12`,
+            borderColor: `${theme.primary}28`,
+          }}
+        >
+          <Droplets className="w-3.5 h-3.5 mb-1" style={{ color: theme.accent }} />
           <span className="text-[10px] opacity-60">Humidity</span>
           <span className="text-xs font-semibold">{humidity}{humidity !== "--" ? "%" : ""}</span>
         </div>
 
-        <div className="flex flex-col items-center p-1.5 rounded-xl bg-sky-500/10 border border-sky-500/15">
-          <Wind className="w-3.5 h-3.5 text-cyan-400 mb-1" />
+        <div
+          className="flex flex-col items-center p-1.5 rounded-xl border transition-colors"
+          style={{
+            backgroundColor: `${theme.primary}12`,
+            borderColor: `${theme.primary}28`,
+          }}
+        >
+          <Wind className="w-3.5 h-3.5 mb-1" style={{ color: theme.accent }} />
           <span className="text-[10px] opacity-60">Wind</span>
           <span className="text-xs font-semibold">{windKmph}{windKmph !== "--" ? " km/h" : ""}</span>
         </div>
 
-        <div className="flex flex-col items-center p-1.5 rounded-xl bg-sky-500/10 border border-sky-500/15">
-          <Sun className="w-3.5 h-3.5 text-amber-400 mb-1" />
+        <div
+          className="flex flex-col items-center p-1.5 rounded-xl border transition-colors"
+          style={{
+            backgroundColor: `${theme.primary}12`,
+            borderColor: `${theme.primary}28`,
+          }}
+        >
+          <Sun className="w-3.5 h-3.5 mb-1 text-amber-400" />
           <span className="text-[10px] opacity-60">UV Index</span>
           <span className="text-xs font-semibold">{uvIndex}</span>
         </div>
 
-        <div className="flex flex-col items-center p-1.5 rounded-xl bg-sky-500/10 border border-sky-500/15">
-          <Thermometer className="w-3.5 h-3.5 text-rose-400 mb-1" />
+        <div
+          className="flex flex-col items-center p-1.5 rounded-xl border transition-colors"
+          style={{
+            backgroundColor: `${theme.primary}12`,
+            borderColor: `${theme.primary}28`,
+          }}
+        >
+          <Thermometer className="w-3.5 h-3.5 mb-1 text-rose-400" />
           <span className="text-[10px] opacity-60">Feels Like</span>
           <span className="text-xs font-semibold">{feelsLike !== "--" ? `${feelsLike}°C` : "--"}</span>
         </div>
       </div>
 
       {tempC !== "" && (
-        <div className="flex items-center justify-between mt-3 pt-2.5 border-t border-sky-500/15 text-[11px] opacity-85 relative z-10 px-1">
+        <div
+          className="flex items-center justify-between mt-3 pt-2.5 border-t text-[11px] opacity-85 relative z-10 px-1"
+          style={{ borderColor: `${theme.primary}25` }}
+        >
           <div className="flex items-center space-x-1">
             <span>🌅 Morning</span>
             <span className="font-semibold">{formatTemp(morningC)}</span>
@@ -483,11 +543,20 @@ const TimerCardPalette: React.FC<{
     <div
       className={`relative overflow-hidden rounded-2xl p-4 sm:p-5 border transition-all shadow-xl ${
         isCompleted
-          ? "bg-gradient-to-br from-amber-950/70 via-rose-950/60 to-slate-900 border-amber-500/40 text-amber-200"
+          ? "text-amber-200"
           : isDark
-          ? "bg-gradient-to-br from-slate-900/90 via-indigo-950/50 to-slate-950/90 border-indigo-500/30 text-white"
-          : "bg-gradient-to-br from-indigo-50/95 via-white/95 to-slate-50/95 border-indigo-200 text-slate-900"
+          ? "text-white"
+          : "text-slate-900"
       }`}
+      style={{
+        background: isCompleted
+          ? "linear-gradient(135deg, rgba(120, 53, 15, 0.75) 0%, rgba(136, 19, 55, 0.65) 100%)"
+          : isDark
+          ? `linear-gradient(135deg, rgba(15, 23, 42, 0.94) 0%, ${theme.primary}22 50%, rgba(10, 15, 30, 0.96) 100%)`
+          : `linear-gradient(135deg, rgba(255, 255, 255, 0.96) 0%, ${theme.primary}14 50%, rgba(240, 245, 255, 0.94) 100%)`,
+        borderColor: isCompleted ? "rgba(245, 158, 11, 0.45)" : `${theme.primary}45`,
+        boxShadow: `0 12px 32px rgba(0, 0, 0, 0.25), 0 0 24px ${theme.glow}`,
+      }}
     >
       {/* Ambient Fluid Glow */}
       <div
@@ -504,27 +573,24 @@ const TimerCardPalette: React.FC<{
         <div className="flex items-center space-x-2">
           <span className="relative flex h-2 w-2">
             <span
-              className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
-                isCompleted ? "bg-amber-400" : isStopwatch ? "bg-cyan-400" : "bg-indigo-400"
-              }`}
+              className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75"
+              style={{ backgroundColor: isCompleted ? "#f59e0b" : theme.accent }}
             />
             <span
-              className={`relative inline-flex rounded-full h-2 w-2 ${
-                isCompleted ? "bg-amber-500" : isStopwatch ? "bg-cyan-500" : "bg-indigo-500"
-              }`}
+              className="relative inline-flex rounded-full h-2 w-2"
+              style={{ backgroundColor: isCompleted ? "#d97706" : theme.primary }}
             />
           </span>
           <span className="text-xs font-semibold uppercase tracking-wider opacity-85">
             {timerTitle}
           </span>
           <span
-            className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono border ${
-              isCompleted
-                ? "bg-amber-500/20 text-amber-300 border-amber-500/40"
-                : isRunning
-                ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
-                : "bg-amber-500/20 text-amber-300 border-amber-500/30"
-            }`}
+            className="text-[10px] px-1.5 py-0.5 rounded-full font-mono border"
+            style={{
+              backgroundColor: isCompleted ? "rgba(245, 158, 11, 0.2)" : `${theme.primary}20`,
+              color: isCompleted ? "#fcd34d" : theme.accent,
+              borderColor: isCompleted ? "rgba(245, 158, 11, 0.4)" : `${theme.primary}40`,
+            }}
           >
             {isCompleted ? "Time's Up!" : isRunning ? "Active" : "Paused"}
           </span>
@@ -538,7 +604,8 @@ const TimerCardPalette: React.FC<{
                 key={m}
                 type="button"
                 onClick={(e) => handleAddMinutes(m, e)}
-                className="px-2 py-0.5 rounded-lg text-xs font-semibold bg-white/10 hover:bg-white/20 transition-all border border-white/10"
+                className="px-2 py-0.5 rounded-lg text-xs font-semibold bg-white/10 hover:bg-white/20 transition-all border"
+                style={{ borderColor: `${theme.primary}30` }}
               >
                 +{m}m
               </button>
@@ -785,43 +852,64 @@ export const ActionCard: React.FC<ActionCardProps> = ({
     );
   };
 
+  const isWeatherCard = items.some(i => i.type === "weather" || i.payload?.tool === "get_weather");
+  const isTimerCard = items.some(i => i.type === "timer" || i.type === "stopwatch" || i.payload?.tool === "set_timer" || i.payload?.tool === "stopwatch");
+  const isFileCard = items.some(i => i.payload?.file || i.type === "file");
+
+  const cardTitle = isWeatherCard
+    ? "Weather Forecast"
+    : isTimerCard
+    ? "Timer & Stopwatch"
+    : isFileCard
+    ? "Matching Files"
+    : "Quick Actions";
+
   return (
     <motion.div
       id="fluent-action-card-container"
-      initial={{ opacity: 0, y: 16, scale: 0.96 }}
+      initial={{ opacity: 0, y: 18, scale: 0.98 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: -12, scale: 0.96 }}
-      transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-      className="w-full max-w-lg mx-auto relative px-4 transform-gpu will-change-[transform,opacity]"
+      exit={{ opacity: 0, y: -14, scale: 0.98 }}
+      transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+      className="w-full max-w-xl mx-auto relative px-2 sm:px-4 transform-gpu will-change-[transform,opacity]"
     >
       {/* Ambient Fluid Glow Behind Card */}
       <div
-        className="absolute -inset-1.5 rounded-3xl opacity-30 pointer-events-none"
+        className="absolute -inset-2 rounded-3xl opacity-35 pointer-events-none blur-xl"
         style={{
-          background: `radial-gradient(circle, ${theme.primary}44 0%, ${theme.secondary}15 70%, transparent 100%)`,
+          background: `radial-gradient(circle, ${theme.primary}66 0%, ${theme.secondary}25 70%, transparent 100%)`,
           transform: "translateZ(0)",
         }}
       />
 
       {/* Fluent Frosted Mica Card */}
       <div
-        className={`card-bracket relative rounded-2xl p-4 sm:p-5 shadow-2xl transition-colors duration-150 border transform-gpu ${
+        className={`relative rounded-2xl sm:rounded-3xl p-4 sm:p-5 shadow-2xl transition-colors duration-150 border transform-gpu ${
           isDark
-            ? "acrylic-glass text-slate-100 border-white/10 shadow-black/40"
-            : "acrylic-glass-light text-slate-900 border-black/10 shadow-slate-300/40"
+            ? "acrylic-glass text-slate-100 shadow-black/50"
+            : "acrylic-glass-light text-slate-900 shadow-slate-300/50"
         }`}
+        style={{
+          borderColor: `${theme.primary}40`,
+          boxShadow: isDark
+            ? `0 20px 50px rgba(0,0,0,0.55), 0 0 35px ${theme.glow}`
+            : `0 20px 40px rgba(0,0,0,0.08), 0 0 25px ${theme.glow}`,
+        }}
       >
-        {/* Clean Header with Quick Actions Title & Close Button */}
-        <div className="flex items-center justify-between mb-3.5 pb-2.5 border-b border-white/10 dark:border-white/10 text-xs">
+        {/* Clean Header with Title & Close Button */}
+        <div
+          className="flex items-center justify-between mb-3.5 pb-2.5 border-b text-xs"
+          style={{ borderColor: `${theme.primary}25` }}
+        >
           <div className="flex items-center space-x-2">
             <div
-              className="w-5 h-5 rounded-lg flex items-center justify-center text-white text-[10px]"
+              className="w-5 h-5 rounded-lg flex items-center justify-center text-white text-[10px] shadow-sm"
               style={{ background: theme.gradient }}
             >
               <Sparkles className="w-3 h-3" />
             </div>
-            <span className="font-semibold text-xs tracking-wide opacity-90">
-              Quick Actions
+            <span className="font-semibold text-xs tracking-wide opacity-90" style={{ color: theme.accent }}>
+              {cardTitle}
             </span>
           </div>
 
@@ -833,6 +921,7 @@ export const ActionCard: React.FC<ActionCardProps> = ({
               onCancel();
             }}
             className="p-1 rounded-lg opacity-60 hover:opacity-100 hover:bg-white/10 transition-all border border-transparent hover:border-white/10"
+            style={{ color: theme.accent }}
             title="Close"
           >
             <X className="w-3.5 h-3.5" />
@@ -840,7 +929,7 @@ export const ActionCard: React.FC<ActionCardProps> = ({
         </div>
 
         {/* Action Items List */}
-        <div className="space-y-3 mb-5 max-h-80 overflow-y-auto custom-scrollbar pr-0.5">
+        <div className="space-y-3 mb-4 max-h-[46vh] sm:max-h-[50vh] overflow-y-auto custom-scrollbar pr-0.5">
           {items.map((item, idx) => {
             if (item.payload?.file) {
               const file = item.payload.file;
@@ -926,13 +1015,15 @@ export const ActionCard: React.FC<ActionCardProps> = ({
                 }}
                 className={`flex items-center justify-between p-3 rounded-xl cursor-pointer transition-colors duration-150 border transform-gpu ${
                   item.selected
-                    ? isDark
-                      ? "bg-white/10 border-white/15 shadow-sm"
-                      : "bg-white/80 border-black/10 shadow-sm"
+                    ? "shadow-sm"
                     : isDark
                     ? "bg-white/5 border-transparent opacity-60 hover:opacity-90"
                     : "bg-black/5 border-transparent opacity-60 hover:opacity-90"
                 }`}
+                style={item.selected ? {
+                  backgroundColor: isDark ? `${theme.primary}18` : `${theme.primary}12`,
+                  borderColor: `${theme.primary}50`,
+                } : {}}
               >
                 <div className="flex items-center space-x-3.5 min-w-0 pr-2 flex-1">
                   {getIcon(item)}
@@ -940,7 +1031,14 @@ export const ActionCard: React.FC<ActionCardProps> = ({
                     <div className="flex items-center space-x-2">
                       <span className="text-sm font-medium leading-snug truncate">{item.title}</span>
                       {item.badge && (
-                        <span className="text-[10px] px-1.5 py-0.2 rounded-full font-mono bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">
+                        <span
+                          className="text-[10px] px-1.5 py-0.5 rounded-full font-mono border"
+                          style={{
+                            backgroundColor: `${theme.primary}20`,
+                            color: theme.accent,
+                            borderColor: `${theme.primary}40`,
+                          }}
+                        >
                           {item.badge}
                         </span>
                       )}
@@ -997,7 +1095,7 @@ export const ActionCard: React.FC<ActionCardProps> = ({
 
         {/* Buttons Footer */}
         <div className="pt-2">
-          {onRetry && (
+          {onRetry && isFileCard && (
             <button type="button" onClick={onRetry} className="mb-2 flex w-full items-center justify-center gap-1.5 rounded-xl border border-white/10 px-4 py-2 text-xs font-semibold transition-colors hover:bg-white/10">
               <RotateCcw className="h-3.5 w-3.5" />Retry search
             </button>
@@ -1006,11 +1104,14 @@ export const ActionCard: React.FC<ActionCardProps> = ({
             id="action-cancel-button"
             type="button"
             onClick={onCancel}
-            className={`w-full py-2 px-4 rounded-xl text-xs font-semibold transition-colors duration-150 border active:scale-95 flex items-center justify-center space-x-1.5 ${
+            className={`w-full py-2.5 px-4 rounded-xl text-xs font-semibold transition-colors duration-150 border active:scale-95 flex items-center justify-center space-x-1.5 ${
               isDark
-                ? "bg-white/5 hover:bg-white/10 text-slate-300 border-white/10 hover:border-white/20"
-                : "bg-black/5 hover:bg-black/10 text-slate-700 border-black/10 hover:border-black/20"
+                ? "bg-white/5 hover:bg-white/10 text-slate-300"
+                : "bg-black/5 hover:bg-black/10 text-slate-700"
             }`}
+            style={{
+              borderColor: `${theme.primary}35`,
+            }}
           >
             <span>Close</span>
           </button>

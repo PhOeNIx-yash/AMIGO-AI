@@ -25,11 +25,11 @@ export const ContactPicker: React.FC<ContactPickerProps> = ({
   return (
     <motion.div
       id="fluent-contact-picker-container"
-      initial={{ opacity: 0, y: 25, scale: 0.96 }}
+      initial={{ opacity: 0, y: 18, scale: 0.98 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: -20, scale: 0.95 }}
-      transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
-      className="w-full max-w-lg mx-auto relative px-4"
+      exit={{ opacity: 0, y: -14, scale: 0.98 }}
+      transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+      className="w-full max-w-xl mx-auto relative px-2 sm:px-4"
     >
       {/* Title / Question */}
       <motion.p
@@ -44,10 +44,10 @@ export const ContactPicker: React.FC<ContactPickerProps> = ({
 
       {/* Frosted Mica Glass Card */}
       <div
-        className={`card-bracket relative rounded-2xl p-2.5 sm:p-3 shadow-2xl transition-colors duration-150 border transform-gpu ${
+        className={`relative rounded-2xl sm:rounded-3xl p-3 sm:p-4 shadow-2xl transition-colors duration-150 border transform-gpu ${
           isDark
-            ? "acrylic-glass text-slate-100 border-white/10 shadow-black/40"
-            : "acrylic-glass-light text-slate-900 border-black/10 shadow-slate-300/40"
+            ? "acrylic-glass text-slate-100 border-white/10 shadow-black/50"
+            : "acrylic-glass-light text-slate-900 border-black/10 shadow-slate-300/50"
         }`}
       >
         <div className="space-y-1.5">
