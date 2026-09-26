@@ -149,6 +149,39 @@ export default function App() {
     try { localStorage.setItem("windows11_voice_assistant_autocycle_interval", String(autoCycleInterval)); } catch (e) {}
   }, [autoCycleInterval]);
 
+  // Dynamic iOS / Mobile Virtual Viewport synchronization
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const handleViewportChange = () => {
+      const vv = window.visualViewport;
+      const height = vv ? vv.height : window.innerHeight;
+      document.documentElement.style.setProperty("--visual-viewport-height", `${height}px`);
+      // Keep document scroll at origin to prevent iOS rubber-banding and white canvas gap
+      if (window.scrollY !== 0) {
+        window.scrollTo(0, 0);
+      }
+    };
+
+    handleViewportChange();
+
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", handleViewportChange);
+      window.visualViewport.addEventListener("scroll", handleViewportChange);
+    }
+    window.addEventListener("resize", handleViewportChange);
+    window.addEventListener("orientationchange", handleViewportChange);
+
+    return () => {
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener("resize", handleViewportChange);
+        window.visualViewport.removeEventListener("scroll", handleViewportChange);
+      }
+      window.removeEventListener("resize", handleViewportChange);
+      window.removeEventListener("orientationchange", handleViewportChange);
+    };
+  }, []);
+
   // Persistent Backend configuration for plug-and-play connection
   const [backendConfig, setBackendConfig] = useState<BackendConfig>(() => {
     if (typeof window !== "undefined") {
@@ -679,12 +712,12 @@ export default function App() {
         return "fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[94vw] max-w-4xl h-[86vh] max-h-[820px] rounded-3xl shadow-2xl z-50 border border-white/15 overflow-hidden";
       case "fullscreen":
       default:
-        return "fixed inset-0 w-screen h-screen z-50";
+        return "fixed inset-0 w-full h-[var(--visual-viewport-height,100dvh)] z-50";
     }
   };
 
   return (
-    <div className={`relative w-screen h-screen overflow-hidden ${colorTheme === "noir" ? "bg-black" : "bg-slate-950"} flex items-center justify-center`}>
+    <div className={`relative w-full h-[var(--visual-viewport-height,100dvh)] overflow-hidden ${colorTheme === "noir" ? "bg-black" : "bg-slate-950"} flex items-center justify-center`}>
       {/* Background Desktop Simulation for Plugin Context */}
       <div className="absolute inset-0 z-0 flex flex-col justify-between p-6 opacity-30 select-none pointer-events-none">
         <div className="flex items-center justify-between text-xs text-white/50">

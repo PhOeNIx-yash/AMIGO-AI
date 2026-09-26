@@ -174,7 +174,14 @@ def init_reminders(speak_callback=None, broadcast_callback=None) -> None:
     with _reminders_lock:
         stored = load_reminders()
         now = datetime.datetime.now()
-        _scheduled_reminders = [r for r in stored if datetime.datetime.fromisoformat(r["target_time"]) > now - datetime.timedelta(hours=24)]
+        # Only schedule upcoming reminders whose target time is in the future
+        _scheduled_reminders = [
+            r for r in stored
+            if datetime.datetime.fromisoformat(r["target_time"]) > now
+        ]
+        # Clean up expired reminders from storage
+        if len(_scheduled_reminders) != len(stored):
+            save_reminders(_scheduled_reminders)
     if not _scheduler_running:
         _scheduler_running = True
         threading.Thread(target=_run_scheduler_loop, daemon=True).start()

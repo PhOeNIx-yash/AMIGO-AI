@@ -590,7 +590,7 @@ def get_agent_action(user_query: str, conversation_history: list | None = None) 
                 context = {}
                 compound_actions = []
                 for sq in steps:
-                    act = task_agent.resolve_step_intent(sq, context)
+                    act = task_agent.resolve_step_intent(sq, context, conversation_history=conversation_history)
                     if act and act.get("tool") not in (None, ""):
                         compound_actions.append(act)
                         if act.get("tool") == "open_app":

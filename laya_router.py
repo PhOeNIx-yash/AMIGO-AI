@@ -30,25 +30,36 @@ _laya_load_attempted = False
 LAYA_QUESTIONS = {
     "tool": {
         "type": "choice",
-        "instructions": "Which capability executes this request?",
+        "instructions": "Which capability or tool executes this request?",
         "criteria": {
-            "open_app": "Open, launch, or start an installed application or program on the computer",
+            "open_app": "Launch or open an installed desktop application, software, or program",
             "close_app": "Close, quit, exit, or terminate a running application or window",
+            "take_screenshot": "Capture, take, or save a screenshot image of the computer screen",
+            "screen_vision": "Inspect, read, or describe what is currently visible on the computer display or screen",
+            "lock_pc": "Lock the computer screen or workstation",
+            "sleep_pc": "Put the computer or PC to sleep mode",
+            "restart_pc": "Restart or reboot the computer system",
+            "system_status": "Check computer hardware metrics like battery percentage, CPU load, or RAM usage",
+            "empty_recycle_bin": "Empty the desktop recycle bin or trash",
+            "play_youtube": "Search and play a song, music, track, artist, album, or video on YouTube",
+            "pause_media": "Pause or stop currently playing media, music, or video",
+            "play_media": "Resume, unpause, or continue playing paused media or music",
+            "next_track": "Skip to the next song or next music track",
+            "prev_track": "Go back to the previous song or track",
+            "set_volume": "Adjust, increase, decrease, mute, unmute, or set system audio volume",
+            "get_time": "Check the system clock time right now or what hour and minute it is",
+            "get_date": "Report today's calendar date, day of week, or current year",
+            "get_weather": "Check current outdoor weather conditions, local temperature, rain, or city forecast",
+            "get_calendar": "Check scheduled calendar events, appointments, or meetings",
+            "unread_emails": "Check or read unread emails or Outlook inbox messages",
+            "set_timer": "Set a countdown timer, stopwatch, or alarm duration",
+            "set_reminder": "Set or schedule a reminder or task alert",
+            "find_file": "Find, search, or locate local files or folders on the computer",
+            "document_qa": "Search or summarize contents of local documents, PDFs, or spreadsheets",
+            "memory_recall": "Recall saved personal facts, flight numbers, tickets, or user notes from memory",
+            "web_search": "Search Google or the web for online information, facts, or live news",
             "window_mgmt": "Minimize, maximize, restore, or switch desktop windows",
-            "browser_nav": "Navigate browser tabs, open URL, scroll webpage up or down",
-            "desktop_input": "Type text, press keyboard shortcuts, or click on the screen",
-            "play_youtube": "Play or stream music, songs, artists, or videos on YouTube",
-            "media_control": "Pause, resume, skip tracks, or check currently playing media",
-            "set_volume": "Adjust, increase, decrease, mute, or unmute system audio volume",
-            "time_date": "Check the current time or date",
-            "weather": "Check the meteorological weather forecast, rain, or outdoor temperature for a location or city",
-            "system_control": "Lock PC, sleep PC, restart system, or capture a screenshot",
-            "screen_vision": "Analyze, read, or answer questions about what is visible on the screen",
-            "memory_recall": "Recall stored personal memories, facts, notes, or past interactions",
-            "document_qa": "Search or ask questions about indexed local documents and files",
-            "workspace": "Check user's personal Outlook emails, personal calendar meetings/schedule, or manage timers and alarms",
-            "web_search": "Search the web, google information, look up facts, esports or sports match schedules, live events, or browse the internet",
-            "chat": "General conversation, small talk, casual remarks, opinions, compliments, discussing music or songs, storytelling, or general questions",
+            "chat": "General conversation, chatting, answering questions, personal information, explanations, greetings, telling a joke, advice, or chit-chat",
         },
     },
 }
@@ -63,16 +74,31 @@ TOOL_ACTION_PROMPTS = {
     "window_mgmt": "manage open windows",
     "desktop_input": "type or interact with your screen",
     "media_control": "control media playback",
+    "pause_media": "pause media playback",
+    "play_media": "resume media playback",
+    "next_track": "skip to the next track",
+    "prev_track": "go back to the previous track",
     "set_volume": "adjust the volume",
-    "time_date": "check the current time or date",
+    "get_time": "check the current time",
+    "get_date": "check the current date",
+    "get_weather": "check the weather forecast",
     "weather": "check the weather forecast",
     "system_control": "perform a system control action",
+    "take_screenshot": "take a screenshot of your screen",
+    "lock_pc": "lock your PC",
+    "sleep_pc": "put your PC to sleep",
+    "restart_pc": "restart your PC",
+    "system_status": "check system hardware status",
+    "empty_recycle_bin": "empty the recycle bin",
     "screen_vision": "inspect your screen",
     "memory_recall": "check your saved memory",
     "document_qa": "search your documents",
     "workspace": "check email or calendar",
-    "get_time": "check the current time",
-    "get_date": "check the current date",
+    "get_calendar": "check your calendar schedule",
+    "unread_emails": "check your unread emails",
+    "set_timer": "set a timer",
+    "set_reminder": "set a reminder",
+    "find_file": "find files on your PC",
 }
 
 
@@ -82,14 +108,9 @@ def format_clarification_prompt(tool_a: str, tool_b: str, query: str) -> str:
     return f"I'm not completely sure — did you want to {desc_a}, or {desc_b}?"
 
 
-# Parameter extraction helpers (used strictly after neural tool decision)
-_RE_SCROLL = re.compile(r"\bscroll\s+(down|up)\b", re.I)
-_RE_CLICK = re.compile(r"\b(?:left\s+|right\s+)?click(?:\s+(?:at|on)\s+(\d+)\s*[,x\s]\s*(\d+))?\b", re.I)
+# Dynamic entity parameter extraction helpers
 _RE_VOL_NUM = re.compile(r"\b(\d{1,3})\s*(?:%|percent)?\b", re.I)
 _RE_TIMER_SECS = re.compile(r"(\d+)\s*(days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)", re.I)
-_RE_EMAIL = re.compile(r"\b(?:email|emails|mail|inbox|outlook)\b", re.I)
-_RE_CALENDAR = re.compile(r"\b(?:calendar|schedule|meeting|appointment)\b", re.I)
-_RE_TIMER = re.compile(r"\b(?:timer|countdown|alarm|stopwatch)\b", re.I)
 
 
 def get_last_played_song(conversation_history: list | None = None) -> dict | None:
@@ -221,16 +242,14 @@ def get_laya_agent():
 
 
 def extract_parameters_and_tool(tool: str, query: str, conversation_history: list | None = None) -> tuple[str, dict[str, Any]]:
-    """Refines tool classification and extracts execution parameters."""
+    """Extracts dynamic parameters for neural-selected tools without fragile keyword routing ladders."""
     q = query.strip()
-    q_low = q.lower()
 
     if tool == "open_app":
         # Extract target application entity
-        name = re.sub(r"^(?:(?:can|could|would)\s+(?:you|u)\s+)?(?:please\s+)?(?:open|launch|start|run)(?:\s+(?:the\s+|an?\s+)?)?", "", q, flags=re.I)
-        name = re.sub(r"\s+(?:please|for\s+me)$", "", name, flags=re.I).strip()
-
-        # If name is anaphoric ("it", "this", "the app") and history is available, resolve from previous turns
+        name = re.sub(r"^(?:(?:can|could|would)\s+(?:you|u)\s+)?(?:please\s+)?(?:open|launch|start|run|show)(?:\s+(?:the\s+|an?\s+|my\s+)?)?", "", q, flags=re.I)
+        name = re.sub(r"\s+(?:please|for\s+me|app)$", "", name, flags=re.I).strip()
+        # Anaphoric resolution from recent history if needed
         if (not name or name.lower() in ("it", "this", "that", "the app", "this app")) and conversation_history:
             for turn in reversed(conversation_history):
                 if isinstance(turn, dict):
@@ -239,25 +258,11 @@ def extract_parameters_and_tool(tool: str, query: str, conversation_history: lis
                     if m_app:
                         name = m_app.group(1).strip()
                         break
-
-        # If query contains no opening intent and matches no installed application, treat as general conversation
-        has_open_indicator = bool(re.search(r"\b(?:open|launch|start|run|app|application|program)\b", q_low))
-        if not has_open_indicator:
-            try:
-                from app_opener import _find_best_app
-                if not _find_best_app(q)[0]:
-                    return "chat", {}
-            except Exception:
-                return "chat", {}
-
         return "open_app", {"name": name, "app_name": name}
 
     if tool == "close_app":
-        has_close_indicator = bool(re.search(r"\b(?:close|quit|exit|kill|terminate|shut\s*down)\b", q_low))
-        if not has_close_indicator:
-            return "chat", {}
-        name = re.sub(r"^(?:(?:can|could|would)\s+(?:you|u)\s+)?(?:please\s+)?(?:close|quit|exit|kill)(?:\s+(?:the\s+|an?\s+)?)?", "", q, flags=re.I)
-        name = re.sub(r"\s+(?:please|for\s+me)$", "", name, flags=re.I).strip()
+        name = re.sub(r"^(?:(?:can|could|would)\s+(?:you|u)\s+)?(?:please\s+)?(?:close|quit|exit|kill|terminate|shut\s*down)(?:\s+(?:the\s+|an?\s+|my\s+)?)?", "", q, flags=re.I)
+        name = re.sub(r"\s+(?:please|for\s+me|app)$", "", name, flags=re.I).strip()
         if (not name or name.lower() in ("it", "this", "that", "the app", "this app")) and conversation_history:
             for turn in reversed(conversation_history):
                 if isinstance(turn, dict):
@@ -268,60 +273,9 @@ def extract_parameters_and_tool(tool: str, query: str, conversation_history: lis
                         break
         return "close_app", {"name": name, "app_name": name.lower() if name else ""}
 
-
-
-
-    if tool == "window_mgmt":
-        if "maximize" in q_low:
-            return "window_management", {"action": "maximize"}
-        if "restore" in q_low:
-            return "window_management", {"action": "restore"}
-        if "switch" in q_low or "alt tab" in q_low:
-            return "window_management", {"action": "switch_window"}
-        if "minimize" in q_low:
-            return "window_management", {"action": "minimize_all"}
-        return "chat", {}
-
-    if tool == "browser_nav":
-        if "close tab" in q_low or "close this tab" in q_low:
-            return "close_tab", {}
-        if "next tab" in q_low:
-            return "next_tab", {}
-        if "prev tab" in q_low or "previous tab" in q_low:
-            return "prev_tab", {}
-        if m := _RE_SCROLL.search(q_low):
-            return f"scroll_{m.group(1)}", {"amount": 600}
-        if any(w in q_low for w in ("tab", "browser", "website", "url", "webpage", "scroll")):
-            m_url = re.search(r"\b(?:for|to|with)\s+(\S+)", q, re.I)
-            url = m_url.group(1) if m_url else ""
-            return "new_tab", {"url": url}
-        return "chat", {}
-
-    if tool == "desktop_input":
-        if re.search(r"\b(?:press|hit)\b", q_low):
-            m_key = re.search(r"^(?:please\s+)?(?:press|hit)\s+['\"]?(.+?)['\"]?$", q, re.I)
-            key_name = m_key.group(1).strip() if m_key else "enter"
-            return "press_key", {"keys": key_name}
-        if m := _RE_CLICK.search(q_low):
-            x = int(m.group(1)) if m.group(1) else None
-            y = int(m.group(2)) if m.group(2) else None
-            return "click_screen", {"x": x, "y": y}
-        if re.search(r"\b(?:type|write|input)\b", q_low):
-            m_type = re.search(r"^(?:please\s+)?(?:type|write|enter|input)\s+['\"]?(.+?)['\"]?(?:\s+(?:in|into|on)\s+(?:the\s+)?(.+))?$", q, re.I)
-            text = m_type.group(1).strip() if m_type else q
-            app = m_type.group(2).strip() if (m_type and m_type.group(2)) else ""
-            return "type_text", {"text": text, "app": app}
-        return "chat", {}
-
     if tool == "play_youtube":
-        if any(w in q_low for w in ("what song", "what's playing", "what is playing", "current song", "which song")):
-            return "current_media", {}
-
-        # Requires a genuine play/stream/watch action directive; casual statements, comments, or praise ("this song is very good") are chat
-        has_play_action = bool(re.search(
-            r"\b(?:play|listen(?:\s+to)?|stream|put\s+on|watch|replay|repeat|queue)\b",
-            q_low,
-        ))
+        # Check if casual remark or opinion about a song without play directive ("this song is very good")
+        has_play_action = bool(re.search(r"\b(?:play|listen(?:\s+to)?|stream|put\s+on|watch|replay|repeat|queue)\b", q, re.I))
         if not has_play_action:
             return "chat", {}
 
@@ -331,55 +285,31 @@ def extract_parameters_and_tool(tool: str, query: str, conversation_history: lis
             q,
             flags=re.I,
         )
-        clean = re.sub(r"\s+(?:on\s+youtube|from\s+youtube|please|for\s+me)$", "", clean, flags=re.I).strip()
-        clean = clean.rstrip("?!.,;:").strip()
+        clean = re.sub(r"\s+(?:on\s+youtube|from\s+youtube|please|for\s+me)$", "", clean, flags=re.I).strip().rstrip("?!.,;:")
         clean_norm = clean.lower()
-        # Anaphoric reference resolution for replay/repeat/again
-        if not clean_norm or clean_norm in (
-            "it again", "that again", "again", "it", "this", "that",
-            "the song again", "that song again", "the track again", "the music again",
-            "once more", "it once more", "song", "music", "track", "that song", "the song",
-        ):
+        if not clean_norm or clean_norm in ("it again", "that again", "again", "it", "this", "that", "once more", "the song", "that song"):
             song = get_last_played_song(conversation_history)
             if song and song.get("title"):
                 return "play_youtube", {"query": song["title"]}
         return "play_youtube", {"query": clean or q}
 
-    if tool == "media_control":
-        if any(w in q_low for w in ("what song", "what's playing", "what is playing", "current song", "which song")):
+    if tool in ("media_control", "current_media"):
+        if re.search(r"\b(?:song|playing|track|music)\b", q, re.I) and re.search(r"\b(?:what|current|which)\b", q, re.I):
             return "current_media", {}
-        if "mute" in q_low or "unmute" in q_low or "silence" in q_low:
-            return "mute", {}
-        if any(w in q_low for w in ("next", "skip")):
-            return "next_track", {}
-        if any(w in q_low for w in ("prev", "previous", "back")):
-            return "prev_track", {}
-        if any(w in q_low for w in ("pause", "stop", "freeze", "halt")):
+        if re.search(r"\b(?:pause|stop|halt)\b", q, re.I):
             return "pause_media", {}
-        if any(w in q_low for w in ("resume", "unpause", "continue", "play")):
+        if re.search(r"\b(?:resume|unpause|continue|play)\b", q, re.I):
             return "play_media", {}
-        return "chat", {}
-
-    if tool == "set_volume":
-        if "mute" in q_low or "unmute" in q_low or "silence" in q_low:
-            return "mute", {}
-        if "louder" in q_low or "increase" in q_low or "turn up" in q_low:
-            return "volume_up", {}
-        if "quieter" in q_low or "decrease" in q_low or "turn down" in q_low:
-            return "volume_down", {}
-        if any(w in q_low for w in ("volume", "sound", "audio", "loudness")):
-            m = _RE_VOL_NUM.search(q)
-            return "set_volume", {"level": m.group(1) if m else "50"}
-        return "chat", {}
+        if re.search(r"\b(?:next|skip)\b", q, re.I):
+            return "next_track", {}
+        if re.search(r"\b(?:prev|previous|back)\b", q, re.I):
+            return "prev_track", {}
+        return tool, {}
 
     if tool == "time_date":
-        if any(w in q_low for w in ("calendar", "schedule", "meeting", "appointment", "event")):
-            return "get_calendar", {}
-        if any(w in q_low for w in ("date", "day", "today", "year", "month", "tomorrow", "yesterday")):
+        if re.search(r"\b(?:date|day|today|year|month)\b", q, re.I):
             return "get_date", {}
-        if any(w in q_low for w in ("time", "clock", "hour", "minute", "now", "current", "o'clock", "am", "pm")):
-            return "get_time", {}
-        return "chat", {}
+        return "get_time", {}
 
     if tool in ("get_weather", "weather"):
         m_in = re.search(r"\b(?:in|at|for|of)\s+([a-zA-Z\s.-]+?)(?:\s*\?|\s*$|\s+please)", q, re.I)
@@ -397,56 +327,77 @@ def extract_parameters_and_tool(tool: str, query: str, conversation_history: lis
                         break
         return "get_weather", {"city": city}
 
-    if tool == "system_control":
-        if any(w in q_low for w in ("close", "quit", "exit", "kill")):
-            return extract_parameters_and_tool("close_app", q, conversation_history)
-        if "screenshot" in q_low:
-            return "take_screenshot", {}
-        if "lock" in q_low:
-            return "lock_pc", {}
-        if "sleep" in q_low:
-            return "sleep_pc", {}
-        if "restart" in q_low or "reboot" in q_low:
-            return "restart_pc", {}
-        if any(w in q_low for w in ("pause", "stop", "freeze", "halt")):
-            return "pause_media", {}
-        if "resume" in q_low:
-            return "play_media", {}
-        if "read screen" in q_low or "what is on my screen" in q_low or "look at" in q_low:
-            return "screen_vision", {"question": q}
-        if any(w in q_low for w in ("status", "battery", "cpu", "ram", "hardware", "specs", "metrics", "pc status", "system status")):
-            return "system_status", {}
-        return "chat", {}
+    if tool == "set_volume":
+        if re.search(r"\b(?:mute|silence|unmute)\b", q, re.I):
+            return "mute", {}
+        if re.search(r"\b(?:up|louder|increase|higher|boost)\b", q, re.I):
+            return "volume_up", {}
+        if re.search(r"\b(?:down|quieter|decrease|lower|soften)\b", q, re.I):
+            return "volume_down", {}
+        m = _RE_VOL_NUM.search(q)
+        return "set_volume", {"level": m.group(1) if m else "50"}
 
-    if tool in ("screen_vision", "read_screen"):
-        if any(w in q_low for w in ("screen", "display", "monitor", "look at", "what am i looking at", "read this", "see on", "visible", "what is this", "what's this", "active window", "window")):
-            return "screen_vision", {"question": q}
-        return "chat", {}
+    if tool == "set_timer":
+        total_secs = 60
+        if m := _RE_TIMER_SECS.search(q):
+            val, unit = int(m.group(1)), m.group(2).lower()
+            total_secs = val * 86400 if unit.startswith("d") else (val * 3600 if unit.startswith("h") else (val * 60 if unit.startswith("m") else val))
+        return "set_timer", {"duration": total_secs, "seconds": total_secs}
+
+    if tool == "set_reminder":
+        return "set_reminder", {"query": q}
+
+    if tool == "find_file":
+        clean = re.sub(r"^(?:(?:can|could|would)\s+(?:you|u)\s+)?(?:please\s+)?(?:find|search(?:\s+for)?|locate|show)(?:\s+(?:the\s+|my\s+|an?\s+)?)?(?:file|document|folder|doc)?(?:\s+(?:called|named|titled))?\s*", "", q, flags=re.I).strip()
+        return "find_file", {"query": clean or q}
+
+    if tool in ("document_qa", "ask_document"):
+        return "document_qa", {"query": q}
 
     if tool == "memory_recall":
         return "memory_recall", {"query": q}
 
-    if tool == "document_qa":
-        return "document_qa", {"query": q}
-
-    if tool == "workspace":
-        if _RE_EMAIL.search(q_low):
-            return "unread_emails", {}
-        if _RE_CALENDAR.search(q_low):
-            return "get_calendar", {}
-        if _RE_TIMER.search(q_low):
-            total_secs = 60
-            if m := _RE_TIMER_SECS.search(q):
-                val, unit = int(m.group(1)), m.group(2).lower()
-                total_secs = val * 86400 if unit.startswith("d") else (val * 3600 if unit.startswith("h") else (val * 60 if unit.startswith("m") else val))
-            return "set_timer", {"duration": total_secs, "seconds": total_secs}
-        return "chat", {}
+    if tool in ("screen_vision", "read_screen"):
+        return "screen_vision", {"question": q}
 
     if tool == "web_search":
         clean = re.sub(r"^(?:(?:can|could|would)\s+(?:you|u)\s+)?(?:please\s+)?(?:search(?:\s+(?:the\s+web|online|google))?(?:\s+for)?|google(?:\s+for)?|look\s+up)\s+", "", q, flags=re.I)
         clean = re.sub(r"\s+(?:on\s+google|online|please)$", "", clean, flags=re.I).strip()
         return "web_search", {"query": clean or q}
 
+    if tool == "window_mgmt":
+        if re.search(r"\b(?:maximize|fullscreen)\b", q, re.I):
+            return "window_management", {"action": "maximize"}
+        if re.search(r"\b(?:restore|unmaximize)\b", q, re.I):
+            return "window_management", {"action": "restore"}
+        if re.search(r"\b(?:switch|alt\s*tab)\b", q, re.I):
+            return "window_management", {"action": "switch_window"}
+        return "window_management", {"action": "minimize_all"}
+
+    if tool == "system_control":
+        # Legacy umbrella compatibility fallback
+        if re.search(r"\b(?:screenshot|snap)\b", q, re.I):
+            return "take_screenshot", {}
+        if re.search(r"\b(?:lock)\b", q, re.I):
+            return "lock_pc", {}
+        if re.search(r"\b(?:sleep)\b", q, re.I):
+            return "sleep_pc", {}
+        if re.search(r"\b(?:restart|reboot)\b", q, re.I):
+            return "restart_pc", {}
+        return "system_status", {}
+
+    if tool == "workspace":
+        # Legacy umbrella compatibility fallback
+        if re.search(r"\b(?:email|inbox|mail)\b", q, re.I):
+            return "unread_emails", {}
+        if re.search(r"\b(?:calendar|meeting|schedule)\b", q, re.I):
+            return "get_calendar", {}
+        return "set_timer", {"duration": 60, "seconds": 60}
+
+    # Concrete tools directly execute with natural parameters:
+    # take_screenshot, lock_pc, sleep_pc, restart_pc, system_status, empty_recycle_bin,
+    # pause_media, play_media, next_track, prev_track, mute, get_time, get_date,
+    # get_calendar, unread_emails, chat
     return tool, {}
 
 
@@ -468,35 +419,44 @@ def route_intent_via_laya(user_query: str, conversation_history: list | None = N
     try:
         t0 = time.perf_counter()
 
-        # Contextual history injection: include the last 2-3 turns of dialogue in Laya's state payload
-        hist = conversation_history
-        if hist is None:
-            try:
-                from rag_engine import get_recent_conversations
-                hist = get_recent_conversations(count=3)
-            except Exception:
-                hist = []
-
-        recent_history = []
-        if hist and isinstance(hist, list):
-            for turn in hist[-3:]:
-                if isinstance(turn, dict):
-                    user_msg = (turn.get("user") or turn.get("query") or "").strip()
-                    assistant_msg = (turn.get("assistant") or turn.get("response") or "").strip()
-                    tool_used = (turn.get("tool") or "").strip()
-                    turn_data = {}
-                    if user_msg:
-                        turn_data["user"] = user_msg
-                    if assistant_msg:
-                        turn_data["assistant"] = assistant_msg[:140]
-                    if tool_used and tool_used != "chat":
-                        turn_data["tool"] = tool_used
-                    if turn_data:
-                        recent_history.append(turn_data)
+        # Contextual history injection: only inject history when the request is anaphoric/follow-up,
+        # so independent questions are evaluated purely on their own without previous topic bias.
+        q_low = q.lower()
+        is_anaphoric_followup = (
+            len(q.split()) <= 4
+            or any(re.search(r"\b" + re.escape(w) + r"\b", q_low) for w in ("it", "again", "that", "this", "repeat", "them"))
+            or any(q_low.startswith(p) for p in ("what about", "how about", "and in", "and for", "and then", "what else"))
+        )
 
         state: dict[str, Any] = {"request": q}
-        if recent_history:
-            state["history"] = recent_history
+
+        if is_anaphoric_followup:
+            hist = conversation_history
+            if hist is None:
+                try:
+                    from rag_engine import get_recent_conversations
+                    hist = get_recent_conversations(count=2)
+                except Exception:
+                    hist = []
+
+            recent_history = []
+            if hist and isinstance(hist, list):
+                for turn in hist[-2:]:
+                    if isinstance(turn, dict):
+                        user_msg = (turn.get("user") or turn.get("query") or "").strip()
+                        assistant_msg = (turn.get("assistant") or turn.get("response") or "").strip()
+                        turn_data = {}
+                        if user_msg:
+                            turn_data["user"] = user_msg
+                        if assistant_msg:
+                            turn_data["assistant"] = assistant_msg[:100]
+                        if turn.get("tool"):
+                            turn_data["tool"] = turn.get("tool")
+                        if turn_data:
+                            recent_history.append(turn_data)
+
+            if recent_history:
+                state["history"] = recent_history
 
         # Single forward pass for neural decision
         res = agent.predict(state, LAYA_QUESTIONS)
@@ -552,10 +512,13 @@ def route_intent_via_laya(user_query: str, conversation_history: list | None = N
                     "confidence": top_prob,
                 }
 
-
         final_tool, params = extract_parameters_and_tool(raw_tool, q, conversation_history=conversation_history)
         if final_tool == "chat":
             logger.info("[Laya Router] Extracted parameters evaluated '%s' -> chat in %.1f ms", q[:35], elapsed_ms)
+            return {"tool": "chat", "params": {}, "speak": "", "source": "laya", "confidence": tool_conf}
+
+        if final_tool != "chat" and tool_conf < 0.35:
+            logger.info("[Laya Router] Low confidence (%.3f) for '%s' -> natural fallback to chat in %.1f ms", tool_conf, final_tool, elapsed_ms)
             return {"tool": "chat", "params": {}, "speak": "", "source": "laya", "confidence": tool_conf}
 
         logger.info(

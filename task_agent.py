@@ -202,9 +202,13 @@ def decompose_task(user_prompt: str) -> List[str]:
 
 
 
-def resolve_step_intent(step: str, context: Dict[str, Any]) -> Dict[str, Any]:
+def resolve_step_intent(
+    step: str,
+    context: Dict[str, Any],
+    conversation_history: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     """Resolves single action step in a multi-step chain using Laya System 1."""
-    laya_act = route_intent_via_laya(step)
+    laya_act = route_intent_via_laya(step, conversation_history=conversation_history)
     if laya_act and laya_act.get("tool") not in ("chat", None):
         laya_act["step_text"] = step
         if laya_act.get("tool") == "type_text" and not laya_act.get("params", {}).get("app"):
@@ -224,20 +228,23 @@ def resolve_step_intent(step: str, context: Dict[str, Any]) -> Dict[str, Any]:
 def execute_action_chain(
     steps: List[str],
     on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
+    conversation_history: Optional[List[Dict[str, Any]]] = None,
+    context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Executes multi-step action sequences autonomously with sub-40ms step transitions.
     Propagates intermediate context (e.g. opened apps, file paths) across steps.
     """
     results = []
-    context: Dict[str, Any] = get_desktop_context()
+    if context is None:
+        context = get_desktop_context()
     total_steps = len(steps)
 
     logger.info("[Task Agent] Executing chain of %d steps", total_steps)
 
     for idx, step_text in enumerate(steps, 1):
         step_started = time.perf_counter()
-        action_plan = resolve_step_intent(step_text, context)
+        action_plan = resolve_step_intent(step_text, context, conversation_history=conversation_history)
         tool = action_plan.get("tool", "chat")
         params = action_plan.get("params", {})
 
@@ -311,9 +318,10 @@ def execute_action_chain(
 def run_task(
     user_prompt: str,
     on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
+    conversation_history: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Unified entry point: decomposes, plans, and executes multi-step task."""
     steps = decompose_task(user_prompt)
     if not steps:
         return {"status": "empty", "summary": "No actionable steps identified."}
-    return execute_action_chain(steps, on_progress=on_progress)
+    return execute_action_chain(steps, on_progress=on_progress, conversation_history=conversation_history)

@@ -1133,8 +1133,8 @@ def get_user_profile_prompt(query: str = "") -> str:
             try:
                 matched_facts = search(query, target_collections=[USER_FACTS], top_k=2)
                 for mf in matched_facts:
-                    doc = mf.get("document", "").strip()
-                    dist = mf.get("distance", 1.0)
+                    doc = (mf.get("text") or mf.get("document") or "").strip()
+                    dist = mf.get("distance") if "distance" in mf else round(1.0 - float(mf.get("score", 0.0)), 4)
                     # Ensure high semantic relevance threshold (L2 distance < 0.85)
                     if doc and dist < 0.85 and not (user_name and doc.lower().startswith("user's name is")) and not doc.startswith("Uploaded image"):
                         parts.append(f"Relevant remembered fact: {doc}")

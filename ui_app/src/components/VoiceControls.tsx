@@ -570,11 +570,14 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
   };
 
   return (
-    <div className="w-full max-w-2xl mx-auto flex flex-col items-center px-3 pb-3 sm:pb-4">
-      {/* Hidden file inputs */}
+    <div className="w-full max-w-2xl mx-auto flex flex-col items-center px-3 pb-[max(0.5rem,calc(env(safe-area-inset-bottom)+0.25rem))]">
+      {/* Hidden file inputs: tabIndex=-1 and aria-hidden prevent iOS Safari accessory navigation buttons (< >) */}
       <input
         ref={fileInputDocRef}
         type="file"
+        tabIndex={-1}
+        aria-hidden="true"
+        style={{ display: "none" }}
         accept=".pdf,.docx,.doc,.txt,.csv,.md,.json,.py,.js,.ts,.tsx,.html,.css,.yaml,.yml,.xml,.sql,.xlsx,.xls,.pptx,.rtf,.odt"
         className="hidden"
         onChange={(e) => {
@@ -587,6 +590,9 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
       <input
         ref={fileInputImgRef}
         type="file"
+        tabIndex={-1}
+        aria-hidden="true"
+        style={{ display: "none" }}
         accept="image/*,.png,.jpg,.jpeg,.webp,.gif,.bmp,.svg,.ico"
         className="hidden"
         onChange={(e) => {
@@ -599,6 +605,9 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
       <input
         ref={fileInputAllRef}
         type="file"
+        tabIndex={-1}
+        aria-hidden="true"
+        style={{ display: "none" }}
         accept="*/*"
         className="hidden"
         onChange={(e) => {
@@ -910,6 +919,7 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
                   id="voice-text-input"
                   name="amigo_search_query_prompt"
                   type="text"
+                  enterKeyHint="send"
                   autoComplete="off"
                   autoCorrect="off"
                   autoCapitalize="off"
@@ -918,7 +928,10 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
                   data-form-type="other"
                   value={isTranscribing ? "Transcribing speech..." : inputText}
                   onChange={(e) => setInputText(e.target.value)}
-                  onFocus={() => setIsFocused(true)}
+                  onFocus={() => {
+                    setIsFocused(true);
+                    setTimeout(() => window.scrollTo(0, 0), 50);
+                  }}
                   onBlur={() => setIsFocused(false)}
                   onPaste={handlePasteEvent}
                   disabled={disabled || isListening || isTranscribing}

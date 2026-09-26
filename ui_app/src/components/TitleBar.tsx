@@ -82,7 +82,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   return (
     <header
       id="windows-11-titlebar"
-      className={`relative z-50 flex items-center justify-between px-3.5 py-2.5 transition-colors duration-300 border-b backdrop-blur-xl select-none ${
+      className={`relative z-50 flex items-center justify-between px-3.5 pt-[max(0.625rem,env(safe-area-inset-top))] pb-2.5 transition-colors duration-300 border-b backdrop-blur-xl select-none ${
         isDark
           ? "bg-black/25 border-white/[0.06] text-slate-200"
           : "bg-white/60 border-black/[0.05] text-slate-800"

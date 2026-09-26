@@ -369,15 +369,16 @@ def _tool_document_qa(params, query, spoken):
     q = params.get("query", query) if isinstance(params, dict) else query
     try:
         doc_results = rag_engine.search_documents(q, top_k=5)
-        if doc_results:
-            doc_context = "\n---\n".join(d["text"] for d in doc_results if d.get("text"))
+        relevant_docs = [d for d in doc_results if d.get("score", 0.0) >= 0.25 and d.get("text")]
+        if relevant_docs:
+            doc_context = "\n---\n".join(d["text"] for d in relevant_docs)
             prompt = f"The user is asking about their local documents: '{q}'\nAnswer accurately using the document context above."
             response = get_ai_response(prompt, doc_context=doc_context)
-            return response, None, {"matched_docs": [d.get("metadata", {}).get("source", "doc") for d in doc_results[:3]]}
+            return response, None, {"matched_docs": [d.get("metadata", {}).get("source", "doc") for d in relevant_docs[:3]]}
     except Exception as e:
         logger.debug(f"[Document QA]: {e}")
 
-    return _tool_ask_document(params, q, spoken)
+    return get_ai_response(q), None
 
 
 def _tool_type_text(params, query, spoken):

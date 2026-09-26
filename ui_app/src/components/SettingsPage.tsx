@@ -532,7 +532,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.96, y: 16 }}
           transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
-          className={`absolute inset-0 z-50 flex flex-col backdrop-blur-2xl shadow-2xl overflow-hidden ${
+          className={`fixed inset-0 z-[100] h-[var(--visual-viewport-height,100dvh)] flex flex-col backdrop-blur-2xl shadow-2xl overflow-hidden ${
             isDark ? "text-white" : "text-slate-900"
           }`}
           style={{
@@ -544,8 +544,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
         >
           {/* Header */}
           <div
-            className={`flex items-center justify-between px-4 sm:px-6 py-3 border-b ${
-              isDark ? "bg-black/40" : "bg-white/90"
+            className={`flex items-center justify-between px-4 sm:px-6 pt-[max(0.75rem,calc(env(safe-area-inset-top)+0.5rem))] pb-3 border-b flex-shrink-0 ${
+              isDark ? "bg-black/50" : "bg-white/95"
             }`}
             style={{ borderColor: isDark ? `${theme.primary}18` : `${theme.primary}12` }}
           >
@@ -593,11 +593,11 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
           </div>
 
           {/* Main Layout */}
-          <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
-            {/* Simple Tabs Sidebar */}
+          <div className="flex-1 min-h-0 flex flex-col md:flex-row overflow-hidden">
+            {/* Horizontal Tabs Bar on Mobile / Sidebar on Desktop */}
             <div
-              className={`w-full md:w-52 flex-shrink-0 p-2 sm:p-3 border-b md:border-b-0 md:border-r flex md:flex-col space-x-1 md:space-x-0 md:space-y-1 ${
-                isDark ? "bg-black/20" : "bg-slate-50"
+              className={`w-full md:w-52 flex-shrink-0 p-2 sm:p-3 border-b md:border-b-0 md:border-r flex md:flex-col space-x-1.5 md:space-x-0 md:space-y-1 overflow-x-auto no-scrollbar whitespace-nowrap ${
+                isDark ? "bg-black/30" : "bg-slate-50"
               }`}
               style={{ borderColor: isDark ? `${theme.primary}18` : `${theme.primary}12` }}
             >
@@ -608,9 +608,15 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                   <button
                     key={tab.id}
                     onClick={() => setActiveTab(tab.id)}
-                    className={`flex items-center space-x-2 px-3 py-2.5 rounded-xl text-xs font-medium transition-all ${
+                    className={`flex items-center space-x-2 px-3.5 py-2 md:py-2.5 rounded-xl text-xs font-medium transition-all flex-shrink-0 border-b-2 md:border-b-0 md:border-l-[3px] ${
                       isActive
-                        ? "font-semibold"
+                        ? "font-semibold shadow-sm"
+                        : "border-transparent"
+                    } ${
+                      isActive
+                        ? isDark
+                          ? "text-white"
+                          : "text-slate-900"
                         : isDark
                         ? "text-slate-400 hover:text-white hover:bg-white/5"
                         : "text-slate-600 hover:text-slate-900 hover:bg-black/5"
@@ -618,22 +624,22 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     style={
                       isActive
                         ? {
-                            borderLeft: `3px solid ${theme.primary}`,
-                            backgroundColor: isDark ? `${theme.primary}18` : `${theme.primary}10`,
+                            borderColor: theme.primary,
+                            backgroundColor: isDark ? `${theme.primary}25` : `${theme.primary}14`,
                             color: isDark ? (theme.accent || theme.primary) : theme.primary,
                           }
                         : {}
                     }
                   >
                     <Icon className="w-4 h-4 flex-shrink-0" />
-                    <span>{tab.label}</span>
+                    <span className="whitespace-nowrap">{tab.label}</span>
                   </button>
                 );
               })}
             </div>
 
-            {/* Content Area with smooth tab transition physics */}
-            <div className="flex-1 overflow-y-auto p-4 sm:p-6 smooth-scroll-container">
+            {/* Content Area with smooth tab transition physics and mobile safe area bottom */}
+            <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6 pb-[max(3rem,calc(env(safe-area-inset-bottom)+2.5rem))] smooth-scroll-container">
               <AnimatePresence mode="wait">
                 <motion.div
                   key={activeTab}
@@ -1194,10 +1200,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 })()}
 
                 {/* Engine / Category Filter Segmented Tabs */}
-                <div className="flex items-center justify-between pt-1">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pt-1">
                   <div className="text-xs font-semibold uppercase tracking-wider opacity-60">Studio Neural Voices (24kHz)</div>
                   <div
-                    className={`inline-flex p-1 rounded-xl border ${
+                    className={`inline-flex p-1 rounded-xl border self-start sm:self-auto ${
                       isDark ? "bg-black/30" : "bg-slate-100"
                     }`}
                     style={{ borderColor: isDark ? `${theme.primary}18` : `${theme.primary}12` }}
@@ -1491,7 +1497,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
 
                 {/* Knowledge Base & Document Indexing Visual Widget */}
                 <div className={`p-3.5 rounded-xl border ${isDark ? "bg-black/30 border-white/5" : "bg-slate-50 border-black/5"} space-y-3`}>
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
                     <div>
                       <div className="text-xs font-semibold flex items-center space-x-1.5">
                         <Database className="w-3.5 h-3.5" style={{ color: theme.accent || theme.primary }} />
@@ -1504,7 +1510,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     <button
                       onClick={handleTriggerReindex}
                       disabled={isReindexing || Boolean(ragStatus?.indexer?.is_indexing) || Boolean(indexingProgress?.is_indexing)}
-                      className="px-3 py-1.5 rounded-xl text-xs font-semibold border disabled:opacity-50 transition-colors flex items-center space-x-1.5 shadow-sm"
+                      className="self-start sm:self-auto px-3 py-1.5 rounded-xl text-xs font-semibold border disabled:opacity-50 transition-colors flex items-center space-x-1.5 shadow-sm"
                       style={{
                         borderColor: `${theme.primary}40`,
                         backgroundColor: `${theme.primary}15`,

@@ -95,6 +95,7 @@ try:
     
     set_thinking_enabled(_init_settings.get("thinkingEnabled", False))
 except Exception:
+    
     pass
 
 logger = logging.getLogger("amigo.ui_server")
