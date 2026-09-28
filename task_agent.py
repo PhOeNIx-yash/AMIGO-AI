@@ -12,7 +12,7 @@ from typing import Any, Callable, Dict, List, Optional
 import os_automation
 from screen_vision import get_active_window_title
 import tool_registry
-from laya_router import route_intent_via_laya, extract_parameters_and_tool
+from llm_agent import get_agent_action
 
 logger = logging.getLogger("amigo.task_agent")
 
@@ -206,19 +206,22 @@ def resolve_step_intent(
     step: str,
     context: Dict[str, Any],
     conversation_history: Optional[List[Dict[str, Any]]] = None,
-) -> Dict[str, Any]:
-    """Resolves single action step in a multi-step chain using Laya System 1."""
-    laya_act = route_intent_via_laya(step, conversation_history=conversation_history)
-    if laya_act and laya_act.get("tool") not in ("chat", None):
-        laya_act["step_text"] = step
-        if laya_act.get("tool") == "type_text" and not laya_act.get("params", {}).get("app"):
-            if last_app := context.get("last_opened_app"):
-                laya_act.setdefault("params", {})["app"] = last_app
-                laya_act["speak"] = f"Typing text into {last_app}."
-        return laya_act
+) -> List[Dict[str, Any]]:
+    """Resolves single action step in a multi-step chain using LLM-based agent.
+    Returns a list of actions (may be multiple for complex steps)."""
+    actions = get_agent_action(step, conversation_history=conversation_history)
+    if actions:
+        for act in actions:
+            if act.get("tool") not in ("chat", None):
+                act["step_text"] = step
+                # For type_text, always use the last opened app from context if available
+                if act.get("tool") == "type_text":
+                    if last_app := context.get("last_opened_app"):
+                        act["params"]["app"] = last_app  # Explicitly override
+                        act["speak"] = f"Typing text into {last_app}."
+        return actions
 
-    return {"tool": "chat", "params": {}, "step_text": step}
-
+    return [{"tool": "chat", "params": {}, "step_text": step}]
 
 
 # ---------------------------------------------------------------------------
@@ -240,66 +243,102 @@ def execute_action_chain(
         context = get_desktop_context()
     total_steps = len(steps)
 
+    # Build running conversation history that includes previous steps in this chain
+    running_history = list(conversation_history) if conversation_history else []
+
     logger.info("[Task Agent] Executing chain of %d steps", total_steps)
 
     for idx, step_text in enumerate(steps, 1):
         step_started = time.perf_counter()
-        action_plan = resolve_step_intent(step_text, context, conversation_history=conversation_history)
-        tool = action_plan.get("tool", "chat")
-        params = action_plan.get("params", {})
+        action_plans = resolve_step_intent(step_text, context, conversation_history=running_history)
+        
+        # Execute all actions for this step
+        step_results = []
+        step_success = True
+        step_messages = []
+        
+        for action_idx, action_plan in enumerate(action_plans):
+            tool = action_plan.get("tool", "chat")
+            params = action_plan.get("params", {})
+            
+            if on_progress:
+                try:
+                    on_progress({
+                        "step": idx,
+                        "total": total_steps,
+                        "sub_step": action_idx + 1,
+                        "sub_total": len(action_plans),
+                        "status": "executing",
+                        "step_text": step_text,
+                        "tool": tool,
+                    })
+                except Exception:
+                    pass
 
-        if on_progress:
-            try:
-                on_progress({
-                    "step": idx,
-                    "total": total_steps,
-                    "status": "executing",
-                    "step_text": step_text,
-                    "tool": tool,
-                })
-            except Exception:
-                pass
+            action_result_msg = ""
+            action_success = True
 
-        step_result_msg = ""
-        success = True
+            # Dispatch: Desktop Automation
+            if tool in ("type_text", "press_key", "window_management", "click_screen"):
+                action_success, action_result_msg = execute_desktop_action(tool, params)
 
-        # Dispatch: Desktop Automation
-        if tool in ("type_text", "press_key", "window_management", "click_screen"):
-            success, step_result_msg = execute_desktop_action(tool, params)
+            # Dispatch: Browser & Web Navigation
+            elif tool in ("new_tab", "close_tab", "next_tab", "prev_tab", "scroll_down", "scroll_up", "search_and_type", "open_website"):
+                action_success, action_result_msg = execute_browser_action(tool, params)
 
-        # Dispatch: Browser & Web Navigation
-        elif tool in ("new_tab", "close_tab", "next_tab", "prev_tab", "scroll_down", "scroll_up", "search_and_type", "open_website"):
-            success, step_result_msg = execute_browser_action(tool, params)
+            # Dispatch: Native Amigo Tool Registry
+            else:
+                try:
+                    spoken_res, _, _ = tool_registry.execute_tool(tool, params, query=step_text)
+                    action_result_msg = spoken_res or f"Executed {tool.replace('_', ' ')}."
+                except Exception as e:
+                    action_success = False
+                    action_result_msg = f"Error in {tool}: {e}"
 
-        # Dispatch: Native Amigo Tool Registry
-        else:
-            try:
-                spoken_res, _, _ = tool_registry.execute_tool(tool, params, query=step_text)
-                step_result_msg = spoken_res or f"Executed {tool.replace('_', ' ')}."
-            except Exception as e:
-                success = False
-                step_result_msg = f"Error in {tool}: {e}"
+            # Context updates for subsequent steps
+            if tool == "open_app":
+                app_name = params.get("name", "")
+                if app_name:
+                    context["last_opened_app"] = app_name
+                    # Reduced sleep - Windows typically focuses new app within 100ms
+                    time.sleep(0.1)
 
-        # Context updates for subsequent steps
-        if tool == "open_app":
-            app_name = params.get("name", "")
-            if app_name:
-                context["last_opened_app"] = app_name
-                time.sleep(0.25)  # Allow Windows a brief moment to focus new app window
+            step_results.append({
+                "sub_step": action_idx + 1,
+                "tool": tool,
+                "success": action_success,
+                "message": action_result_msg,
+            })
+            
+            if not action_success:
+                step_success = False
+            if action_result_msg:
+                step_messages.append(action_result_msg)
 
+        # Combine results for this step
+        step_result_msg = " ".join(step_messages) if step_messages else f"Executed {step_text}."
+        
         elapsed_ms = (time.perf_counter() - step_started) * 1000
         logger.info(
-            "[Task Agent] Step %d/%d '%s' -> tool=%s (%.1f ms): %s",
-            idx, total_steps, step_text, tool, elapsed_ms, step_result_msg,
+            "[Task Agent] Step %d/%d '%s' -> %d actions (%.1f ms): %s",
+            idx, total_steps, step_text, len(action_plans), elapsed_ms, step_result_msg,
         )
 
         results.append({
             "step": idx,
             "text": step_text,
-            "tool": tool,
-            "success": success,
+            "actions": step_results,
+            "success": step_success,
             "message": step_result_msg,
             "duration_ms": elapsed_ms,
+        })
+
+        # Add this step to running history for subsequent steps
+        running_history.append({
+            "user": step_text,
+            "assistant": step_result_msg,
+            "tool": action_plans[0].get("tool", "chat") if action_plans else "chat",
+            "params": action_plans[0].get("params", {}) if action_plans else {},
         })
 
     # Generate synthesized summary of completion

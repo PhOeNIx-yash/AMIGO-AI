@@ -578,60 +578,21 @@ def get_agent_action(user_query: str, conversation_history: list | None = None) 
             fast_stop["speak"] = "Got it! " + fast_stop["speak"]
         return [fast_stop]
 
-
-    q_lower = user_query.lower().strip()
-
-    # Tier 1: Multi-Step Compound Action Chains (Decompose commands like "close Chrome and search the web")
-    if any(conj in q_lower for conj in (" and then ", " then ", " after that ", " and also ", " but also ", " as well as ", " and ", " & ", ";")):
-        try:
-            import task_agent
-            steps = task_agent.decompose_task(user_query)
-            if len(steps) > 1:
-                context = {}
-                compound_actions = []
-                for sq in steps:
-                    act = task_agent.resolve_step_intent(sq, context, conversation_history=conversation_history)
-                    if act and act.get("tool") not in (None, ""):
-                        compound_actions.append(act)
-                        if act.get("tool") == "open_app":
-                            context["last_opened_app"] = act.get("params", {}).get("name", "")
-
-                has_executable_tool = any(a.get("tool") not in ("chat", None) for a in compound_actions)
-                if has_executable_tool and compound_actions:
-                    # Deduplicate consecutive identical actions (e.g. multiple get_weather or open_app)
-                    deduped_actions = []
-                    for act in compound_actions:
-                        if not deduped_actions:
-                            deduped_actions.append(act)
-                        else:
-                            prev = deduped_actions[-1]
-                            if prev.get("tool") == act.get("tool"):
-                                prev_p = prev.get("params") or {}
-                                act_p = act.get("params") or {}
-                                # If the new act has more informative params, replace prev; otherwise keep prev
-                                if any(act_p.values()) and not any(prev_p.values()):
-                                    deduped_actions[-1] = act
-                            else:
-                                deduped_actions.append(act)
-                    # If we have concrete tools, omit pure empty chat steps
-                    executable_only = [a for a in deduped_actions if a.get("tool") != "chat" or a.get("params", {}).get("query")]
-                    if executable_only:
-                        return executable_only
-        except Exception as e:
-            logger.debug("[Task Agent Decomposition Note]: %s", e)
-
-    # Tier 2: Laya System 1 Neural Decision Router (Every action goes through Laya!)
+    # Use new LLM-based agent for all intent understanding (replaces Laya + Task Agent)
     try:
-        from laya_router import route_intent_via_laya
-        laya_action = route_intent_via_laya(user_query, conversation_history=conversation_history)
-        if laya_action and laya_action.get("tool") not in ("chat", None):
+        from llm_agent import get_agent_action
+        actions = get_agent_action(user_query, conversation_history=conversation_history)
+        if actions:
             if is_user_correction:
-                laya_action["speak_prefix"] = "Got it, thanks for correcting me! "
-            return [laya_action]
+                for action in actions:
+                    if action.get("speak"):
+                        action["speak"] = "Got it, thanks for correcting me! " + action["speak"]
+                        break
+            return actions
     except Exception as e:
-        logger.debug("[Laya Router Exception]: %s", e)
+        logger.debug("[LLM Agent Exception]: %s", e)
 
-    # Tier 3: Conversational Chat & Reasoning via MiniCPM 5 2B (Amigo Neural Model)
+    # Fallback: Conversational Chat
     chat_action = {"tool": "chat", "params": {"query": user_query}, "speak": ""}
     if is_user_correction:
         chat_action["speak_prefix"] = "Got it, thanks for correcting me! "

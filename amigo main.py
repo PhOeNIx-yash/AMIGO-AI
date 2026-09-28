@@ -18,7 +18,8 @@ except Exception:
 
 from ai import add_to_memory, get_ai_response_stream, load_memory
 from app_opener import ensure_built
-from local_llm import get_active_model_info, get_agent_action, get_clipboard_text, init_local_llm, sanitize_for_tts, _RE_PROBE_GUARD
+from local_llm import get_active_model_info, get_clipboard_text, init_local_llm, sanitize_for_tts, _RE_PROBE_GUARD
+from llm_agent import get_agent_action
 from reminder_timer import init_reminders
 from Searchnow import scrape_web_info
 from tool_registry import execute_tool

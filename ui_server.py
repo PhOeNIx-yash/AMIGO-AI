@@ -182,7 +182,7 @@ set_media_update_callback(_on_media_update)
 # ---------------------------------------------------------------------------
 def get_active_model_info():
     try:
-        from laya_router import is_laya_ready
+        from llm_agent import is_laya_ready
     except Exception:
         def is_laya_ready(): return False
 

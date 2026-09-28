@@ -55,14 +55,14 @@ User Voice / Text Input
         │
         ▼
   ┌─────────────────────────────────────────────────────┐
-  │  Tier 2: Laya System 1 Neural Router (ALL Actions)  │
-  │  laya_router.route_intent_via_laya()                │
-  │  • Single parallel forward pass (<2s)               │
-  │  • Priority fast-paths (<1ms): scroll, lock, tab,   │
-  │    press, type, email, calendar, weather, timer     │
-  │  • 100% action precision — no false positives       │
+  │  Tier 2: LLM-Based Agent (Natural Language Intent)  │
+  │  llm_agent.get_agent_action()                       │
+  │  • MiniCPM 5 2B reasons about user intent           │
+  │  • Full conversation context & memory integration   │
+  │  • Handles ambiguity, follow-ups, anaphora naturally│
+  │  • Structured tool calling with validated schemas   │
   └─────────────────────────────────────────────────────┘
-        │ intent == "chat" OR conf < 0.35
+        │
         ▼
   ┌─────────────────────────────────────────────────────┐
   │  Tier 3: MiniCPM 5 2B (Conversational Reasoning)   │
@@ -96,8 +96,8 @@ amigo-main/
 ├── start_amigo.bat         # Windows one-click dashboard launcher
 ├── requirements.txt        # Python backend dependencies
 ├── ui_server.py            # Flask REST API, SSE event streaming & UI server
-├── laya_router.py          # Laya System 1 Neural Router (sub-second intent routing)
-├── task_agent.py           # Laya-powered multi-step task decomposer & chain executor
+├── llm_agent.py            # LLM-based agent (natural language intent understanding)
+├── task_agent.py           # Multi-step task decomposer & chain executor
 ├── local_llm.py            # MiniCPM 5 2B GGUF engine & agentic pipeline controller
 ├── tts.py                  # Unified speech engine (Kokoro ONNX TTS & Sherpa-ONNX STT)
 ├── tool_registry.py        # Central tool registry, dispatcher & action cards
@@ -116,8 +116,7 @@ amigo-main/
 ├── settings_resolver.py    # Windows Settings ms-settings: URI resolver
 ├── amigo main.py           # Terminal CLI voice & keyboard interface
 ├── models/
-│   ├── laya/               # Laya System 1 weights (model.safetensors + rl_agent_config.json)
-│   └── minicpm/            # MiniCPM 5 2B GGUF weights
+│   ├── minicpm/            # MiniCPM 5 2B GGUF weights
 └── ui_app/                 # Modern React + Vite frontend source code
     ├── src/
     │   ├── components/     # ActionCard, CanvasVisualizer, KineticText, SettingsPage, etc.

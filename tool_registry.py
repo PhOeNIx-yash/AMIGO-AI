@@ -165,13 +165,35 @@ def _tool_get_current_media(params, query, spoken):
         media_state = state.get("current_media") or {}
         title = media_state.get("title") or media_state.get("query")
         artist = media_state.get("artist") or ""
-        if title:
+        if title and title != "No music playing":
             clean_title = _RE_MEDIA_CLEAN_TITLE.sub("", title).strip()
             by_artist = f" by {artist}" if artist and artist not in ("YouTube Music", "YouTube", "") else ""
             return f"Currently playing '{clean_title}'{by_artist} on YouTube.", media_state.get("url")
     except Exception:
         pass
-    return "No song or video is currently playing. Would you like me to play something?", None
+
+    try:
+        import ui_server
+        media = getattr(ui_server, "_current_media", None)
+        if media and isinstance(media, dict):
+            title = media.get("title")
+            artist = media.get("artist", "")
+            if title and title != "No music playing":
+                clean_title = _RE_MEDIA_CLEAN_TITLE.sub("", title).strip()
+                by_artist = f" by {artist}" if artist and artist not in ("YouTube Music", "YouTube", "") else ""
+                return f"Currently playing '{clean_title}'{by_artist}.", media.get("url")
+    except Exception:
+        pass
+
+    try:
+        from llm_agent import get_last_played_song
+        last_s = get_last_played_song()
+        if last_s and last_s.get("title"):
+            return f"The last song played was '{last_s['title']}'.", last_s.get("url")
+    except Exception:
+        pass
+
+    return "No song or video is currently playing.", None
 
 
 def _tool_get_time(params, query, spoken):
@@ -368,13 +390,12 @@ def _tool_memory_recall(params, query, spoken):
 def _tool_document_qa(params, query, spoken):
     q = params.get("query", query) if isinstance(params, dict) else query
     try:
-        doc_results = rag_engine.search_documents(q, top_k=5)
-        relevant_docs = [d for d in doc_results if d.get("score", 0.0) >= 0.25 and d.get("text")]
-        if relevant_docs:
-            doc_context = "\n---\n".join(d["text"] for d in relevant_docs)
+        # Use build_rag_context to get full document content (extracts full text from files on disk)
+        doc_context = rag_engine.build_rag_context(q, top_k=5)
+        if doc_context:
             prompt = f"The user is asking about their local documents: '{q}'\nAnswer accurately using the document context above."
             response = get_ai_response(prompt, doc_context=doc_context)
-            return response, None, {"matched_docs": [d.get("metadata", {}).get("source", "doc") for d in relevant_docs[:3]]}
+            return response, None, {"matched_docs": ["document_context"]}
     except Exception as e:
         logger.debug(f"[Document QA]: {e}")
 
@@ -459,11 +480,14 @@ def _tool_pause_media(params, query, spoken):
     state = get_active_state(clean_expired=True)
     media = state.get("current_media") if isinstance(state, dict) else None
     has_tracked_media = bool(media and isinstance(media, dict))
+    is_playing = has_tracked_media and media.get("status") == "playing"
 
-    try:
-        os_automation.play_pause_media()
-    except Exception:
-        pass
+    # Only send pause key if media is actually playing
+    if is_playing:
+        try:
+            os_automation.play_pause_media()
+        except Exception:
+            pass
 
     if _media_update_cb:
         _media_update_cb({"status": "paused"})
@@ -477,11 +501,14 @@ def _tool_play_media(params, query, spoken):
     state = get_active_state(clean_expired=False)
     media = state.get("current_media") if isinstance(state, dict) else None
     has_tracked_media = bool(media and isinstance(media, dict))
+    is_paused = has_tracked_media and media.get("status") == "paused"
 
-    try:
-        os_automation.play_pause_media()
-    except Exception:
-        pass
+    # Only send play key if media is actually paused
+    if is_paused:
+        try:
+            os_automation.play_pause_media()
+        except Exception:
+            pass
 
     if _media_update_cb:
         _media_update_cb({"status": "playing"})
@@ -1229,11 +1256,22 @@ def build_action_cards(tool: str, params: dict, result_metadata: dict, url: str 
             "close_app": ("Close Application", "Exit or terminate program"),
             "window_mgmt": ("Manage Windows", "Minimize, maximize, or switch"),
             "weather": ("Weather Forecast", "Check current weather"),
+            "get_weather": ("Weather Forecast", "Check current weather"),
             "time_date": ("Time & Date", "Check current time or date"),
+            "get_time": ("Current Time", "Check the system clock"),
+            "get_date": ("Current Date", "Check today's date"),
             "system_control": ("System Control", "Perform PC action"),
             "screen_vision": ("Inspect Screen", "Analyze screen view"),
             "memory_recall": ("Check Memory", "Recall saved facts"),
             "document_qa": ("Search Documents", "Ask about local files"),
+            "find_file": ("Find Files", "Locate files or folders on PC"),
+            "current_media": ("Current Song", "Tell which song is currently playing"),
+            "pause_media": ("Pause Media", "Pause audio or video playback"),
+            "play_media": ("Resume Playback", "Resume playing media"),
+            "next_track": ("Next Track", "Skip to next music track"),
+            "prev_track": ("Previous Track", "Go back to previous track"),
+            "get_calendar": ("Calendar Schedule", "Check upcoming calendar events"),
+            "unread_emails": ("Unread Emails", "Check unread Outlook emails"),
         }
 
         for idx, cand in enumerate(candidates):
