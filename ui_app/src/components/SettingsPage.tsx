@@ -542,18 +542,19 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
               : `radial-gradient(ellipse 120% 70% at 50% 0%, ${theme.primary}08 0%, rgba(248, 249, 252, 0.98) 70%)`,
           }}
         >
-          {/* Header */}
+          {/* Header - Fixed layout with grid to prevent overlap */}
           <div
-            className={`flex items-center justify-between px-4 sm:px-6 pt-[max(0.75rem,calc(env(safe-area-inset-top)+0.5rem))] pb-3 border-b flex-shrink-0 ${
+            className={`relative px-4 sm:px-6 pt-[max(4rem,calc(env(safe-area-inset-top)+3.5rem))] pb-3 border-b flex-shrink-0 flex items-center justify-between ${
               isDark ? "bg-black/50" : "bg-white/95"
             }`}
             style={{ borderColor: isDark ? `${theme.primary}18` : `${theme.primary}12` }}
           >
-            <div className="flex items-center space-x-3">
+            {/* Left section - Back button + Title */}
+            <div className="flex items-center space-x-3 min-w-0">
               <button
                 id="settings-back-btn"
                 onClick={onClose}
-                className={`p-2 rounded-xl border transition-colors flex items-center justify-center ${
+                className={`p-2 rounded-xl border transition-colors flex items-center justify-center flex-shrink-0 ${
                   isDark
                     ? "bg-white/5 border-white/10 hover:bg-white/10 text-slate-200"
                     : "bg-black/5 border-black/10 hover:bg-black/10 text-slate-800"
@@ -562,18 +563,19 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
               >
                 <ArrowLeft className="w-4 h-4" />
               </button>
-              <div>
+              <div className="min-w-0">
                 <div className="flex items-center space-x-2">
-                  <Settings className="w-4 h-4" style={{ color: theme.accent }} />
-                  <h2 className="text-base sm:text-lg font-semibold tracking-tight">Settings</h2>
+                  <Settings className="w-4 h-4 flex-shrink-0" style={{ color: theme.accent }} />
+                  <h2 className="text-base sm:text-lg font-semibold tracking-tight truncate">Settings</h2>
                 </div>
-                <p className="text-xs opacity-60">Personalize themes, visualizers, and API settings</p>
+                <p className="text-xs opacity-60 hidden sm:block truncate">Personalize themes, visualizers, and API settings</p>
               </div>
             </div>
 
-            <div className="flex items-center space-x-2">
+            {/* Right section - Save button (flex aligned to center with left content) */}
+            <div className="flex items-center space-x-2 flex-shrink-0 z-10 ml-4">
               {savedBanner && (
-                <span className="text-xs font-semibold text-emerald-400 flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 animate-fade-in">
+                <span className="text-xs font-semibold text-emerald-400 flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 animate-fade-in flex-shrink-0">
                   <Check className="w-3.5 h-3.5" />
                   <span>Saved</span>
                 </span>
@@ -582,7 +584,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
               <button
                 id="settings-save-btn"
                 onClick={handleSave}
-                className="px-4 py-1.5 rounded-xl text-xs font-semibold text-white shadow-sm transition-transform active:scale-95"
+                className="px-4 py-1.5 rounded-xl text-xs font-semibold text-white shadow-sm transition-transform active:scale-95 flex-shrink-0"
                 style={{
                   background: theme.gradient,
                 }}

@@ -34,6 +34,8 @@ import signal
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from typing import Optional
 
 import psutil
 from flask import Flask, Response, jsonify, request, send_from_directory
@@ -678,6 +680,11 @@ def api_assistant_process():
             "secondaryDetails": url if url else "",
         },
         "metadata": {**result_metadata, "params": params},
+        # Generated content fields for panel display
+        "generatedContent": result_metadata.get("generated_content"),
+        "contentType": result_metadata.get("content_type"),
+        "contentTopic": result_metadata.get("topic"),
+        "showGeneratedPanel": result_metadata.get("show_panel", False),
         "url": url,
     }
     return jsonify(formatted_response)
@@ -1135,10 +1142,32 @@ def rag_search_endpoint():
     query = data.get("query", "").strip()
     collections = data.get("collections")  # optional filter
     top_k = int(data.get("top_k", 5))
+    query_type = data.get("query_type", "auto")  # auto, general, fact_lookup, document_qa, conversation_recall
+    metadata_filter = data.get("metadata_filter")  # optional metadata filter
     if not query:
         return jsonify({"error": "Empty query"}), 400
-    results = rag_engine.search(query, target_collections=collections, top_k=top_k)
-    return jsonify({"query": query, "results": results})
+    results = rag_engine.search(query, target_collections=collections, top_k=top_k, query_type=query_type, metadata_filter=metadata_filter)
+    return jsonify({"query": query, "query_type": query_type, "results": results})
+
+
+@app.route("/api/rag/debug-search", methods=["POST"])
+def rag_debug_search_endpoint():
+    """Debug search with detailed scoring information."""
+    data = request.get_json() or {}
+    query = data.get("query", "").strip()
+    collections = data.get("collections")
+    top_k = int(data.get("top_k", 10))
+    if not query:
+        return jsonify({"error": "Empty query"}), 400
+    debug_info = rag_engine.debug_search(query, target_collections=collections, top_k=top_k)
+    return jsonify(debug_info)
+
+
+@app.route("/api/rag/reinitialize-reranker", methods=["POST"])
+def rag_reinitialize_reranker():
+    """Attempt to reinitialize the cross-encoder reranker."""
+    success = rag_engine.reinitialize_reranker()
+    return jsonify({"success": success, "message": "Reranker reinitialized" if success else "Reranker reinit failed"})
 
 
 @app.route("/api/rag/reindex", methods=["POST"])
@@ -1277,14 +1306,31 @@ def api_hotkey_status():
         return jsonify({"running": False, "error": str(e)})
 
 
-if __name__ == "__main__":
-    _info = get_active_model_info()
-    print("==================================================")
-    print("   AMIGO VOICE ASSISTANT - UI DASHBOARD SERVER   ")
-    print(f"   [ {_info['name'].upper()} | {_info['tts_engine'].upper()} | RAG + AGENTIC ]")
-    print("==================================================")
+# Async initialization state
+_llm_ready = threading.Event()
+_llm_load_error: Optional[Exception] = None
+
+
+def _load_llm_background():
+    """Load LLM model in background thread."""
+    global _llm_load_error
+    try:
+        init_local_llm()
+        _llm_ready.set()
+    except Exception as e:
+        _llm_load_error = e
+        _llm_ready.set()
+
+
+def _start_background_initializations():
+    """Start all background initializations in parallel."""
+    # Start RAG engine (async internally, non-blocking)
+    rag_engine.init_rag(background=True)
     
-    # Start Alt+V global wake hotkey service
+    # Start background file indexer
+    start_background_indexer(rag_engine, interval_minutes=30)
+    
+    # Start hotkey service (already async internally)
     try:
         import hotkey_service
         hotkey_service.set_broadcast_callback(broadcaster.broadcast)
@@ -1292,15 +1338,62 @@ if __name__ == "__main__":
     except Exception as e:
         logger.warning(f"[Hotkey Service] Could not start: {e}")
 
-    # Initialize RAG engine and start background indexer
-    print("[ AMIGO ] Initializing RAG memory engine...", flush=True)
-    rag_engine.init_rag()
-    start_background_indexer(rag_engine, interval_minutes=30)
-    print("[ AMIGO ] RAG engine ready. Background indexer started.", flush=True)
 
-    # Pre-load local AI model so the very first command has zero cold-start delay
-    print("[ AMIGO ] Loading local AI model into memory...", flush=True)
-    init_local_llm()
-    print("[ AMIGO ] Local AI model ready.", flush=True)
+def _wait_for_llm_with_progress(executor: ThreadPoolExecutor):
+    """Wait for LLM to load with progress indicator."""
+    # Use ASCII spinner for Windows console compatibility
+    spinner = ["|", "/", "-", "\\"]
+    i = 0
+    start_time = time.time()
+    
+    print("[ AMIGO ] Loading AI model...", end=" ", flush=True)
+    
+    # Submit LLM loading to executor
+    future = executor.submit(_load_llm_background)
+    
+    while not _llm_ready.is_set():
+        elapsed = time.time() - start_time
+        print(f"\r[ AMIGO ] Loading AI model... {spinner[i % len(spinner)]} ({elapsed:.1f}s)", end="", flush=True)
+        i += 1
+        time.sleep(0.1)
+    
+    # Ensure the future completes (propagate any exception)
+    try:
+        future.result(timeout=1.0)
+    except Exception:
+        pass  # Exception already captured in _llm_load_error
+    
+    elapsed = time.time() - start_time
+    if _llm_load_error:
+        print(f"\r[ AMIGO ] AI model load FAILED after {elapsed:.1f}s: {_llm_load_error}")
+        raise _llm_load_error
+    else:
+        print(f"\r[ AMIGO ] AI model loaded in {elapsed:.1f}s OK")
+
+
+def initialize_amigo_async():
+    """Initialize all Amigo components asynchronously with proper executor lifecycle."""
+    print("[ AMIGO ] Starting async initialization...")
+    
+    # Create executor locally to ensure proper lifecycle management
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="AmigoStartup") as executor:
+        # Start all background initializations immediately (non-blocking)
+        _start_background_initializations()
+        
+        # Wait for LLM with progress (this is the critical path)
+        _wait_for_llm_with_progress(executor)
+    
+    print("[ AMIGO ] All systems ready!")
+
+
+if __name__ == "__main__":
+    _info = get_active_model_info()
+    print("==================================================")
+    print("   AMIGO VOICE ASSISTANT - UI DASHBOARD SERVER   ")
+    print(f"   [ {_info['name'].upper()} | {_info['tts_engine'].upper()} | RAG + AGENTIC ]")
+    print("==================================================")
+    
+    # Async initialization with progress indicator
+    initialize_amigo_async()
 
     launch_server(port=5000, open_browser=True)

@@ -18,7 +18,7 @@ from local_llm import (
     sanitize_for_tts,
     is_thinking_enabled,
 )
-from rag_engine import get_recent_conversations, search_memory, get_user_profile_prompt, get_active_context_prompt, get_active_state
+from rag_engine import get_recent_conversations, get_user_profile_prompt, get_active_context_prompt, get_active_state
 from tool_registry import execute_tool
 from network_utils import is_internet_connected
 
@@ -36,7 +36,7 @@ CONFIG_PATH = os.path.join(LAYA_DIR, "rl_agent_config.json")
 TOOL_DEFINITIONS = [
     {
         "name": "chat",
-        "description": "General conversation, answering questions, explanations, advice, coding help, greetings, opinions, jokes, or any query that is NOT a direct command to execute a specific action.",
+        "description": "General conversation, questions, explanations, advice, coding help, greetings, jokes. Do NOT use for WRITE/TYPE/GENERATE/COMPOSE requests - use 'type_text' or 'generate_content'.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -47,182 +47,161 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "open_app",
-        "description": "Launch, run, start, or open an installed application, program, or software by name on the PC.",
+        "description": "Launch an installed application by name (e.g., 'vscode', 'chrome', 'calculator', 'word').",
         "parameters": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Name of the application to open (e.g., 'notepad', 'chrome', 'vscode', 'calculator')"}
+                "name": {"type": "string", "description": "Application name to open"}
             },
             "required": ["name"]
         }
     },
     {
         "name": "close_app",
-        "description": "Close, quit, exit, or terminate a specific running application or window by name.",
+        "description": "Close a running application by name.",
         "parameters": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Name of the application to close"}
+                "name": {"type": "string", "description": "Application name to close"}
             },
             "required": ["name"]
         }
     },
     {
         "name": "play_youtube",
-        "description": "Play, listen to, stream, or queue a specific song, music, track, artist, album, or video on YouTube. Must contain a play/listen directive.",
+        "description": "Play a song, video, or music on YouTube.",
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "What to search and play on YouTube (song name, artist, video title, etc.)"}
+                "query": {"type": "string", "description": "What to search and play on YouTube"}
             },
             "required": ["query"]
         }
     },
     {
         "name": "web_search",
-        "description": "Search Google or the web for online information, facts, live news, or current events.",
+        "description": "Search the web for information, facts, news, or current events.",
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Search query for web search"}
+                "query": {"type": "string", "description": "Search query"}
             },
             "required": ["query"]
         }
     },
     {
         "name": "get_weather",
-        "description": "Check current outdoor weather conditions, local temperature, rain, or city forecast.",
+        "description": "Check current weather conditions, temperature, or forecast for a city.",
         "parameters": {
             "type": "object",
             "properties": {
-                "city": {"type": "string", "description": "City or location name for weather"}
+                "city": {"type": "string", "description": "City or location name"}
             },
             "required": ["city"]
         }
     },
     {
         "name": "get_time",
-        "description": "Check the system clock time right now or what hour and minute it is.",
+        "description": "Check the current system time.",
         "parameters": {"type": "object", "properties": {}}
     },
     {
         "name": "get_date",
-        "description": "Report today's calendar date, day of week, or current year.",
+        "description": "Report today's date, day of week, or current year.",
         "parameters": {"type": "object", "properties": {}}
     },
     {
         "name": "set_volume",
-        "description": "Adjust, increase, decrease, mute, unmute, or set system audio volume level.",
+        "description": "Adjust system audio volume. Valid actions: mute, volume_up, volume_down, set_volume (with level 0-100).",
         "parameters": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["mute", "volume_up", "volume_down", "set_volume"], "description": "Volume action to perform"},
-                "level": {"type": "integer", "description": "Volume level (0-100) when action is set_volume"}
+                "action": {"type": "string", "enum": ["mute", "volume_up", "volume_down", "set_volume"], "description": "Volume action: mute, volume_up, volume_down, or set_volume"},
+                "level": {"type": "integer", "description": "Volume level 0-100 (required when action is set_volume)"}
             },
             "required": ["action"]
         }
     },
     {
         "name": "pause_media",
-        "description": "Pause or stop currently playing media, music, or video.",
+        "description": "Pause currently playing media or music.",
         "parameters": {"type": "object", "properties": {}}
     },
     {
         "name": "play_media",
-        "description": "Resume, unpause, or continue playing paused media or music.",
+        "description": "Resume paused media or music.",
         "parameters": {"type": "object", "properties": {}}
     },
     {
         "name": "next_track",
-        "description": "Skip, advance, forward, or jump to the NEXT song or music track (go forward in playlist).",
+        "description": "Skip to the next song/track.",
         "parameters": {"type": "object", "properties": {}}
     },
     {
         "name": "prev_track",
-        "description": "Go back to the PREVIOUS song or track (go backward in playlist). Use for 'previous track', 'last track', 'go back'.",
+        "description": "Go back to the previous song/track.",
         "parameters": {"type": "object", "properties": {}}
     },
     {
         "name": "current_media",
-        "description": "Check, identify, or report what song, title, artist, or music track is currently playing.",
+        "description": "Check what song/track is currently playing.",
         "parameters": {"type": "object", "properties": {}}
     },
     {
         "name": "window_mgmt",
-        "description": "Minimize, maximize, restore, or switch desktop windows.",
+        "description": "Minimize, maximize, restore, or switch windows.",
         "parameters": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["minimize_all", "maximize", "restore", "switch_window"], "description": "Window management action"}
+                "action": {"type": "string", "enum": ["minimize_all", "maximize", "restore", "switch_window"], "description": "Window action"}
             },
             "required": ["action"]
         }
     },
     {
         "name": "take_screenshot",
-        "description": "Capture, take, or save a screenshot image of the computer screen.",
+        "description": "Capture a screenshot of the screen.",
         "parameters": {"type": "object", "properties": {}}
     },
     {
         "name": "lock_pc",
-        "description": "Directly lock the computer screen or workstation right now.",
+        "description": "Lock the computer screen.",
         "parameters": {"type": "object", "properties": {}}
     },
     {
         "name": "sleep_pc",
-        "description": "Directly put the computer or PC to sleep mode right now.",
+        "description": "Put the computer to sleep.",
         "parameters": {"type": "object", "properties": {}}
     },
     {
         "name": "restart_pc",
-        "description": "Directly restart or reboot the computer system right now.",
+        "description": "Restart the computer.",
         "parameters": {"type": "object", "properties": {}}
-    },
-    {
-        "name": "system_status",
-        "description": "Check computer hardware metrics like battery percentage, CPU load, or RAM usage.",
-        "parameters": {"type": "object", "properties": {}}
-    },
-    {
-        "name": "empty_recycle_bin",
-        "description": "Empty the desktop recycle bin or trash.",
-        "parameters": {"type": "object", "properties": {}}
-    },
-    {
-        "name": "screen_vision",
-        "description": "Inspect, read, or describe what is currently visible on the computer display or screen.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "question": {"type": "string", "description": "What to look for or describe on screen"}
-            },
-            "required": ["question"]
-        }
     },
     {
         "name": "get_calendar",
-        "description": "Check scheduled calendar events, appointments, or meetings.",
+        "description": "Check the user's LOCAL Outlook calendar events, appointments, or meetings. This accesses the user's calendar data stored locally on their machine - NO cloud access.",
         "parameters": {"type": "object", "properties": {}}
     },
     {
         "name": "unread_emails",
-        "description": "Check or read unread emails or Outlook inbox messages.",
+        "description": "Check the user's LOCAL Outlook unread emails or inbox. This accesses emails stored locally on the user's machine - NO cloud access.",
         "parameters": {"type": "object", "properties": {}}
     },
     {
         "name": "set_timer",
-        "description": "Set a countdown timer, stopwatch, or alarm duration.",
+        "description": "Set a countdown timer or alarm.",
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Timer duration and description (e.g., '5 minutes for pasta', '1 hour')"}
+                "query": {"type": "string", "description": "Timer duration and description (e.g., '5 minutes', '1 hour')"}
             },
             "required": ["query"]
         }
     },
     {
         "name": "set_reminder",
-        "description": "Set or schedule a reminder or task alert.",
+        "description": "Set a reminder or task alert.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -233,7 +212,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "find_file",
-        "description": "Find, search, or locate local files or folders on the computer.",
+        "description": "Find or locate local files or folders on the user's computer. This searches the user's LOCAL file system - NO cloud access.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -244,37 +223,71 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "document_qa",
-        "description": "Search, read, inspect, or summarize contents of local files or documents and tell what it says.",
+        "description": "Search, read, or summarize the user's LOCAL DOCUMENTS and FILES on their computer (PDFs, Word docs, text files, spreadsheets, presentations). This accesses files stored locally on the user's machine - NO cloud access. Use when user asks about content from their files, documents, tickets, bookings, confirmations, receipts, PNR numbers, flight details, hotel reservations, or any information that would be in a saved document/file.",
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Question about document contents"}
+                "query": {"type": "string", "description": "Question about document/file contents (e.g., 'what is my PNR number', 'show my flight booking', 'read the PDF')"}
             },
             "required": ["query"]
         }
     },
     {
         "name": "memory_recall",
-        "description": "Recall saved personal facts, flight numbers, tickets, or user notes from memory.",
+        "description": "Recall saved PERSONAL FACTS, preferences, or conversation history that the user explicitly told you to remember (e.g., 'remember my name is John', 'I like coffee', 'my birthday is...'). This accesses the user's LOCAL memory database on their machine. Use for facts the user SAVED TO MEMORY, not for content from documents/files.",
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "What to recall from memory"}
+                "query": {"type": "string", "description": "What personal fact or preference to recall from memory"}
             },
             "required": ["query"]
         }
     },
     {
         "name": "type_text",
-        "description": "Type or input text into the currently active application or a specific application. Use this when the user wants to WRITE, TYPE, INPUT, ENTER, or COMPOSE text content (like writing a document, email, message, letter, application, essay, code, etc.). Do NOT use this for opening apps - use 'open_app' for that.",
+        "description": "Type text into the active window or a specific app. Use for WRITE/TYPE/INPUT requests. If no app specified, types into current window.",
         "parameters": {
             "type": "object",
             "properties": {
-                "text": {"type": "string", "description": "The text to type (the actual content to write)"},
-                "app": {"type": "string", "description": "Optional: specific application to type into (e.g., 'notepad', 'chrome')"}
+                "text": {"type": "string", "description": "Text to type"},
+                "app": {"type": "string", "description": "Optional: specific app (e.g., 'vscode', 'word'). Only if user explicitly mentions."}
             },
             "required": ["text"]
         }
+    },
+    {
+        "name": "generate_content",
+        "description": "Generate content (email, letter, application, code, document, message) using AI and show in review panel. Use for GENERATE/CREATE/COMPOSE/DRAFT requests. Params: type, topic, context (optional).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "type": {"type": "string", "description": "Content type (email, letter, application, code, document, message)"},
+                "topic": {"type": "string", "description": "What to write about"},
+                "context": {"type": "string", "description": "Optional additional context"}
+            },
+            "required": ["type", "topic"]
+        }
+    },
+    {
+        "name": "insert_content",
+        "description": "Insert generated content into active window via clipboard paste (Ctrl+V). Use when user says 'insert it', 'type it here', 'paste it'. Content must be from generate_content.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "description": "Content to insert"}
+            },
+            "required": ["content"]
+        }
+    },
+    {
+        "name": "system_status",
+        "description": "Check computer hardware metrics like battery percentage, CPU load, or RAM usage.",
+        "parameters": {"type": "object", "properties": {}}
+    },
+    {
+        "name": "empty_recycle_bin",
+        "description": "Empty the desktop recycle bin or trash.",
+        "parameters": {"type": "object", "properties": {}}
     },
     {
         "name": "press_key",
@@ -375,14 +388,26 @@ IMPORTANT GUIDELINES:
 8. Be concise in your tool calls - the system will execute them and give you results.
 9. After tool execution, you'll receive results and can continue or respond to the user.
 
+CRITICAL PRIVACY & DATA ACCESS RULES:
+- You have FULL ACCESS to the user's LOCAL data through the provided tools. This includes: local documents/files (PDFs, Word, Excel, etc.), Outlook emails, Outlook calendar, and saved conversation memory.
+- ALL data access is LOCAL ONLY - nothing leaves the user's machine. You are NOT sending data to any cloud service.
+- When users ask about their emails, calendar, documents, or personal facts - USE THE TOOLS. Do NOT refuse or say you cannot access personal data.
+- The tools (document_qa, unread_emails, get_calendar, memory_recall, find_file) are specifically designed to access LOCAL data on the user's machine.
+- NEVER say "I don't have access to your personal data" or "I cannot access your emails/calendar/documents" - YOU CAN via the tools.
+
 CRITICAL DISAMBIGUATION RULES:
-- "write application", "write letter", "write email", "write document", "compose", "type", "input text" → use "type_text" (writing content)
-- "open application", "open app", "launch app", "start app", "run app" → use "open_app" (launching software)
-- The word "application" alone is ambiguous: if preceded by "write/compose/type" → type_text; if preceded by "open/launch/start/run" → open_app
-- If user says "open X and write Y" → first open_app(X), then type_text(Y)
-- "previous track", "last track", "go back", "back track" → use "prev_track" (go backward)
-- "next track", "skip track", "forward track" → use "next_track" (go forward)
+- "generate/create/draft/compose application|letter|email|document|code" → generate_content (shows in panel for review)
+- "write/type/input application|letter|email|document" → type_text (direct typing)
+- "open/launch/start/run app" → open_app (launch software)
+- "application" alone: "generate/create/draft/compose" → generate_content; "write/type/input" → type_text; "open/launch/start/run" → open_app
+- "open X and write Y" → open_app(X) then type_text(Y)
+- "generate X and insert it" → generate_content(X) then insert_content
+- "insert it", "type it here", "paste it", "put it in" → insert_content (clipboard paste)
+- type_text: omit "app" param for current window; only include if user says "in vscode", "in word", etc.
+- "previous/last/back track" → prev_track; "next/skip/forward track" → next_track
 - City names in get_weather MUST be capitalized (e.g., "London", "Tokyo", "New York")
+- set_volume action MUST be one of: mute, volume_up, volume_down, set_volume (NOT "up", "down", "mute on/off"). "set volume to N" → action: set_volume, level: N. "turn up/down volume" → action: volume_up/volume_down. "mute/unmute" → action: mute.
+- DOCUMENT QA vs MEMORY RECALL: "what is my PNR", "show my booking", "read my ticket", "flight details", "hotel reservation", "document", "file", "PDF", "receipt", "confirmation" → document_qa (searches LOCAL FILES/DOCUMENTS). "what did I tell you", "remember my name", "my preference", "I told you", "recall that" → memory_recall (recalls SAVED PERSONAL FACTS).
 
 Think about what the user ACTUALLY wants, not just keywords. Understand the INTENT behind their words.
 """
@@ -492,7 +517,7 @@ def get_agent_actions(query: str, conversation_history: list | None = None) -> l
         {"role": "user", "content": query}
     ]
 
-    # Build detailed tool schema for the prompt
+    # Build concise tool schema for the prompt
     tool_schema_lines = []
     for tool in TOOL_DEFINITIONS:
         name = tool["name"]
@@ -501,17 +526,14 @@ def get_agent_actions(query: str, conversation_history: list | None = None) -> l
         required = tool["parameters"].get("required", [])
         
         if not props:
-            tool_schema_lines.append(f'- {name}: {desc} (no parameters)')
+            tool_schema_lines.append(f'- {name}: {desc}')
         else:
             param_details = []
             for param_name, param_info in props.items():
                 ptype = param_info.get("type", "string")
-                pdesc = param_info.get("description", "")
-                if "enum" in param_info:
-                    pdesc += f" Valid values: {param_info['enum']}"
-                req = " (required)" if param_name in required else " (optional)"
-                param_details.append(f"{param_name}: {ptype}{req} - {pdesc}")
-            tool_schema_lines.append(f'- {name}: {desc}\n  Parameters: {"; ".join(param_details)}')
+                req = " (req)" if param_name in required else ""
+                param_details.append(f"{param_name}: {ptype}{req}")
+            tool_schema_lines.append(f'- {name}: {desc} | Params: {", ".join(param_details)}')
 
     tool_schema_block = "\n".join(tool_schema_lines)
 
@@ -535,9 +557,19 @@ TOOL SCHEMAS (use EXACTLY these parameters):
 {tool_schema_block}
 
 Example:
-{{"tool": "open_app", "params": {{"name": "notepad"}}, "speak": "Opening Notepad"}}
-{{"tool": "window_mgmt", "params": {{"action": "maximize"}}, "speak": "Maximizing the window"}}
-I've opened Notepad and maximized it for you."""
+{{"tool": "open_app", "params": {{"name": "vscode"}}, "speak": "Opening VS Code"}}
+{{"tool": "window_mgmt", "params": {{"action": "maximize"}}, "speak": "Maximizing window"}}
+I've opened VS Code and maximized it.
+
+Generate content (shows in panel):
+{{"tool": "generate_content", "params": {{"type": "application", "topic": "leave application for tomorrow"}}, "speak": "Generating leave application"}}
+
+Insert generated content:
+{{"tool": "insert_content", "params": {{"content": "Dear Sir/Madam, I request leave..."}}, "speak": "Inserting content"}}
+
+Direct typing:
+{{"tool": "type_text", "params": {{"text": "Hello world"}}, "speak": "Typing text"}}
+Types into current window."""
 
     full_prompt = system_prompt + "\n\n" + tool_prompt
 

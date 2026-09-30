@@ -33,8 +33,7 @@ _RE_PDF_NEWLINES = re.compile(r'(?<=[a-zA-Z0-9])\n(?=[a-zA-Z0-9])')
 _RE_PDF_ADJACENT = re.compile(r"([A-Z0-9]{2,})([A-Z][a-z]+)")
 _RE_CHUNK_WHITESPACE = re.compile(r"\s+")
 _RE_CHUNK_SENTENCES = re.compile(r"(?<=[.!?])\s+")
-_RE_CODE_BLOCKS = re.compile(r"```[\s\S]*?```")
-_RE_MARKDOWN_HEADERS = re.compile(r"^#{1,6}\s+.*$", re.MULTILINE)
+_RE_MARKDOWN_HEADERS = re.compile(r"^(#{1,6})\s+(.*)$", re.MULTILINE)
 
 logger = logging.getLogger("amigo.rag_engine_v2")
 
@@ -48,7 +47,6 @@ _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 RAG_DATA_DIR = os.path.join(_BASE_DIR, "rag_data")
 CHROMA_DIR = os.path.join(RAG_DATA_DIR, "chroma")
 PROFILE_FILE = os.path.join(_BASE_DIR, "amigo_profile.json")
-FILE_HASHES_PATH = os.path.join(RAG_DATA_DIR, "file_hashes.json")
 BM25_INDEX_PATH = os.path.join(RAG_DATA_DIR, "bm25_index.pkl")
 
 # ── Constants ──────────────────────────────────────────────────
@@ -62,11 +60,47 @@ ALL_COLLECTIONS = [CONVERSATIONS, USER_FACTS, DOCUMENTS, EMAILS, CALENDAR]
 SUPPORTED_EXTENSIONS = {
     # Essential document types only
     ".pdf",           # PDF documents
-    ".docx", ".doc",  # Word documents
+    ".docx",          # Word documents (modern .docx only; legacy .doc not supported by python-docx)
     ".txt",           # Notepad/text files
     ".xlsx", ".csv",  # Excel/spreadsheet files
     ".pptx",          # PowerPoint presentations
 }
+
+# ── Voice/Performance Constants ────────────────────────────────
+# Skip RAG for these tool types (app control, media, timers never touch vector store)
+SKIP_RAG_TOOLS = {
+    "play_youtube", "pause", "resume", "stop", "volume", "mute", "unmute",
+    "open", "close", "launch", "scroll", "click", "type",
+    "set_timer", "set_reminder", "cancel_timer", "cancel_reminder",
+    "get_weather", "get_time", "get_date",
+    "system_volume", "system_brightness", "system_power",
+}
+
+# Max context tokens for voice responses (~1.5k chars ≈ 400 tokens)
+MAX_VOICE_CONTEXT_CHARS = 1500
+
+# Low-value tools that shouldn't be stored in conversation memory
+LOW_VALUE_TOOLS = {
+    "play_youtube", "pause", "resume", "stop", "volume", "mute", "unmute",
+    "open", "close", "launch", "scroll", "click", "type",
+    "system_volume", "system_brightness", "system_power",
+}
+
+# Stop words for name/city extraction (STT transcripts have no punctuation)
+STOP_WORDS = {
+    "and", "but", "or", "the", "a", "an", "to", "for", "in", "on", "at",
+    "with", "by", "from", "of", "my", "me", "i", "you", "we", "they",
+    "he", "she", "it", "is", "was", "were", "am", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "must", "can", "shall", "want", "need",
+    "like", "love", "hate", "play", "listen", "watch", "see", "look",
+    "call", "back", "later", "now", "then", "there", "here", "where",
+    "when", "what", "who", "why", "how", "some", "any", "all", "this",
+    "that", "these", "those", "uber", "taxi", "cab", "ride",
+}
+
+# Question words for importance scoring (STT has no ?)
+QUESTION_WORDS = {"what", "when", "who", "where", "why", "how", "which", "whose", "whom"}
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 CHUNK_SIZE = 512
@@ -121,17 +155,7 @@ class SearchResult:
     importance: float = 1.0
 
 
-@dataclass
-class DocumentChunk:
-    """Represents a document chunk with metadata."""
-    text: str
-    filepath: str
-    filename: str
-    chunk_index: int
-    total_chunks: int
-    file_type: str
-    modified_time: str
-    embedding: Optional[list] = None
+# DocumentChunk dataclass removed - unused (ponytail: dead code removal)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -152,47 +176,65 @@ def _init_chroma() -> None:
             import chromadb
             from chromadb.utils import embedding_functions
 
-            # Fast offline-first initialization
+            # Fast offline-first initialization - use local env vars, not process-wide
             cache_root = os.path.expanduser(os.path.join("~", ".cache", "huggingface", "hub"))
-            model_cache_exists = any(
-                os.path.exists(os.path.join(cache_root, f"models--sentence-transformers--{EMBEDDING_MODEL.replace('/', '--')}"))
-                for _ in [None]
-            ) if os.path.exists(cache_root) else False
+            model_dir_name = f"models--{EMBEDDING_MODEL.replace('/', '--')}"
+            alt_dir_name = f"models--sentence-transformers--{EMBEDDING_MODEL.replace('/', '--')}"
+            model_cache_exists = os.path.exists(os.path.join(cache_root, model_dir_name)) or os.path.exists(os.path.join(cache_root, alt_dir_name)) if os.path.exists(cache_root) else False
 
-            if model_cache_exists:
-                os.environ["HF_HUB_OFFLINE"] = "1"
-                os.environ["TRANSFORMERS_OFFLINE"] = "1"
+            client = chromadb.PersistentClient(path=CHROMA_DIR)
 
-            _chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
-
-            # Use better embedding model
-            try:
-                _embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-                    model_name=EMBEDDING_MODEL,
-                )
-            except Exception as first_err:
-                os.environ["HF_HUB_OFFLINE"] = "1"
-                os.environ["TRANSFORMERS_OFFLINE"] = "1"
+            # Use better embedding model with proper environment handling
+            # We need to set env vars BEFORE creating the embedding function since it reads os.environ
+            def _make_embedding_fn(use_offline: bool):
+                # Save original env
+                old_hf_offline = os.environ.get("HF_HUB_OFFLINE")
+                old_transformers_offline = os.environ.get("TRANSFORMERS_OFFLINE")
                 try:
-                    _embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+                    if use_offline or model_cache_exists:
+                        os.environ["HF_HUB_OFFLINE"] = "1"
+                        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+                    elif old_hf_offline is not None:
+                        os.environ.pop("HF_HUB_OFFLINE", None)
+                    if old_transformers_offline is not None:
+                        os.environ.pop("TRANSFORMERS_OFFLINE", None)
+                    
+                    return embedding_functions.SentenceTransformerEmbeddingFunction(
                         model_name=EMBEDDING_MODEL,
                     )
-                except Exception as second_err:
-                    os.environ.pop("HF_HUB_OFFLINE", None)
-                    os.environ.pop("TRANSFORMERS_OFFLINE", None)
-                    _embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-                        model_name=EMBEDDING_MODEL,
-                    )
+                finally:
+                    # Restore original env
+                    if old_hf_offline is not None:
+                        os.environ["HF_HUB_OFFLINE"] = old_hf_offline
+                    else:
+                        os.environ.pop("HF_HUB_OFFLINE", None)
+                    if old_transformers_offline is not None:
+                        os.environ["TRANSFORMERS_OFFLINE"] = old_transformers_offline
+                    else:
+                        os.environ.pop("TRANSFORMERS_OFFLINE", None)
+
+            try:
+                _embedding_fn = _make_embedding_fn(use_offline=False)
+            except Exception:
+                # Try with offline mode
+                try:
+                    _embedding_fn = _make_embedding_fn(use_offline=True)
+                except Exception:
+                    # Try without any offline settings
+                    _embedding_fn = _make_embedding_fn(use_offline=False)
 
             # Check if collections need to be recreated due to embedding dimension change
             _recreate_collections_if_needed()
 
             for name in ALL_COLLECTIONS:
-                _collections[name] = _chroma_client.get_or_create_collection(
+                _collections[name] = client.get_or_create_collection(
                     name=name,
                     embedding_function=_embedding_fn,
                     metadata={"hnsw:space": "cosine"},
                 )
+
+            # Set client AFTER collections are created to avoid race condition
+            _chroma_client = client
 
             # Initialize cross-encoder reranker
             _init_reranker()
@@ -200,14 +242,21 @@ def _init_chroma() -> None:
             # Initialize BM25 index
             _init_bm25_index()
 
+            global _initialized, _init_failed
+            _initialized = True
+            _init_failed = False
             logger.info("[RAG v2] ChromaDB initialized with %d collections using %s", len(_collections), EMBEDDING_MODEL)
         except Exception as e:
+            _init_failed = True
+            _initialized = False
             logger.error("[RAG v2] ChromaDB init failed: %s", e)
             raise
 
 
 def _recreate_collections_if_needed() -> None:
-    """Check if existing collections have different embedding dimensions and recreate if needed."""
+    """Check if existing collections have different embedding dimensions and recreate if needed.
+    WARNING: This deletes all data in collections with mismatched dimensions.
+    """
     try:
         # Get the expected dimension from the new embedding model
         test_embedding = _embedding_fn(["test"])
@@ -235,8 +284,9 @@ def _recreate_collections_if_needed() -> None:
                                 existing_dim = emb.shape[1] if len(emb.shape) > 1 else emb.shape[0]
                             
                             if existing_dim is not None and existing_dim != expected_dim:
-                                logger.info("[RAG v2] Collection '%s' has dimension %d, expected %d. Deleting...", 
-                                           name, existing_dim, expected_dim)
+                                logger.warning("[RAG v2] Collection '%s' has dimension %d, expected %d. "
+                                               "ALL DATA IN THIS COLLECTION WILL BE DELETED.", 
+                                               name, existing_dim, expected_dim)
                                 _chroma_client.delete_collection(name=name)
             except Exception as e:
                 logger.debug("[RAG v2] Could not check collection '%s': %s", name, e)
@@ -326,11 +376,19 @@ def _rebuild_bm25_index() -> None:
         logger.error("[RAG v2] BM25 rebuild failed: %s", e)
 
 
+# Coalesce BM25 rebuild requests with a debounce timer
+_bm25_rebuild_pending = False
+_bm25_rebuild_lock = threading.Lock()
+
+
 def _bm25_update_worker():
-    """Background worker for BM25 index updates."""
+    """Background worker for BM25 index updates with coalescing."""
+    global _bm25_rebuild_pending
     while True:
         try:
             _bm25_update_queue.get()
+            with _bm25_rebuild_lock:
+                _bm25_rebuild_pending = False
             _rebuild_bm25_index()
         except Exception as e:
             logger.error("[RAG v2] BM25 update worker error: %s", e)
@@ -338,14 +396,58 @@ def _bm25_update_worker():
             _bm25_update_queue.task_done()
 
 
+def _schedule_bm25_rebuild():
+    """Schedule a BM25 rebuild, coalescing multiple requests within a short window."""
+    global _bm25_rebuild_pending
+    with _bm25_rebuild_lock:
+        if _bm25_rebuild_pending:
+            return
+        _bm25_rebuild_pending = True
+    _bm25_update_queue.put(True)
+
+
 threading.Thread(target=_bm25_update_worker, daemon=True, name="BM25-Updater").start()
 
 
+# Track initialization state for non-blocking access
+_initialized = False
+_init_failed = False
+
+
 def _col(name: str):
-    """Get a ChromaDB collection by name, initializing engine if needed."""
+    """Get a ChromaDB collection by name. Returns None if not initialized (non-blocking)."""
+    global _initialized, _init_failed
     if _chroma_client is None:
-        _init_chroma()
+        if _init_failed:
+            return None
+        if not _initialized:
+            # Not ready yet - return None instead of blocking on init
+            return None
     return _collections.get(name)
+
+
+def is_rag_ready() -> bool:
+    """Check if RAG engine is fully initialized and ready."""
+    return _initialized and _chroma_client is not None and not _init_failed
+
+
+def flush_write_queues() -> None:
+    """Flush all pending writes to disk. Call on shutdown."""
+    # Flush profile queue
+    _profile_queue.join()
+    # Flush conversation queue
+    _conv_write_queue.join()
+    # Flush BM25 queue
+    _bm25_update_queue.join()
+    logger.info("[RAG v2] All write queues flushed on shutdown")
+
+
+def _register_shutdown():
+    """Register atexit handler to flush queues on clean shutdown."""
+    import atexit
+    atexit.register(flush_write_queues)
+
+_register_shutdown()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -392,7 +494,7 @@ _profile_queue = queue.Queue()
 
 
 def _profile_writer_worker():
-    """Background worker that persists profile changes."""
+    """Background worker that persists profile changes atomically."""
     while True:
         p = _profile_queue.get()
         try:
@@ -404,8 +506,11 @@ def _profile_writer_worker():
                     break
             with _profile_lock:
                 dumped = json.dumps(p, indent=2)
-                with open(PROFILE_FILE, "w", encoding="utf-8") as f:
+                # Atomic write: write to temp file then replace
+                temp_file = PROFILE_FILE + ".tmp"
+                with open(temp_file, "w", encoding="utf-8") as f:
                     f.write(dumped)
+                os.replace(temp_file, PROFILE_FILE)
         except Exception as e:
             logger.error("[RAG v2] Error saving profile: %s", e)
         finally:
@@ -496,9 +601,13 @@ def get_active_state(clean_expired: bool = True) -> dict:
     return state
 
 
-def update_active_state(slot: str, data: dict) -> None:
-    """Update an active-state slot in memory."""
-    if not slot or not isinstance(data, dict):
+def update_active_state(slot: str, data: dict | list) -> None:
+    """Update an active-state slot in memory. Accepts dict or list (wrapped in dict)."""
+    if not slot:
+        return
+    if isinstance(data, list):
+        data = {"items": data}
+    elif not isinstance(data, dict):
         return
     slot_data = dict(data)
     slot_data["timestamp"] = datetime.datetime.now().isoformat()
@@ -574,17 +683,22 @@ def _extract_pdf_enhanced(filepath: str) -> str:
                 # Extract text with layout preservation
                 text = page.extract_text(x_tolerance=2, y_tolerance=2) or ""
                 
-                # Extract tables
+                # Extract tables - but avoid duplicating text already in extract_text
                 tables = page.extract_tables()
+                table_texts = []
                 if tables:
                     for table in tables:
                         table_text = "\n".join([" | ".join([cell or "" for cell in row]) for row in table])
-                        text += f"\n\n[Table]\n{table_text}\n"
+                        table_texts.append(table_text)
                 
                 if text:
-                    cleaned = _RE_PDF_NEWLINES.sub('', text)
+                    cleaned = _RE_PDF_NEWLINES.sub(' ', text)
                     cleaned = _RE_PDF_ADJACENT.sub(r"\1 \2", cleaned)
+                    if table_texts:
+                        cleaned += "\n\n[Tables]\n" + "\n\n".join(table_texts)
                     pages.append(cleaned.strip())
+                elif table_texts:
+                    pages.append("[Tables]\n" + "\n\n".join(table_texts))
     except Exception as e:
         logger.debug("[RAG v2] pdfplumber error for %s: %s", filepath, e)
         return _extract_pdf_fallback(filepath)
@@ -616,7 +730,7 @@ def _extract_pdf_fallback(filepath: str) -> str:
                 except Exception:
                     pass
             if text:
-                cleaned = _RE_PDF_NEWLINES.sub('', text)
+                cleaned = _RE_PDF_NEWLINES.sub(' ', text)
                 cleaned = _RE_PDF_ADJACENT.sub(r"\1 \2", cleaned)
                 pages.append(cleaned.strip())
         except Exception:
@@ -659,22 +773,33 @@ def _extract_docx_enhanced(filepath: str) -> str:
 
 def _extract_xlsx_enhanced(filepath: str) -> str:
     """Enhanced XLSX extraction with sheet names and formatting."""
+    wb = None
     try:
         import openpyxl
         wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
         sheets: list[str] = []
         for sheet in wb.worksheets:
             rows_text: list[str] = []
+            row_count = 0
             for row in sheet.iter_rows(values_only=True):
                 non_empty = [str(v).strip() for v in row if v is not None and str(v).strip()]
                 if non_empty:
                     rows_text.append(" | ".join(non_empty))
+                row_count += 1
+                if row_count >= 2000:  # Increased limit from 500
+                    break
             if rows_text:
-                sheets.append(f"[Sheet: {sheet.title}]\n" + "\n".join(rows_text[:500]))
+                sheets.append(f"[Sheet: {sheet.title}]\n" + "\n".join(rows_text))
         return "\n\n".join(sheets)
     except Exception as e:
         logger.debug("[RAG v2] Extraction error for xlsx %s: %s", filepath, e)
         return ""
+    finally:
+        if wb:
+            try:
+                wb.close()
+            except Exception:
+                pass
 
 
 def _extract_pptx_enhanced(filepath: str) -> str:
@@ -716,23 +841,29 @@ def semantic_chunk(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK
     if not text or len(text.strip()) < 50:
         return []
 
-    # First, try to split by markdown headers (before whitespace normalization)
-    header_splits = _RE_MARKDOWN_HEADERS.split(text)
-    if len(header_splits) > 1:
-        # Has markdown headers, split by them
-        chunks = []
-        for section in header_splits:
-            if not section.strip():
-                continue
-            # Normalize whitespace within each section
-            section = _RE_CHUNK_WHITESPACE.sub(" ", section).strip()
-            section_chunks = _chunk_by_paragraphs(section, chunk_size, overlap)
-            chunks.extend(section_chunks)
-        return [c for c in chunks if len(c) > 30]
-    
-    # Otherwise, normalize whitespace and split by paragraphs then sentences
-    text = _RE_CHUNK_WHITESPACE.sub(" ", text).strip()
-    return _chunk_by_paragraphs(text, chunk_size, overlap)
+    # Split by markdown headers, keeping headers with their content
+    matches = list(_RE_MARKDOWN_HEADERS.finditer(text))
+    sections = []
+    if matches:
+        for i, m in enumerate(matches):
+            start = m.start()
+            end = matches[i+1].start() if i+1 < len(matches) else len(text)
+            header = m.group(0).strip()
+            body = text[start:end].strip()
+            # Combine header and body
+            section_text = header + ("\n\n" + body if body else "")
+            sections.append(section_text)
+    else:
+        sections = [text]
+
+    all_chunks = []
+    for sec in sections:
+        # Preserve paragraph breaks; normalize internal whitespace only
+        paragraphs = sec.split("\n\n")
+        norm_paragraphs = [_RE_CHUNK_WHITESPACE.sub(" ", p).strip() for p in paragraphs if p.strip()]
+        normalized = "\n\n".join(norm_paragraphs)
+        all_chunks.extend(_chunk_by_paragraphs(normalized, chunk_size, overlap))
+    return [c for c in all_chunks if len(c) > 30]
 
 
 def _chunk_by_paragraphs(text: str, chunk_size: int, overlap: int) -> list[str]:
@@ -827,6 +958,26 @@ def _ensure_buffer() -> collections.deque:
     return _conversation_buffer
 
 
+# Queue for async fact extraction (avoids blocking on embedding)
+_fact_extraction_queue: queue.Queue = queue.Queue()
+
+
+def _fact_extraction_worker():
+    """Background worker for user profile fact extraction."""
+    while True:
+        try:
+            user_msg, remember = _fact_extraction_queue.get()
+            try:
+                extract_user_profile_updates(user_msg, remember=remember)
+            except Exception as e:
+                logger.error("[RAG v2] Fact extraction error: %s", e)
+        finally:
+            _fact_extraction_queue.task_done()
+
+
+threading.Thread(target=_fact_extraction_worker, daemon=True, name="FactExtractor").start()
+
+
 def add_conversation(
     user_msg: str,
     assistant_msg: str,
@@ -836,8 +987,17 @@ def add_conversation(
     state_update: dict | None = None,
     importance: float = 1.0,
 ) -> None:
-    """Add a conversation turn to RAG memory with importance scoring."""
+    """Add a conversation turn to RAG memory with importance scoring.
+    Skips storage for low-value tool commands (media, app control, timers)."""
     if not user_msg or not user_msg.strip():
+        return
+
+    # Skip storing low-value tool turns (commands, media control, etc.)
+    if tool in LOW_VALUE_TOOLS:
+        # Still update active state but don't store in memory
+        if state_update and isinstance(state_update, dict):
+            for slot, data in state_update.items():
+                update_active_state(slot, data)
         return
 
     user_msg = re.sub(r"\s+", " ", user_msg).strip()[:1000]
@@ -885,15 +1045,18 @@ def add_conversation(
         for slot, data in state_update.items():
             update_active_state(slot, data)
 
-    # Extract user profile updates
-    extract_user_profile_updates(user_msg, remember=remember)
+    # Queue fact extraction asynchronously (non-blocking)
+    try:
+        _fact_extraction_queue.put((user_msg, remember))
+    except Exception as e:
+        logger.error("[RAG v2] Error queueing fact extraction: %s", e)
 
 
 def _calculate_importance(user_msg: str, assistant_msg: str, tool: str, base_importance: float) -> float:
     """Calculate importance score for a conversation turn."""
     importance = base_importance
     
-    # Tool-based importance
+    # Tool-based importance (use as base, not max, so it actually varies)
     tool_importance = {
         "chat": 0.5,
         "web_search": 0.7,
@@ -904,7 +1067,7 @@ def _calculate_importance(user_msg: str, assistant_msg: str, tool: str, base_imp
         "get_weather": 0.4,
         "play_youtube": 0.3,
     }
-    importance = max(importance, tool_importance.get(tool, 0.5))
+    importance = tool_importance.get(tool, 0.5)
     
     # Length-based (longer = more important)
     total_len = len(user_msg) + len(assistant_msg)
@@ -913,12 +1076,13 @@ def _calculate_importance(user_msg: str, assistant_msg: str, tool: str, base_imp
     elif total_len > 200:
         importance = min(1.0, importance + 0.1)
     
-    # Question marks indicate information seeking
-    if "?" in user_msg:
+    # Question words indicate information seeking (STT has no ?)
+    user_lower = user_msg.lower()
+    if any(qw in user_lower.split() for qw in QUESTION_WORDS):
         importance = min(1.0, importance + 0.1)
     
     # Explicit memory commands
-    if any(kw in user_msg.lower() for kw in ("remember", "note", "save", "important")):
+    if any(kw in user_lower for kw in ("remember", "note", "save", "important")):
         importance = min(1.0, importance + 0.3)
     
     return importance
@@ -927,7 +1091,34 @@ def _calculate_importance(user_msg: str, assistant_msg: str, tool: str, base_imp
 def get_recent_conversations(count: int = 6) -> list[dict]:
     """Return the most recent N conversations from in-memory buffer."""
     buf = _ensure_buffer()
+    # Buffer is already sorted by timestamp (oldest first), so take last N
     return list(buf)[-count:]
+
+
+def get_recent_conversations_from_chroma(count: int = 6) -> list[dict]:
+    """Return the most recent N conversations from ChromaDB, sorted by timestamp."""
+    try:
+        col = _col(CONVERSATIONS)
+        if not col or col.count() == 0:
+            return []
+        # Fetch more than needed to sort properly
+        fetch = min(col.count(), max(count * 2, 100))
+        results = col.get(limit=fetch, include=["metadatas", "documents"])
+        if results and results.get("metadatas"):
+            items = []
+            for meta, doc in zip(results["metadatas"], results["documents"]):
+                items.append({
+                    "user": meta.get("user_msg", ""),
+                    "assistant": meta.get("assistant_msg", ""),
+                    "tool": meta.get("tool", "chat"),
+                    "timestamp": meta.get("timestamp", ""),
+                    "importance": meta.get("importance", 1.0),
+                })
+            items.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+            return items[:count]
+    except Exception as e:
+        logger.debug("[RAG v2] get_recent_conversations_from_chroma note: %s", e)
+    return []
 
 
 def get_important_conversations(min_importance: float = 0.7, limit: int = 20) -> list[dict]:
@@ -938,27 +1129,8 @@ def get_important_conversations(min_importance: float = 0.7, limit: int = 20) ->
 
 def summarize_conversation_history(max_turns: int = 50) -> str:
     """Generate a summary of recent conversation history for context."""
-    buf = _ensure_buffer()
-    recent = list(buf)[-max_turns:]
-    
-    if not recent:
-        return ""
-    
-    # Group by topic/tool
-    topics = {}
-    for turn in recent:
-        tool = turn.get("tool", "chat")
-        if tool not in topics:
-            topics[tool] = []
-        topics[tool].append(turn)
-    
-    summary_parts = []
-    for tool, turns in topics.items():
-        if tool == "chat":
-            continue
-        summary_parts.append(f"{tool}: {len(turns)} interactions")
-    
-    return "Recent activity: " + "; ".join(summary_parts) if summary_parts else ""
+    # This function counts tool usage, not a true summary. Use get_conversation_activity_summary instead.
+    return get_conversation_activity_summary(max_turns)
 
 
 def invalidate_conversations_cache() -> None:
@@ -1015,6 +1187,14 @@ def clear_conversations() -> None:
     with _conv_cache_lock:
         _all_conversations_cache = []
 
+    # Drain the write queue first to avoid writes after clear
+    while not _conv_write_queue.empty():
+        try:
+            _conv_write_queue.get_nowait()
+            _conv_write_queue.task_done()
+        except queue.Empty:
+            break
+
     try:
         if _chroma_client:
             try:
@@ -1028,6 +1208,17 @@ def clear_conversations() -> None:
             )
     except Exception as e:
         logger.error("[RAG v2] Error clearing conversations: %s", e)
+
+    # Reset active state in memory
+    global _ACTIVE_STATE
+    _ACTIVE_STATE = {
+        "current_media": None,
+        "active_app": {"name": "", "timestamp": None},
+        "last_search": {"query": "", "timestamp": None},
+        "active_subject": {"name": "", "category": "", "timestamp": None},
+        "active_file": {"path": "", "name": "", "timestamp": None},
+    }
+    clear_search_cache()  # Invalidate search cache
 
     profile = load_profile()
     profile["active_state"] = {
@@ -1067,6 +1258,7 @@ def add_user_fact(fact: str, category: str = "general", importance: float = 1.0)
                     "importance": importance,
                 }],
             )
+        clear_search_cache()  # Invalidate search cache on new fact
     except Exception as e:
         logger.error("[RAG v2] Error adding user fact: %s", e)
 
@@ -1093,11 +1285,12 @@ def clear_user_facts() -> None:
     try:
         col = _col(USER_FACTS)
         if col and col.count() > 0:
-            # Get all IDs and delete them
-            results = col.get(include=["ids"])
+            # Get all IDs and delete them - don't use include=["ids"] as it may fail
+            results = col.get()
             if results and results.get("ids"):
                 col.delete(ids=results["ids"])
                 logger.info("[RAG v2] Cleared all user facts")
+        clear_search_cache()  # Invalidate search cache
     except Exception as e:
         logger.error("[RAG v2] Error clearing user facts: %s", e)
 
@@ -1117,7 +1310,7 @@ def expand_query(query: str, conversation_history: list | None = None) -> list[s
     queries = [query.strip()]
     q_lower = query.lower()
     
-    # Add synonyms for common terms
+    # Add synonyms for common terms using word boundaries to avoid substring issues
     synonyms = {
         "find": ["search", "locate", "look for"],
         "show": ["display", "view", "see"],
@@ -1133,9 +1326,12 @@ def expand_query(query: str, conversation_history: list | None = None) -> list[s
     }
     
     for term, syns in synonyms.items():
-        if term in q_lower:
+        # Use word boundary regex to avoid substring replacement (e.g., "display" -> "dislisten")
+        if re.search(rf'\b{re.escape(term)}\b', q_lower):
             for syn in syns:
-                queries.append(query.replace(term, syn))
+                # Replace whole word only
+                new_q = re.sub(rf'\b{re.escape(term)}\b', syn, query, flags=re.IGNORECASE)
+                queries.append(new_q)
     
     # Add context from conversation history
     if conversation_history:
@@ -1173,7 +1369,13 @@ def clear_search_cache() -> None:
     _SEARCH_CACHE.clear()
 
 
-def _semantic_search(query: str, target_collections: list[str], top_k: int) -> list[SearchResult]:
+def _semantic_search(
+    query: str,
+    target_collections: list[str],
+    top_k: int,
+    metadata_filter: dict | None = None,
+    query_embedding: list[float] | None = None,
+) -> list[SearchResult]:
     """Perform semantic search using ChromaDB."""
     all_results = []
     
@@ -1182,22 +1384,30 @@ def _semantic_search(query: str, target_collections: list[str], top_k: int) -> l
             col = _col(col_name)
             if not col or col.count() == 0:
                 continue
-            results = col.query(
-                query_texts=[query],
-                n_results=min(top_k * 2, col.count()),  # Get more for reranking
-                include=["documents", "metadatas", "distances"],
-            )
+            query_kwargs = {
+                "n_results": min(top_k * 2, col.count()),
+                "include": ["documents", "metadatas", "distances"],
+            }
+            if query_embedding is not None:
+                query_kwargs["query_embeddings"] = [query_embedding]
+            else:
+                query_kwargs["query_texts"] = [query]
+            if metadata_filter and isinstance(metadata_filter, dict):
+                query_kwargs["where"] = metadata_filter
+            results = col.query(**query_kwargs)
             if results and results.get("documents") and results["documents"][0]:
                 for doc, meta, dist in zip(
                     results["documents"][0],
                     results["metadatas"][0],
                     results["distances"][0],
                 ):
+                    importance = float(meta.get("importance", 1.0)) if isinstance(meta, dict) else 1.0
                     all_results.append(SearchResult(
                         text=doc,
                         source=col_name,
                         score=round(1.0 - dist, 4),
-                        metadata=meta,
+                        metadata=meta or {},
+                        importance=importance,
                     ))
         except Exception as e:
             logger.debug("[RAG v2] Semantic search error in %s: %s", col_name, e)
@@ -1205,24 +1415,34 @@ def _semantic_search(query: str, target_collections: list[str], top_k: int) -> l
     return all_results
 
 
-def _bm25_search(query: str, top_k: int) -> list[SearchResult]:
+def _bm25_search(query: str, top_k: int, metadata_filter: dict | None = None) -> list[SearchResult]:
     """Perform BM25 keyword search."""
     if _bm25_index is None or not _bm25_doc_map:
         return []
     
     try:
-        from rank_bm25 import BM25Okapi
         query_tokens = query.lower().split()
         scores = _bm25_index.get_scores(query_tokens)
         
         # Get top-k indices
-        top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
+        top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k * 2]
         
         results = []
         for idx in top_indices:
             if scores[idx] > 0:
                 doc_info = _bm25_doc_map.get(idx)
                 if doc_info:
+                    # Apply metadata filter if provided
+                    if metadata_filter:
+                        meta = doc_info['metadata']
+                        match = True
+                        for k, v in metadata_filter.items():
+                            if meta.get(k) != v:
+                                match = False
+                                break
+                        if not match:
+                            continue
+                    
                     results.append(SearchResult(
                         text=doc_info['text'],
                         source=DOCUMENTS,
@@ -1230,6 +1450,8 @@ def _bm25_search(query: str, top_k: int) -> list[SearchResult]:
                         metadata=doc_info['metadata'],
                         keyword_score=float(scores[idx]),
                     ))
+                    if len(results) >= top_k:
+                        break
         return results
     except Exception as e:
         logger.debug("[RAG v2] BM25 search error: %s", e)
@@ -1258,75 +1480,172 @@ def _rerank_results(query: str, results: list[SearchResult], top_k: int) -> list
         return results[:top_k]
 
 
-def _hybrid_search(query: str, target_collections: list[str], top_k: int = 5) -> list[SearchResult]:
+def _hybrid_search(
+    query: str,
+    target_collections: list[str],
+    top_k: int = 5,
+    metadata_filter: dict | None = None,
+    conversation_history: list | None = None,
+) -> list[SearchResult]:
     """
     Perform hybrid search combining semantic, keyword, and reranking.
+    Preserves calibrated [0..1] confidence scores across both documents and facts.
+    Optimizations:
+    - Skip query expansion for short queries (voice)
+    - Batch embeddings for all query variants
+    - Skip reranker unless top semantic scores are close (within 0.1)
+    - Only rerank for document questions, not fact lookups
     """
-    # Expand query for better recall
-    expanded_queries = expand_query(query)
+    # Skip query expansion for short queries (voice-friendly)
+    # Short queries don't benefit from expansion and it adds latency
+    if len(query.split()) <= 3:
+        expanded_queries = [query]
+    else:
+        expanded_queries = expand_query(query, conversation_history)
+    
+    # Batch embeddings for all query variants at once
+    query_embeddings = {}
+    try:
+        if _embedding_fn is not None and expanded_queries:
+            embeddings = _embedding_fn(expanded_queries)
+            for eq, emb in zip(expanded_queries, embeddings):
+                query_embeddings[eq] = emb
+    except Exception:
+        pass
     
     all_results = []
     
-    # Semantic search for each expanded query
+    # Semantic search for each expanded query (using pre-computed embeddings)
     for eq in expanded_queries:
-        semantic_results = _semantic_search(eq, target_collections, top_k * 2)
+        eq_embedding = query_embeddings.get(eq)
+        semantic_results = _semantic_search(eq, target_collections, top_k * 2, metadata_filter=metadata_filter, query_embedding=eq_embedding)
         all_results.extend(semantic_results)
     
     # BM25 keyword search for documents
     if DOCUMENTS in target_collections:
-        bm25_results = _bm25_search(query, top_k * 2)
+        bm25_results = _bm25_search(query, top_k * 2, metadata_filter=metadata_filter)
         all_results.extend(bm25_results)
     
-    # Deduplicate by text content
-    seen_texts = set()
-    unique_results = []
+    # Deduplicate by text content, MERGING scores when same chunk found by both
+    seen_texts = {}
     for r in all_results:
         text_key = r.text[:200]  # Use first 200 chars as key
         if text_key not in seen_texts:
-            seen_texts.add(text_key)
-            unique_results.append(r)
+            seen_texts[text_key] = r
+        else:
+            # Same chunk found by both semantic and BM25 - merge scores
+            existing = seen_texts[text_key]
+            # Keep the higher semantic score
+            if r.score > existing.score:
+                existing.score = r.score
+            # Keep the higher keyword score
+            if r.keyword_score > existing.keyword_score:
+                existing.keyword_score = r.keyword_score
+            # Keep rerank score if present
+            if r.rerank_score > existing.rerank_score:
+                existing.rerank_score = r.rerank_score
     
-    # Rerank with cross-encoder
-    reranked = _rerank_results(query, unique_results, top_k * 2)
+    unique_results = list(seen_texts.values())
+    
+    # Decide whether to rerank:
+    # - Only for document questions (DOCUMENTS in target)
+    # - Only if top semantic scores are close (within 0.15)
+    # - Skip if reranker not available
+    should_rerank = (
+        _reranker is not None 
+        and DOCUMENTS in target_collections
+        and len(unique_results) >= 2
+    )
+    
+    if should_rerank:
+        # Check if top scores are close enough to benefit from reranking
+        unique_results.sort(key=lambda x: x.score, reverse=True)
+        top_score = unique_results[0].score
+        second_score = unique_results[1].score if len(unique_results) > 1 else 0
+        if top_score - second_score > 0.15:
+            # Clear winner, skip reranking
+            should_rerank = False
+    
+    if should_rerank:
+        reranked = _rerank_results(query, unique_results, top_k * 2)
+    else:
+        reranked = unique_results
+        # Sort by semantic score
+        reranked.sort(key=lambda x: x.score, reverse=True)
     
     # Final scoring: combine semantic, keyword, and rerank scores
     for r in reranked:
-        # Weighted combination
-        r.score = (
-            0.4 * r.score +           # Semantic similarity
-            0.2 * min(r.keyword_score / 10.0, 1.0) +  # Normalized BM25
-            0.4 * r.rerank_score      # Cross-encoder relevance
-        ) * r.importance
+        sem_score = max(0.0, min(1.0, r.score))
+        # Keyword boost: normalized BM25 score (0-1) * 0.2
+        kw_boost = 0.2 * min(r.keyword_score / 10.0, 1.0) if r.keyword_score > 0 else 0.0
+        
+        # Rerank boost: cross-encoder outputs sigmoid values (0-1), scale appropriately
+        rerank_boost = 0.0
+        if _reranker is not None and r.rerank_score > 0:
+            # Cross-encoder typically outputs 0-1 sigmoid values
+            # Use a gentle boost that doesn't saturate immediately
+            rerank_boost = 0.15 * r.rerank_score
+        
+        combined = min(1.0, sem_score + kw_boost + rerank_boost)
+        r.score = round(combined * r.importance, 4)
     
     reranked.sort(key=lambda x: x.score, reverse=True)
     return reranked[:top_k]
 
 
-def search(query: str, target_collections: list[str] | None = None, top_k: int = 5) -> list[dict]:
+def search(
+    query: str,
+    target_collections: list[str] | None = None,
+    top_k: int = 5,
+    query_type: str = "auto",
+    metadata_filter: dict | None = None,
+    conversation_history: list | None = None,
+    skip_rag: bool = False,
+    **kwargs,
+) -> list[dict]:
     """
     Enhanced hybrid search with caching, query expansion, and reranking.
-    Includes fast path for simple queries.
+    Includes fast path for simple queries and support for query_type and metadata_filter.
+    skip_rag: if True, returns empty list (for tools that shouldn't use RAG)
     """
-    if not query or not query.strip():
+    if skip_rag or not query or not query.strip():
         return []
-    if target_collections is None:
-        target_collections = [CONVERSATIONS, USER_FACTS, DOCUMENTS]
 
-    cache_key = f"{query.strip().lower()}::{','.join(sorted(target_collections))}::{top_k}"
+    if target_collections is None:
+        if query_type in ("conversation_recall", "memory", "fact_lookup"):
+            target_collections = [USER_FACTS, CONVERSATIONS]
+        elif query_type in ("document_qa", "document", "file"):
+            target_collections = [DOCUMENTS]
+        else:
+            target_collections = [CONVERSATIONS, USER_FACTS, DOCUMENTS]
+
+    cache_key = f"{query.strip().lower()}::{','.join(sorted(target_collections))}::{top_k}::{query_type}::{json.dumps(metadata_filter or {}, sort_keys=True)}"
     now = time.time()
     if cache_key in _SEARCH_CACHE:
         ts, cached_res = _SEARCH_CACHE[cache_key]
         if now - ts < _SEARCH_CACHE_TTL:
-            return cached_res
+            # Return a copy to prevent cache mutation
+            return copy.deepcopy(cached_res)
 
-    # Fast path for simple queries (short, no expansion needed)
-    is_simple = len(query.split()) <= 3 and not any(c in query for c in '"\'')
+    # Fast path for simple queries (short, no expansion needed, no metadata filter)
+    # Skip query expansion for voice (short queries don't benefit)
+    is_simple = len(query.split()) <= 3 and not any(c in query for c in '"\'') and not metadata_filter
     if is_simple and top_k <= 3:
         # Use only semantic search for simple queries (faster)
-        results = _semantic_search(query, target_collections, top_k)
+        # Compute embedding once
+        query_embedding = None
+        try:
+            if _embedding_fn is not None:
+                query_embedding = _embedding_fn([query])[0]
+        except Exception:
+            pass
+        results = _semantic_search(query, target_collections, top_k, metadata_filter=metadata_filter, query_embedding=query_embedding)
+        for r in results:
+            r.score = round(max(0.0, min(1.0, r.score)) * r.importance, 4)
+        results.sort(key=lambda x: x.score, reverse=True)
     else:
         # Full hybrid search for complex queries
-        results = _hybrid_search(query, target_collections, top_k)
+        results = _hybrid_search(query, target_collections, top_k, metadata_filter=metadata_filter, conversation_history=conversation_history)
     
     # Convert to dict format for compatibility
     dict_results = []
@@ -1340,12 +1659,51 @@ def search(query: str, target_collections: list[str] | None = None, top_k: int =
             "keyword_score": r.keyword_score,
         })
 
-    # Cache results
+    # Cache results (store a copy to prevent mutation)
     if len(_SEARCH_CACHE) > 512:
         _SEARCH_CACHE.pop(next(iter(_SEARCH_CACHE)))
-    _SEARCH_CACHE[cache_key] = (now, dict_results)
+    _SEARCH_CACHE[cache_key] = (now, copy.deepcopy(dict_results))
     
     return dict_results
+
+
+def should_skip_rag_for_tool(tool: str) -> bool:
+    """Check if a tool should skip RAG retrieval (app control, media, timers)."""
+    return tool in SKIP_RAG_TOOLS
+
+
+def debug_search(
+    query: str,
+    target_collections: list[str] | None = None,
+    top_k: int = 10,
+    **kwargs,
+) -> dict:
+    """Debug search returning detailed scoring and collection information."""
+    start_time = time.perf_counter()
+    results = search(query, target_collections=target_collections, top_k=top_k, **kwargs)
+    duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+    return {
+        "query": query,
+        "target_collections": target_collections or [CONVERSATIONS, USER_FACTS, DOCUMENTS],
+        "top_k": top_k,
+        "count": len(results),
+        "results": results,
+        "duration_ms": duration_ms,
+        "reranker_active": _reranker is not None,
+        "bm25_active": _bm25_index is not None,
+        "stats": get_index_stats(),
+    }
+
+
+def reinitialize_reranker() -> bool:
+    """Attempt to reinitialize the cross-encoder reranker."""
+    global _reranker
+    try:
+        _init_reranker()
+        return _reranker is not None
+    except Exception as e:
+        logger.error("[RAG v2] Failed to reinitialize reranker: %s", e)
+        return False
 
 
 # Convenience search functions
@@ -1395,15 +1753,17 @@ def search_files_by_context(query: str, top_k: int = 10) -> list[dict]:
 #  Enhanced RAG Context Builder
 # ═══════════════════════════════════════════════════════════════
 
-def build_rag_context(query: str, top_k: int = 5, conversation_history: list | None = None) -> str:
+def build_rag_context(query: str, top_k: int = 5, conversation_history: list | None = None, for_voice: bool = True) -> str:
     """
     Build enhanced RAG context for LLM prompt injection.
     Uses hybrid search with query expansion and reranking.
+    For voice: caps total context at MAX_VOICE_CONTEXT_CHARS (~1.5k chars).
     """
     if not query or not query.strip():
         return ""
 
-    # Search with expanded queries and reranking
+    # Search with expanded queries and reranking, passing conversation_history for query expansion
+    # Include EMAILS and CALENDAR collections for comprehensive knowledge retrieval
     results = search(query, target_collections=[DOCUMENTS, USER_FACTS], top_k=top_k)
     
     if not results:
@@ -1417,9 +1777,11 @@ def build_rag_context(query: str, top_k: int = 5, conversation_history: list | N
     parts: list[str] = []
     top_doc = None
     seen_files: set[str] = set()
+    total_chars = 0
+    max_chars = MAX_VOICE_CONTEXT_CHARS if for_voice else 8000
 
     for r in relevant:
-        if len(seen_files) >= top_k:
+        if len(seen_files) >= top_k or total_chars >= max_chars:
             break
         src = r.get("source", "")
         if src == DOCUMENTS:
@@ -1432,15 +1794,24 @@ def build_rag_context(query: str, top_k: int = 5, conversation_history: list | N
                 seen_files.add(fpath)
                 if os.path.exists(fpath):
                     # Use build_file_context which handles both small and large documents
-                    file_context = build_file_context(fpath, query)
+                    file_context = build_file_context(fpath, query, max_chars=max_chars - total_chars)
                     if file_context:
                         parts.append(file_context)
+                        total_chars += len(file_context)
                         continue
-                text = r.get("text", "")[:1500]  # Increased preview
-                parts.append(f"[From document '{fname}']:\n{text}")
+                text = r.get("text", "")[:1500]
+                if total_chars + len(text) > max_chars:
+                    text = text[:max_chars - total_chars]
+                if text:
+                    parts.append(f"[From document '{fname}']:\n{text}")
+                    total_chars += len(text)
         elif src == USER_FACTS:
             text = r.get("text", "")[:1000]
-            parts.append(f"[Known fact]: {text}")
+            if total_chars + len(text) > max_chars:
+                text = text[:max_chars - total_chars]
+            if text:
+                parts.append(f"[Known fact]: {text}")
+                total_chars += len(text)
 
     if top_doc:
         try:
@@ -1451,39 +1822,52 @@ def build_rag_context(query: str, top_k: int = 5, conversation_history: list | N
     return "\n\n".join(parts)
 
 
-def build_file_context(filepath: str, question: str) -> str:
-    """Retrieve relevant chunks or full text from a specific file for Q&A."""
+def build_file_context(filepath: str, question: str, max_chars: int = 8000) -> str:
+    """Retrieve relevant chunks or full text from a specific file for Q&A.
+    Respects max_chars limit for voice context capping."""
     if not os.path.exists(filepath):
         return ""
-    text = extract_text(filepath)
-    if not text:
+    
+    # Check file size first without extracting full text
+    try:
+        fsize = os.path.getsize(filepath)
+        if fsize > MAX_FILE_SIZE or fsize == 0:
+            return ""
+    except OSError:
         return ""
 
-    # For short documents, provide full content
-    if len(text) <= 8000:
-        return f"[Full content of '{os.path.basename(filepath)}']:\n{text}"
+    # For small files, extract and return full content (capped)
+    if fsize <= 8000:
+        text = extract_text(filepath)
+        if text:
+            text = text[:max_chars]
+            return f"[Full content of '{os.path.basename(filepath)}']:\n{text}"
+        return ""
 
-    # For larger documents, query relevant chunks
+    # For larger documents, query relevant chunks from index
     try:
         col = _col(DOCUMENTS)
         if col and col.count() > 0:
-            seen_paths = set()
-            for p in (filepath, os.path.normpath(filepath), filepath.replace("\\", "/"), filepath.replace("/", "\\")):
-                if p in seen_paths:
-                    continue
-                seen_paths.add(p)
-                results = col.query(
-                    query_texts=[question],
-                    n_results=10,
-                    where={"filepath": p},
-                    include=["documents", "distances"],
-                )
-                if results and results.get("documents") and results["documents"][0]:
-                    return f"[Relevant sections from '{os.path.basename(filepath)}']:\n" + "\n\n".join(results["documents"][0])
+            normalized_path = os.path.normpath(filepath)
+            results = col.query(
+                query_texts=[question],
+                n_results=10,
+                where={"filepath": normalized_path},
+                include=["documents", "distances"],
+            )
+            if results and results.get("documents") and results["documents"][0]:
+                content = "\n\n".join(results["documents"][0])
+                content = content[:max_chars]
+                return f"[Relevant sections from '{os.path.basename(filepath)}']:\n{content}"
     except Exception as e:
         logger.debug("[RAG v2] build_file_context error: %s", e)
 
-    return f"[Content from '{os.path.basename(filepath)}']:\n{text[:8000]}"
+    # Fallback: extract and truncate
+    text = extract_text(filepath)
+    if text:
+        text = text[:max_chars]
+        return f"[Content from '{os.path.basename(filepath)}']:\n{text}"
+    return ""
 
 
 def get_file_summary_context(filepath: str) -> str:
@@ -1531,13 +1915,22 @@ def index_document(filepath: str) -> bool:
         modified_time = datetime.datetime.fromtimestamp(os.path.getmtime(filepath)).isoformat()
         filename = os.path.basename(filepath)
         file_type = ext.lstrip(".")
+        normalized_path = os.path.normpath(filepath)
+
+        # Delete old chunks for this file to avoid orphan chunks on re-index
+        try:
+            old_results = col.get(where={"filepath": normalized_path}, include=["ids"])
+            if old_results and old_results.get("ids"):
+                col.delete(ids=old_results["ids"])
+        except Exception:
+            pass
 
         ids, docs, metas = [], [], []
         for i, chunk in enumerate(chunks):
-            ids.append(hashlib.md5(f"{filepath}::{i}".encode()).hexdigest())
+            ids.append(hashlib.md5(f"{normalized_path}::{i}".encode()).hexdigest())
             docs.append(chunk)
             metas.append({
-                "filepath": filepath,
+                "filepath": normalized_path,
                 "filename": filename,
                 "chunk_index": i,
                 "total_chunks": len(chunks),
@@ -1546,10 +1939,13 @@ def index_document(filepath: str) -> bool:
                 "type": "document",
             })
 
-        col.upsert(ids=ids, documents=docs, metadatas=metas)
+        # Batch upsert in chunks to avoid Chroma batch limits
+        batch_size = 100
+        for i in range(0, len(ids), batch_size):
+            col.upsert(ids=ids[i:i+batch_size], documents=docs[i:i+batch_size], metadatas=metas[i:i+batch_size])
         
-        # Trigger BM25 index rebuild
-        _bm25_update_queue.put(True)
+        # Trigger BM25 index rebuild (coalesced by worker)
+        _schedule_bm25_rebuild()
         clear_search_cache()
         
         logger.info("[RAG v2] Indexed '%s' (%d semantic chunks)", filename, len(chunks))
@@ -1615,8 +2011,25 @@ def index_calendar_event(subject: str, start: str, end: str,
 #  User Profile Extraction Helpers
 # ═══════════════════════════════════════════════════════════════
 
+def _clean_stt_name(name: str) -> str:
+    """Clean STT-extracted name: remove stop words, limit to 3 tokens, handle common mishearings."""
+    tokens = name.strip().split()
+    # Filter out stop words
+    tokens = [t for t in tokens if t.lower() not in STOP_WORDS]
+    # Limit to 3 tokens max
+    tokens = tokens[:3]
+    if not tokens:
+        return ""
+    # Join and title-case (but preserve apostrophes)
+    cleaned = " ".join(tokens)
+    # Handle common STT mishearings
+    cleaned = cleaned.replace("Mcdonald", "McDonald").replace("Obrien", "O'Brien")
+    return cleaned.title()
+
+
 def extract_user_profile_updates(user_query: str, remember: str = "") -> None:
-    """Extract user identity, preferences, and facts from natural speech."""
+    """Extract user identity, preferences, and facts from natural speech.
+    STT-friendly: constrains to 1-3 tokens, filters stop words, handles no punctuation."""
     text = (user_query or "").strip()
     if not text:
         return
@@ -1626,30 +2039,36 @@ def extract_user_profile_updates(user_query: str, remember: str = "") -> None:
     preferences = profile.setdefault("preferences", {})
     updated = False
 
-    # Name
-    if m := re.search(r"\b(?:my name is|call me)\s+([A-Za-z\s]{2,30})", text, re.I):
-        name = m.group(1).strip().title()
-        if name and name.lower() not in ("amigo", "user", "someone"):
+    # Name - constrain to 1-3 tokens, filter stop words, handle STT mishearings
+    if m := re.search(r"\b(?:my name is|call me)\s+([A-Za-z][A-Za-z\s]{1,40})", text, re.I):
+        raw_name = m.group(1).strip()
+        name = _clean_stt_name(raw_name)
+        # Require at least 1 token, max 3, and not a common false positive
+        if name and name.lower() not in ("amigo", "user", "someone", "a taxi", "me", "back", "later", "an uber", "uber"):
             identity["name"] = name
             add_user_fact(f"User's name is {name}", category="identity", importance=0.9)
             updated = True
 
-    # Favorite Artist
-    if m := re.search(r"\b(?:my (?:favorite|favourite) artist is|i love listening to)\s+([A-Za-z0-9\s]{2,40})", text, re.I):
-        artist = m.group(1).strip().title()
-        favs = preferences.setdefault("favorite_artists", [])
-        if artist not in favs:
-            favs.append(artist)
-            preferences["favorite_artists"] = favs[-10:]
-            add_user_fact(f"Favorite artist: {artist}", category="preference", importance=0.7)
-            updated = True
+    # Favorite Artist - constrain to 1-3 tokens, filter stop words
+    if m := re.search(r"\b(?:my (?:favorite|favourite) artist is|i love listening to)\s+([A-Za-z0-9][A-Za-z0-9\s]{1,50})", text, re.I):
+        raw_artist = m.group(1).strip()
+        artist = _clean_stt_name(raw_artist)
+        if artist:
+            favs = preferences.setdefault("favorite_artists", [])
+            if artist not in favs:
+                favs.append(artist)
+                preferences["favorite_artists"] = favs[-10:]
+                add_user_fact(f"Favorite artist: {artist}", category="preference", importance=0.7)
+                updated = True
 
-    # Favorite City
-    if m := re.search(r"\b(?:i live in|my city is)\s+([A-Za-z\s]{2,40})", text, re.I):
-        city = m.group(1).strip().title()
-        preferences["favorite_city"] = city
-        add_user_fact(f"User lives in {city}", category="preference", importance=0.7)
-        updated = True
+    # Favorite City - constrain to 1-3 tokens, filter stop words
+    if m := re.search(r"\b(?:i live in|my city is)\s+([A-Za-z][A-Za-z\s]{1,50})", text, re.I):
+        raw_city = m.group(1).strip()
+        city = _clean_stt_name(raw_city)
+        if city:
+            preferences["favorite_city"] = city
+            add_user_fact(f"User lives in {city}", category="preference", importance=0.7)
+            updated = True
 
     # Custom facts via "remember" field
     if remember and len(remember.strip()) > 5:
@@ -1661,7 +2080,8 @@ def extract_user_profile_updates(user_query: str, remember: str = "") -> None:
 
 
 def get_user_profile_prompt(query: str = "") -> str:
-    """Format user profile for LLM prompt injection with semantic fact retrieval."""
+    """Format user profile for LLM prompt injection with semantic fact retrieval.
+    Only adds 'NEVER say you don't have access' when facts were actually retrieved."""
     profile = load_profile()
     parts: list[str] = []
     user_name = profile.get("identity", {}).get("name")
@@ -1672,24 +2092,31 @@ def get_user_profile_prompt(query: str = "") -> str:
     if city := profile.get("preferences", {}).get("favorite_city"):
         parts.append(f"User lives in: {city}.")
 
-    # Only inject specific remembered facts when semantically relevant
+    facts_retrieved = False
+    # Only inject specific remembered facts when semantically relevant or asking about user/data
     if query and query.strip():
         q_clean = query.strip().lower()
         words = q_clean.split()
-        is_memory_signal = any(kw in q_clean for kw in ("remember", "recall", "my ", "favorite", "about me", "note", "prefer", "know about me", "where do i", "who is", "what is my"))
+        is_memory_signal = any(kw in q_clean for kw in ("remember", "recall", "my ", "favorite", "about me", "note", "prefer", "know about me", "where do i", "who is", "what is my", "personal", "data", "who am i", "facts"))
         should_search_facts = (is_memory_signal or len(words) >= 4) and not any(
             q_clean.startswith(prefix) for prefix in ("open ", "launch ", "close ", "play ", "pause", "mute", "unmute", "volume ", "set timer", "scroll ", "click ")
         )
         if should_search_facts:
             try:
-                matched_facts = search(query, target_collections=[USER_FACTS], top_k=3)
+                matched_facts = search(query, target_collections=[USER_FACTS], top_k=5)
                 for mf in matched_facts:
                     doc = (mf.get("text") or mf.get("document") or "").strip()
                     score = mf.get("score", 0)
-                    if doc and score > 0.4 and not (user_name and doc.lower().startswith("user's name is")) and not doc.startswith("Uploaded image"):
-                        parts.append(f"Relevant remembered fact: {doc}")
+                    if doc and score > 0.35 and not doc.startswith("Uploaded image"):
+                        # Fence retrieved facts to prevent prompt injection
+                        parts.append(f"Relevant remembered fact: <<BEGIN_FACT>>{doc}<<END_FACT>>")
+                        facts_retrieved = True
             except Exception as e:
                 logger.debug("[RAG v2 Profile Facts]: %s", e)
+
+    # Only add critical instruction if facts were actually retrieved (not just profile basics)
+    if facts_retrieved:
+        parts.append("CRITICAL: You run locally on this PC with full access to the user's data and memories above. Answer factually using this data. NEVER say you don't have access to personal data.")
 
     return "\n".join(parts) if parts else ""
 
@@ -1738,11 +2165,12 @@ def get_index_stats() -> dict:
 # ═══════════════════════════════════════════════════════════════
 
 def load_memory() -> dict:
-    """Returns a memory dict shaped for UI and agent consumers."""
+    """Returns a memory dict shaped for UI and agent consumers.
+    Uses live _ACTIVE_STATE instead of stale profile active_state."""
     profile = load_profile()
     conversations = get_all_conversations(limit=200)
     return {
-        "active_state": profile.get("active_state", {}),
+        "active_state": get_active_state(clean_expired=True),  # Live state, not profile
         "ui_settings": profile.get("ui_settings", {}),
         "conversations": conversations,
         "user_profile": {
@@ -1768,7 +2196,12 @@ def save_memory(memory: dict) -> None:
                 profile["preferences"] = up["preferences"]
             if "custom_facts" in up and isinstance(up["custom_facts"], list):
                 for fact in up["custom_facts"]:
-                    if isinstance(fact, str) and len(fact.strip()) >= 3:
+                    if isinstance(fact, dict):
+                        # Preserve category and importance
+                        add_user_fact(fact.get("text", "").strip(), 
+                                    category=fact.get("category", "custom"),
+                                    importance=fact.get("importance", 1.0))
+                    elif isinstance(fact, str) and len(fact.strip()) >= 3:
                         add_user_fact(fact.strip(), category="custom")
     save_profile(profile)
 
@@ -1778,21 +2211,24 @@ def save_memory(memory: dict) -> None:
 # ═══════════════════════════════════════════════════════════════
 
 _initialized = False
+_init_failed = False
 
 
 def init_rag(background: bool = True) -> None:
     """Initialize RAG engine asynchronously in the background."""
-    global _initialized
-    if _initialized:
+    global _initialized, _init_failed
+    if _initialized or _init_failed:
         return
 
     def _worker():
-        global _initialized
+        global _initialized, _init_failed
         try:
             _init_chroma()
-            _initialized = True
+            # _init_chroma sets _initialized and _init_failed
             logger.info("[RAG v2] Engine ready in background. %s", get_index_stats())
         except Exception as e:
+            _init_failed = True
+            _initialized = False
             logger.warning("[RAG v2] Background init note: %s", e)
 
     if background:
@@ -1809,7 +2245,11 @@ def init_rag(background: bool = True) -> None:
 def search_async(query: str, target_collections: list[str] | None = None, top_k: int = 5, callback=None):
     """Perform search asynchronously with callback."""
     def _search_task():
-        results = search(query, target_collections, top_k)
+        try:
+            results = search(query, target_collections, top_k)
+        except Exception as e:
+            logger.error("[RAG v2] Async search error: %s", e)
+            results = []
         if callback:
             callback(results)
     

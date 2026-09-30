@@ -1,5 +1,7 @@
 import React, { useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
+// Import optimized motion configs
+import { fluidSpring, scaleFade } from "../utils/motionConfig";
 import {
   Server,
   X,
@@ -108,7 +110,7 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
   };
 
   return (
-    <AnimatePresence>
+    <AnimatePresence mode="wait">
       {isOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           {/* Backdrop */}
@@ -116,17 +118,18 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
+            transition={getTransition(fluidSpring)}
             onClick={onClose}
-            className="fixed inset-0 bg-black/60 backdrop-blur-md"
+            className="fixed inset-0 bg-black/60 backdrop-blur-md gpu-accelerated"
           />
 
           {/* Modal Card */}
           <motion.div
-            initial={{ opacity: 0, scale: 0.95, y: 15 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.95, y: 15 }}
-            transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-            className={`relative w-full max-w-xl rounded-2xl border shadow-2xl overflow-hidden flex flex-col max-h-[90vh] z-10 ${
+            variants={scaleFade}
+            initial="hidden"
+            animate="show"
+            exit="exit"
+            className={`relative w-full max-w-xl rounded-2xl border shadow-2xl overflow-hidden flex flex-col max-h-[90vh] z-10 gpu-accelerated ${
               isDark
                 ? "bg-[#11111d] border-white/10 text-slate-100 shadow-indigo-950/50"
                 : "bg-white border-black/10 text-slate-900 shadow-indigo-200/50"

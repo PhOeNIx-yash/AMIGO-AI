@@ -3,16 +3,11 @@ Local LLM Module for Amigo Voice Assistant.
 Executes MiniCPM 5 2B locally via llama-cpp-python on Windows.
 """
 
-import base64
 import contextvars
-import datetime
-import io
-import json
 import logging
 import multiprocessing
 import os
 import re
-import sys
 import threading
 import time
 import unicodedata
@@ -26,6 +21,22 @@ except ImportError:
     pyperclip = None
 
 from network_utils import is_internet_connected
+
+
+# ---------------------------------------------------------------------------
+# LLM Performance Configuration (tunable via environment variables)
+# ---------------------------------------------------------------------------
+def _get_llm_config():
+    """Get LLM configuration from environment variables with sensible defaults."""
+    cpu_count = multiprocessing.cpu_count()
+    return {
+        "n_ctx": int(os.getenv("AMIGO_LLM_N_CTX", "4096")),
+        "n_threads": int(os.getenv("AMIGO_LLM_N_THREADS", str(min(4, max(1, cpu_count // 2))))),
+        "n_batch": int(os.getenv("AMIGO_LLM_N_BATCH", "512")),
+        "n_ubatch": int(os.getenv("AMIGO_LLM_N_UBATCH", "256")),
+        "n_gpu_layers": int(os.getenv("AMIGO_LLM_N_GPU_LAYERS", "-1")),  # -1 = auto, 0 = CPU only
+        "use_mmap": os.getenv("AMIGO_LLM_USE_MMAP", "true").lower() == "true",
+    }
 
 
 def get_clipboard_text() -> str | None:
@@ -73,7 +84,7 @@ _active_model_key = "minicpm5-2b"
 
 _local_llm_instance = None
 _llm_lock = threading.Lock()
-_devnull = open(os.devnull, "w")
+_inference_lock = threading.Lock()  # Separate lock for inference (Llama isn't thread-safe)
 
 
 def get_available_models() -> dict:
@@ -182,48 +193,78 @@ def ensure_model_downloaded() -> str:
     return get_model_path()
 
 
+# Track model load failures to avoid repeated retries
+_model_load_failed = False
+_model_load_error = None
+
+
 def init_local_llm(force_reload: bool = False):
-    """Initializes local Llama instance with GPU offloading, fast context ingestion, and multimodal vision support."""
-    global _local_llm_instance
+    """Initializes local Llama instance with GPU offloading, fast context ingestion, and multimodal vision support.
+    Loads once, logs the reason on failure, and backs off (doesn't retry on every query)."""
+    global _local_llm_instance, _model_load_failed, _model_load_error
     if not force_reload and _local_llm_instance is not None:
         return _local_llm_instance
+    if not force_reload and _model_load_failed:
+        # Already tried and failed - don't retry unless forced
+        logger.debug(f"[Local AI Engine] Skipping reload (previous error: {_model_load_error})")
+        return None
 
     with _llm_lock:
         if not force_reload and _local_llm_instance is not None:
             return _local_llm_instance
+        if not force_reload and _model_load_failed:
+            return None
 
         _local_llm_instance = None
+        _model_load_failed = False
+        _model_load_error = None
         model_file = get_model_path()
         if not os.path.exists(model_file):
+            _model_load_failed = True
+            _model_load_error = "Model file not found"
+            logger.error(f"[Local AI Engine] {_model_load_error}: {model_file}")
             return None
 
         try:
             from llama_cpp import Llama
+            config = _get_llm_config()
+            
+            # Try with flash_attn first, then without
+            last_error = None
             for fa in [True, False]:
                 try:
                     kwargs = {
                         "model_path": model_file,
-                        "n_ctx": 4096,
-                        "n_gpu_layers": -1,
+                        "n_ctx": config["n_ctx"],
+                        "n_gpu_layers": config["n_gpu_layers"],
                         "main_gpu": 0,
-                        "n_threads": max(1, multiprocessing.cpu_count() - 2),
-                        "n_batch": 1024,
-                        "n_ubatch": 512,
+                        "n_threads": config["n_threads"],
+                        "n_batch": config["n_batch"],
+                        "n_ubatch": config["n_ubatch"],
                         "flash_attn": fa,
-                        "use_mmap": True,
+                        "use_mmap": config["use_mmap"],
                         "verbose": False,
                     }
                     _local_llm_instance = Llama(**kwargs)
                     if _local_llm_instance:
                         break
-                except Exception:
-                    pass
+                except Exception as e:
+                    last_error = e
+                    logger.warning(f"[Local AI Engine] Load attempt with flash_attn={fa} failed: {e}")
+                    continue
 
             if _local_llm_instance:
                 _setup_chat_formatter(_local_llm_instance)
                 logger.info(f"[Local AI Engine] {MODEL_NAME} loaded.")
                 return _local_llm_instance
+            else:
+                _model_load_failed = True
+                _model_load_error = str(last_error) if last_error else "Unknown error"
+                logger.error(f"[Local AI Engine] All load attempts failed: {_model_load_error}")
+                return None
         except Exception as e:
+            _model_load_failed = True
+            _model_load_error = str(e)
             logger.error(f"[Local AI Engine] Load error: {e}")
             return None
     return None
@@ -288,9 +329,9 @@ def _setup_chat_formatter(llm) -> None:
 # TTS Text Cleaning Utilities (Optimized with pre-compiled regexes)
 # ---------------------------------------------------------------------------
 
-_RE_THINK = re.compile(r"<think>[\s\S]*?</think>", re.IGNORECASE)
+
 _RE_CODE_BLOCK = re.compile(r"```[a-zA-Z]*\n?([\s\S]*?)```")
-_RE_MD_MARKS = re.compile(r"[*_~`#>]")
+_RE_MD_MARKS = re.compile(r"[*_~`>]")
 _RE_MD_LINKS = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 _RE_BRACKETS = re.compile(r"[{}\[\]\\<>]")
 _RE_WHITESPACE = re.compile(r"\s+")
@@ -312,6 +353,12 @@ def strip_markdown_for_tts(text: str) -> str:
             thought_body = text.split("<think>", 1)[-1].strip()
             sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', thought_body) if len(s.strip()) > 5]
             text = sentences[-1] if sentences else thought_body
+    # Handle currency symbols with proper number placement
+    text = re.sub(r'₹(\d+(?:[.,]\d+)?)', r'\1 rupees', text)
+    text = re.sub(r'\$(\d+(?:[.,]\d+)?)', r'\1 dollars', text)
+    text = re.sub(r'€(\d+(?:[.,]\d+)?)', r'\1 euros', text)
+    text = re.sub(r'£(\d+(?:[.,]\d+)?)', r'\1 pounds', text)
+    # Handle currency symbols without numbers (fallback)
     text = text.replace("₹", " rupees ").replace("$", " dollars ").replace("€", " euros ").replace("£", " pounds ")
     text = _RE_CODE_BLOCK.sub(r"\1", text)
     text = _RE_MD_MARKS.sub("", text)
@@ -321,10 +368,17 @@ def strip_markdown_for_tts(text: str) -> str:
 
 
 def clean_tts_text(text: str) -> str:
-    """Preserves spoken characters, punctuation, and Unicode letters while dropping noise symbols."""
+    """Preserves spoken characters, punctuation, and Unicode letters while dropping noise symbols.
+    Keeps math symbols (+ = ° × ÷) and currency symbols."""
     if not text:
         return ""
-    result = [ch for ch in text if unicodedata.category(ch).startswith(("L", "N", "P", "Z", "M")) or ch in " ,.!?:;-'\"]"]
+    # Allow math symbols (Sm), currency (Sc), and other common spoken symbols
+    allowed_symbols = " ,.!?:;-'\"+=\u00b0\u00d7\u00f7$€£¥%@#&*()[]{}<>|\\/~`^_+"
+    result = [
+        ch for ch in text 
+        if unicodedata.category(ch).startswith(("L", "N", "P", "Z", "M", "Sm", "Sc")) 
+        or ch in allowed_symbols
+    ]
     return "".join(result).strip()
 
 
@@ -354,33 +408,34 @@ def query_local_llm(
     thinking: bool | None = None,
     sanitize: bool = True,
 ) -> str:
-    """Queries local LLM and returns clean spoken output."""
+    """Queries local LLM and returns clean spoken output. Thread-safe with inference lock."""
     llm = init_local_llm()
     if llm:
         token = None
         if thinking is not None:
             token = _thinking_ctx.set(thinking)
-        try:
-            messages = _prepare_chat_messages(system_prompt, prompt)
-            res = llm.create_chat_completion(
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                repeat_penalty=1.1,
-                stop=STOP_TOKENS,
-            )
-            output = res["choices"][0]["message"]["content"]
-            for tok in STOP_TOKENS:
-                output = output.split(tok)[0]
-            if sanitize:
-                return sanitize_for_tts(output.strip()) or output.strip()
-            return output.strip()
-        except Exception as e:
-            logger.error(f"[LLM Query Error]: {e}")
-        finally:
-            if token is not None:
-                _thinking_ctx.reset(token)
-    return "I am here and ready to help."
+        with _inference_lock:
+            try:
+                messages = _prepare_chat_messages(system_prompt, prompt)
+                res = llm.create_chat_completion(
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    repeat_penalty=1.1,
+                    stop=STOP_TOKENS,
+                )
+                output = res["choices"][0]["message"]["content"]
+                # Don't split on STOP_TOKENS here - the model's stop parameter handles this.
+                # Splitting on them post-hoc truncates legitimate quoted text (emails, docs, etc.)
+                if sanitize:
+                    return sanitize_for_tts(output.strip()) or output.strip()
+                return output.strip()
+            except Exception as e:
+                logger.error(f"[LLM Query Error]: {e}")
+                return f"I'm having trouble processing that request: {e}"
+            finally:
+                if token is not None:
+                    _thinking_ctx.reset(token)
 
 
 def query_local_llm_stream(
@@ -391,39 +446,40 @@ def query_local_llm_stream(
     temperature: float = 0.6,
     thinking: bool | None = None,
 ) -> Generator[str, None, None]:
-    """Streams raw tokens in real-time from the local LLM."""
+    """Streams raw tokens in real-time from the local LLM. Thread-safe with inference lock."""
     llm = init_local_llm()
     if llm:
         token = None
         if thinking is not None:
             token = _thinking_ctx.set(thinking)
-        try:
-            messages = _prepare_chat_messages(system_prompt, prompt)
-            stream_res = llm.create_chat_completion(
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                repeat_penalty=1.1,
-                stop=STOP_TOKENS,
-                stream=True,
-            )
-            for chunk in stream_res:
-                if interruption_event and interruption_event.is_set():
-                    return
-                delta = chunk["choices"][0].get("delta", {}).get("content", "")
-                if delta:
-                    yield delta
-            return
-        except Exception as e:
-            logger.error(f"[LLM Stream Error]: {e}")
-        finally:
-            if token is not None:
-                _thinking_ctx.reset(token)
-    yield "I am here and ready to help."
+        with _inference_lock:
+            try:
+                messages = _prepare_chat_messages(system_prompt, prompt)
+                stream_res = llm.create_chat_completion(
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    repeat_penalty=1.1,
+                    stop=STOP_TOKENS,
+                    stream=True,
+                )
+                for chunk in stream_res:
+                    if interruption_event and interruption_event.is_set():
+                        return
+                    delta = chunk["choices"][0].get("delta", {}).get("content", "")
+                    if delta:
+                        yield delta
+                return
+            except Exception as e:
+                logger.error(f"[LLM Stream Error]: {e}")
+                yield f"I'm having trouble processing that request: {e}"
+            finally:
+                if token is not None:
+                    _thinking_ctx.reset(token)
 
 
 _RE_SENTENCE_SPLIT_CHUNKS = re.compile(r'(?<=[.!?])\s+|\n+')
-_RE_TITLE_ABBREV = re.compile(r'\b(mr|mrs|ms|dr|vs|eg|ie|etc)\.$', re.IGNORECASE)
+_RE_TITLE_ABBREV = re.compile(r'\b(mr|mrs|ms|dr|vs|eg|ie|etc|prof|sr|jr|st|ave|blvd|rd|apt|no|vol|ch|fig|eq|ex|al|ca|cf|ed|ft|hr|lb|oz|pt|qt|yd|mr|ms|mrs|dr|vs|etc|i\.e|e\.g|vs|mr|mrs|ms|dr|prof|sr|jr)\.?$', re.IGNORECASE)
 
 
 def stream_sentence_chunks(token_generator, interruption_event: threading.Event | None = None) -> Generator[str, None, None]:
@@ -487,7 +543,7 @@ _RE_PROBE_GUARD = re.compile(
     re.I
 )
 
-_EXACT_EXIT = frozenset({"exit", "quit", "goodbye", "bye", "close amigo", "shutdown pc"})
+_EXACT_EXIT = frozenset({"goodbye", "close amigo", "shutdown pc"})
 _EXACT_STOP = frozenset({"stop", "shut up", "be quiet", "stop talking", "stop speaking", "quiet", "silence"})
 _RE_CALC_COMMAND = re.compile(r"^(?:calculate|compute|solve|evaluate)\s+(.+)$", re.IGNORECASE)
 
@@ -529,7 +585,7 @@ def parse_user_intent_fast(query: str) -> dict[str, Any] | None:
 
 
 _RE_USER_CORRECTION = re.compile(
-    r"^(?:no\s*,?\s*|actually\s*,?\s*|that'?s\s+(?:wrong|not\s+what\s+i\s+(?:asked|meant))\s*,?\s*|you\s+misunderstood\s*,?\s*|i\s+meant\s+|correction:?\s*)+",
+    r"^(?:\bno\b\s*,?\s*|actually\s*,?\s*|that'?s\s+(?:wrong|not\s+what\s+i\s+(?:asked|meant))\s*,?\s*|you\s+misunderstood\s*,?\s*|i\s+meant\s+|correction:?\s*)+",
     re.IGNORECASE,
 )
 
@@ -550,7 +606,8 @@ def get_agent_action(user_query: str, conversation_history: list | None = None) 
 
     # Security & Guardrail Check
     if _RE_PROBE_GUARD.search(user_query):
-        return [{"tool": "chat", "params": {}, "speak": ""}]
+        # Return a special blocked action that doesn't call the LLM
+        return [{"tool": "blocked", "params": {}, "speak": ""}]
 
     # User Self-Correction Learning Loop
     is_user_correction = False

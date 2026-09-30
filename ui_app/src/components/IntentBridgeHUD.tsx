@@ -1,5 +1,7 @@
 import React from "react";
 import { motion, AnimatePresence } from "motion/react";
+// Import optimized motion configs
+import { fluidSpring, popIn, scaleFade } from "../utils/motionConfig";
 import { CheckCircle2, Loader2, AlertCircle, WifiOff, Sun, Sliders, Keyboard } from "lucide-react";
 import { ColorTheme } from "../types";
 import { COLOR_THEMES } from "../data/presets";
@@ -720,12 +722,12 @@ export const IntentBridgeHUD: React.FC<IntentBridgeHUDProps> = ({
   return (
     <motion.div
       layout
-      initial={{ opacity: 0, y: -6, scale: 0.96 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: -6, scale: 0.96, transition: { duration: 0.22, ease: "easeOut" } }}
-      transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+      variants={popIn}
+      initial="hidden"
+      animate="show"
+      exit="exit"
       onClick={onDismiss}
-      className={`flex w-full max-w-full items-center justify-center mx-auto my-3 ${onDismiss ? "cursor-pointer" : ""}`}
+      className={`flex w-full max-w-full items-center justify-center mx-auto my-3 gpu-accelerated ${onDismiss ? "cursor-pointer" : ""}`}
       title={onDismiss ? "Click to dismiss" : undefined}
     >
       {/* Unified Gemini Action Pill with Fluid Smooth Geometry */}

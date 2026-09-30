@@ -7,7 +7,8 @@ export type AssistantState =
   | "action_card" // Showing action choices
   | "contact_picker" // Disambiguation / choice picker
   | "working" // Executing task in background
-  | "completed"; // Final result card / dispatch summary
+  | "completed" // Final result card / dispatch summary
+  | "generated_content"; // Showing generated content panel for review
 
 export type ColorTheme = "violet" | "cobalt" | "emerald" | "sunset" | "cyan" | "weather" | "noir";
 
@@ -52,6 +53,11 @@ export interface AssistantResponse {
   };
   url?: string;
   metadata?: Record<string, any>;
+  // Generated content fields
+  generatedContent?: string;
+  contentType?: string;
+  contentTopic?: string;
+  showGeneratedPanel?: boolean;
 }
 
 export interface HistoryEntry {

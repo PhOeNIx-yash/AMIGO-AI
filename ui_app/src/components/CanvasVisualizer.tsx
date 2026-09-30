@@ -29,6 +29,7 @@ interface CanvasVisualizerProps {
 // processing: 'solving' (3D rotating puzzle bands)
 // working: 'working' (3D particle orbits around sphere)
 // completed: 'composing' (3D flowing harmonic ribbon)
+// generated_content: 'composing' (showing generated content for review)
 const ORB_STATES: Record<AssistantState, OrbState> = {
   idle: "weaving",
   listening: "listening",
@@ -37,6 +38,7 @@ const ORB_STATES: Record<AssistantState, OrbState> = {
   contact_picker: "connecting",
   working: "working",
   completed: "composing",
+  generated_content: "composing",
 };
 
 const ORB_LABELS: Record<AssistantState, string> = {
@@ -47,6 +49,7 @@ const ORB_LABELS: Record<AssistantState, string> = {
   contact_picker: "Amigo is connecting details",
   working: "Amigo is working",
   completed: "Amigo completed the task",
+  generated_content: "Amigo generated content for review",
 };
 
 const ORB_RENDER_SIZE = 256;

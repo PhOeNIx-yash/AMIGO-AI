@@ -20,6 +20,7 @@ import { VoiceControls } from "./components/VoiceControls";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { BackendSettingsModal } from "./components/BackendSettingsModal";
 import { SettingsPage } from "./components/SettingsPage";
+import { GeneratedContentPanel } from "./components/GeneratedContentPanel";
 import { KineticHeading, KineticStateBadge, TextAnimationStyle, normalizeAnimationStyle } from "./components/KineticText";
 import { IntentBridgeHUD, isActionIntent } from "./components/IntentBridgeHUD";
 import { COLOR_THEMES, GREETING_PRESETS } from "./data/presets";
@@ -353,6 +354,13 @@ export default function App() {
   const [hudActive, setHudActive] = useState<boolean>(false);
   const [liveIntent, setLiveIntent] = useState<string | null>(null);
   const [liveParams, setLiveParams] = useState<Record<string, any> | null>(null);
+  
+  // Generated content panel state
+  const [generatedContent, setGeneratedContent] = useState<{
+    content: string;
+    contentType: string;
+    topic: string;
+  } | null>(null);
 
   // Real-time bidirectional SSE sync with Amigo Python voice loop & server events
   useEffect(() => {
@@ -567,7 +575,15 @@ export default function App() {
         data.actionCards.some((c: any) => c.type !== "file")
       );
 
-      if (data.requiresDisambiguation && data.contactMatches && data.contactMatches.length > 0) {
+      // Check for generated content panel
+      if (data.showGeneratedPanel && data.generatedContent) {
+        setGeneratedContent({
+          content: data.generatedContent,
+          contentType: data.contentType || "document",
+          topic: data.contentTopic || effectivePrompt,
+        });
+        setState("generated_content");
+      } else if (data.requiresDisambiguation && data.contactMatches && data.contactMatches.length > 0) {
         setState("contact_picker");
         if (data.disambiguationQuestion) {
           setDisplayText(data.disambiguationQuestion);
@@ -606,12 +622,86 @@ export default function App() {
       responseData.actionCards.length > 0 &&
       responseData.actionCards.some((c: any) => c.type !== "file")
     );
-    setState(hasActionCards ? "action_card" : responseData.requiresDisambiguation ? "contact_picker" : "completed");
+    
+    // Check for generated content in history
+    if (responseData.showGeneratedPanel && responseData.generatedContent) {
+      setGeneratedContent({
+        content: responseData.generatedContent,
+        contentType: responseData.contentType || "document",
+        topic: responseData.contentTopic || entry.prompt,
+      });
+      setState("generated_content");
+    } else {
+      setState(hasActionCards ? "action_card" : responseData.requiresDisambiguation ? "contact_picker" : "completed");
+    }
 
     setShowHistory(false);
     if (responseData.speechReply && backendConfig.autoSpeech !== false && soundEnabled) {
       speakText(responseData.speechReply);
     }
+  };
+
+  // Generated content panel handlers
+  const handleGeneratedContentInsert = async (content: string) => {
+    // Call backend to insert content via clipboard
+    try {
+      await executeBackendAction({
+        id: "insert_content",
+        type: "general",
+        title: "Insert Content",
+        subtitle: "Paste generated content",
+        selected: true,
+        payload: { content },
+        actionType: "execute",
+      }, backendConfig);
+      setDisplayText("Content inserted successfully!");
+      setState("completed");
+      setGeneratedContent(null);
+    } catch (err) {
+      console.error("Failed to insert content:", err);
+      setDisplayText("Failed to insert content");
+    }
+  };
+
+  const handleGeneratedContentCopy = (content: string) => {
+    navigator.clipboard.writeText(content).then(() => {
+      setDisplayText("Copied to clipboard!");
+    }).catch(() => {
+      setDisplayText("Failed to copy");
+    });
+  };
+
+  const handleGeneratedContentRegenerate = async () => {
+    if (!generatedContent) return;
+    setDisplayText("Regenerating...");
+    setState("working");
+    try {
+      await processVoiceCommand(`Regenerate ${generatedContent.contentType}: ${generatedContent.topic}`, backendConfig);
+    } catch (err) {
+      console.error("Failed to regenerate:", err);
+    }
+  };
+
+  const handleGeneratedContentSave = async (content: string) => {
+    // Save to a file or memory
+    try {
+      const blob = new Blob([content], { type: "text/plain" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${generatedContent?.contentType || "content"}-${Date.now()}.txt`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setDisplayText("Content saved to file!");
+    } catch (err) {
+      console.error("Failed to save:", err);
+      setDisplayText("Failed to save content");
+    }
+  };
+
+  const handleGeneratedContentClose = () => {
+    setGeneratedContent(null);
+    setState("completed");
   };
 
   // Clear all command history across UI and Amigo memory backend
@@ -1009,6 +1099,23 @@ export default function App() {
                           question={assistantData.disambiguationQuestion}
                           contacts={assistantData.contactMatches || []}
                           onSelectContact={handleSelectContact}
+                          isDark={isDark}
+                          colorTheme={colorTheme}
+                        />
+                      )}
+
+                      {/* 4. Generated Content Panel (for reviewing generated content before inserting) */}
+                      {state === "generated_content" && generatedContent && (
+                        <GeneratedContentPanel
+                          key="generated-content-panel"
+                          content={generatedContent.content}
+                          contentType={generatedContent.contentType}
+                          topic={generatedContent.topic}
+                          onInsert={handleGeneratedContentInsert}
+                          onCopy={handleGeneratedContentCopy}
+                          onRegenerate={handleGeneratedContentRegenerate}
+                          onSave={handleGeneratedContentSave}
+                          onClose={handleGeneratedContentClose}
                           isDark={isDark}
                           colorTheme={colorTheme}
                         />

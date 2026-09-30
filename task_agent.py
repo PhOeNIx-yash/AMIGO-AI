@@ -62,7 +62,7 @@ def execute_desktop_action(action: str, params: Dict[str, Any]) -> tuple[bool, s
             if target_app:
                 from app_opener import open_windows_app
                 open_windows_app(target_app)
-                time.sleep(0.3)
+                # Don't wait for window - clipboard paste (Ctrl+V) works on currently focused text field
             ok = os_automation.type_text(text)
             return ok, f"Typed text into {target_app or 'active window'}." if ok else "Failed to type text."
 
@@ -214,10 +214,11 @@ def resolve_step_intent(
         for act in actions:
             if act.get("tool") not in ("chat", None):
                 act["step_text"] = step
-                # For type_text, always use the last opened app from context if available
+                # For type_text, only use last opened app from context if LLM didn't specify an app
+                # (LLM omits 'app' param when user wants to type into current window)
                 if act.get("tool") == "type_text":
-                    if last_app := context.get("last_opened_app"):
-                        act["params"]["app"] = last_app  # Explicitly override
+                    if "app" not in act.get("params", {}) and (last_app := context.get("last_opened_app")):
+                        act["params"]["app"] = last_app
                         act["speak"] = f"Typing text into {last_app}."
         return actions
 

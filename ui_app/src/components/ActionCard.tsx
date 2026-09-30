@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { motion } from "motion/react";
+// Import optimized motion configs
+import { fluidSpring, popIn, staggerContainer, staggerItem } from "../utils/motionConfig";
 import {
   MessageSquare,
   Utensils,
@@ -867,11 +869,11 @@ export const ActionCard: React.FC<ActionCardProps> = ({
   return (
     <motion.div
       id="fluent-action-card-container"
-      initial={{ opacity: 0, y: 18, scale: 0.98 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: -14, scale: 0.98 }}
-      transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-      className="w-full max-w-xl mx-auto relative px-2 sm:px-4 transform-gpu will-change-[transform,opacity]"
+      variants={scaleFade}
+      initial="hidden"
+      animate="show"
+      exit="exit"
+      className="w-full max-w-xl mx-auto relative px-2 sm:px-4 gpu-accelerated"
     >
       {/* Ambient Fluid Glow Behind Card */}
       <div
@@ -929,7 +931,7 @@ export const ActionCard: React.FC<ActionCardProps> = ({
         </div>
 
         {/* Action Items List */}
-        <div className="space-y-3 mb-4 max-h-[46vh] sm:max-h-[50vh] overflow-y-auto custom-scrollbar pr-0.5">
+        <motion.div className="space-y-3 mb-4 max-h-[46vh] sm:max-h-[50vh] overflow-y-auto custom-scrollbar pr-0.5" variants={staggerContainer} initial="hidden" animate="show">
           {items.map((item, idx) => {
             if (item.payload?.file) {
               const file = item.payload.file;
@@ -939,7 +941,7 @@ export const ActionCard: React.FC<ActionCardProps> = ({
                 payload: { tool: action === "open" ? "open_file" : action === "reveal" ? "reveal_file" : "copy_file_path", action, path: file.path },
               });
               return (
-                <motion.div key={item.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.16, ease: "easeOut" }} className={`rounded-xl border p-3 transform-gpu transition-colors duration-150 ${isDark ? "border-white/10 bg-white/[0.04]" : "border-black/10 bg-white/80"}`}>
+                <motion.div key={item.id} variants={staggerItem} className={`rounded-xl border p-3 gpu-accelerated transition-colors duration-150 ${isDark ? "border-white/10 bg-white/[0.04]" : "border-black/10 bg-white/80"}`}>
                   <div className="flex min-w-0 items-start gap-3">
                     <FileText className="mt-0.5 h-4 w-4 flex-shrink-0" style={{ color: theme.accent }} />
                     <div className="min-w-0 flex-1">
@@ -969,10 +971,8 @@ export const ActionCard: React.FC<ActionCardProps> = ({
               return (
                 <motion.div
                   key={item.id}
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.16, ease: "easeOut" }}
-                  className="transform-gpu"
+                  variants={staggerItem}
+                  className="gpu-accelerated"
                 >
                   <TimerCardPalette item={item} isDark={isDark} theme={theme} />
                 </motion.div>
@@ -983,10 +983,8 @@ export const ActionCard: React.FC<ActionCardProps> = ({
               return (
                 <motion.div
                   key={item.id}
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.16, ease: "easeOut" }}
-                  className="transform-gpu"
+                  variants={staggerItem}
+                  className="gpu-accelerated"
                 >
                   <WeatherCardPalette item={item} isDark={isDark} theme={theme} />
                 </motion.div>
@@ -1089,9 +1087,9 @@ export const ActionCard: React.FC<ActionCardProps> = ({
                 </motion.div>
               )}
             </motion.div>
-          );
-        })}
-        </div>
+          )}
+
+        </motion.div>
 
         {/* Buttons Footer */}
         <div className="pt-2">

@@ -34,7 +34,7 @@ _RE_APP_ARTICLE = re.compile(r"^(?:the|that|my|an?)\s+", re.IGNORECASE)
 _RE_MEDIA_CLEAN_TITLE = re.compile(r"^(?:play|playing)\s*:\s*", re.IGNORECASE)
 _RE_DOC_STRIP_ACTION = re.compile(r"^(?:please\s+)?(?:can you\s+|can u\s+|could you\s+|could u\s+|will you\s+|would you\s+)?(?:tell me\s+|give me\s+|show me\s+)?(?:open|show|read|summarize|tell me about|what is in|what does|find|locate|check|view|inspect)\s+", re.IGNORECASE)
 _RE_DOC_STOPWORDS = re.compile(r"\b(?:the|that|those|these|my|a|an|file|files|document|documents|doc|pdf)\b", re.IGNORECASE)
-_RE_DOC_ORDINAL = re.compile(r"\b(?:number\s+(\d+)|(\d+)(?:st|nd|rd|th)?|first|second|third|fourth|fifth)\b", re.IGNORECASE)
+_RE_DOC_ORDINAL = re.compile(r"\b(?:number\s+(\d+)|(\d+)(?:st|nd|rd|th)\b|first|second|third|fourth|fifth)\b", re.IGNORECASE)
 _RE_TIMER_PROMPT = re.compile(r"\b(timer|countdown|stopwatch)\b", re.IGNORECASE)
 
 logger = logging.getLogger("amigo.tool_registry")
@@ -50,13 +50,11 @@ def set_media_update_callback(cb):
 
 
 def extract_and_open_urls(text: str) -> bool:
-    """Finds URLs in text and opens top matches in default browser."""
+    """Finds URLs in text. Auto-opening disabled for security - URLs are returned for manual clicking."""
     urls = _RE_URLS.findall(text)
-    opened = False
-    for url in urls[:2]:
-        webbrowser.open(url)
-        opened = True
-    return opened
+    # Security: Auto-opening URLs from LLM responses is a prompt-injection risk.
+    # URLs are now only returned for display; user must manually click.
+    return bool(urls)
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +132,7 @@ def _tool_play_youtube(params, query, spoken):
             "artist": media_payload["artist"],
             "platform": "YouTube",
             "query": clean_q,
+            "status": "playing",
         })
     except Exception:
         pass
@@ -345,13 +344,23 @@ def _tool_memory_recall(params, query, spoken):
     q_low = (q or "").lower().strip()
 
     # 1. Storing / Remembering a new personal fact
-    if any(q_low.startswith(p) for p in ("remember that", "remember this", "save that", "note that", "store that", "keep in mind")):
-        fact = re.sub(
-            r"^(?:please\s+)?(?:remember\s+(?:that|this)?|save\s+(?:that|this)?|note\s+(?:that|this)?|store\s+(?:that|this)?|keep\s+in\s+mind\s+(?:that)?)\s*",
-            "",
-            q,
-            flags=re.I,
-        ).strip()
+    # Match "remember that", "please remember that", "hey amigo remember that", etc.
+    remember_patterns = [
+        r"\bremember\s+(?:that|this)\b",
+        r"\bsave\s+(?:that|this)\b",
+        r"\bnote\s+(?:that|this)\b",
+        r"\bstore\s+(?:that|this)\b",
+        r"\bkeep\s+in\s+mind\s+(?:that)?\b",
+    ]
+    is_remember = any(re.search(p, q_low) for p in remember_patterns)
+    
+    if is_remember:
+        # Remove the remember command prefix
+        fact = q
+        for pattern in remember_patterns:
+            fact = re.sub(pattern, "", fact, flags=re.I)
+        # Also remove common prefixes like "please", "hey amigo", etc.
+        fact = re.sub(r"^(?:please\s+|hey\s+amigo\s+|amigo\s+)", "", fact, flags=re.I).strip()
         if fact:
             try:
                 rag_engine.add_user_fact(fact, category="user_memory")
@@ -362,9 +371,11 @@ def _tool_memory_recall(params, query, spoken):
     # 2. Recalling a stored fact or past conversation
     recalled_facts = []
     try:
-        recalled = rag_engine.search(q, target_collections=[rag_engine.USER_FACTS, rag_engine.CONVERSATIONS], top_k=4)
+        # Use improved search with conversation_recall query type
+        recalled = rag_engine.search(q, target_collections=[rag_engine.USER_FACTS, rag_engine.CONVERSATIONS], 
+                                     top_k=5, query_type="conversation_recall")
         for r in recalled:
-            if r.get("score", 0) > 0.05 and r.get("text"):
+            if r.get("score", 0) > 0.15 and r.get("text"):
                 recalled_facts.append(r["text"])
     except Exception as e:
         logger.debug(f"[Memory Recall]: {e}")
@@ -403,18 +414,26 @@ def _tool_document_qa(params, query, spoken):
 
 
 def _tool_type_text(params, query, spoken):
+    # Require confirmation for potentially disruptive action
+    confirm_result = _require_confirmation("Type text", params, query, spoken or "Typing text")
+    if confirm_result[2].get("requires_confirmation"):
+        return confirm_result
     app = params.get("app", "").strip() if isinstance(params, dict) else ""
     if app:
         open_windows_app(app)
-        import time
-        time.sleep(0.25)
+        # Don't wait for window - clipboard paste (Ctrl+V) works on currently focused text field
+        # User should click the text field first, then the paste will go there
     text = params.get("text", "").strip() if isinstance(params, dict) else ""
     if text:
         os_automation.type_text(text)
-    return spoken or (f"Typed text into {app}." if app else f"Typed '{text}'." if text else "Typed text."), None
+    return spoken or (f"Typed text into {app or 'active window'}." if text else "Typed text."), None
 
 
 def _tool_press_key(params, query, spoken):
+    # Require confirmation for potentially disruptive action
+    confirm_result = _require_confirmation("Press key(s)", params, query, spoken or "Pressing keys")
+    if confirm_result[2].get("requires_confirmation"):
+        return confirm_result
     keys = params.get("keys", "") if isinstance(params, dict) else ""
     if keys:
         os_automation.press_shortcut(keys)
@@ -422,6 +441,10 @@ def _tool_press_key(params, query, spoken):
 
 
 def _tool_click_screen(params, query, spoken):
+    # Require confirmation for potentially disruptive action
+    confirm_result = _require_confirmation("Click screen", params, query, spoken or "Clicking screen")
+    if confirm_result[2].get("requires_confirmation"):
+        return confirm_result
     import pyautogui
     x = params.get("x") if isinstance(params, dict) else None
     y = params.get("y") if isinstance(params, dict) else None
@@ -470,6 +493,11 @@ def _tool_stop(params, query, spoken):
     return "Stopped.", None
 
 
+def _tool_blocked(params, query, spoken):
+    """Handler for blocked/probe queries - returns empty response without calling LLM."""
+    return "", None
+
+
 def _tool_pause_media(params, query, spoken):
     try:
         from tts import stop_speaking
@@ -480,7 +508,8 @@ def _tool_pause_media(params, query, spoken):
     state = get_active_state(clean_expired=True)
     media = state.get("current_media") if isinstance(state, dict) else None
     has_tracked_media = bool(media and isinstance(media, dict))
-    is_playing = has_tracked_media and media.get("status") == "playing"
+    # Assume playing if we have media but no status (backward compat)
+    is_playing = has_tracked_media and media.get("status") in ("playing", None)
 
     # Only send pause key if media is actually playing
     if is_playing:
@@ -501,6 +530,7 @@ def _tool_play_media(params, query, spoken):
     state = get_active_state(clean_expired=False)
     media = state.get("current_media") if isinstance(state, dict) else None
     has_tracked_media = bool(media and isinstance(media, dict))
+    # Only send play key if media is actually paused
     is_paused = has_tracked_media and media.get("status") == "paused"
 
     # Only send play key if media is actually paused
@@ -540,7 +570,8 @@ def _tool_close_app(params, query, spoken):
 def _tool_window_management(params, query, spoken):
     action = params.get("action", "")
     app_name = params.get("app_name", "") or params.get("name", "")
-    if action in ("close_window", "close_app") or app_name:
+    # Only close if action is explicitly close_window or close_app
+    if action in ("close_window", "close_app"):
         return _tool_close_app({"app_name": app_name}, query, spoken)
     elif action:
         os_automation.window_action(action)
@@ -551,7 +582,7 @@ def _tool_calculate(params, query, spoken):
     expr = params.get("expression", query).strip()
     if expr:
         res = Calc(expr)
-        if res:
+        if res is not None:
             return f"The answer is {res}.", None
     return spoken or "Calculation completed.", None
 
@@ -569,14 +600,35 @@ def _tool_clarification(params, query, spoken):
     }
 
 
+def _require_confirmation(action_name: str, params: dict, query: str, spoken: str) -> tuple[str, None, dict]:
+    """Return a clarification response requiring user confirmation for destructive actions."""
+    confirmed = params.get("confirmed", False) if isinstance(params, dict) else False
+    if confirmed:
+        return "", None, {}  # Proceed with action
+    msg = spoken or f"Please confirm: {action_name}?"
+    return msg, None, {
+        "status": "requires_confirmation",
+        "requires_confirmation": True,
+        "action": action_name,
+        "original_params": params,
+        "original_query": query,
+        "original_spoken": spoken,
+    }
+
+
 def _tool_chat(params, query, spoken):
-    # Check if local indexed documents or remembered facts contain relevant knowledge
-    rag_ctx = rag_engine.build_rag_context(query, top_k=5)
-    if rag_ctx:
-        logger.info("[Tool Chat] Local RAG context found for query '%s'", query[:40])
-        response = get_ai_response(query, doc_context=rag_ctx)
+    # If the agent already provided a response in the 'speak' parameter, use it directly
+    # This avoids calling the LLM twice for simple chat responses
+    if spoken and spoken.strip():
+        response = spoken.strip()
     else:
-        response = get_ai_response(query)
+        # Check if local indexed documents or remembered facts contain relevant knowledge
+        rag_ctx = rag_engine.build_rag_context(query, top_k=5)
+        if rag_ctx:
+            logger.info("[Tool Chat] Local RAG context found for query '%s'", query[:40])
+            response = get_ai_response(query, doc_context=rag_ctx)
+        else:
+            response = get_ai_response(query)
 
     uncertainty_patterns = (
         "would you like me to look into",
@@ -628,6 +680,69 @@ def _tool_chat(params, query, spoken):
     return response, None
 
 
+def _tool_generate_content(params, query, spoken):
+    """Generate content (email, letter, application, code, etc.) using LLM and return for panel display."""
+    content_type = params.get("type", "text")  # email, letter, application, code, document, etc.
+    topic = params.get("topic", query)
+    context = params.get("context", "")
+    
+    # Build prompt for content generation
+    generation_prompt = f"""Generate a {content_type} about: {topic}
+    
+Context: {context}
+
+Write a professional, well-structured {content_type}. Be concise but complete. Do not include meta-commentary or explanations - just the content itself."""
+    
+    # Generate content using LLM
+    from ai import get_ai_response
+    generated_content = get_ai_response(generation_prompt)
+    
+    # Return 3-element tuple: (spoken_text, url, metadata)
+    # spoken_text is a brief confirmation, url is None, metadata triggers the panel
+    return f"Generated {content_type} about {topic}.", None, {
+        "generated_content": generated_content,
+        "content_type": content_type,
+        "topic": topic,
+        "show_panel": True
+    }
+
+
+def _tool_insert_content(params, query, spoken):
+    """Insert generated content into active window via clipboard paste.
+    Uses try/finally to ensure clipboard is always restored."""
+    content = params.get("content", "")
+    if not content:
+        return "No content to insert.", None
+    
+    import pyperclip
+    import pyautogui
+    import time
+    
+    # Save current clipboard
+    old_clipboard = ""
+    try:
+        old_clipboard = pyperclip.paste()
+    except Exception:
+        pass
+    
+    try:
+        # Set new content
+        pyperclip.copy(content)
+        # Paste
+        pyautogui.hotkey("ctrl", "v")
+        # Wait for paste to complete - use a longer delay and check
+        time.sleep(0.3)
+        return "Content inserted successfully.", None
+    except Exception as e:
+        logger.error(f"[Insert Content] Error: {e}")
+        return f"Failed to insert content: {e}", None
+    finally:
+        # Always restore clipboard, even if paste failed
+        try:
+            if old_clipboard:
+                pyperclip.copy(old_clipboard)
+        except Exception:
+            pass
 
 
 
@@ -646,7 +761,6 @@ _SIMPLE_OS_ACTIONS = {
     "mute":               (os_automation.mute, "Audio muted."),
     "lock_pc":            (os_automation.lock_pc, "Locking your PC."),
     "sleep_pc":           (os_automation.sleep_pc, "Putting system to sleep."),
-    "empty_recycle_bin":  (os_automation.empty_recycle_bin, "Recycle bin emptied."),
     "cancel_shutdown":    (os_automation.cancel_shutdown, "Shutdown cancelled."),
 }
 
@@ -656,6 +770,33 @@ def _make_simple_handler(func, default_msg):
         func()
         return spoken or default_msg, None
     return _handler
+
+
+def _tool_empty_recycle_bin(params, query, spoken):
+    # Require confirmation for destructive action
+    confirm_result = _require_confirmation("Empty recycle bin", params, query, spoken or "Emptying recycle bin")
+    if confirm_result[2].get("requires_confirmation"):
+        return confirm_result
+    os_automation.empty_recycle_bin()
+    return spoken or "Recycle bin emptied.", None
+
+
+def _tool_lock_pc(params, query, spoken):
+    # Require confirmation for potentially disruptive action
+    confirm_result = _require_confirmation("Lock PC", params, query, spoken or "Locking PC")
+    if confirm_result[2].get("requires_confirmation"):
+        return confirm_result
+    os_automation.lock_pc()
+    return spoken or "Locking your PC.", None
+
+
+def _tool_sleep_pc(params, query, spoken):
+    # Require confirmation for potentially disruptive action
+    confirm_result = _require_confirmation("Sleep PC", params, query, spoken or "Putting system to sleep")
+    if confirm_result[2].get("requires_confirmation"):
+        return confirm_result
+    os_automation.sleep_pc()
+    return spoken or "Putting system to sleep.", None
 
 
 # ---------------------------------------------------------------------------
@@ -801,7 +942,37 @@ def _tool_open_settings(params, query, spoken):
 def _tool_system_status(params, query, spoken):
     return os_automation.get_system_status().get("summary", "System status checked."), None
 
+
+def _tool_system_control(params, query, spoken):
+    """Handle various system control actions."""
+    action = params.get("action", "").lower() if isinstance(params, dict) else ""
+    
+    if action in ("lock", "lock_pc"):
+        return _tool_lock_pc(params, query, spoken or "Locking PC")
+    elif action in ("sleep", "sleep_pc"):
+        return _tool_sleep_pc(params, query, spoken or "Putting system to sleep")
+    elif action in ("restart", "restart_pc"):
+        return _tool_restart_pc(params, query, spoken or "Restarting PC")
+    elif action in ("shutdown", "shutdown_pc"):
+        # Shutdown would be very destructive - require explicit confirmation
+        confirm_result = _require_confirmation("Shutdown PC", params, query, spoken or "Shutting down PC")
+        if confirm_result[2].get("requires_confirmation"):
+            return confirm_result
+        os_automation.shutdown_pc(30)
+        return spoken or "Shutting down in 30 seconds.", None
+    elif action in ("cancel_shutdown",):
+        os_automation.cancel_shutdown()
+        return spoken or "Shutdown cancelled.", None
+    elif action in ("empty_recycle_bin",):
+        return _tool_empty_recycle_bin(params, query, spoken or "Emptying recycle bin")
+    else:
+        return f"Unknown system control action: {action}", None
+
 def _tool_restart_pc(params, query, spoken):
+    # Require confirmation for destructive action
+    confirm_result = _require_confirmation("Restart PC", params, query, spoken or "Restarting PC in 30 seconds")
+    if confirm_result[2].get("requires_confirmation"):
+        return confirm_result
     os_automation.restart_pc(30)
     return spoken or "Restarting in 30 seconds.", None
 
@@ -843,12 +1014,14 @@ UI_TOOL_HANDLERS = {
     "new_tab":           _tool_new_tab,
     "close_app":         _tool_close_app,
     "window_management": _tool_window_management,
+    "window_mgmt": _tool_window_management,
     "calculate":         _tool_calculate,
     "set_volume":        _tool_set_volume,
     "set_brightness":    _tool_set_brightness,
     "open_settings":     _tool_open_settings,
     "system_status":     _tool_system_status,
     "hardware_metrics":  _tool_system_status,
+    "system_control":    _tool_system_control,
     "restart_pc":        _tool_restart_pc,
     "pause_media":       _tool_pause_media,
     "play_media":        _tool_play_media,
@@ -869,13 +1042,18 @@ UI_TOOL_HANDLERS = {
     "screen_vision":     _tool_read_screen,
     "memory_recall":     _tool_memory_recall,
     "document_qa":       _tool_document_qa,
-    "ask_document":      _tool_document_qa,
     "current_media":     _tool_get_current_media,
     "get_current_media": _tool_get_current_media,
     "clarification":     _tool_clarification,
     "time_date":         _tool_get_time,
     "exit":              _tool_exit,
     "chat":              _tool_chat,
+    "generate_content":  _tool_generate_content,
+    "insert_content":    _tool_insert_content,
+    "empty_recycle_bin": _tool_empty_recycle_bin,
+    "lock_pc":           _tool_lock_pc,
+    "sleep_pc":          _tool_sleep_pc,
+    "blocked":           _tool_blocked,
 }
 
 
@@ -1130,7 +1308,8 @@ def execute_tool(tool: str, params: dict, query: str = "", spoken: str = "") -> 
         return result or "", None, {}
     except Exception as e:
         logger.error(f"Error executing tool '{tool}': {e}")
-        return spoken or f"An error occurred while executing {tool}.", None, {}
+        # Don't use the pre-provided spoken message on error - it might be misleading
+        return f"An error occurred while executing {tool}: {e}", None, {"error": str(e)}
 
 
 # ---------------------------------------------------------------------------

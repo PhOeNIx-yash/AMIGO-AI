@@ -43,6 +43,31 @@ def get_active_window_title() -> str:
     return ""
 
 
+def wait_for_window_active(target_name: str, timeout: float = 5.0, poll_interval: float = 0.1) -> bool:
+    """
+    Waits for a window containing target_name in its title to become the active foreground window.
+    
+    Args:
+        target_name: Partial name/title of the window to wait for (case-insensitive)
+        timeout: Maximum time to wait in seconds
+        poll_interval: How often to check the active window in seconds
+    
+    Returns:
+        True if the window became active within timeout, False otherwise
+    """
+    import time
+    target_lower = target_name.lower()
+    start_time = time.time()
+    
+    while time.time() - start_time < timeout:
+        active_title = get_active_window_title()
+        if active_title and target_lower in active_title.lower():
+            return True
+        time.sleep(poll_interval)
+    
+    return False
+
+
 def capture_screen_image(save_path: str | None = "amigo_screenshot.png"):
     """
     Captures the current desktop screen and optionally saves it as an image file.
