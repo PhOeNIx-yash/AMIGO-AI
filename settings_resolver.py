@@ -153,4 +153,5 @@ def open_setting(setting: str) -> str:
     """Resolve, launch, and return a spoken confirmation string."""
     label, uri = resolve_setting(setting)
     os.system(f"start {uri}")
-    return f"Opening {label} settings."
+    from ai import get_quick_feedback
+    return get_quick_feedback(f"opened {label} settings")

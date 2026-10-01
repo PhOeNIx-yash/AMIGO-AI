@@ -366,6 +366,16 @@ def build_agent_system_prompt(query: str = "", conversation_history: list | None
     prompt = f"""You are Amigo, a capable desktop AI assistant. Today is {now.strftime('%A, %B %d, %Y at %I:%M %p')}.
 Internet Status: {net_status}.
 
+YOUR PERSONALITY:
+You are a capable, natural voice assistant - helpful and conversational, not robotic.
+- Talk like a competent colleague: clear, varied, and to the point.
+- Vary your language every time: different greetings, confirmations, and phrasing.
+- Keep it concise: 1-2 sentences for most responses, more only when needed.
+- Acknowledge the user's request naturally before acting or answering.
+- Never use the same opener twice - rotate through: "Sure thing", "Got it", "On it", "Right away", "Done", "All set", "Here you go", etc.
+- Match the user's tone: efficient for commands, warm for questions, direct for facts.
+- Stay accurate - be helpful, not entertaining.
+
 You have access to the following tools. When the user asks you to do something, you MUST decide which tool(s) to use and call them with the appropriate parameters.
 
 AVAILABLE TOOLS:
@@ -387,6 +397,7 @@ IMPORTANT GUIDELINES:
 7. If internet is offline, web_search, play_youtube, get_weather will fail - inform the user.
 8. Be concise in your tool calls - the system will execute them and give you results.
 9. After tool execution, you'll receive results and can continue or respond to the user.
+10. When you speak to the user (in "speak" or the chat response), be fun and personable per YOUR PERSONALITY above - never robotic.
 
 CRITICAL PRIVACY & DATA ACCESS RULES:
 - You have FULL ACCESS to the user's LOCAL data through the provided tools. This includes: local documents/files (PDFs, Word, Excel, etc.), Outlook emails, Outlook calendar, and saved conversation memory.
@@ -487,35 +498,34 @@ def _parse_tool_calls(response: str) -> list[dict]:
     return tool_calls
 
 
-def _extract_final_response(response: str, tool_calls: list) -> str:
-    """Extract the final conversational response after tool calls."""
-    # Remove tool call JSON from response
-    import re
-    # Remove JSON tool calls
-    cleaned = re.sub(r'\{[^{}]*"tool"\s*:\s*"[^"]+"[^{}]*\}', '', response)
-    cleaned = re.sub(r'\{[^{}]*"name"\s*:\s*"[^"]+"[^{}]*"arguments"\s*:\s*\{[^{}]*\}[^{}]*\}', '', cleaned)
-    # Remove ```...``` blocks
-    cleaned = re.sub(r'```[\s\S]*?```', '', cleaned)
-    cleaned = re.sub(r'```', '', cleaned)
-    return sanitize_for_tts(cleaned.strip())
-
-
 def get_agent_actions(query: str, conversation_history: list | None = None) -> list[dict]:
     """
     Main entry point: Get agent actions for a user query using LLM reasoning.
     Returns a list of tool actions to execute.
+    The LLM will decide whether to use one or multiple tools based on the user's intent.
     """
     if not initialize_agent():
         return [{"tool": "chat", "params": {}, "speak": "I'm having trouble initializing my AI engine. Please try again."}]
 
-    # Build system prompt with full context
-    system_prompt = build_agent_system_prompt(query, conversation_history=conversation_history)
+    # Build system prompt with full context (without conversation history - we'll pass it as messages)
+    system_prompt = build_agent_system_prompt(query, conversation_history=None)
 
-    # Prepare messages for the LLM
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": query}
-    ]
+    # Build conversation messages including history
+    messages = [{"role": "system", "content": system_prompt}]
+    
+    # Add conversation history as proper chat messages
+    if conversation_history:
+        recent = conversation_history[-10:]  # Use last 10 turns
+        for turn in recent:
+            u = (turn.get("user") or "").strip()
+            a = (turn.get("assistant") or "").strip()
+            if u:
+                messages.append({"role": "user", "content": u[:1000]})
+            if a:
+                messages.append({"role": "assistant", "content": a[:1500]})
+    
+    # Add current query
+    messages.append({"role": "user", "content": query})
 
     # Build concise tool schema for the prompt
     tool_schema_lines = []
@@ -537,48 +547,49 @@ def get_agent_actions(query: str, conversation_history: list | None = None) -> l
 
     tool_schema_block = "\n".join(tool_schema_lines)
 
-    # Query the LLM with function calling prompt
-    # We use a special prompt format that encourages tool use
-    tool_prompt = f"""The user said: "{query}"
+    # Tool calling instructions appended to the user message
+    tool_prompt = f"""
 
-Analyze what they want and decide which tool(s) to use. You MUST respond with tool calls in this EXACT JSON format:
-{{"tool": "tool_name", "params": {{"param": "value"}}, "speak": "optional confirmation message"}}
-
-CRITICAL RULES:
-1. Only use tools from the list below
-2. Only use parameters defined in each tool's schema
-3. For enum parameters, ONLY use the exact values listed
-4. Do NOT add extra parameters not in the schema
-5. Do NOT include parameters for tools that have no parameters (empty object {{}})
-6. You can include multiple tool calls, each on its own line
-7. After tool calls, provide your final response to the user
+You have access to the following tools. When the user asks you to do something, you MUST decide which tool(s) to use and call them with the appropriate parameters.
 
 TOOL SCHEMAS (use EXACTLY these parameters):
 {tool_schema_block}
 
-Example:
-{{"tool": "open_app", "params": {{"name": "vscode"}}, "speak": "Opening VS Code"}}
-{{"tool": "window_mgmt", "params": {{"action": "maximize"}}, "speak": "Maximizing window"}}
-I've opened VS Code and maximized it.
+CRITICAL RULES:
+1. Only use tools from the list above
+2. Only use parameters defined in each tool's schema
+3. For enum parameters, ONLY use the exact values listed
+4. Do NOT add extra parameters not in the schema
+5. Do NOT include parameters for tools that have no parameters (empty object {{}})
+6. For MULTIPLE actions, output MULTIPLE JSON objects, ONE PER LINE:
+   {{"tool": "tool1", "params": {{...}}, "speak": "..."}}
+   {{"tool": "tool2", "params": {{...}}, "speak": "..."}}
+7. After tool calls, provide your final response to the user
 
-Generate content (shows in panel):
-{{"tool": "generate_content", "params": {{"type": "application", "topic": "leave application for tomorrow"}}, "speak": "Generating leave application"}}
+EXAMPLE - Single action:
+{{"tool": "open_app", "params": {{"name": "vscode"}}, "speak": "Ooh, VS Code coming right up!"}}
 
-Insert generated content:
-{{"tool": "insert_content", "params": {{"content": "Dear Sir/Madam, I request leave..."}}, "speak": "Inserting content"}}
+EXAMPLE - Multiple actions (MUST be on separate lines):
+{{"tool": "close_app", "params": {{"name": "chrome"}}, "speak": "Bye-bye Chrome!"}}
+{{"tool": "web_search", "params": {{"query": "best browser to use"}}, "speak": "Alright, digging into the great browser debate..."}}
 
-Direct typing:
-{{"tool": "type_text", "params": {{"text": "Hello world"}}, "speak": "Typing text"}}
-Types into current window."""
+EXAMPLE - Generate then insert:
+{{"tool": "generate_content", "params": {{"type": "application", "topic": "leave application"}}, "speak": "One leave application, coming right up!"}}
+{{"tool": "insert_content", "params": {{"content": "..."}}, "speak": "And... pasted in! Done!"}}
 
-    full_prompt = system_prompt + "\n\n" + tool_prompt
+EXAMPLE - Open then type:
+{{"tool": "open_app", "params": {{"name": "notepad"}}, "speak": "Notepad's up, let's write!"}}
+{{"tool": "type_text", "params": {{"text": "Hello world"}}, "speak": "Typing away!"}}"""
+
+    # Append tool prompt to the last user message
+    messages[-1]["content"] += tool_prompt
 
     try:
         response = query_local_llm(
-            full_prompt,
-            system_prompt="",  # System prompt is embedded in full_prompt
+            messages,
+            system_prompt="",  # System prompt is already in messages
             max_tokens=1024,
-            temperature=0.3,
+            temperature=0.6,
             thinking=is_thinking_enabled(),
             sanitize=False
         )
@@ -586,21 +597,44 @@ Types into current window."""
         # Parse tool calls from response
         tool_calls = _parse_tool_calls(response)
 
+        # Extract final conversational response (after tool calls)
+        final_response = _extract_final_response(response, tool_calls)
+
         # If no tool calls found, default to chat
         if not tool_calls:
             # Check if it's a probe query (like "are you there")
             from local_llm import _RE_PROBE_GUARD
             if _RE_PROBE_GUARD.search(query):
-                return [{"tool": "chat", "params": {}, "speak": ""}]
-            # Otherwise treat as chat
-            final_response = _extract_final_response(response, [])
-            return [{"tool": "chat", "params": {}, "speak": final_response}]
+                return [{"tool": "chat", "params": {}, "speak": ""}], ""
+            # Otherwise treat as chat - let the LLM respond naturally with creativity enabled
+            return [{"tool": "chat", "params": {}, "speak": final_response}], final_response
 
-        return tool_calls
+        # Return both tool calls and final response
+        return tool_calls, final_response
 
     except Exception as e:
         logger.error(f"[LLM Agent] Error getting actions: {e}")
-        return [{"tool": "chat", "params": {}, "speak": "I encountered an error processing your request."}]
+        return [{"tool": "chat", "params": {}, "speak": "I encountered an error processing your request."}], "I encountered an error processing your request."
+
+
+def _extract_final_response(response: str, tool_calls: list) -> str:
+    """Extract the final conversational response after tool calls."""
+    # Remove tool call JSON from response
+    import re
+    # Remove JSON tool calls (both formats)
+    cleaned = re.sub(r'\{[^{}]*"tool"\s*:\s*"[^"]+"[^{}]*\}', '', response)
+    cleaned = re.sub(r'\{[^{}]*"name"\s*:\s*"[^"]+"[^{}]*"arguments"\s*:\s*\{[^{}]*\}[^{}]*\}', '', cleaned)
+    # Remove any remaining JSON-like blocks with tool/name
+    cleaned = re.sub(r'\{[^{}]*"(?:tool|name)"\s*:\s*"[^"]+"[^{}]*\}', '', cleaned)
+    # Remove ```...``` blocks
+    cleaned = re.sub(r'```[\s\S]*?```', '', cleaned)
+    cleaned = re.sub(r'```', '', cleaned)
+    # Remove any leftover "speak": "..." fields
+    cleaned = re.sub(r'"speak"\s*:\s*"[^"]*"', '', cleaned)
+    # Clean up extra whitespace and punctuation
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    cleaned = re.sub(r'^[,\s]+|[,\s]+$', '', cleaned)
+    return sanitize_for_tts(cleaned)
 
 
 def get_agent_response_stream(
@@ -637,7 +671,7 @@ You can include multiple tool calls if needed. After the tool calls, provide you
             full_prompt,
             system_prompt="",
             max_tokens=1024,
-            temperature=0.3,
+            temperature=0.6,
             thinking=is_thinking_enabled(),
             interruption_event=interruption_event
         )
@@ -688,6 +722,16 @@ def get_agent_action(query: str, conversation_history: list | None = None) -> li
     """
     Compatibility function matching the old laya_router.get_agent_action signature.
     This allows dropping in the new agent without changing callers.
+    Returns only the tool actions (first element of tuple).
+    """
+    actions, _ = get_agent_actions(query, conversation_history)
+    return actions
+
+
+def get_agent_actions_with_response(query: str, conversation_history: list | None = None) -> tuple[list[dict], str]:
+    """
+    Get agent actions AND the final conversational response from the LLM.
+    Returns tuple of (actions, final_response).
     """
     return get_agent_actions(query, conversation_history)
 

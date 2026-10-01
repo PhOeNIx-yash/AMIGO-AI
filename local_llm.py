@@ -28,13 +28,19 @@ from network_utils import is_internet_connected
 # ---------------------------------------------------------------------------
 def _get_llm_config():
     """Get LLM configuration from environment variables with sensible defaults."""
-    cpu_count = multiprocessing.cpu_count()
+    # Use physical cores only (no hyperthreading) for better inference throughput
+    try:
+        import psutil
+        physical_cores = psutil.cpu_count(logical=False) or multiprocessing.cpu_count()
+    except Exception:
+        physical_cores = multiprocessing.cpu_count()
+    
     return {
-        "n_ctx": int(os.getenv("AMIGO_LLM_N_CTX", "4096")),
-        "n_threads": int(os.getenv("AMIGO_LLM_N_THREADS", str(min(4, max(1, cpu_count // 2))))),
-        "n_batch": int(os.getenv("AMIGO_LLM_N_BATCH", "512")),
-        "n_ubatch": int(os.getenv("AMIGO_LLM_N_UBATCH", "256")),
-        "n_gpu_layers": int(os.getenv("AMIGO_LLM_N_GPU_LAYERS", "-1")),  # -1 = auto, 0 = CPU only
+        "n_ctx": int(os.getenv("AMIGO_LLM_N_CTX", "8192")),
+        "n_threads": int(os.getenv("AMIGO_LLM_N_THREADS", str(min(8, max(1, physical_cores))))),
+        "n_batch": int(os.getenv("AMIGO_LLM_N_BATCH", "1024")),
+        "n_ubatch": int(os.getenv("AMIGO_LLM_N_UBATCH", "512")),
+        "n_gpu_layers": int(os.getenv("AMIGO_LLM_N_GPU_LAYERS", "-1")),  # -1 = all layers on GPU
         "use_mmap": os.getenv("AMIGO_LLM_USE_MMAP", "true").lower() == "true",
     }
 
@@ -65,7 +71,7 @@ MODEL_TARGETS = [
     ("Abiray/MiniCPM5-2B-GGUF", "MiniCPM5-2B-Q4_K_M.gguf"),
 ]
 
-STOP_TOKENS = ["<|im_end|>", "<|endoftext|>", "<|im_start|>", "User:", "Human:", "Assistant:"]
+STOP_TOKENS = ["<|im_end|>","<|endoftext|>","<|im_start|>","User:","Human:","Assistant:"]
 
 AVAILABLE_MODELS = {
     "minicpm5-2b": {
@@ -297,6 +303,39 @@ def get_current_thinking_enabled() -> bool:
     return _thinking_enabled
 
 
+# ---------------------------------------------------------------------------
+# Creativity Mode Control (LLM-driven sampling, no hardcoded per-query temps)
+# ---------------------------------------------------------------------------
+_creativity_enabled: bool = True  # default ON for varied, natural responses
+
+
+def set_creativity_enabled(enabled: bool) -> None:
+    """Enable or disable creativity mode (more expressive, varied sampling)."""
+    global _creativity_enabled
+    _creativity_enabled = bool(enabled)
+    logger.info("[AI Config] Creativity Mode: %s", "ENABLED" if _creativity_enabled else "DISABLED")
+
+
+def is_creativity_enabled() -> bool:
+    """Return whether creativity mode is currently active."""
+    return _creativity_enabled
+
+
+def get_sampling_params() -> dict:
+    """Sampling parameters driven by the creativity mode flag.
+
+    When creativity is ON the LLM samples freely (higher temperature/top_p) for
+    varied, natural language. When OFF it stays focused and deterministic for
+    factual/grounded answers.
+    """
+    if _creativity_enabled:
+        return {"temperature": 0.6, "top_p": 0.85}
+    return {"temperature": 0.2, "top_p": 0.9}
+
+
+# ---------------------------------------------------------------------------
+# Chat Formatter Setup (wraps chat formatter to honor thinking-mode overrides)
+# ---------------------------------------------------------------------------
 def _setup_chat_formatter(llm) -> None:
     """Wraps Jinja2ChatFormatter to dynamically pass enable_thinking to the GGUF template."""
     try:
@@ -421,6 +460,7 @@ def query_local_llm(
                     messages=messages,
                     max_tokens=max_tokens,
                     temperature=temperature,
+                    top_p=get_sampling_params()["top_p"],
                     repeat_penalty=1.1,
                     stop=STOP_TOKENS,
                 )
@@ -459,6 +499,7 @@ def query_local_llm_stream(
                     messages=messages,
                     max_tokens=max_tokens,
                     temperature=temperature,
+                    top_p=get_sampling_params()["top_p"],
                     repeat_penalty=1.1,
                     stop=STOP_TOKENS,
                     stream=True,
@@ -585,7 +626,7 @@ def parse_user_intent_fast(query: str) -> dict[str, Any] | None:
 
 
 _RE_USER_CORRECTION = re.compile(
-    r"^(?:\bno\b\s*,?\s*|actually\s*,?\s*|that'?s\s+(?:wrong|not\s+what\s+i\s+(?:asked|meant))\s*,?\s*|you\s+misunderstood\s*,?\s*|i\s+meant\s+|correction:?\s*)+",
+    r"^(?:\bno\b\s*(?:[,;]\s*|\s+)(?:that'?s\s+(?:wrong|not\s+what\s+i\s+(?:asked|meant))|i\s+meant|actually|you\s+misunderstood|correction)\b|actually\s*,?\s*|that'?s\s+(?:wrong|not\s+what\s+i\s+(?:asked|meant))\s*,?\s*|you\s+misunderstood\s*,?\s*|i\s+meant\s+|correction:?\s*)+",
     re.IGNORECASE,
 )
 

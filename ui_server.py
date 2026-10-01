@@ -49,6 +49,8 @@ from ai import (
     set_thinking_enabled,
     is_thinking_enabled,
     get_last_thought,
+    get_ai_response,
+    get_quick_feedback,
 )
 from local_llm import (
     get_active_model_info as get_llm_model_info,
@@ -328,11 +330,16 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
             last_url = res_url
 
     primary_tool = "multi_command" if len(actions) > 1 else last_tool
-    final_reply = " ".join(combined_spoken).strip() or (f"Completed {primary_tool.replace('_', ' ')}." if primary_tool != "chat" else "")
+    final_reply = " ".join(combined_spoken).strip()
+    if not final_reply and primary_tool != "chat":
+        from ai import get_quick_feedback
+        final_reply = get_quick_feedback(f"finished {primary_tool.replace('_', ' ')}")
+    elif not final_reply:
+        final_reply = ""
 
     add_to_memory(
         display_prompt or query,
-        final_reply or f"Completed {primary_tool.replace('_', ' ')}",
+        final_reply,
         tool=primary_tool,
         clipboard_used=clipboard_used,
         remember=last_remember,
@@ -344,7 +351,7 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
 
     broadcaster.broadcast("chat_message", {
         "sender": "assistant",
-        "text": final_reply or f"Completed {primary_tool.replace('_', ' ')}",
+        "text": final_reply,
         "tool": primary_tool,
         "url": last_url,
         "thought": last_thought,
@@ -638,7 +645,7 @@ def api_assistant_process():
         )
     )
 
-    speech_reply = response_text or f"Executing {tool.replace('_', ' ')}"
+    speech_reply = response_text or get_quick_feedback(f"starting {tool.replace('_', ' ')}")
     if "matching file" in speech_reply and "\n" in speech_reply:
         m_count = _RE_FILE_MATCH_COUNT.search(speech_reply)
         c_num = m_count.group(1) if m_count else "some"

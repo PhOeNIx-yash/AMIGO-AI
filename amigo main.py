@@ -19,9 +19,9 @@ except Exception:
 from ai import add_to_memory, get_ai_response_stream, load_memory
 from app_opener import ensure_built
 from local_llm import get_active_model_info, get_clipboard_text, init_local_llm, sanitize_for_tts, _RE_PROBE_GUARD
-from llm_agent import get_agent_action
+from llm_agent import get_agent_action, get_agent_actions
 from reminder_timer import init_reminders
-from Searchnow import scrape_web_info
+from web_search import search_web, format_for_llm, scrape_web_info
 from tool_registry import execute_tool
 from tts import (
     speak as tts_speak,
@@ -191,7 +191,12 @@ def process_agent_query(query: str) -> None:
     history = rag_engine.get_recent_conversations(15)
     clipboard_used = bool(get_clipboard_text())
 
-    actions = [{"tool": "chat", "params": {}, "speak": ""}] if _RE_PROBE_GUARD.search(query) else get_agent_action(query, conversation_history=history)
+    # Get both tool actions and final LLM response
+    if _RE_PROBE_GUARD.search(query):
+        actions = [{"tool": "chat", "params": {}, "speak": ""}]
+        final_response = ""
+    else:
+        actions, final_response = get_agent_actions(query, conversation_history=history)
 
     combined_spoken = []
     last_tool = "chat"
@@ -205,7 +210,15 @@ def process_agent_query(query: str) -> None:
             combined_spoken.append(spoken)
         last_tool = action.get("tool", "chat")
 
-    final_reply = " ".join(combined_spoken).strip() or f"Completed {last_tool.replace('_', ' ')}."
+    # Use the LLM's final response if available, otherwise fall back to combined tool responses
+    if final_response and final_response.strip():
+        final_reply = final_response.strip()
+    else:
+        final_reply = " ".join(combined_spoken).strip()
+    
+    if not final_reply:
+        from ai import get_quick_feedback
+        final_reply = get_quick_feedback(f"finished {last_tool.replace('_', ' ')}")
     add_to_memory(query, final_reply, tool=last_tool, clipboard_used=clipboard_used)
 
 

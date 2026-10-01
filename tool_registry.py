@@ -22,7 +22,9 @@ from reminder_timer import (
     handle_cancel_reminder,
     parse_relative_seconds,
 )
-from Searchnow import searchGoogle, searchYoutube, scrape_web_info, resolve_youtube_video, clean_search_query
+from web_search import (searchGoogle, searchYoutube, resolve_youtube_video, 
+                           clean_search_query, scrape_web_info,
+                           search_web, format_for_llm)
 from settings_resolver import open_setting
 from weather import weather_command, get_weather_data
 from network_utils import is_internet_connected
@@ -75,19 +77,34 @@ def _tool_web_search(params, query, spoken):
     except Exception:
         pass
 
-    snippets = scrape_web_info(target)
-    search_url = "https://www.google.com/search?q=" + urllib.parse.quote(target)
+    # Fast-mode search for voice: single engine, no content fetching, minimal processing
+    search_response = search_web(target, max_results=3, fetch_content=False, fast_mode=True)
+    search_url = f"https://www.google.com/search?q={urllib.parse.quote(target)}"
 
-    if snippets:
-        response = get_ai_response(query, web_context=snippets)
+    if search_response.results:
+        # Format context for LLM with snippets only (fast)
+        web_context = format_for_llm(search_response, max_chars=3000)
+        response = get_ai_response(query, web_context=web_context)
+        
+        meta = {
+            "status": "success",
+            "query_type": search_response.query_type,
+            "results_count": len(search_response.results),
+            "engines_used": search_response.engines_used,
+            "search_time_ms": search_response.search_time_ms,
+            "structured_data": search_response.structured_data,
+            "cache_hit": search_response.cache_hit,
+        }
+        
         if any(kw in query.lower() for kw in ("browser", "open google", "search google", "show in browser", "open browser")):
             searchGoogle(target)
-        return response, search_url
+        return response, search_url, meta
 
+    # Fallback: open browser if requested
     if any(kw in query.lower() for kw in ("browser", "open google", "search google", "show in browser", "open browser")):
         searchGoogle(target)
     response = get_ai_response(query)
-    return response, search_url
+    return response, search_url, {"status": "no_results"}
 
 
 def _tool_open_website(params, query, spoken):
@@ -102,9 +119,9 @@ def _tool_open_website(params, query, spoken):
             update_active_state("active_subject", {"name": url, "category": "website"})
         except Exception:
             pass
-        return spoken, url
+        return f"Opened {url}.", url
     searchGoogle(query)
-    return spoken, None
+    return "Searched the web.", None
 
 
 def _tool_play_youtube(params, query, spoken):
@@ -250,7 +267,8 @@ def _tool_open_app(params, query, spoken):
             update_active_state("active_app", {"name": clean_target})
         except Exception:
             pass
-        return f"Opening {clean_target.title()}.", None
+        from ai import get_quick_feedback
+        return get_quick_feedback(f"opened {clean_target}"), None
 
     # 2. Is it an already running application?
     if is_app_already_running(clean_target):
@@ -426,7 +444,7 @@ def _tool_type_text(params, query, spoken):
     text = params.get("text", "").strip() if isinstance(params, dict) else ""
     if text:
         os_automation.type_text(text)
-    return spoken or (f"Typed text into {app or 'active window'}." if text else "Typed text."), None
+    return (f"Typed text into {app or 'active window'}." if text else "Typed text."), None
 
 
 def _tool_press_key(params, query, spoken):
@@ -437,7 +455,7 @@ def _tool_press_key(params, query, spoken):
     keys = params.get("keys", "") if isinstance(params, dict) else ""
     if keys:
         os_automation.press_shortcut(keys)
-    return spoken or (f"Pressed {keys}." if keys else "Done."), None
+    return (f"Pressed {keys}." if keys else "Done."), None
 
 
 def _tool_click_screen(params, query, spoken):
@@ -451,12 +469,12 @@ def _tool_click_screen(params, query, spoken):
     if x is not None and y is not None:
         try:
             pyautogui.click(int(x), int(y))
-            return spoken or f"Clicked at ({x}, {y}).", None
+            return f"Clicked at ({x}, {y}).", None
         except Exception as e:
             return f"Click error: {e}", None
     try:
         pyautogui.click()
-        return spoken or "Clicked.", None
+        return "Clicked.", None
     except Exception as e:
         return f"Click error: {e}", None
 
@@ -522,7 +540,7 @@ def _tool_pause_media(params, query, spoken):
         _media_update_cb({"status": "paused"})
     if has_tracked_media and isinstance(media, dict):
         update_active_state("current_media", {**media, "status": "paused"})
-    return spoken or "Media paused.", None
+    return "Media paused.", None
 
 
 
@@ -544,26 +562,26 @@ def _tool_play_media(params, query, spoken):
         _media_update_cb({"status": "playing"})
     if has_tracked_media and isinstance(media, dict):
         update_active_state("current_media", {**media, "status": "playing"})
-    return spoken or "Media resumed.", None
+    return "Media resumed.", None
 
 
 def _tool_next_track(params, query, spoken):
     os_automation.next_track()
-    return spoken or "Next track.", None
+    return "Next track.", None
 
 
 def _tool_prev_track(params, query, spoken):
     os_automation.prev_track()
-    return spoken or "Previous track.", None
+    return "Previous track.", None
 
 
 def _tool_close_app(params, query, spoken):
     name = params.get("app_name") or params.get("name") or params.get("app") or ""
     closed = os_automation.close_app(name)
     if not name or name.lower() in ("current", "active", "this", "window", "app", "application", "it"):
-        return spoken or "Window closed.", None
+        return "Window closed.", None
     if closed:
-        return spoken or f"Closed {name.title()}.", None
+        return f"Closed {name.title()}.", None
     return f"{name.title()} is not currently running.", None
 
 
@@ -575,7 +593,7 @@ def _tool_window_management(params, query, spoken):
         return _tool_close_app({"app_name": app_name}, query, spoken)
     elif action:
         os_automation.window_action(action)
-    return spoken or "Done.", None
+    return "Done.", None
 
 
 def _tool_calculate(params, query, spoken):
@@ -584,14 +602,15 @@ def _tool_calculate(params, query, spoken):
         res = Calc(expr)
         if res is not None:
             return f"The answer is {res}.", None
-    return spoken or "Calculation completed.", None
+    from ai import get_quick_feedback
+    return get_quick_feedback("calculated the answer"), None
 
 
 def _tool_clarification(params, query, spoken):
     """Handles clarifying questions when intent or parameters are ambiguous."""
     candidates = params.get("candidate_tools", []) if isinstance(params, dict) else []
     q = params.get("query", query) if isinstance(params, dict) else query
-    msg = spoken or f"I'm not completely sure what you'd like to do with '{q}'. Please choose an option below or clarify."
+    msg = f"I'm not completely sure what you'd like to do with '{q}'. Please choose an option below or clarify."
     return msg, None, {
         "status": "requires_clarification",
         "requires_clarification": True,
@@ -768,35 +787,35 @@ _SIMPLE_OS_ACTIONS = {
 def _make_simple_handler(func, default_msg):
     def _handler(params, query, spoken):
         func()
-        return spoken or default_msg, None
+        return default_msg, None
     return _handler
 
 
 def _tool_empty_recycle_bin(params, query, spoken):
     # Require confirmation for destructive action
-    confirm_result = _require_confirmation("Empty recycle bin", params, query, spoken or "Emptying recycle bin")
+    confirm_result = _require_confirmation("Empty recycle bin", params, query, "Emptying recycle bin")
     if confirm_result[2].get("requires_confirmation"):
         return confirm_result
     os_automation.empty_recycle_bin()
-    return spoken or "Recycle bin emptied.", None
+    return "Recycle bin emptied.", None
 
 
 def _tool_lock_pc(params, query, spoken):
     # Require confirmation for potentially disruptive action
-    confirm_result = _require_confirmation("Lock PC", params, query, spoken or "Locking PC")
+    confirm_result = _require_confirmation("Lock PC", params, query, "Locking PC")
     if confirm_result[2].get("requires_confirmation"):
         return confirm_result
     os_automation.lock_pc()
-    return spoken or "Locking your PC.", None
+    return "Locking your PC.", None
 
 
 def _tool_sleep_pc(params, query, spoken):
     # Require confirmation for potentially disruptive action
-    confirm_result = _require_confirmation("Sleep PC", params, query, spoken or "Putting system to sleep")
+    confirm_result = _require_confirmation("Sleep PC", params, query, "Putting system to sleep")
     if confirm_result[2].get("requires_confirmation"):
         return confirm_result
     os_automation.sleep_pc()
-    return spoken or "Putting system to sleep.", None
+    return "Putting system to sleep.", None
 
 
 # ---------------------------------------------------------------------------
@@ -899,13 +918,16 @@ def _tool_file_action(params, query, spoken):
             pass
         ok, msg = execute_file_action(target_path, action)
         clean_name = os.path.splitext(os.path.basename(target_path))[0].replace("_", " ").replace("-", " ").title()
-        return f"Opening {clean_name}.", None
-    return "I couldn't find that file on your computer.", None
+        from ai import get_quick_feedback
+        return get_quick_feedback(f"opened {clean_name}"), None
+    from ai import get_ai_response
+    return get_ai_response(f"Could not find that file on the computer. Give a brief, friendly apology.", use_memory=False, is_voice=True), None
 
 
 
 def _tool_show_images(params, query, spoken):
-    return spoken or "Showing images.", "https://www.google.com/search?q=" + urllib.parse.quote(params.get("query", query))
+    from ai import get_quick_feedback
+    return spoken or get_quick_feedback("showing image results"), "https://www.google.com/search?q=" + urllib.parse.quote(params.get("query", query))
 
 def _tool_search_and_type(params, query, spoken):
     os_automation.search_and_type(params.get("text", ""))
@@ -948,33 +970,33 @@ def _tool_system_control(params, query, spoken):
     action = params.get("action", "").lower() if isinstance(params, dict) else ""
     
     if action in ("lock", "lock_pc"):
-        return _tool_lock_pc(params, query, spoken or "Locking PC")
+        return _tool_lock_pc(params, query, "Locking PC")
     elif action in ("sleep", "sleep_pc"):
-        return _tool_sleep_pc(params, query, spoken or "Putting system to sleep")
+        return _tool_sleep_pc(params, query, "Putting system to sleep")
     elif action in ("restart", "restart_pc"):
-        return _tool_restart_pc(params, query, spoken or "Restarting PC")
+        return _tool_restart_pc(params, query, "Restarting PC in 30 seconds")
     elif action in ("shutdown", "shutdown_pc"):
         # Shutdown would be very destructive - require explicit confirmation
-        confirm_result = _require_confirmation("Shutdown PC", params, query, spoken or "Shutting down PC")
+        confirm_result = _require_confirmation("Shutdown PC", params, query, "Shutting down PC")
         if confirm_result[2].get("requires_confirmation"):
             return confirm_result
         os_automation.shutdown_pc(30)
-        return spoken or "Shutting down in 30 seconds.", None
+        return "Shutting down in 30 seconds.", None
     elif action in ("cancel_shutdown",):
         os_automation.cancel_shutdown()
-        return spoken or "Shutdown cancelled.", None
+        return "Shutdown cancelled.", None
     elif action in ("empty_recycle_bin",):
-        return _tool_empty_recycle_bin(params, query, spoken or "Emptying recycle bin")
+        return _tool_empty_recycle_bin(params, query, "Emptying recycle bin")
     else:
         return f"Unknown system control action: {action}", None
 
 def _tool_restart_pc(params, query, spoken):
     # Require confirmation for destructive action
-    confirm_result = _require_confirmation("Restart PC", params, query, spoken or "Restarting PC in 30 seconds")
+    confirm_result = _require_confirmation("Restart PC", params, query, "Restarting PC in 30 seconds")
     if confirm_result[2].get("requires_confirmation"):
         return confirm_result
     os_automation.restart_pc(30)
-    return spoken or "Restarting in 30 seconds.", None
+    return "Restarting in 30 seconds.", None
 
 def _tool_set_timer(params, query, spoken):
     return handle_set_timer(params, query), None
@@ -989,7 +1011,7 @@ def _tool_cancel_reminder(params, query, spoken):
     return handle_cancel_reminder(params), None
 
 def _tool_exit(params, query, spoken):
-    return spoken or "Goodbye!", None
+    return "Goodbye!", None
 
 
 # ---------------------------------------------------------------------------

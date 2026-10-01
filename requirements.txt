@@ -24,6 +24,8 @@ huggingface-hub>=0.23.0        # Automatic model downloading from HuggingFace
 # ── Web Dashboard & REST API ──────────────────────────────────
 Flask>=3.0.0                   # Web dashboard, SSE event streaming, REST backend
 requests>=2.31.0               # Live weather fetching (wttr.in)
+beautifulsoup4>=4.12.0         # HTML parsing for web search
+lxml>=4.9.0                    # Fast HTML/XML parser for BeautifulSoup
 
 # ── Desktop & OS Automation ───────────────────────────────────
 pyautogui>=0.9.54              # Keyboard shortcuts, typing, screen capture

@@ -18,6 +18,8 @@ from local_llm import (
     get_clipboard_text,
     is_thinking_enabled,
     set_thinking_enabled,
+    is_creativity_enabled,
+    get_sampling_params,
 )
 
 # ── RAG Engine (the new memory backbone) ──
@@ -25,6 +27,30 @@ import rag_engine
 from network_utils import is_internet_connected
 
 logger = logging.getLogger("amigo.ai")
+
+# ═══════════════════════════════════════════════════════════════
+#  Quick Feedback (ultra-fast, minimal tokens, no RAG)
+# ═══════════════════════════════════════════════════════════════
+
+_QUICK_FEEDBACK_PROMPT = "You are Amigo. Give a SHORT (1 sentence), friendly, natural confirmation. No fluff."
+
+def get_quick_feedback(action_desc: str) -> str:
+    """Ultra-fast feedback for action confirmations. ~50ms vs ~2s for full LLM."""
+    try:
+        sampling = get_sampling_params()
+        # Minimal prompt, tiny token budget, no memory/RAG
+        response = query_local_llm(
+            f"Action done: {action_desc}. One-sentence friendly confirmation:",
+            system_prompt=_QUICK_FEEDBACK_PROMPT,
+            max_tokens=48,
+            temperature=min(sampling["temperature"], 0.5),  # lower = faster, more deterministic
+            thinking=False,
+            sanitize=True,
+        )
+        return response.strip() or "Done."
+    except Exception:
+        return "Done."
+
 
 _last_screen_text = ""
 _last_screen_time = 0.0
@@ -169,17 +195,21 @@ def _build_voice_prompt(query: str = "", is_voice: bool = True, has_web_context:
     
     # Static system identity and guidelines (KV-cache friendly - put first)
     prompt = (
-        "You are Amigo, a friendly and helpful AI voice assistant running locally on the user's PC. "
-        "You have access to the user's LOCAL data through tools (documents, Outlook emails, Outlook calendar, saved memory) "
-        "when those tools are invoked. ALL data access is LOCAL ONLY - nothing leaves the user's machine. "
-        "When users ask about their emails, calendar, documents, or personal facts, the system will invoke the appropriate tools. "
-        "If a tool is not available or fails, acknowledge the limitation honestly.\n\n"
-        "Conversation Guidelines:\n"
-        "- Answer questions, riddles, math problems, and user requests directly, accurately, and completely.\n"
-        "- When following up on prior discussion, use the conversation history to maintain context.\n"
-        "- Speak naturally, clearly, and concisely without repetitive greetings or robotic boilerplate.\n"
-        "- Only reference remembered user facts or personal notes when the user explicitly asks about them or when directly relevant to what they are asking. NEVER blurt out or awkwardly append remembered facts to unrelated answers.\n"
-        "- You are Amigo, a desktop AI assistant that can play music, stream audio on YouTube, launch programs, manage windows, and control system volume through tool calls. If a tool call fails, say so honestly.\n"
+        "You are Amigo - a helpful, natural voice assistant on the user's PC. "
+        "You're capable and conversational, not a corporate help desk. "
+        "Your tone: warm, clear, and varied - never robotic or repetitive.\n\n"
+        "How you talk:\n"
+        "- Use natural, varied language. Vary your greetings, confirmations, and phrasing each time.\n"
+        "- Keep responses concise: 1-3 sentences for casual chat, more only when needed.\n"
+        "- React naturally: acknowledge what the user said before responding.\n"
+        "- Don't use the same opener twice - mix up 'Sure thing', 'Got it', 'On it', 'Right away', 'Done', etc.\n"
+        "- Ask a relevant follow-up only when it genuinely helps the conversation.\n"
+        "- NEVER lecture, never list rules, never sound like a manual. No robotic boilerplate.\n\n"
+        "Practical stuff:\n"
+        "- You can play music, stream YouTube, launch programs, manage windows, control volume via tool calls. If a call fails, say so directly.\n"
+        "- Answer factual questions (math, riddles, lookups) accurately.\n"
+        "- Only bring up remembered user facts when asked or directly relevant.\n"
+        "- Use conversation history to maintain context.\n"
     )
     
     # Thinking mode (semi-static)
@@ -227,49 +257,6 @@ def _build_voice_prompt(query: str = "", is_voice: bool = True, has_web_context:
     if screen := get_last_screen_text():
         if any(kw in query_lower for kw in screen_keywords):
             prompt += f"\n[Screen OCR: '{screen[:200]}']"
-
-    return prompt
-
-    if not online:
-        prompt += (
-            "Important: You are currently NOT connected to the internet. "
-            "If the user asks you to perform an action that requires internet (such as web search, checking live weather, online lookups, or YouTube), "
-            "tell them directly that you are not connected to the internet right now.\n"
-        )
-    elif has_web_context:
-        prompt += (
-            "Current Network Status: Connected (Online). You are synthesizing online web search results to answer the user's query accurately.\n"
-            "Guidelines:\n"
-            "- Rely strictly on the provided web search information to answer the user's query.\n"
-            "- State verified facts, numbers, dates, or figures directly and accurately.\n"
-            "- If a requested detail is not found in the search results, state what is available and clarify what is not provided, rather than guessing.\n"
-        )
-    else:
-        prompt += "Current Network Status: Connected (Online). You have active internet connectivity right now.\n"
-
-    prompt += (
-        "Conversation Guidelines:\n"
-        "- Answer questions, riddles, math problems, and user requests directly, accurately, and completely.\n"
-        "- When following up on prior discussion, use the conversation history to maintain context.\n"
-        "- Speak naturally, clearly, and concisely without repetitive greetings or robotic boilerplate.\n"
-        "- Only reference remembered user facts or personal notes when the user explicitly asks about them or when directly relevant to what they are asking. NEVER blurt out or awkwardly append remembered facts to unrelated answers.\n"
-        "- You are Amigo, a fully capable desktop AI assistant equipped to play music, stream audio on YouTube, launch programs, manage windows, and control system volume. NEVER state that you cannot play music, cannot access YouTube, or cannot execute actions, because the system executes these capabilities on your behalf.\n"
-        "- You are the user's personal assistant; answer their questions and recall their documents and records when asked.\n"
-        "- IMPORTANT: You have FULL ACCESS to the user's LOCAL data through tools (local documents, Outlook emails, Outlook calendar, saved memory). ALL data access is LOCAL ONLY - nothing leaves the user's machine. When users ask about their emails, calendar, documents, or personal facts, USE THE TOOLS. Do NOT refuse or say you cannot access personal data."
-    )
-    if is_thinking_enabled():
-        prompt += "- Reasoning mode: Think step-by-step inside <think> tags before providing your final answer outside of <think>.\n"
-    else:
-        prompt += "- Direct answer mode: Respond directly with your answer. Do NOT output <think> tags or internal deliberation.\n"
-
-    if active_ctx := get_active_context_prompt():
-        prompt += f"\n{active_ctx}"
-    if user_prof := get_user_profile_prompt(query):
-        prompt += f"\n{user_prof}"
-    if clip := get_clipboard_text():
-        prompt += f"\n[Clipboard: '{clip[:200]}']"
-    if screen := get_last_screen_text():
-        prompt += f"\n[Screen OCR: '{screen[:200]}']"
 
     return prompt
 
@@ -344,8 +331,8 @@ def get_ai_response(
     prompt = _build_voice_prompt(query=query, is_voice=is_voice, has_web_context=bool(web_context))
     thinking_active = is_thinking_enabled()
     max_tokens = 2048 if thinking_active else 512
-    temp = 0.0 if web_context else (0.1 if doc_context else 0.5)
-    response = query_local_llm(messages, system_prompt=prompt, max_tokens=max_tokens, temperature=temp, thinking=thinking_active, sanitize=False)
+    sampling = get_sampling_params()
+    response = query_local_llm(messages, system_prompt=prompt, max_tokens=max_tokens, temperature=sampling["temperature"], thinking=thinking_active, sanitize=False)
     response = _RE_SPEAKER_PREFIX.sub("", response).strip()
 
     # Extract thought block if present into thread-local state
@@ -378,9 +365,9 @@ def get_ai_response_stream(
     prompt = _build_voice_prompt(query=query, is_voice=is_voice, has_web_context=bool(web_context))
     thinking_active = is_thinking_enabled()
     max_tokens = 2048 if thinking_active else (256 if is_voice else 512)
-    temp = 0.0 if web_context else (0.1 if doc_context else 0.6)
+    sampling = get_sampling_params()
     token_gen = query_local_llm_stream(
-        messages, system_prompt=prompt, max_tokens=max_tokens, interruption_event=interruption_event, temperature=temp, thinking=thinking_active,
+        messages, system_prompt=prompt, max_tokens=max_tokens, interruption_event=interruption_event, temperature=sampling["temperature"], thinking=thinking_active,
     )
 
     for sentence in stream_sentence_chunks(token_gen, interruption_event=interruption_event):

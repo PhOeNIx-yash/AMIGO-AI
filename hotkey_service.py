@@ -34,22 +34,8 @@ _lock = threading.Lock()
 _broadcast_callback = None
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CUSTOM_CHIME = os.path.join(BASE_DIR, "assets", "soothing_chime.wav")
-CUSTOM_OFF = os.path.join(BASE_DIR, "assets", "soothing_off.wav")
-
-SOOTHING_WAKE_SOUNDS = [
-    CUSTOM_CHIME,
-    r"C:\Windows\Media\Windows Proximity Connection.wav",
-    r"C:\Windows\Media\Windows Message Nudge.wav",
-    r"C:\Windows\Media\Windows Background.wav",
-    r"C:\Windows\Media\Windows Navigation Start.wav",
-]
-
-SOOTHING_OFF_SOUNDS = [
-    CUSTOM_OFF,
-    r"C:\Windows\Media\Windows Navigation Start.wav",
-    r"C:\Windows\Media\Windows Background.wav",
-]
+ACTIVATING_SOUND = os.path.join(BASE_DIR, "assets", "activating sound.mp3")
+SEARCHING_SOUND = os.path.join(BASE_DIR, "assets", "searching sound.mp3")
 
 
 def set_broadcast_callback(callback):
@@ -97,28 +83,28 @@ def _broadcast(event_type: str, data: dict = None):
     threading.Thread(target=_post_http, daemon=True).start()
 
 
-def _play_soothing_wake_sound():
-    """Plays a gentle, soothing acoustic harmonic chime."""
+def _play_sound_async(sound_path: str):
+    """Play an MP3 sound file asynchronously using Windows default player."""
     try:
-        import winsound
-        for s in SOOTHING_WAKE_SOUNDS:
-            if os.path.exists(s):
-                winsound.PlaySound(s, winsound.SND_FILENAME | winsound.SND_ASYNC)
-                return
-    except Exception:
-        pass
+        if os.path.exists(sound_path):
+            # Use Windows start command to play MP3 with default handler
+            subprocess.Popen(
+                ["cmd.exe", "/c", "start", "", sound_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+    except Exception as e:
+        logger.debug(f"[Sound] Failed to play {sound_path}: {e}")
 
 
-def _play_soothing_off_sound():
-    """Plays a soft, calming completion sound."""
-    try:
-        import winsound
-        for s in SOOTHING_OFF_SOUNDS:
-            if os.path.exists(s):
-                winsound.PlaySound(s, winsound.SND_FILENAME | winsound.SND_ASYNC)
-                return
-    except Exception:
-        pass
+def _play_activating_sound():
+    """Plays the activation sound (Alt+V pressed)."""
+    _play_sound_async(ACTIVATING_SOUND)
+
+
+def _play_searching_sound():
+    """Plays the searching/thinking sound."""
+    _play_sound_async(SEARCHING_SOUND)
 
 
 def _handle_wake_action():
@@ -143,8 +129,8 @@ def _handle_wake_action():
                 logger.info(f"[Hotkey Wake] Screen captured on-demand. Active Window: '{window_title}'")
             return screenshot
 
-        # Step 2: Play soothing chime and update UI state to 'listening'
-        _play_soothing_wake_sound()
+        # Step 2: Play activating sound and update UI state to 'listening'
+        _play_activating_sound()
         _broadcast("state_change", {"state": "listening"})
 
         # Step 3: Listen for user speech via microphone
@@ -275,7 +261,7 @@ def _handle_wake_action():
         except Exception:
             pass
     finally:
-        _play_soothing_off_sound()
+        _play_searching_sound()
         _broadcast("state_change", {"state": "idle"})
         with _lock:
             _is_processing = False
