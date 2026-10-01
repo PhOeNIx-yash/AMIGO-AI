@@ -186,14 +186,8 @@ set_media_update_callback(_on_media_update)
 # ---------------------------------------------------------------------------
 def get_active_model_info():
     try:
-        from llm_agent import is_laya_ready
-    except Exception:
-        def is_laya_ready(): return False
-
-    try:
         info = get_llm_model_info()
         vision_ok = is_vision_ready()
-        laya_ok = is_laya_ready()
         name = info.get("name", "MiniCPM 5 2B")
         return {
             "key": info.get("key", "minicpm5-2b"),
@@ -201,21 +195,20 @@ def get_active_model_info():
             "type": "local_gguf",
             "context_length": 8192,
             "tts_engine": get_tts_engine_name(),
-            "system1_router": "Laya System 1 (Active)" if laya_ok else "Tier 1 Fast-Path",
+            "system1_router": "LLM Agent (MiniCPM 5 2B)",
             "vision_ready": vision_ok,
             "vision_mode": f"Native Multimodal ({name})" if vision_ok else "OCR Fallback (Windows Media OCR)",
             "hotkey": "Alt+V",
         }
     except Exception:
         vision_ok = is_vision_ready()
-        laya_ok = is_laya_ready()
         return {
             "key": "minicpm5-2b",
             "name": "MiniCPM 5 2B",
             "type": "local_gguf",
             "context_length": 8192,
             "tts_engine": get_tts_engine_name(),
-            "system1_router": "Laya System 1 (Active)" if laya_ok else "Tier 1 Fast-Path",
+            "system1_router": "LLM Agent (MiniCPM 5 2B)",
             "vision_ready": vision_ok,
             "vision_mode": "OCR Fallback (Windows Media OCR)",
             "hotkey": "Alt+V",

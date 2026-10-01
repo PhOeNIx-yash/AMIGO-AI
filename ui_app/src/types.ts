@@ -24,6 +24,7 @@ export interface ActionCardItem {
   url?: string;
   badge?: string;
   actionType?: "toggle" | "button" | "navigate" | "execute";
+  originalPrompt?: string;
 }
 
 export interface ContactItem {

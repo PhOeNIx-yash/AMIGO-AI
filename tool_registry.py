@@ -722,7 +722,7 @@ Write a professional, well-structured {content_type}. Be concise but complete. D
         "generated_content": generated_content,
         "content_type": content_type,
         "topic": topic,
-        "show_panel": True
+        "showGeneratedPanel": True
     }
 
 

@@ -652,7 +652,7 @@ export default function App() {
         subtitle: "Paste generated content",
         selected: true,
         payload: { content },
-        actionType: "execute",
+        originalPrompt: `Insert generated content: ${content.slice(0, 100)}`,
       }, backendConfig);
       setDisplayText("Content inserted successfully!");
       setState("completed");

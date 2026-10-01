@@ -1,7 +1,6 @@
 """
 LLM-Based Agent for Amigo Voice Assistant.
-Replaces the brittle Laya Router classifier with true natural language understanding.
-Uses MiniCPM 5 2B with function calling / structured output for tool selection.
+Provides natural language understanding using MiniCPM 5 2B with tool calling for action execution.
 """
 
 import json
@@ -23,11 +22,6 @@ from tool_registry import execute_tool
 from network_utils import is_internet_connected
 
 logger = logging.getLogger("amigo.llm_agent")
-
-# Laya model paths (for is_laya_ready check)
-LAYA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "models", "laya"))
-WEIGHTS_PATH = os.path.join(LAYA_DIR, "model.safetensors")
-CONFIG_PATH = os.path.join(LAYA_DIR, "rl_agent_config.json")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Tool Definitions for Function Calling
@@ -69,11 +63,11 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "play_youtube",
-        "description": "Play a song, video, or music on YouTube.",
+        "description": "Play music, songs, videos, or audio on YouTube. Use this for ANY request to play music, stream a song, listen to a track, or watch a video. This works online via YouTube - you DO have access to this. Do NOT say you cannot play music.",
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "What to search and play on YouTube"}
+                "query": {"type": "string", "description": "What to search and play on YouTube (song name, artist, video title, etc.)"}
             },
             "required": ["query"]
         }
@@ -363,8 +357,20 @@ def build_agent_system_prompt(query: str = "", conversation_history: list | None
 
     tools_block = "\n".join(tool_descriptions)
 
-    prompt = f"""You are Amigo, a capable desktop AI assistant. Today is {now.strftime('%A, %B %d, %Y at %I:%M %p')}.
+    hour = now.hour
+    if 5 <= hour < 12:
+        period = "morning"
+    elif 12 <= hour < 17:
+        period = "afternoon"
+    elif 17 <= hour < 21:
+        period = "evening"
+    else:
+        period = "night"
+    current_time_str = now.strftime('%I:%M %p').lstrip('0')
+
+    prompt = f"""You are Amigo, a capable desktop AI assistant. Today is {now.strftime('%A, %B %d, %Y')}. Current local time: {current_time_str} ({period}).
 Internet Status: {net_status}.
+Be naturally aware of the current local time and period of day (morning, afternoon, evening, night) when conversing or greeting the user.
 
 YOUR PERSONALITY:
 You are a capable, natural voice assistant - helpful and conversational, not robotic.
@@ -394,6 +400,7 @@ IMPORTANT GUIDELINES:
 4. For ANY action that changes system state (opening apps, playing media, setting volume, etc.) - use the specific action tool.
 5. You can call MULTIPLE tools in sequence if needed (e.g., open an app then maximize it).
 6. Consider conversation context - references like "it", "that", "the song", "the app" refer to recent topics.
+7. DO NOT ask for confirmation before using tools - just use them. If user says "play X", call play_youtube. If user says "yes" after you suggested playing on YouTube, call play_youtube with the song name.
 7. If internet is offline, web_search, play_youtube, get_weather will fail - inform the user.
 8. Be concise in your tool calls - the system will execute them and give you results.
 9. After tool execution, you'll receive results and can continue or respond to the user.
@@ -419,6 +426,15 @@ CRITICAL DISAMBIGUATION RULES:
 - City names in get_weather MUST be capitalized (e.g., "London", "Tokyo", "New York")
 - set_volume action MUST be one of: mute, volume_up, volume_down, set_volume (NOT "up", "down", "mute on/off"). "set volume to N" → action: set_volume, level: N. "turn up/down volume" → action: volume_up/volume_down. "mute/unmute" → action: mute.
 - DOCUMENT QA vs MEMORY RECALL: "what is my PNR", "show my booking", "read my ticket", "flight details", "hotel reservation", "document", "file", "PDF", "receipt", "confirmation" → document_qa (searches LOCAL FILES/DOCUMENTS). "what did I tell you", "remember my name", "my preference", "I told you", "recall that" → memory_recall (recalls SAVED PERSONAL FACTS).
+
+- MUSIC PLAYBACK INTENT GUIDE:
+  - PLAY REQUEST: User wants to hear music now ("play X", "put on X", "stream X", "I want to hear X") → play_youtube
+  - APPRECIATION: User expresses enjoyment of currently playing music ("I like this", "love this song", "great track", "this is good") → chat (respond warmly, do NOT replay)
+  - REPLAY REQUEST: User explicitly wants to hear the current song again ("play it again", "replay", "repeat", "one more time") → play_youtube
+  - PLAYBACK CONTROL: User wants to control playback ("pause", "stop", "resume", "skip") → pause_media / play_media / next_track / prev_track
+  - CONFIRMATION: User agrees to your suggestion to play something ("yes", "yeah", "sure", "go ahead") → play_youtube with the song you mentioned
+  - NEVER say "I don't have access to play music" - you CAN play music on YouTube via play_youtube tool
+  - KEY DISTINCTION: Appreciation = commentary on current experience (chat). Replay/Play = desire for action (play_youtube). If unsure, check: does the user want something TO HAPPEN (action) or are they SHARING A FEELING (chat)?
 
 Think about what the user ACTUALLY wants, not just keywords. Understand the INTENT behind their words.
 """
@@ -589,7 +605,7 @@ EXAMPLE - Open then type:
             messages,
             system_prompt="",  # System prompt is already in messages
             max_tokens=1024,
-            temperature=0.6,
+            temperature=0.4,
             thinking=is_thinking_enabled(),
             sanitize=False
         )
@@ -619,13 +635,29 @@ EXAMPLE - Open then type:
 
 def _extract_final_response(response: str, tool_calls: list) -> str:
     """Extract the final conversational response after tool calls."""
-    # Remove tool call JSON from response
     import re
-    # Remove JSON tool calls (both formats)
-    cleaned = re.sub(r'\{[^{}]*"tool"\s*:\s*"[^"]+"[^{}]*\}', '', response)
+    import json
+    
+    cleaned = response
+    
+    # Remove tool call JSON by serializing parsed tool_calls back to JSON and removing exact matches
+    for call in tool_calls:
+        # Format 1: {"tool": "...", "params": {...}, "speak": "..."} - with spaces
+        tool_json1 = json.dumps({"tool": call["tool"], "params": call.get("params", {}), "speak": call.get("speak", "")})
+        # Format 2: compact (no spaces)
+        tool_json2 = json.dumps({"tool": call["tool"], "params": call.get("params", {}), "speak": call.get("speak", "")}, separators=(',', ':'))
+        # Format 3: function calling style
+        tool_json3 = json.dumps({"name": call["tool"], "arguments": call.get("params", {})})
+        tool_json4 = json.dumps({"name": call["tool"], "arguments": call.get("params", {})}, separators=(',', ':'))
+        
+        for tj in [tool_json1, tool_json2, tool_json3, tool_json4]:
+            cleaned = cleaned.replace(tj, '')
+    
+    # Fallback: regex for any remaining tool call patterns
+    cleaned = re.sub(r'\{[^{}]*"tool"\s*:\s*"[^"]+"[^{}]*\}', '', cleaned)
     cleaned = re.sub(r'\{[^{}]*"name"\s*:\s*"[^"]+"[^{}]*"arguments"\s*:\s*\{[^{}]*\}[^{}]*\}', '', cleaned)
-    # Remove any remaining JSON-like blocks with tool/name
     cleaned = re.sub(r'\{[^{}]*"(?:tool|name)"\s*:\s*"[^"]+"[^{}]*\}', '', cleaned)
+    
     # Remove ```...``` blocks
     cleaned = re.sub(r'```[\s\S]*?```', '', cleaned)
     cleaned = re.sub(r'```', '', cleaned)
@@ -671,7 +703,7 @@ You can include multiple tool calls if needed. After the tool calls, provide you
             full_prompt,
             system_prompt="",
             max_tokens=1024,
-            temperature=0.6,
+            temperature=0.4,
             thinking=is_thinking_enabled(),
             interruption_event=interruption_event
         )
@@ -720,8 +752,7 @@ You can include multiple tool calls if needed. After the tool calls, provide you
 
 def get_agent_action(query: str, conversation_history: list | None = None) -> list[dict]:
     """
-    Compatibility function matching the old laya_router.get_agent_action signature.
-    This allows dropping in the new agent without changing callers.
+    Main function to resolve user query into tool actions.
     Returns only the tool actions (first element of tuple).
     """
     actions, _ = get_agent_actions(query, conversation_history)
@@ -790,7 +821,7 @@ def format_clarification_prompt(tool_a: str, tool_b: str, query: str) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Utility Functions (replacing laya_router utilities)
+# Utility Functions
 # ──────────────────────────────────────────────────────────────────────────────
 
 def get_last_played_song(conversation_history: list | None = None) -> dict | None:
@@ -875,12 +906,3 @@ def get_last_played_song(conversation_history: list | None = None) -> dict | Non
                     return {"title": song_name, "query": song_name, "url": ""}
 
     return None
-
-
-def is_laya_ready() -> bool:
-    """Check if Laya weights and configuration exist locally."""
-    return (
-        os.path.exists(WEIGHTS_PATH)
-        and os.path.getsize(WEIGHTS_PATH) > 500_000_000
-        and os.path.exists(CONFIG_PATH)
-    )

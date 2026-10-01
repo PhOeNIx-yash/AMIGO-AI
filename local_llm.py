@@ -42,6 +42,12 @@ def _get_llm_config():
         "n_ubatch": int(os.getenv("AMIGO_LLM_N_UBATCH", "512")),
         "n_gpu_layers": int(os.getenv("AMIGO_LLM_N_GPU_LAYERS", "-1")),  # -1 = all layers on GPU
         "use_mmap": os.getenv("AMIGO_LLM_USE_MMAP", "true").lower() == "true",
+        # Performance optimizations
+        "logits_all": False,        # Don't compute logits for all tokens (saves VRAM/compute)
+        "embedding": False,         # Generation only, no embeddings
+        "offload_kqv": True,        # Offload K/Q/V to GPU (llama.cpp default)
+        "flash_attn": True,         # Use flash attention if available
+        "numa": False,              # Disable NUMA for single-socket laptop
     }
 
 
@@ -247,8 +253,12 @@ def init_local_llm(force_reload: bool = False):
                         "n_threads": config["n_threads"],
                         "n_batch": config["n_batch"],
                         "n_ubatch": config["n_ubatch"],
-                        "flash_attn": fa,
+                        "flash_attn": fa and config.get("flash_attn", True),
                         "use_mmap": config["use_mmap"],
+                        "logits_all": config.get("logits_all", False),
+                        "embedding": config.get("embedding", False),
+                        "offload_kqv": config.get("offload_kqv", True),
+                        "numa": config.get("numa", False),
                         "verbose": False,
                     }
                     _local_llm_instance = Llama(**kwargs)
@@ -461,12 +471,10 @@ def query_local_llm(
                     max_tokens=max_tokens,
                     temperature=temperature,
                     top_p=get_sampling_params()["top_p"],
-                    repeat_penalty=1.1,
+                    repeat_penalty=1.05,  # Slightly lower for faster generation
                     stop=STOP_TOKENS,
                 )
                 output = res["choices"][0]["message"]["content"]
-                # Don't split on STOP_TOKENS here - the model's stop parameter handles this.
-                # Splitting on them post-hoc truncates legitimate quoted text (emails, docs, etc.)
                 if sanitize:
                     return sanitize_for_tts(output.strip()) or output.strip()
                 return output.strip()
@@ -606,7 +614,6 @@ def clean_spoken_query(query: str) -> str:
 def parse_user_intent_fast(query: str) -> dict[str, Any] | None:
     """
     Tier 0: Sub-millisecond matcher strictly for immediate safety exits, stops, and explicit math.
-    All device actions and tool decisions are routed through Laya System 1.
     """
     text = clean_spoken_query(query)
     if not text:
@@ -632,15 +639,14 @@ _RE_USER_CORRECTION = re.compile(
 
 
 # ---------------------------------------------------------------------------
-# Action & Intent Resolution via Laya System 1 & MiniCPM 5 2B
+# Action & Intent Resolution via LLM Agent & MiniCPM 5 2B
 # ---------------------------------------------------------------------------
 
 def get_agent_action(user_query: str, conversation_history: list | None = None) -> list[dict]:
     """
     Primary intent entry point for Amigo Voice Assistant.
     Coordinates between emergency stops, user self-correction learning,
-    Task Agent (desktop & browser navigation), Laya System 1 neural decision router,
-    and MiniCPM 5 2B (conversation).
+    and MiniCPM 5 2B LLM Agent.
     """
     if not user_query or not user_query.strip():
         return [{"tool": "chat", "params": {}, "speak": ""}]
@@ -676,7 +682,7 @@ def get_agent_action(user_query: str, conversation_history: list | None = None) 
             fast_stop["speak"] = "Got it! " + fast_stop["speak"]
         return [fast_stop]
 
-    # Use new LLM-based agent for all intent understanding (replaces Laya + Task Agent)
+    # Use LLM-based agent for all intent understanding
     try:
         from llm_agent import get_agent_action
         actions = get_agent_action(user_query, conversation_history=conversation_history)

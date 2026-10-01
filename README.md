@@ -1,6 +1,6 @@
 # Amigo Voice Assistant 🎙️✨
 
-A private, intelligent, and agentic personal voice assistant powered locally by the **MiniCPM 5 2B** GGUF model, **Laya System 1 Neural Router**, **Sherpa-ONNX** real-time neural speech recognition, and **Kokoro ONNX** 24kHz studio neural speech synthesis.
+A private, intelligent, and agentic personal voice assistant powered locally by the **MiniCPM 5 2B** GGUF model, **Sherpa-ONNX** real-time neural speech recognition, and **Kokoro ONNX** 24kHz studio neural speech synthesis.
 
 Amigo provides desktop automation, browser & window control, document intelligence (invoices, PDFs, spreadsheets), live interactive action widgets (countdown timers, stopwatches, weather telemetry), deep web browsing, app management, and an adaptive RAG-powered vector memory system — completely offline, with **zero API keys and zero cloud dependencies**.
 
@@ -9,11 +9,8 @@ Amigo provides desktop automation, browser & window control, document intelligen
 ## 🌟 Key Capabilities & Features
 
 - **100% Offline Local AI** — Powered by `MiniCPM 5 2B` via `llama-cpp-python` with optional CUDA GPU acceleration for near-instant inference.
-- **⚡ Laya System 1 Neural Router** — Sub-second, non-autoregressive intent routing via [Convai Innovations' Laya](https://github.com/convai-innovations/laya). A dedicated ModernBERT decision model that classifies every query in a single parallel forward pass (`<2s`), routing actions deterministically to the correct tool before MiniCPM ever runs. Zero regex conflicts, zero duplicate routing paths.
-- **Dual-Engine Architecture (System 1 + System 2)**:
-  - **System 1 (Laya)** — Instant action classification: opens apps, controls windows, browser tabs, desktop input, volume, screenshots, timers, email, calendar, and more.
-  - **System 2 (MiniCPM 5 2B)** — Deep conversational reasoning, Q&A, explanations, math, jokes, and general chat. Only invoked when Laya confirms `intent == "chat"`.
-- **Multi-Step Compound Command Chains** — Execute complex commands like *"Open Notepad and type Hello World"* or *"Minimize all windows and check weather in Tokyo"* as atomically decomposed sequential action chains, each step routing through Laya at sub-40ms transitions.
+- **⚡ Natural Language Intent Agent** — Neural agent architecture that understands conversational intent, extracts structured tool parameters, and dispatches actions directly to the desktop environment.
+- **Multi-Step Compound Command Chains** — Execute complex commands like *"Open Notepad and type Hello World"* or *"Minimize all windows and check weather in Tokyo"* as atomically decomposed sequential action chains.
 - **Desktop & Windows Automation** — Type text, press keys, click screen coordinates, manage windows (minimize all, maximize, switch), and launch or close any Windows application.
 - **Browser & Web Page Control** — Open new tabs, close tabs, switch between tabs, scroll pages up/down, and visit URLs — all via voice.
 - **Offline Speech-to-Text (STT)** — Powered by `Sherpa-ONNX` (`streaming Zipformer`) for ultra-low latency (<50ms) streaming voice command recognition, lightweight memory footprint (~80MB RAM), and zero CPU saturation.
@@ -35,9 +32,9 @@ Amigo provides desktop automation, browser & window control, document intelligen
 
 ---
 
-## 🧠 Dual-Engine Neural Architecture
+## 🧠 Neural Agent Architecture
 
-Amigo uses a **two-model pipeline** for zero-conflict, low-latency task execution:
+Amigo uses a tiered agent pipeline for zero-conflict, low-latency task execution:
 
 ```
 User Voice / Text Input
@@ -146,7 +143,6 @@ This automatically:
 4. Initializes RAG vector data storage directories and default profile.
 5. Verifies or compiles the Web Dashboard production build (`ui_app/dist`).
 
-> **Optional — Laya System 1 Router**: Place `model.safetensors` and `rl_agent_config.json` into `models/laya/`. When present, Amigo automatically activates the Laya System 1 Neural Router for sub-second action routing. Without it, the pipeline falls back gracefully to MiniCPM 5 2B for all queries.
 
 ### Option 2: Command Line Setup
 ```bash
@@ -214,7 +210,7 @@ Choose your preferred interaction mode:
 
 Amigo is designed from the ground up for privacy:
 - All LLM reasoning runs locally on your machine via `llama-cpp-python`.
-- All action routing runs locally via the Laya System 1 Neural Router (no cloud inference).
+- All action routing and tool calling run 100% locally on your machine (no cloud inference).
 - All speech recognition (STT) runs 100% locally on your machine via `sherpa-onnx`.
 - All neural TTS speech generation runs locally on your machine via `kokoro-onnx`.
 - Memory vector embeddings and user profiles remain entirely on your local filesystem.

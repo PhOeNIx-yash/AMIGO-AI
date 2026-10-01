@@ -80,10 +80,13 @@ SKIP_RAG_TOOLS = {
 MAX_VOICE_CONTEXT_CHARS = 1500
 
 # Low-value tools that shouldn't be stored in conversation memory
+# Only skip truly mechanical/system commands, not user-facing interactions
 LOW_VALUE_TOOLS = {
-    "play_youtube", "pause", "resume", "stop", "volume", "mute", "unmute",
-    "open", "close", "launch", "scroll", "click", "type",
+    "volume", "mute", "unmute", "volume_up", "volume_down",
     "system_volume", "system_brightness", "system_power",
+    "scroll", "click", "type", "press_key", "click_screen",
+    "pause_media", "play_media", "next_track", "prev_track",
+    "stop", "stop_speaking",
 }
 
 # Stop words for name/city extraction (STT transcripts have no punctuation)

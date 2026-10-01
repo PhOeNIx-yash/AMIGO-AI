@@ -58,12 +58,12 @@ SEARCH_ENGINES = {
 }
 
 # Content extraction settings
-MAX_CONTENT_LENGTH = 3000
-TOP_K_RESULTS_TO_FETCH = 3
-TOP_K_FINAL_SNIPPETS = 4
+MAX_CONTENT_LENGTH = 2000
+TOP_K_RESULTS_TO_FETCH = 2
+TOP_K_FINAL_SNIPPETS = 3
 CACHE_TTL_SECONDS = 3600  # 1 hour
-REQUEST_TIMEOUT = 5
-FETCH_TIMEOUT = 6
+REQUEST_TIMEOUT = 3
+FETCH_TIMEOUT = 4
 
 # Domain credibility scores (higher = more trustworthy)
 DOMAIN_CREDIBILITY = {
@@ -568,17 +568,18 @@ def search_web(
     all_results = []
     engines_used = []
     
+    # Fast mode: limit results per engine
+    per_engine_limit = 3 if fast_mode else 5
+    
     def search_engine(engine_name: str) -> list[SearchResult]:
         engine = SEARCH_ENGINES[engine_name]
         try:
             if engine["method"] == "LIBRARY":
-                # Direct library call (e.g., DDGS)
                 parser = PARSERS[engine["parser"]]
-                # Pass fast_mode to DDGS parser
                 if engine["parser"] == "ddgs_lib":
-                    results = parser(query, max_results=10, fast_mode=fast_mode)
+                    results = parser(query, max_results=per_engine_limit, fast_mode=fast_mode)
                 else:
-                    results = parser(query, max_results=10)
+                    results = parser(query, max_results=per_engine_limit)
             else:
                 url = engine["url"].format(query=urllib.parse.quote(query))
                 if engine["method"] == "POST":
@@ -594,30 +595,41 @@ def search_web(
             for r in results:
                 r.relevance_score *= engine["weight"]
             
-            return results
+            return results[:per_engine_limit]
         except Exception as e:
             logger.debug(f"[{engine_name} Search Error]: {e}")
             return []
     
-    # Parallel engine searches
-    futures = {_EXECUTOR.submit(search_engine, e): e for e in engines}
-    for future in futures:
-        engine_name = futures[future]
-        try:
-            results = future.result(timeout=REQUEST_TIMEOUT + 2)
+    # Parallel engine searches with early exit for fast_mode
+    if fast_mode and len(engines) > 1:
+        # In fast mode, run engines sequentially but stop after first success
+        for e in engines:
+            results = search_engine(e)
             if results:
                 all_results.extend(results)
-                engines_used.append(engine_name)
-        except Exception as e:
-            logger.debug(f"[{engine_name} Future Error]: {e}")
+                engines_used.append(e)
+                break
+    else:
+        futures = {_EXECUTOR.submit(search_engine, e): e for e in engines}
+        for future in futures:
+            engine_name = futures[future]
+            try:
+                results = future.result(timeout=REQUEST_TIMEOUT + 1)
+                if results:
+                    all_results.extend(results)
+                    engines_used.append(engine_name)
+            except Exception as e:
+                logger.debug(f"[{engine_name} Future Error]: {e}")
     
-    # Deduplicate by URL
+    # Deduplicate by URL (fast path)
     seen_urls = set()
     unique_results = []
     for r in all_results:
         if r.url not in seen_urls:
             seen_urls.add(r.url)
             unique_results.append(r)
+            if len(unique_results) >= max_results:
+                break
     
     # Fetch full content for top results (skip in fast_mode)
     if fetch_content and unique_results and not fast_mode:

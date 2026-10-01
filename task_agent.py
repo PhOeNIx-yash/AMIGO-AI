@@ -1,7 +1,7 @@
 """
-task_agent.py — Laya-Powered Autonomous Task Agent for Amigo Assistant.
+task_agent.py — Autonomous Task Agent for Amigo Assistant.
 Executes high-speed Windows desktop automation, browser control, and multi-step action chains.
-Leverages Laya System 1 for sub-40ms decision transitions and MiniCPM for natural synthesis.
+Leverages sequential action execution and MiniCPM for natural synthesis.
 """
 
 import logging

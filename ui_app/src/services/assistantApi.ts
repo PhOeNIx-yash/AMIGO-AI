@@ -147,11 +147,9 @@ export async function executeBackendAction(
       method: "POST",
       headers,
       body: JSON.stringify({
-        actionId: action.id,
-        type: action.type,
-        title: action.title,
+        tool: action.id,
         payload: action.payload,
-        timestamp: Date.now(),
+        original_prompt: action.originalPrompt || "",
       }),
     });
     return await res.json().catch(() => ({ success: res.ok }));

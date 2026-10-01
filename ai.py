@@ -218,8 +218,20 @@ def _build_voice_prompt(query: str = "", is_voice: bool = True, has_web_context:
     else:
         prompt += "- Direct answer mode: Respond directly with your answer. Do NOT output  tags or internal deliberation.\n"
 
-    # Volatile content last (date, internet status, context)
-    prompt += f"\nToday is {now.strftime('%A, %B')} {now.day}, {now.year}.\n"
+    # Volatile content last (date, time, internet status, context)
+    hour = now.hour
+    if 5 <= hour < 12:
+        period = "morning"
+    elif 12 <= hour < 17:
+        period = "afternoon"
+    elif 17 <= hour < 21:
+        period = "evening"
+    else:
+        period = "night"
+    current_time_str = now.strftime('%I:%M %p').lstrip('0')
+
+    prompt += f"\nToday is {now.strftime('%A, %B')} {now.day}, {now.year}. Current local time: {current_time_str} ({period}).\n"
+    prompt += "Be naturally aware of the current local time and period of day (morning, afternoon, evening, night) when greeting or speaking to the user.\n"
     prompt += f"Internet Status: {net_status}.\n"
 
     if not online:

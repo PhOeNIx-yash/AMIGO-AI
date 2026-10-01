@@ -700,7 +700,7 @@ const TimerCardPalette: React.FC<{
   );
 };
 
-export const ActionCard: React.FC<ActionCardProps> = ({
+export const ActionCard: React.FC<ActionCardProps> = (({
   items,
   onToggleItem,
   onExecuteSingleItem,
@@ -866,7 +866,7 @@ export const ActionCard: React.FC<ActionCardProps> = ({
     ? "Matching Files"
     : "Quick Actions";
 
-  return (
+  const content = (
     <motion.div
       id="fluent-action-card-container"
       variants={scaleFade}
@@ -1086,35 +1086,29 @@ export const ActionCard: React.FC<ActionCardProps> = ({
                   {item.selected && <Check className="w-3.5 h-3.5 stroke-[2.5]" />}
                 </motion.div>
               )}
-            </motion.div>
-          )}
-
-        </motion.div>
-
-        {/* Buttons Footer */}
-        <div className="pt-2">
-          {onRetry && isFileCard && (
-            <button type="button" onClick={onRetry} className="mb-2 flex w-full items-center justify-center gap-1.5 rounded-xl border border-white/10 px-4 py-2 text-xs font-semibold transition-colors hover:bg-white/10">
-              <RotateCcw className="h-3.5 w-3.5" />Retry search
-            </button>
-          )}
-          <button
-            id="action-cancel-button"
-            type="button"
-            onClick={onCancel}
-            className={`w-full py-2.5 px-4 rounded-xl text-xs font-semibold transition-colors duration-150 border active:scale-95 flex items-center justify-center space-x-1.5 ${
-              isDark
-                ? "bg-white/5 hover:bg-white/10 text-slate-300"
-                : "bg-black/5 hover:bg-black/10 text-slate-700"
-            }`}
-            style={{
-              borderColor: `${theme.primary}35`,
-            }}
-          >
-            <span>Close</span>
+      <div className="pt-2">
+        {onRetry && isFileCard && (
+          <button type="button" onClick={onRetry} className="mb-2 flex w-full items-center justify-center gap-1.5 rounded-xl border border-white/10 px-4 py-2 text-xs font-semibold transition-colors hover:bg-white/10">
+            <RotateCcw className="h-3.5 w-3.5" />Retry search
           </button>
-        </div>
+        )}
+        <button
+          id="action-cancel-button"
+          type="button"
+          onClick={onCancel}
+          className={`w-full py-2.5 px-4 rounded-xl text-xs font-semibold transition-colors duration-150 border active:scale-95 flex items-center justify-center space-x-1.5 ${
+            isDark
+              ? "bg-white/5 hover:bg-white/10 text-slate-300"
+              : "bg-black/5 hover:bg-black/10 text-slate-700"
+          }`}
+          style={{
+            borderColor: `${theme.primary}35`,
+          }}
+        >
+          <span>Close</span>
+        </button>
       </div>
     </motion.div>
   );
+  return content;
 };
