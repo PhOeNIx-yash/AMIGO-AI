@@ -301,7 +301,10 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
             res_spoken = handler_result or ""
             res_url, handler_metadata = None, {}
         if handler_metadata:
-            response_metadata.update(handler_metadata)
+                    # Preserve showGeneratedPanel if already set to True by a previous tool
+                    if response_metadata.get("showGeneratedPanel") is True:
+                        handler_metadata["showGeneratedPanel"] = True
+                    response_metadata.update(handler_metadata)
         logger.info(
             "[Timing] request_id=%s stage=tool tool=%s duration_ms=%.1f",
             request_id or "unknown", tool, (time.perf_counter() - tool_started) * 1000,
@@ -684,9 +687,13 @@ def api_assistant_process():
         "generatedContent": result_metadata.get("generated_content"),
         "contentType": result_metadata.get("content_type"),
         "contentTopic": result_metadata.get("topic"),
-        "showGeneratedPanel": result_metadata.get("show_panel", False),
+        "showGeneratedPanel": result_metadata.get("showGeneratedPanel", False),
         "url": url,
     }
+    # Debug logging
+    logger.info(f"[DEBUG] result_metadata keys: {list(result_metadata.keys())}")
+    logger.info(f"[DEBUG] generated_content: {result_metadata.get('generated_content')[:50] if result_metadata.get('generated_content') else None}")
+    logger.info(f"[DEBUG] showGeneratedPanel: {result_metadata.get('showGeneratedPanel')}")
     return jsonify(formatted_response)
 
 

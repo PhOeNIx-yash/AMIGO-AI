@@ -1,7 +1,6 @@
 import React, { useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-// Import optimized motion configs
-import { fluidSpring, scaleFade } from "../utils/motionConfig";
+import { fluidSpring, scaleFade, getTransition } from "../utils/motionConfig";
 import {
   Server,
   X,

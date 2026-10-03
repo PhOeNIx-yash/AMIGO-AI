@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { motion } from "motion/react";
-// Import optimized motion configs
-import { fluidSpring, popIn, staggerContainer, staggerItem } from "../utils/motionConfig";
+// Import motion configurations
+import { scaleFade, staggerContainer, staggerItem } from "../utils/motionConfig";
 import {
   MessageSquare,
   Utensils,
@@ -700,7 +700,7 @@ const TimerCardPalette: React.FC<{
   );
 };
 
-export const ActionCard: React.FC<ActionCardProps> = (({
+export const ActionCard: React.FC<ActionCardProps> = ({
   items,
   onToggleItem,
   onExecuteSingleItem,
@@ -1086,6 +1086,11 @@ export const ActionCard: React.FC<ActionCardProps> = (({
                   {item.selected && <Check className="w-3.5 h-3.5 stroke-[2.5]" />}
                 </motion.div>
               )}
+            </motion.div>
+          );
+        })}
+      </motion.div>
+
       <div className="pt-2">
         {onRetry && isFileCard && (
           <button type="button" onClick={onRetry} className="mb-2 flex w-full items-center justify-center gap-1.5 rounded-xl border border-white/10 px-4 py-2 text-xs font-semibold transition-colors hover:bg-white/10">
@@ -1108,7 +1113,8 @@ export const ActionCard: React.FC<ActionCardProps> = (({
           <span>Close</span>
         </button>
       </div>
-    </motion.div>
+    </div>
+  </motion.div>
   );
   return content;
 };

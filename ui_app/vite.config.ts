@@ -11,6 +11,47 @@ export default defineConfig(() => {
         '@': path.resolve(__dirname, '.'),
       },
     },
+    build: {
+      // Increase chunk size warning limit to 1MB
+      chunkSizeWarningLimit: 1000,
+      // Enable minification with terser for better compression
+      minify: 'terser',
+      terserOptions: {
+        compress: {
+          drop_console: true,
+          drop_debugger: true,
+          pure_funcs: ['console.log', 'console.info', 'console.debug'],
+        },
+        mangle: {
+          safari10: true,
+        },
+      },
+      // Code splitting with manual chunks
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            // Vendor chunks
+            'vendor-react': ['react', 'react-dom'],
+            'vendor-motion': ['motion'],
+            'vendor-ui': ['lucide-react', 'liquid-gooey', 'thinking-orbs'],
+            // App chunks - split by feature
+            'app-core': ['src/App.tsx', 'src/main.tsx'],
+          },
+          // Optimize chunk naming
+          chunkFileNames: 'assets/[name]-[hash].js',
+          entryFileNames: 'assets/[name]-[hash].js',
+          assetFileNames: 'assets/[name]-[hash].[ext]',
+        },
+      },
+      // Enable CSS code splitting
+      cssCodeSplit: true,
+      // Generate source maps for production debugging
+      sourcemap: true,
+      // Optimize dependencies
+      commonjsOptions: {
+        include: [/node_modules/],
+      },
+    },
     server: {
       proxy: {
         '/api': {

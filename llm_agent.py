@@ -414,7 +414,7 @@ CRITICAL PRIVACY & DATA ACCESS RULES:
 - NEVER say "I don't have access to your personal data" or "I cannot access your emails/calendar/documents" - YOU CAN via the tools.
 
 CRITICAL DISAMBIGUATION RULES:
-- "generate/create/draft/compose application|letter|email|document|code" → generate_content (shows in panel for review)
+- "generate/create/draft/compose application|letter|email|document|code|message" → generate_content (shows in panel for review)
 - "write/type/input application|letter|email|document" → type_text (direct typing)
 - "open/launch/start/run app" → open_app (launch software)
 - "application" alone: "generate/create/draft/compose" → generate_content; "write/type/input" → type_text; "open/launch/start/run" → open_app
@@ -435,6 +435,21 @@ CRITICAL DISAMBIGUATION RULES:
   - CONFIRMATION: User agrees to your suggestion to play something ("yes", "yeah", "sure", "go ahead") → play_youtube with the song you mentioned
   - NEVER say "I don't have access to play music" - you CAN play music on YouTube via play_youtube tool
   - KEY DISTINCTION: Appreciation = commentary on current experience (chat). Replay/Play = desire for action (play_youtube). If unsure, check: does the user want something TO HAPPEN (action) or are they SHARING A FEELING (chat)?
+
+- WRITING & CONTENT GENERATION GUIDE:
+  - "generate/create/draft/compose an email" → generate_content(type="email", topic="...")
+  - "generate/create/draft/compose a letter" → generate_content(type="letter", topic="...")
+  - "generate/create/draft/compose an application" → generate_content(type="application", topic="...")
+  - "generate/create/draft/compose a document" → generate_content(type="document", topic="...")
+  - "generate/create/draft/compose code" or "generate/create/draft/compose a script" → generate_content(type="code", topic="...")
+  - "generate/create/draft/compose a message" → generate_content(type="message", topic="...")
+  - "draft/compose a message to [person]" → generate_content(type="message", topic="message to [person]") - do NOT ask for more details
+  - "compose a message" (alone) → generate_content(type="message", topic="compose a message") - do NOT ask for topic
+  - "write/type/input an email/letter/application/document" → type_text (direct typing into active window)
+  - "insert it", "paste it", "type it here", "put it in" → insert_content (requires content from previous generate_content)
+  - ALWAYS use generate_content for GENERATE/CREATE/DRAFT/COMPOSE requests - do NOT respond with chat asking for more details
+  - The generate_content tool shows a review panel - the user can then say "insert it" to paste the content
+  - NEVER say "Would you like me to generate..." or "I can help you draft..." or "What would you like it to be about?" - just call generate_content directly
 
 Think about what the user ACTUALLY wants, not just keywords. Understand the INTENT behind their words.
 """
@@ -472,7 +487,7 @@ def initialize_agent() -> bool:
 
 
 def _parse_tool_calls(response: str) -> list[dict]:
-    """Parse tool calls from LLM response. Supports JSON tool calls format."""
+    """Parse tool calls from LLM response. Supports JSON and XML tool calls formats."""
     tool_calls = []
 
     # Try to find JSON tool calls in the response
@@ -510,6 +525,29 @@ def _parse_tool_calls(response: str) -> list[dict]:
                 })
         except json.JSONDecodeError:
             continue
+
+    # Also try to find MiniCPM 5 2B XML format: name="tool_name"> name="param1">value1 name="param2">value2 ...
+    # First find the tool name
+    tool_name_match = re.search(r'name="([^"]+)">', response)
+    if tool_name_match:
+        tool_name = tool_name_match.group(1)
+        # Find all parameters after the tool name
+        # Format: name="param">value (value can contain spaces, ends before next name=" or end of string)
+        params = {}
+        # Find all name="param">value patterns in the remaining string
+        remaining = response[tool_name_match.end():]
+        # Pattern: name="param_name">param_value (where param_value goes until next name=" or end)
+        param_pattern = r'name="([^"]+)">\s*([^<]*?)(?=\s+name="|$)'
+        param_matches = re.findall(param_pattern, remaining)
+        for param_name, param_value in param_matches:
+            if param_value:
+                params[param_name] = param_value.strip()
+        if tool_name:
+            tool_calls.append({
+                "tool": tool_name,
+                "params": params,
+                "speak": ""
+            })
 
     return tool_calls
 
