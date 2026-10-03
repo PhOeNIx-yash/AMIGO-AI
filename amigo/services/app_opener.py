@@ -40,8 +40,15 @@ _CLEAN_WORDS = frozenset({
 })
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-APP_CACHE_FILE = os.path.join(BASE_DIR, "app_index.json")
-FILE_CACHE_FILE = os.path.join(BASE_DIR, "file_index.json")
+_PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, "..", ".."))
+
+APP_CACHE_FILE = os.path.join(_PROJECT_ROOT, "app_index.json")
+if not os.path.exists(APP_CACHE_FILE) and os.path.exists(os.path.join(BASE_DIR, "app_index.json")):
+    APP_CACHE_FILE = os.path.join(BASE_DIR, "app_index.json")
+
+FILE_CACHE_FILE = os.path.join(_PROJECT_ROOT, "file_index.json")
+if not os.path.exists(FILE_CACHE_FILE) and os.path.exists(os.path.join(BASE_DIR, "file_index.json")):
+    FILE_CACHE_FILE = os.path.join(BASE_DIR, "file_index.json")
 
 _app_dict: Dict[str, str] = {}
 _index_built: bool = False

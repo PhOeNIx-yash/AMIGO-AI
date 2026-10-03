@@ -10,24 +10,37 @@ import re
 import urllib.parse
 import webbrowser
 
-from ai import get_ai_response, update_active_state, get_active_state
-from app_opener import find_files, open_folder, open_windows_app, execute_file_action
-from Calculatenumbers import Calc
-import os_automation
-import rag_engine
-from reminder_timer import (
+# Non-circular imports (safe at module level)
+import amigo.services.os_automation as os_automation
+import amigo.core.rag_engine as rag_engine
+from amigo.core.reminder_timer import (
     handle_set_timer,
     handle_set_reminder,
     handle_list_reminders,
     handle_cancel_reminder,
     parse_relative_seconds,
 )
-from web_search import (searchGoogle, searchYoutube, resolve_youtube_video, 
+from amigo.services.web_search import (searchGoogle, resolve_youtube_video, 
                            clean_search_query, scrape_web_info,
                            search_web, format_for_llm)
-from settings_resolver import open_setting
-from weather import weather_command, get_weather_data
-from network_utils import is_internet_connected
+from amigo.utils.settings_resolver import open_setting
+from amigo.services.weather import weather_command, get_weather_data
+from amigo.utils.network_utils import is_internet_connected
+from amigo.services.app_opener import find_files, open_folder, open_windows_app, execute_file_action
+from amigo.utils.calculate import Calc
+
+# Lazy forwarders to break circular dependency with amigo.core.ai
+def get_ai_response(*args, **kwargs):
+    from amigo.core.ai import get_ai_response as _impl
+    return _impl(*args, **kwargs)
+
+def update_active_state(*args, **kwargs):
+    from amigo.core.ai import update_active_state as _impl
+    return _impl(*args, **kwargs)
+
+def get_active_state(*args, **kwargs):
+    from amigo.core.ai import get_active_state as _impl
+    return _impl(*args, **kwargs)
 
 # Pre-compiled regex patterns for fast matching
 _RE_URLS = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]*[^\s<>"{}|\\^`\[\].,;:!?]')
@@ -189,7 +202,7 @@ def _tool_get_current_media(params, query, spoken):
         pass
 
     try:
-        import ui_server
+        from amigo.ui import server as ui_server
         media = getattr(ui_server, "_current_media", None)
         if media and isinstance(media, dict):
             title = media.get("title")
@@ -202,7 +215,7 @@ def _tool_get_current_media(params, query, spoken):
         pass
 
     try:
-        from llm_agent import get_last_played_song
+        from amigo.core.llm_agent import get_last_played_song
         last_s = get_last_played_song()
         if last_s and last_s.get("title"):
             return f"The last song played was '{last_s['title']}'.", last_s.get("url")
@@ -267,7 +280,7 @@ def _tool_open_app(params, query, spoken):
             update_active_state("active_app", {"name": clean_target})
         except Exception:
             pass
-        from ai import get_quick_feedback
+        from amigo.core.ai import get_quick_feedback
         return get_quick_feedback(f"opened {clean_target}"), None
 
     # 2. Is it an already running application?
@@ -332,7 +345,7 @@ def _tool_find_file(params, query, spoken):
 
 def _tool_take_screenshot(params, query, spoken):
     try:
-        from screen_vision import capture_screen_image
+        from amigo.services.screen_vision import capture_screen_image
         capture_screen_image("amigo_screenshot.png")
         return "Screenshot saved.", None
     except Exception as e:
@@ -343,7 +356,7 @@ def _tool_take_screenshot(params, query, spoken):
 def _tool_read_screen(params, query, spoken):
     q = params.get("question", query) if isinstance(params, dict) else query
     try:
-        from screen_vision import inspect_screen
+        from amigo.services.screen_vision import inspect_screen
         res = inspect_screen(q)
         reply = res.get("reply", "I inspected your screen.")
         meta = {
@@ -499,7 +512,7 @@ def _is_system_audio_playing() -> bool:
 def _tool_stop(params, query, spoken):
     """General stop handler: halts active speech and pauses background playback."""
     try:
-        from tts import stop_speaking
+        from amigo.utils.tts import stop_speaking
         stop_speaking()
     except Exception:
         pass
@@ -518,7 +531,7 @@ def _tool_blocked(params, query, spoken):
 
 def _tool_pause_media(params, query, spoken):
     try:
-        from tts import stop_speaking
+        from amigo.utils.tts import stop_speaking
         stop_speaking()
     except Exception:
         pass
@@ -602,7 +615,7 @@ def _tool_calculate(params, query, spoken):
         res = Calc(expr)
         if res is not None:
             return f"The answer is {res}.", None
-    from ai import get_quick_feedback
+    from amigo.core.ai import get_quick_feedback
     return get_quick_feedback("calculated the answer"), None
 
 
@@ -713,7 +726,7 @@ Context: {context}
 Write a professional, well-structured {content_type}. Be concise but complete. Do not include meta-commentary or explanations - just the content itself."""
     
     # Generate content using LLM
-    from ai import get_ai_response
+    from amigo.core.ai import get_ai_response
     generated_content = get_ai_response(generation_prompt)
     
     # Return 3-element tuple: (spoken_text, url, metadata)
@@ -918,15 +931,15 @@ def _tool_file_action(params, query, spoken):
             pass
         ok, msg = execute_file_action(target_path, action)
         clean_name = os.path.splitext(os.path.basename(target_path))[0].replace("_", " ").replace("-", " ").title()
-        from ai import get_quick_feedback
+        from amigo.core.ai import get_quick_feedback
         return get_quick_feedback(f"opened {clean_name}"), None
-    from ai import get_ai_response
-    return get_ai_response(f"Could not find that file on the computer. Give a brief, friendly apology.", use_memory=False, is_voice=True), None
+    from amigo.core.ai import get_ai_response
+    return get_ai_response("Could not find that file on the computer. Give a brief, friendly apology.", use_memory=False, is_voice=True), None
 
 
 
 def _tool_show_images(params, query, spoken):
-    from ai import get_quick_feedback
+    from amigo.core.ai import get_quick_feedback
     return spoken or get_quick_feedback("showing image results"), "https://www.google.com/search?q=" + urllib.parse.quote(params.get("query", query))
 
 def _tool_search_and_type(params, query, spoken):
@@ -939,6 +952,23 @@ def _tool_new_tab(params, query, spoken):
 
 
 def _tool_set_volume(params, query, spoken):
+    action = params.get("action", "") if isinstance(params, dict) else ""
+    if action == "mute":
+        os_automation.mute()
+        return "Audio muted.", None
+    elif action == "unmute":
+        if hasattr(os_automation, "unmute"):
+            os_automation.unmute()
+        else:
+            os_automation.mute()
+        return "Audio unmuted.", None
+    elif action == "volume_up":
+        os_automation.volume_up()
+        return "Volume increased.", None
+    elif action == "volume_down":
+        os_automation.volume_down()
+        return "Volume decreased.", None
+
     res = os_automation.set_volume(params.get("level", "50"))
     if isinstance(res, (tuple, list)):
         _, msg = res
@@ -1176,7 +1206,7 @@ def _tool_search_knowledge(params, query, spoken):
 def _tool_read_emails(params, query, spoken):
     """Read recent emails from Outlook."""
     try:
-        from mail_integration import get_email_summary_text, is_outlook_available
+        from amigo.services.mail_integration import get_email_summary_text, is_outlook_available
         if not is_outlook_available():
             return "Outlook is not available. Please make sure Microsoft Outlook is installed and running.", None
         count = int(params.get("count", 5))
@@ -1190,7 +1220,7 @@ def _tool_read_emails(params, query, spoken):
 def _tool_search_emails(params, query, spoken):
     """Search emails by keyword, with fallback to RAG indexed knowledge."""
     try:
-        from mail_integration import search_emails, is_outlook_available
+        from amigo.services.mail_integration import search_emails, is_outlook_available
         q = params.get("query", query).strip()
         results = []
         if is_outlook_available():
@@ -1222,7 +1252,7 @@ def _tool_search_emails(params, query, spoken):
 def _tool_unread_emails(params, query, spoken):
     """Get unread email count and previews."""
     try:
-        from mail_integration import get_unread_count, get_unread_emails, is_outlook_available
+        from amigo.services.mail_integration import get_unread_count, get_unread_emails, is_outlook_available
         if not is_outlook_available():
             return "Outlook is not available.", None
         count = get_unread_count()
@@ -1241,7 +1271,7 @@ def _tool_unread_emails(params, query, spoken):
 def _tool_draft_email(params, query, spoken):
     """Draft an email using LLM to generate content."""
     try:
-        from mail_integration import draft_email
+        from amigo.services.mail_integration import draft_email
         to = params.get("to", "").strip()
         subject = params.get("subject", "").strip()
         prompt = params.get("prompt", query).strip()
@@ -1262,7 +1292,7 @@ def _tool_draft_email(params, query, spoken):
 def _tool_get_calendar(params, query, spoken):
     """Get today's or upcoming calendar events."""
     try:
-        from calendar_integration import get_calendar_summary_text, get_upcoming_summary_text, is_outlook_available
+        from amigo.services.calendar_integration import get_calendar_summary_text, get_upcoming_summary_text, is_outlook_available
         if not is_outlook_available():
             return "Outlook Calendar is not available.", None
         days = int(params.get("days", 1))
@@ -1279,7 +1309,7 @@ def _tool_get_calendar(params, query, spoken):
 def _tool_search_calendar(params, query, spoken):
     """Search calendar events by keyword."""
     try:
-        from calendar_integration import search_events, is_outlook_available
+        from amigo.services.calendar_integration import search_events, is_outlook_available
         if not is_outlook_available():
             return "Outlook Calendar is not available.", None
         q = params.get("query", query).strip()

@@ -26,9 +26,12 @@ logger = logging.getLogger("amigo.speech")
 _kokoro_instance = None
 _USE_KOKORO = False
 
-_MODEL_DIR = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "models", "kokoro-onnx"
-)
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+_MODELS_ROOT = os.path.join(_PROJECT_ROOT, "models")
+
+_MODEL_DIR = os.path.join(_MODELS_ROOT, "kokoro-onnx")
+if not os.path.exists(_MODEL_DIR):
+    _MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "kokoro-onnx")
 _MODEL_PATH = os.path.join(_MODEL_DIR, "kokoro-v1.0.onnx")
 _VOICES_PATH = os.path.join(_MODEL_DIR, "voices-v1.0.bin")
 
@@ -59,7 +62,9 @@ CURATED_VOICES = {
     "george":  {"engine": "kokoro", "id": "bm_george",  "name": "George",  "gender": "Male",   "accent": "GB", "desc": "Distinguished British English gentleman"},
 }
 
-_PROFILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "amigo_profile.json")
+_PROFILE_PATH = os.path.join(_PROJECT_ROOT, "amigo_profile.json")
+if not os.path.exists(_PROFILE_PATH):
+    _PROFILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "amigo_profile.json")
 
 ACTIVE_VOICE = "nicole"
 KOKORO_VOICE = "af_nicole"
@@ -166,14 +171,16 @@ def get_tts_engine_name() -> str:
 
 
 def _get_kokoro():
-    """Lazy-load Kokoro ONNX model."""
+    """Lazy-load Kokoro ONNX model - thread-safe."""
     global _kokoro_instance
     if _kokoro_instance is None:
-        if not os.path.exists(_MODEL_PATH):
-            raise FileNotFoundError("Kokoro ONNX model not found at " + _MODEL_PATH)
-        logger.info("[TTS] Loading Kokoro ONNX model...")
-        _kokoro_instance = _KokoroOnnx(_MODEL_PATH, _VOICES_PATH)
-        logger.info("[TTS] Kokoro ONNX ready.")
+        with _tts_lock:
+            if _kokoro_instance is None:  # Double-check
+                if not os.path.exists(_MODEL_PATH):
+                    raise FileNotFoundError("Kokoro ONNX model not found at " + _MODEL_PATH)
+                logger.info("[TTS] Loading Kokoro ONNX model...")
+                _kokoro_instance = _KokoroOnnx(_MODEL_PATH, _VOICES_PATH)
+                logger.info("[TTS] Kokoro ONNX ready.")
     return _kokoro_instance
 
 
@@ -576,8 +583,12 @@ _sherpa_model_lock = threading.Lock()
 _SHERPA_INIT_ATTEMPTED = False
 _SHERPA_IS_AVAILABLE = False
 _SHERPA_DIR = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "models", "sherpa-onnx", "sherpa-onnx-streaming-zipformer-en-2023-06-26"
+    _MODELS_ROOT, "sherpa-onnx", "sherpa-onnx-streaming-zipformer-en-2023-06-26"
 )
+if not os.path.exists(_SHERPA_DIR):
+    _SHERPA_DIR = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "models", "sherpa-onnx", "sherpa-onnx-streaming-zipformer-en-2023-06-26"
+    )
 
 
 def _ensure_sherpa_model_downloaded() -> bool:

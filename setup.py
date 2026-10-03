@@ -94,7 +94,7 @@ def main():
 
     # Sherpa-ONNX Streaming STT Model Check
     try:
-        from tts import get_stt_recognizer, is_stt_available
+        from amigo.utils.tts import get_stt_recognizer, is_stt_available
         print(" -> Checking Sherpa-ONNX Neural STT engine...")
         rec = get_stt_recognizer()
         if is_stt_available():
@@ -107,7 +107,7 @@ def main():
 
     # Local LLM GGUF Model Check (MiniCPM 5 2B — System 2)
     try:
-        import local_llm
+        from amigo.core import local_llm
         model_info = local_llm.get_active_model_info()
         print(f" -> Checking MiniCPM 5 2B (System 2): {model_info['name']} (~{model_info.get('size_gb', 1.45)}GB)...")
         model_path = local_llm.get_model_path()

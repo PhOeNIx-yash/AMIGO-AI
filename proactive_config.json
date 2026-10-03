@@ -1,0 +1,15 @@
+{
+  "enabled": true,
+  "monitoring_interval_seconds": 60,
+  "battery_low_threshold": 20,
+  "battery_critical_threshold": 10,
+  "cpu_high_threshold": 85,
+  "ram_high_threshold": 90,
+  "check_weather_interval_minutes": 30,
+  "check_calendar_interval_minutes": 15,
+  "pattern_learning_enabled": true,
+  "max_suggestions_per_hour": 5,
+  "quiet_hours_start": 22,
+  "quiet_hours_end": 7,
+  "notification_cooldown_minutes": 15
+}

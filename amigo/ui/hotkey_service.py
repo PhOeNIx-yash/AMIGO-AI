@@ -9,9 +9,14 @@ import ctypes
 import ctypes.wintypes
 import logging
 import os
+import subprocess
 import sys
 import threading
 import time
+
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 logger = logging.getLogger("amigo.hotkey_service")
 
@@ -34,8 +39,11 @@ _lock = threading.Lock()
 _broadcast_callback = None
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ACTIVATING_SOUND = os.path.join(BASE_DIR, "assets", "activating sound.mp3")
-SEARCHING_SOUND = os.path.join(BASE_DIR, "assets", "searching sound.mp3")
+_ASSETS_DIR = os.path.join(_PROJECT_ROOT, "assets")
+if not os.path.exists(_ASSETS_DIR):
+    _ASSETS_DIR = os.path.join(BASE_DIR, "assets")
+ACTIVATING_SOUND = os.path.join(_ASSETS_DIR, "activating sound.mp3")
+SEARCHING_SOUND = os.path.join(_ASSETS_DIR, "searching sound.mp3")
 
 
 def set_broadcast_callback(callback):
@@ -118,7 +126,7 @@ def _handle_wake_action():
 
     try:
         # Step 1: Note active window title immediately (<1ms)
-        import screen_vision
+        from amigo.services import screen_vision
         window_title = screen_vision.get_active_window_title()
         screenshot = None
 
@@ -146,7 +154,7 @@ def _handle_wake_action():
             with sr.Microphone() as source:
                 logger.info("[Hotkey Wake] Listening for voice command...")
                 audio = recognizer.listen(source, timeout=4.5, phrase_time_limit=10.0)
-            from tts import transcribe_audio_data
+            from amigo.utils.tts import transcribe_audio_data
             query = transcribe_audio_data(audio).strip()
             logger.info(f"[Hotkey Wake] User said: '{query}'")
         except sr.WaitTimeoutError:
@@ -171,14 +179,14 @@ def _handle_wake_action():
         _broadcast("state_change", {"state": "processing"})
 
         # Step 4: Dispatch Query via Intelligent Agent Action Router
-        from tts import speak
-        import local_llm
+        from amigo.utils.tts import speak
+        from amigo.core import local_llm
 
         reply = ""
 
         try:
-            from local_llm import get_agent_action
-            from tool_registry import execute_tool
+            from amigo.core.local_llm import get_agent_action
+            from amigo.utils.tool_registry import execute_tool
             actions = get_agent_action(query)
             for act in actions:
                 tool = act.get("tool", "chat")
@@ -220,7 +228,7 @@ def _handle_wake_action():
 
         # Step 5: Save interaction to RAG memory (CRUCIAL for History Tab & Vector Recall)
         try:
-            from ai import add_to_memory
+            from amigo.core.ai import add_to_memory
             add_to_memory(
                 user_query=query,
                 assistant_reply=clean_reply,
@@ -246,7 +254,7 @@ def _handle_wake_action():
         logger.error(f"[Hotkey Wake] Unexpected error in wake handler: {e}")
         err_msg = "I encountered an issue processing your request."
         try:
-            from ai import add_to_memory
+            from amigo.core.ai import add_to_memory
             add_to_memory(user_query=query or "Hotkey Request", assistant_reply=err_msg, tool="error")
         except Exception:
             pass
@@ -256,7 +264,7 @@ def _handle_wake_action():
             "tool": "error",
         })
         try:
-            from tts import speak
+            from amigo.utils.tts import speak
             speak(err_msg)
         except Exception:
             pass

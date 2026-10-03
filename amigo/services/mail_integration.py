@@ -4,7 +4,6 @@ Reads emails from Microsoft Outlook via win32com COM API.
 All data stays local — read-only access + draft creation (never auto-sends).
 """
 
-import datetime
 import logging
 import re
 import threading

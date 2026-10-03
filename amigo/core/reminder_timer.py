@@ -18,7 +18,10 @@ import dateutil.parser
 
 logger = logging.getLogger("amigo.reminder_timer")
 
-REMINDERS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "amigo_reminders.json")
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+REMINDERS_FILE = os.path.join(_PROJECT_ROOT, "amigo_reminders.json")
+if not os.path.exists(REMINDERS_FILE) and os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "amigo_reminders.json")):
+    REMINDERS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "amigo_reminders.json")
 
 _speak_callback: Optional[Callable[[str], None]] = None
 _broadcast_callback: Optional[Callable[[str, dict], None]] = None

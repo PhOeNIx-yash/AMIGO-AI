@@ -1,29 +1,34 @@
+#!/usr/bin/env python
 """
-Main Entrypoint for Amigo Voice Assistant.
+Amigo Voice Assistant - Main Entry Point
 Coordinates voice/type input, LLM agent action dispatching, and Kokoro Neural TTS / Sherpa-ONNX STT.
 """
 
 import os
 import queue
 import re
+import sys
 import threading
 import time
 import numpy as np
 import speech_recognition as sr
+
+# Add the project root to the path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
     import sounddevice as _sd
 except Exception:
     _sd = None
 
-from ai import add_to_memory, get_ai_response_stream, load_memory
-from app_opener import ensure_built
-from local_llm import get_active_model_info, get_clipboard_text, init_local_llm, sanitize_for_tts, _RE_PROBE_GUARD
-from llm_agent import get_agent_action, get_agent_actions
-from reminder_timer import init_reminders
-from web_search import search_web, format_for_llm, scrape_web_info
-from tool_registry import execute_tool
-from tts import (
+from amigo.core.ai import add_to_memory, get_ai_response_stream, load_memory
+from amigo.services.app_opener import ensure_built
+from amigo.core.local_llm import get_active_model_info, get_clipboard_text, init_local_llm, sanitize_for_tts, _RE_PROBE_GUARD
+from amigo.core.llm_agent import get_agent_action, get_agent_actions
+from amigo.core.reminder_timer import init_reminders
+from amigo.services.web_search import search_web, format_for_llm, scrape_web_info
+from amigo.utils.tool_registry import execute_tool
+from amigo.utils.tts import (
     speak as tts_speak,
     stop_speaking,
     set_voice,
@@ -32,8 +37,8 @@ from tts import (
     transcribe_audio_data,
     is_stt_available,
 )
-import rag_engine
-from rag_indexer import start_background_indexer
+from amigo.core import rag_engine
+from amigo.core.rag_indexer import start_background_indexer
 
 _ACTIVE_MODE = "3"
 
@@ -44,8 +49,8 @@ class BargeInMonitor:
         self.interruption_event = interruption_event
         self.threshold = threshold
         self.stream = None
+        self._start_time = 0.0
         self._consecutive_hits = 0
-        self._start_time = 0
 
     def _audio_callback(self, indata, frames, time_info, status):
         if self.interruption_event.is_set() or time.time() - self._start_time < 0.35:
@@ -217,7 +222,7 @@ def process_agent_query(query: str) -> None:
         final_reply = " ".join(combined_spoken).strip()
     
     if not final_reply:
-        from ai import get_quick_feedback
+        from amigo.core.ai import get_quick_feedback
         final_reply = get_quick_feedback(f"finished {last_tool.replace('_', ' ')}")
     add_to_memory(query, final_reply, tool=last_tool, clipboard_used=clipboard_used)
 
@@ -248,7 +253,7 @@ if __name__ == "__main__":
     start_background_indexer(rag_engine, interval_minutes=30)
     # Start Alt+V global wake hotkey service
     try:
-        from hotkey_service import start_hotkey_service
+        from amigo.ui.hotkey_service import start_hotkey_service
         start_hotkey_service()
     except Exception as e:
         print(f"    Hotkey service note: {e}")

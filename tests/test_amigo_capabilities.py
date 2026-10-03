@@ -1,8 +1,8 @@
 import unittest
 from unittest.mock import patch
 
-import llm_agent
-import tool_registry
+from amigo.core import llm_agent
+from amigo.utils import tool_registry
 
 
 # Test queries that should be handled correctly by the new LLM agent
@@ -161,7 +161,7 @@ class TestTaskAgent(unittest.TestCase):
     """Tests for task agent (updated to use new agent)."""
     
     def test_task_agent_decompose_preserves_natural_phrases(self):
-        import task_agent
+        from amigo.core import task_agent
         single = task_agent.decompose_task("search for bed and breakfast")
         self.assertEqual(single, ["search for bed and breakfast"])
 
@@ -173,7 +173,7 @@ class TestReminderTimer(unittest.TestCase):
     """Tests for reminder timer (unchanged)."""
     
     def test_reminder_dedup_does_not_swallow_distinct_reminders(self):
-        import reminder_timer
+        from amigo.core import reminder_timer
         with reminder_timer._reminders_lock:
             reminder_timer._scheduled_reminders.clear()
 
@@ -188,7 +188,7 @@ class TestCalculatenumbers(unittest.TestCase):
     """Tests for calculator (unchanged)."""
     
     def test_spoken_math_multiplication_x(self):
-        import Calculatenumbers
+        from amigo.utils import calculate as Calculatenumbers
         res = Calculatenumbers.Calc("what is 4 x 5")
         self.assertEqual(res, "20")
 
@@ -197,7 +197,7 @@ class TestSettingsResolver(unittest.TestCase):
     """Tests for settings resolver (unchanged)."""
     
     def test_settings_resolver_word_boundary(self):
-        import settings_resolver
+        from amigo.utils import settings_resolver
         label, uri = settings_resolver.resolve_setting("opened files in background")
         self.assertNotIn("Pen", label)
 

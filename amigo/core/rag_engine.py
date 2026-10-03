@@ -21,11 +21,12 @@ import logging
 import os
 import queue
 import re
+import sys
 import threading
 import time
 import uuid
-from typing import Any, Optional
-from dataclasses import dataclass, field
+from typing import Any
+from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
 
 # Pre-compiled regex patterns
@@ -38,15 +39,30 @@ _RE_MARKDOWN_HEADERS = re.compile(r"^(#{1,6})\s+(.*)$", re.MULTILINE)
 logger = logging.getLogger("amigo.rag_engine_v2")
 
 # Suppress verbose third-party logs
-for _log_name in ("httpx", "httpcore", "sentence_transformers", "transformers", "huggingface_hub", "urllib3", "chromadb", "pdfminer", "pdfminer.pdffont"):
-    logging.getLogger(_log_name).setLevel(logging.WARNING)
+for _log_name in (
+    "httpx", "httpcore", "sentence_transformers", "transformers", "huggingface_hub",
+    "urllib3", "chromadb", "pdfminer", "pdfminer.pdffont", "pdfminer.pdfinterp",
+    "pdfminer.pdfpage", "pdfminer.pdfdocument", "pypdf", "pdfplumber", "pypdfium2",
+):
+    logging.getLogger(_log_name).setLevel(logging.ERROR)
 
 
 # ── Paths ──────────────────────────────────────────────────────
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-RAG_DATA_DIR = os.path.join(_BASE_DIR, "rag_data")
+_PROJECT_ROOT = os.path.abspath(os.path.join(_BASE_DIR, "..", ".."))
+
+RAG_DATA_DIR = os.path.join(_PROJECT_ROOT, "rag_data")
+if not os.path.exists(RAG_DATA_DIR) and os.path.exists(os.path.join(_BASE_DIR, "rag_data")):
+    RAG_DATA_DIR = os.path.join(_BASE_DIR, "rag_data")
+os.makedirs(RAG_DATA_DIR, exist_ok=True)
+
 CHROMA_DIR = os.path.join(RAG_DATA_DIR, "chroma")
-PROFILE_FILE = os.path.join(_BASE_DIR, "amigo_profile.json")
+os.makedirs(CHROMA_DIR, exist_ok=True)
+
+PROFILE_FILE = os.path.join(_PROJECT_ROOT, "amigo_profile.json")
+if not os.path.exists(PROFILE_FILE) and os.path.exists(os.path.join(_BASE_DIR, "amigo_profile.json")):
+    PROFILE_FILE = os.path.join(_BASE_DIR, "amigo_profile.json")
+
 BM25_INDEX_PATH = os.path.join(RAG_DATA_DIR, "bm25_index.pkl")
 
 # ── Constants ──────────────────────────────────────────────────
@@ -441,8 +457,15 @@ def flush_write_queues() -> None:
     # Flush conversation queue
     _conv_write_queue.join()
     # Flush BM25 queue
-    _bm25_update_queue.join()
-    logger.info("[RAG v2] All write queues flushed on shutdown")
+    try:
+        closed = any(
+            getattr(h, "stream", None) and getattr(h.stream, "closed", False)
+            for h in list(logging.root.handlers) + list(logger.handlers)
+        )
+        if not closed and hasattr(sys, "is_finalizing") and not sys.is_finalizing():
+            logger.info("[RAG v2] All write queues flushed on shutdown")
+    except Exception:
+        pass
 
 
 def _register_shutdown():
@@ -673,10 +696,6 @@ def _extract_pdf_enhanced(filepath: str) -> str:
     try:
         import pdfplumber
     except ImportError:
-        try:
-            from pypdf import PdfReader
-        except ImportError:
-            from PyPDF2 import PdfReader
         return _extract_pdf_fallback(filepath)
 
     pages = []
@@ -1132,8 +1151,27 @@ def get_important_conversations(min_importance: float = 0.7, limit: int = 20) ->
 
 def summarize_conversation_history(max_turns: int = 50) -> str:
     """Generate a summary of recent conversation history for context."""
-    # This function counts tool usage, not a true summary. Use get_conversation_activity_summary instead.
-    return get_conversation_activity_summary(max_turns)
+    buf = _ensure_buffer()
+    recent = list(buf)[-max_turns:]
+    
+    if not recent:
+        return ""
+    
+    # Group by topic/tool
+    topics: dict[str, list] = {}
+    for turn in recent:
+        tool = turn.get("tool", "chat")
+        if tool not in topics:
+            topics[tool] = []
+        topics[tool].append(turn)
+    
+    summary_parts = []
+    for tool, turns in topics.items():
+        if tool == "chat":
+            continue
+        summary_parts.append(f"{tool}: {len(turns)} interactions")
+    
+    return "Recent activity: " + "; ".join(summary_parts) if summary_parts else ""
 
 
 def invalidate_conversations_cache() -> None:
@@ -2259,5 +2297,3 @@ def search_async(query: str, target_collections: list[str] | None = None, top_k:
     _executor.submit(_search_task)
 
 
-# Backward compatibility aliases
-smart_chunk = semantic_chunk

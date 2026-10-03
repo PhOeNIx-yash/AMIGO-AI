@@ -15,9 +15,12 @@ from typing import Callable
 logger = logging.getLogger("amigo.rag_indexer")
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_BASE_DIR, "..", ".."))
 _HOME = os.path.expanduser("~")
 
-FILE_HASHES_PATH = os.path.join(_BASE_DIR, "rag_data", "file_hashes.json")
+FILE_HASHES_PATH = os.path.join(_PROJECT_ROOT, "rag_data", "file_hashes.json")
+if not os.path.exists(FILE_HASHES_PATH) and os.path.exists(os.path.join(_BASE_DIR, "rag_data", "file_hashes.json")):
+    FILE_HASHES_PATH = os.path.join(_BASE_DIR, "rag_data", "file_hashes.json")
 
 # Default directories to scan (supports both standard and OneDrive-synced folders)
 DEFAULT_SCAN_DIRS = [

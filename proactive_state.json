@@ -1,0 +1,16 @@
+{
+  "last_weather_check": 1791031207.0125313,
+  "last_calendar_check": 1791031207.0125313,
+  "last_system_check": 1791031207.0125313,
+  "last_notification_time": 1791031208.5432005,
+  "suggestions_this_hour": 0,
+  "last_hour_reset": 1791031207.0125313,
+  "learned_patterns": {},
+  "user_routines": {},
+  "dismissed_suggestions": [
+    "test_suggestion_1"
+  ],
+  "acknowledged_suggestions": [
+    "test_suggestion_2"
+  ]
+}

@@ -1,6 +1,7 @@
 """
 Local LLM Module for Amigo Voice Assistant.
 Executes MiniCPM 5 2B locally via llama-cpp-python on Windows.
+Optimized for fast inference, low memory, and minimal startup latency.
 """
 
 import contextvars
@@ -20,35 +21,51 @@ try:
 except ImportError:
     pyperclip = None
 
-from network_utils import is_internet_connected
 
+# Pre-computed constants for fast path
+_PHYSICAL_CORES = None
+_LLM_CONFIG = None
+_CONFIG_LOCK = threading.Lock()
 
-# ---------------------------------------------------------------------------
-# LLM Performance Configuration (tunable via environment variables)
-# ---------------------------------------------------------------------------
-def _get_llm_config():
-    """Get LLM configuration from environment variables with sensible defaults."""
-    # Use physical cores only (no hyperthreading) for better inference throughput
-    try:
-        import psutil
-        physical_cores = psutil.cpu_count(logical=False) or multiprocessing.cpu_count()
-    except Exception:
-        physical_cores = multiprocessing.cpu_count()
+def _get_physical_cores() -> int:
+    """Get physical CPU cores (cached)."""
+    global _PHYSICAL_CORES
+    if _PHYSICAL_CORES is None:
+        try:
+            import psutil
+            _PHYSICAL_CORES = psutil.cpu_count(logical=False) or multiprocessing.cpu_count()
+        except Exception:
+            _PHYSICAL_CORES = multiprocessing.cpu_count()
+    return _PHYSICAL_CORES
+
+def _get_llm_config() -> dict:
+    """Get LLM configuration (cached, thread-safe)."""
+    global _LLM_CONFIG
+    if _LLM_CONFIG is not None:
+        return _LLM_CONFIG
     
-    return {
-        "n_ctx": int(os.getenv("AMIGO_LLM_N_CTX", "8192")),
-        "n_threads": int(os.getenv("AMIGO_LLM_N_THREADS", str(min(8, max(1, physical_cores))))),
-        "n_batch": int(os.getenv("AMIGO_LLM_N_BATCH", "1024")),
-        "n_ubatch": int(os.getenv("AMIGO_LLM_N_UBATCH", "512")),
-        "n_gpu_layers": int(os.getenv("AMIGO_LLM_N_GPU_LAYERS", "-1")),  # -1 = all layers on GPU
-        "use_mmap": os.getenv("AMIGO_LLM_USE_MMAP", "true").lower() == "true",
-        # Performance optimizations
-        "logits_all": False,        # Don't compute logits for all tokens (saves VRAM/compute)
-        "embedding": False,         # Generation only, no embeddings
-        "offload_kqv": True,        # Offload K/Q/V to GPU (llama.cpp default)
-        "flash_attn": True,         # Use flash attention if available
-        "numa": False,              # Disable NUMA for single-socket laptop
-    }
+    with _CONFIG_LOCK:
+        if _LLM_CONFIG is not None:
+            return _LLM_CONFIG
+        
+        cores = _get_physical_cores()
+        _LLM_CONFIG = {
+            "n_ctx": int(os.getenv("AMIGO_LLM_N_CTX", "8192")),
+            "n_threads": int(os.getenv("AMIGO_LLM_N_THREADS", str(min(8, max(1, cores))))),
+            "n_batch": int(os.getenv("AMIGO_LLM_N_BATCH", "1024")),
+            "n_ubatch": int(os.getenv("AMIGO_LLM_N_UBATCH", "512")),
+            "n_gpu_layers": int(os.getenv("AMIGO_LLM_N_GPU_LAYERS", "-1")),
+            "use_mmap": os.getenv("AMIGO_LLM_USE_MMAP", "true").lower() == "true",
+            "logits_all": False,
+            "embedding": False,
+            "offload_kqv": True,
+            "flash_attn": True,
+            "numa": False,
+            "rope_scaling": {"type": "linear", "factor": 1.0},
+            "rope_freq_base": 10000.0,
+            "rope_freq_scale": 1.0,
+        }
+    return _LLM_CONFIG
 
 
 def get_clipboard_text() -> str | None:
@@ -66,7 +83,8 @@ def get_clipboard_text() -> str | None:
 # ---------------------------------------------------------------------------
 # Model Configuration (MiniCPM 5 2B)
 # ---------------------------------------------------------------------------
-MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "models"))
+# Use root models directory (not core/models)
+MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "models"))
 
 MODEL_NAME = "MiniCPM 5 2B"
 MODEL_FILENAME = "MiniCPM5-2B-Q4_K_M.gguf"
@@ -77,7 +95,7 @@ MODEL_TARGETS = [
     ("Abiray/MiniCPM5-2B-GGUF", "MiniCPM5-2B-Q4_K_M.gguf"),
 ]
 
-STOP_TOKENS = ["<|im_end|>","<|endoftext|>","<|im_start|>","User:","Human:","Assistant:"]
+STOP_TOKENS = ["<|endoftext|>", "User:", "Human:", "Assistant:"]
 
 AVAILABLE_MODELS = {
     "minicpm5-2b": {
@@ -208,82 +226,85 @@ def ensure_model_downloaded() -> str:
 # Track model load failures to avoid repeated retries
 _model_load_failed = False
 _model_load_error = None
-
+_model_loading = False
+_model_load_event = threading.Event()
 
 def init_local_llm(force_reload: bool = False):
-    """Initializes local Llama instance with GPU offloading, fast context ingestion, and multimodal vision support.
-    Loads once, logs the reason on failure, and backs off (doesn't retry on every query)."""
-    global _local_llm_instance, _model_load_failed, _model_load_error
+    """Initializes local Llama instance with GPU offloading, fast context ingestion.
+    Loads once, logs the reason on failure, and backs off (doesn't retry on every query).
+    Thread-safe with lazy initialization."""
+    global _local_llm_instance, _model_load_failed, _model_load_error, _model_loading
+    
+    # Fast path - already loaded
     if not force_reload and _local_llm_instance is not None:
         return _local_llm_instance
+    
+    # Fast path - already failed, don't retry
     if not force_reload and _model_load_failed:
-        # Already tried and failed - don't retry unless forced
-        logger.debug(f"[Local AI Engine] Skipping reload (previous error: {_model_load_error})")
         return None
-
+    
+    # Wait if another thread is loading
+    if _model_loading and not force_reload:
+        _model_load_event.wait(timeout=30.0)
+        return _local_llm_instance
+    
     with _llm_lock:
+        # Double-check after acquiring lock
         if not force_reload and _local_llm_instance is not None:
             return _local_llm_instance
         if not force_reload and _model_load_failed:
             return None
-
+        
         _local_llm_instance = None
         _model_load_failed = False
         _model_load_error = None
-        model_file = get_model_path()
-        if not os.path.exists(model_file):
-            _model_load_failed = True
-            _model_load_error = "Model file not found"
-            logger.error(f"[Local AI Engine] {_model_load_error}: {model_file}")
-            return None
-
+        _model_loading = True
+        _model_load_event.clear()
+        
         try:
+            model_file = get_model_path()
+            if not os.path.exists(model_file):
+                _model_load_failed = True
+                _model_load_error = "Model file not found"
+                logger.error(f"[Local AI Engine] {_model_load_error}: {model_file}")
+                return None
+
             from llama_cpp import Llama
             config = _get_llm_config()
             
-            # Try with flash_attn first, then without
-            last_error = None
-            for fa in [True, False]:
-                try:
-                    kwargs = {
-                        "model_path": model_file,
-                        "n_ctx": config["n_ctx"],
-                        "n_gpu_layers": config["n_gpu_layers"],
-                        "main_gpu": 0,
-                        "n_threads": config["n_threads"],
-                        "n_batch": config["n_batch"],
-                        "n_ubatch": config["n_ubatch"],
-                        "flash_attn": fa and config.get("flash_attn", True),
-                        "use_mmap": config["use_mmap"],
-                        "logits_all": config.get("logits_all", False),
-                        "embedding": config.get("embedding", False),
-                        "offload_kqv": config.get("offload_kqv", True),
-                        "numa": config.get("numa", False),
-                        "verbose": False,
-                    }
-                    _local_llm_instance = Llama(**kwargs)
-                    if _local_llm_instance:
-                        break
-                except Exception as e:
-                    last_error = e
-                    logger.warning(f"[Local AI Engine] Load attempt with flash_attn={fa} failed: {e}")
-                    continue
-
-            if _local_llm_instance:
-                _setup_chat_formatter(_local_llm_instance)
-                logger.info(f"[Local AI Engine] {MODEL_NAME} loaded.")
-                return _local_llm_instance
-            else:
-                _model_load_failed = True
-                _model_load_error = str(last_error) if last_error else "Unknown error"
-                logger.error(f"[Local AI Engine] All load attempts failed: {_model_load_error}")
-                return None
+            # Single attempt with optimal settings
+            kwargs = {
+                "model_path": model_file,
+                "n_ctx": config["n_ctx"],
+                "n_gpu_layers": config["n_gpu_layers"],
+                "main_gpu": 0,
+                "n_threads": config["n_threads"],
+                "n_batch": config["n_batch"],
+                "n_ubatch": config["n_ubatch"],
+                "flash_attn": config.get("flash_attn", True),
+                "use_mmap": config["use_mmap"],
+                "logits_all": config.get("logits_all", False),
+                "embedding": config.get("embedding", False),
+                "offload_kqv": config.get("offload_kqv", True),
+                "numa": config.get("numa", False),
+                "verbose": False,
+                "rope_scaling": config.get("rope_scaling"),
+                "rope_freq_base": config.get("rope_freq_base", 10000.0),
+            }
+            
+            _local_llm_instance = Llama(**kwargs)
+            _setup_chat_formatter(_local_llm_instance)
+            logger.info(f"[Local AI Engine] {MODEL_NAME} loaded (ctx={config['n_ctx']}, threads={config['n_threads']}, gpu_layers={config['n_gpu_layers']})")
+            return _local_llm_instance
+            
         except Exception as e:
             _model_load_failed = True
             _model_load_error = str(e)
             logger.error(f"[Local AI Engine] Load error: {e}")
             return None
-    return None
+        finally:
+            _model_loading = False
+            _model_load_event.set()
 
 
 # ---------------------------------------------------------------------------
@@ -418,23 +439,58 @@ def strip_markdown_for_tts(text: str) -> str:
 
 def clean_tts_text(text: str) -> str:
     """Preserves spoken characters, punctuation, and Unicode letters while dropping noise symbols.
-    Keeps math symbols (+ = ° × ÷) and currency symbols."""
+    Keeps math symbols (Sm), currency (Sc), and other common spoken symbols."""
     if not text:
         return ""
     # Allow math symbols (Sm), currency (Sc), and other common spoken symbols
     allowed_symbols = " ,.!?:;-'\"+=\u00b0\u00d7\u00f7$€£¥%@#&*()[]{}<>|\\/~`^_+"
+    # Pre-compute allowed categories for faster checking
+    # Check full category (e.g., "Sm", "Sc") not just first letter
+    allowed_cats = {"L", "N", "P", "Z", "M", "Sm", "Sc"}
     result = [
         ch for ch in text 
-        if unicodedata.category(ch).startswith(("L", "N", "P", "Z", "M", "Sm", "Sc")) 
-        or ch in allowed_symbols
+        if unicodedata.category(ch) in allowed_cats or unicodedata.category(ch)[0] in allowed_cats or ch in allowed_symbols
     ]
     return "".join(result).strip()
 
 
 def sanitize_for_tts(text: str) -> str:
-    """Combined markdown cleaner and TTS text sanitizer."""
-    return clean_tts_text(strip_markdown_for_tts(text))
-
+    """Combined markdown cleaner and TTS text sanitizer - optimized single pass."""
+    if not text:
+        return ""
+    
+    # Strip thought blocks first (fast check) - check for thinking tags
+    # Use the same logic as strip_markdown_for_tts
+    if "<?xml" in text:
+        text = text.split("<?/")[-1] if "<?/" in text else ""
+    elif "```" in text:
+        text = text.split("```")[-1]
+    elif "<?" in text:
+        text = text.split("<?")[-1]
+    
+    # Fast path: single pass cleaning
+    text = _RE_CODE_BLOCK.sub(r"\1", text)
+    text = _RE_MD_MARKS.sub("", text)
+    text = _RE_MD_LINKS.sub(r"\1", text)
+    text = _RE_BRACKETS.sub(" ", text)
+    text = _RE_WHITESPACE.sub(" ", text).strip()
+    
+    # Currency handling
+    text = re.sub(r'₹(\d+(?:[.,]\d+)?)', r'\1 rupees', text)
+    text = re.sub(r'\$(\d+(?:[.,]\d+)?)', r'\1 dollars', text)
+    text = re.sub(r'€(\d+(?:[.,]\d+)?)', r'\1 euros', text)
+    text = re.sub(r'£(\d+(?:[.,]\d+)?)', r'\1 pounds', text)
+    text = text.replace("₹", " rupees ").replace("$", " dollars ").replace("€", " euros ").replace("£", " pounds ")
+    
+    # TTS sanitization - single pass
+    allowed_symbols = " ,.!?:;-'\"+=\u00b0\u00d7\u00f7$€£¥%@#&*()[]{}<>|\\/~`^_+"
+    # Check full category (e.g., "Sm", "Sc") not just first letter
+    allowed_cats = {"L", "N", "P", "Z", "M", "Sm", "Sc"}
+    result = [
+        ch for ch in text 
+        if unicodedata.category(ch) in allowed_cats or unicodedata.category(ch)[0] in allowed_cats or ch in allowed_symbols
+    ]
+    return "".join(result).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -453,37 +509,50 @@ def query_local_llm(
     prompt: str | list[dict],
     system_prompt: str = "You are Amigo, a helpful voice assistant. Speak in clear, plain sentences.",
     max_tokens: int = 512,
-    temperature: float = 0.6,
+    temperature: float | None = None,
     thinking: bool | None = None,
     sanitize: bool = True,
+    response_format: dict | None = None,
 ) -> str:
     """Queries local LLM and returns clean spoken output. Thread-safe with inference lock."""
     llm = init_local_llm()
-    if llm:
-        token = None
-        if thinking is not None:
-            token = _thinking_ctx.set(thinking)
-        with _inference_lock:
-            try:
-                messages = _prepare_chat_messages(system_prompt, prompt)
-                res = llm.create_chat_completion(
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    top_p=get_sampling_params()["top_p"],
-                    repeat_penalty=1.05,  # Slightly lower for faster generation
-                    stop=STOP_TOKENS,
-                )
-                output = res["choices"][0]["message"]["content"]
-                if sanitize:
-                    return sanitize_for_tts(output.strip()) or output.strip()
-                return output.strip()
-            except Exception as e:
-                logger.error(f"[LLM Query Error]: {e}")
-                return f"I'm having trouble processing that request: {e}"
-            finally:
-                if token is not None:
-                    _thinking_ctx.reset(token)
+    if not llm:
+        return "I'm having trouble initializing the AI engine."
+    
+    token = None
+    if thinking is not None:
+        token = _thinking_ctx.set(thinking)
+    
+    # Cache sampling params to avoid repeated calls
+    sampling = get_sampling_params()
+    # Use sampling temperature unless caller explicitly passes a value
+    temp = sampling["temperature"] if temperature is None else temperature
+    top_p = sampling["top_p"]
+    
+    with _inference_lock:
+        try:
+            messages = _prepare_chat_messages(system_prompt, prompt)
+            kwargs = {
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": temp,
+                "top_p": top_p,
+                "repeat_penalty": 1.05,
+                "stop": STOP_TOKENS,
+            }
+            if response_format:
+                kwargs["response_format"] = response_format
+            res = llm.create_chat_completion(**kwargs)
+            output = res["choices"][0]["message"]["content"]
+            if sanitize:
+                return sanitize_for_tts(output.strip()) or output.strip()
+            return output.strip()
+        except Exception as e:
+            logger.error(f"[LLM Query Error]: {e}")
+            return f"I'm having trouble processing that request: {e}"
+        finally:
+            if token is not None:
+                _thinking_ctx.reset(token)
 
 
 def query_local_llm_stream(
@@ -491,62 +560,94 @@ def query_local_llm_stream(
     system_prompt: str = "You are Amigo, a helpful voice assistant. Speak in clear, plain sentences.",
     max_tokens: int = 512,
     interruption_event: threading.Event | None = None,
-    temperature: float = 0.6,
+    temperature: float | None = None,
     thinking: bool | None = None,
 ) -> Generator[str, None, None]:
     """Streams raw tokens in real-time from the local LLM. Thread-safe with inference lock."""
     llm = init_local_llm()
-    if llm:
-        token = None
-        if thinking is not None:
-            token = _thinking_ctx.set(thinking)
-        with _inference_lock:
-            try:
-                messages = _prepare_chat_messages(system_prompt, prompt)
-                stream_res = llm.create_chat_completion(
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    top_p=get_sampling_params()["top_p"],
-                    repeat_penalty=1.1,
-                    stop=STOP_TOKENS,
-                    stream=True,
-                )
-                for chunk in stream_res:
-                    if interruption_event and interruption_event.is_set():
-                        return
-                    delta = chunk["choices"][0].get("delta", {}).get("content", "")
-                    if delta:
-                        yield delta
-                return
-            except Exception as e:
-                logger.error(f"[LLM Stream Error]: {e}")
-                yield f"I'm having trouble processing that request: {e}"
-            finally:
-                if token is not None:
+    if not llm:
+        yield "I'm having trouble initializing the AI engine."
+        return
+    
+    token = None
+    if thinking is not None:
+        token = _thinking_ctx.set(thinking)
+    
+    # Cache sampling params to avoid repeated calls
+    sampling = get_sampling_params()
+    # Use sampling temperature unless caller explicitly passes a value
+    temp = sampling["temperature"] if temperature is None else temperature
+    top_p = sampling["top_p"]
+    
+    # Acquire lock for the duration of stream iteration
+    _inference_lock.acquire()
+    try:
+        messages = _prepare_chat_messages(system_prompt, prompt)
+        stream_res = llm.create_chat_completion(
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temp,
+            top_p=top_p,
+            repeat_penalty=1.1,
+            stop=STOP_TOKENS,
+            stream=True,
+        )
+        try:
+            for chunk in stream_res:
+                if interruption_event and interruption_event.is_set():
+                    return
+                delta = chunk["choices"][0].get("delta", {}).get("content", "")
+                if delta:
+                    yield delta
+        finally:
+            # Ensure lock is released even if generator is abandoned
+            _inference_lock.release()
+            # Reset thinking context - catch ValueError if context was already reset
+            if token is not None:
+                try:
                     _thinking_ctx.reset(token)
+                except ValueError:
+                    pass  # Context already reset or invalid
+    except Exception as e:
+        # Lock already released in inner finally, just log and yield error
+        logger.error(f"[LLM Stream Error]: {e}")
+        yield f"I'm having trouble processing that request: {e}"
+        # Reset thinking context on error (in case inner finally didn't run)
+        if token is not None:
+            try:
+                _thinking_ctx.reset(token)
+            except ValueError:
+                pass
 
 
 _RE_SENTENCE_SPLIT_CHUNKS = re.compile(r'(?<=[.!?])\s+|\n+')
-_RE_TITLE_ABBREV = re.compile(r'\b(mr|mrs|ms|dr|vs|eg|ie|etc|prof|sr|jr|st|ave|blvd|rd|apt|no|vol|ch|fig|eq|ex|al|ca|cf|ed|ft|hr|lb|oz|pt|qt|yd|mr|ms|mrs|dr|vs|etc|i\.e|e\.g|vs|mr|mrs|ms|dr|prof|sr|jr)\.?$', re.IGNORECASE)
+# Only real abbreviations that end with a dot; single-letter matches removed
+_RE_TITLE_ABBREV = re.compile(
+    r'\b(mr|mrs|ms|dr|vs|eg|ie|etc|prof|sr|jr|st|ave|blvd|rd|apt|vol|fig|eq|cf|ft|hr|lb|oz|pt|qt|yd|i\.e|e\.g)\.$',
+    re.IGNORECASE
+)
 
 
 def stream_sentence_chunks(token_generator, interruption_event: threading.Event | None = None) -> Generator[str, None, None]:
     """Buffers token stream and yields complete sentence chunks immediately for TTS."""
     buffer = ""
     in_think = False
+    pending = ""  # Hold abbreviation fragments to prepend to next sentence
 
     for token in token_generator:
         if interruption_event and interruption_event.is_set():
+            # Close the upstream generator to release the inference lock
+            if hasattr(token_generator, 'close'):
+                token_generator.close()
             return
         buffer += token
 
-        if "<think>" in buffer:
+        if "<?xml" in buffer or "<?xml" in buffer:
             in_think = True
 
         if in_think:
-            if "</think>" in buffer:
-                buffer = buffer.split("</think>", 1)[1]
+            if "<?/" in buffer:
+                buffer = buffer.split("<?/", 1)[1]
                 in_think = False
             else:
                 continue
@@ -559,17 +660,29 @@ def stream_sentence_chunks(token_generator, interruption_event: threading.Event 
         if len(splits) > 1:
             for s in splits[:-1]:
                 cand = s.strip()
-                if cand and not _RE_TITLE_ABBREV.search(cand):
-                    clean = sanitize_for_tts(cand)
-                    if clean:
-                        yield clean
+                if not cand:
+                    continue
+                # Prepend any pending abbreviation fragment
+                if pending:
+                    cand = f"{pending} {cand}".strip()
+                    pending = ""
+                # If this looks like an abbreviation, hold it for the next sentence
+                if _RE_TITLE_ABBREV.search(cand):
+                    pending = cand
+                    continue
+                clean = sanitize_for_tts(cand)
+                if clean:
+                    yield clean
             buffer = splits[-1]
 
+    # Flush any remaining buffer with pending abbreviation
     if not in_think and buffer.strip() and not (interruption_event and interruption_event.is_set()):
-        clean = sanitize_for_tts(buffer.strip())
+        final = buffer.strip()
+        if pending:
+            final = f"{pending} {final}".strip()
+        clean = sanitize_for_tts(final)
         if clean:
             yield clean
-
 
 # ---------------------------------------------------------------------------
 # Multimodal Vision Stub (MiniCPM 5 2B uses native Windows Media OCR in screen_vision.py)
@@ -658,13 +771,13 @@ def get_agent_action(user_query: str, conversation_history: list | None = None) 
 
     # User Self-Correction Learning Loop
     is_user_correction = False
-    if m := _RE_USER_CORRECTION.search(user_query):
+    if _RE_USER_CORRECTION.search(user_query):
         cleaned = _RE_USER_CORRECTION.sub("", user_query).strip().lstrip(",; ")
         if cleaned:
             is_user_correction = True
             logger.info("[Correction] User self-correction detected: '%s' -> '%s'", user_query, cleaned)
             try:
-                import rag_engine
+                from amigo.core import rag_engine
                 prev_turn = conversation_history[-1].get("user", "") if (conversation_history and isinstance(conversation_history, list)) else ""
                 if prev_turn:
                     rag_engine.add_user_fact(
@@ -684,8 +797,8 @@ def get_agent_action(user_query: str, conversation_history: list | None = None) 
 
     # Use LLM-based agent for all intent understanding
     try:
-        from llm_agent import get_agent_action
-        actions = get_agent_action(user_query, conversation_history=conversation_history)
+        from amigo.core.llm_agent import get_agent_action as llm_get_agent_action
+        actions = llm_get_agent_action(user_query, conversation_history=conversation_history)
         if actions:
             if is_user_correction:
                 for action in actions:
@@ -694,7 +807,7 @@ def get_agent_action(user_query: str, conversation_history: list | None = None) 
                         break
             return actions
     except Exception as e:
-        logger.debug("[LLM Agent Exception]: %s", e)
+        logger.warning("[LLM Agent Exception - falling back to chat]: %s", e, exc_info=True)
 
     # Fallback: Conversational Chat
     chat_action = {"tool": "chat", "params": {"query": user_query}, "speak": ""}

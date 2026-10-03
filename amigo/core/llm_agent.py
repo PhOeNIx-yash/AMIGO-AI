@@ -5,21 +5,22 @@ Provides natural language understanding using MiniCPM 5 2B with tool calling for
 
 import json
 import logging
-import os
 import re
 import threading
-from typing import Any, Generator
+from typing import Generator
 
-from local_llm import (
+from amigo.core.local_llm import (
     query_local_llm,
     query_local_llm_stream,
     init_local_llm,
     sanitize_for_tts,
     is_thinking_enabled,
 )
-from rag_engine import get_recent_conversations, get_user_profile_prompt, get_active_context_prompt, get_active_state
-from tool_registry import execute_tool
-from network_utils import is_internet_connected
+from amigo.core.ai import get_user_profile_prompt, get_active_context_prompt, get_active_state
+import amigo.core.rag_engine as rag_engine
+from amigo.core.rag_engine import get_recent_conversations
+from amigo.utils.tool_registry import execute_tool
+from amigo.utils.network_utils import is_internet_connected
 
 logger = logging.getLogger("amigo.llm_agent")
 
@@ -305,17 +306,6 @@ TOOL_DEFINITIONS = [
             }
         }
     },
-    {
-        "name": "window_management",
-        "description": "Manage window state: minimize all, maximize, restore, or switch windows.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "action": {"type": "string", "enum": ["minimize_all", "maximize", "restore", "switch_window"], "description": "Window management action"}
-            },
-            "required": ["action"]
-        }
-    },
 ]
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -336,8 +326,14 @@ def build_agent_system_prompt(query: str = "", conversation_history: list | None
     # Get recent conversation history - use passed history if available, otherwise from RAG
     if conversation_history:
         recent = conversation_history[-10:]  # Use last 10 turns from passed history
+        last_s = get_last_played_song(conversation_history)
+        if last_s and last_s.get("title") and "Playing" not in active_context:
+            if active_context:
+                active_context = active_context.rstrip("]") + f" | Last Media: '{last_s['title']}']"
+            else:
+                active_context = f"[Active State: Last Media: '{last_s['title']}']"
     else:
-        recent = get_recent_conversations(10)
+        recent = rag_engine.get_recent_conversations(10)
     history_lines = []
     for turn in recent:
         u = (turn.get("user") or "").strip()
@@ -348,14 +344,19 @@ def build_agent_system_prompt(query: str = "", conversation_history: list | None
             history_lines.append(f"Assistant: {a[:200]}")
     history_block = "\n".join(history_lines) if history_lines else "No recent conversation."
 
-    # Build tool descriptions
-    tool_descriptions = []
+    # Build concise tool schema for the prompt
+    tool_schema_lines = []
     for tool in TOOL_DEFINITIONS:
-        params = tool["parameters"]["properties"]
-        param_str = ", ".join([f"{k}: {v.get('type', 'string')}" for k, v in params.items()])
-        tool_descriptions.append(f"- {tool['name']}({param_str}): {tool['description']}")
-
-    tools_block = "\n".join(tool_descriptions)
+        name = tool["name"]
+        desc = tool["description"]
+        props = tool["parameters"]["properties"]
+        required = tool["parameters"].get("required", [])
+        if not props:
+            tool_schema_lines.append(f"- {name}: {desc} | Params: none (use empty {{}})")
+        else:
+            param_details = [f"{k}: {v.get('type', 'string')}{' (req)' if k in required else ''}" for k, v in props.items()]
+            tool_schema_lines.append(f"- {name}: {desc} | Params: {', '.join(param_details)}")
+    tools_block = "\n".join(tool_schema_lines)
 
     hour = now.hour
     if 5 <= hour < 12:
@@ -368,7 +369,8 @@ def build_agent_system_prompt(query: str = "", conversation_history: list | None
         period = "night"
     current_time_str = now.strftime('%I:%M %p').lstrip('0')
 
-    prompt = f"""You are Amigo, a capable desktop AI assistant. Today is {now.strftime('%A, %B %d, %Y')}. Current local time: {current_time_str} ({period}).
+    prompt = f"""You are Amigo, an intelligent Windows desktop voice assistant with active tool execution capabilities.
+Today is {now.strftime('%A, %B %d, %Y')}. Current local time: {current_time_str} ({period}).
 Internet Status: {net_status}.
 Be naturally aware of the current local time and period of day (morning, afternoon, evening, night) when conversing or greeting the user.
 
@@ -389,76 +391,133 @@ AVAILABLE TOOLS:
 
 CONVERSATION HISTORY (most recent last):
 {history_block}
-
 {active_context}
 {user_profile}
 
-IMPORTANT GUIDELINES:
-1. You are a DESKTOP ASSISTANT with REAL capabilities - you CAN open apps, play music, control volume, search the web, check weather, manage files, set timers/reminders, take screenshots, etc. NEVER say you cannot do these things.
-2. Use the tools naturally - if the user wants something done, call the appropriate tool. Don't just chat about it.
-3. For general questions, conversations, explanations, advice, coding help - use the "chat" tool with your response.
-4. For ANY action that changes system state (opening apps, playing media, setting volume, etc.) - use the specific action tool.
-5. You can call MULTIPLE tools in sequence if needed (e.g., open an app then maximize it).
-6. Consider conversation context - references like "it", "that", "the song", "the app" refer to recent topics.
-7. DO NOT ask for confirmation before using tools - just use them. If user says "play X", call play_youtube. If user says "yes" after you suggested playing on YouTube, call play_youtube with the song name.
-7. If internet is offline, web_search, play_youtube, get_weather will fail - inform the user.
-8. Be concise in your tool calls - the system will execute them and give you results.
-9. After tool execution, you'll receive results and can continue or respond to the user.
-10. When you speak to the user (in "speak" or the chat response), be fun and personable per YOUR PERSONALITY above - never robotic.
+OUTPUT FORMAT:
+Every response MUST be a JSON object:
+{{"tool": "tool_name", "params": {{...}}, "speak": "optional confirmation"}}
 
-CRITICAL PRIVACY & DATA ACCESS RULES:
-- You have FULL ACCESS to the user's LOCAL data through the provided tools. This includes: local documents/files (PDFs, Word, Excel, etc.), Outlook emails, Outlook calendar, and saved conversation memory.
-- ALL data access is LOCAL ONLY - nothing leaves the user's machine. You are NOT sending data to any cloud service.
-- When users ask about their emails, calendar, documents, or personal facts - USE THE TOOLS. Do NOT refuse or say you cannot access personal data.
-- The tools (document_qa, unread_emails, get_calendar, memory_recall, find_file) are specifically designed to access LOCAL data on the user's machine.
-- NEVER say "I don't have access to your personal data" or "I cannot access your emails/calendar/documents" - YOU CAN via the tools.
+CONTEXT RESOLUTION:
+When the user refers to something from recent conversation (e.g., "play it again", "play that song", "open that file", "search for that", "the same", "again", "it", "that"), you MUST resolve the reference using the CONVERSATION HISTORY and ACTIVE STATE above. Look at the most recent relevant user request and use those details in your tool parameters.
 
-CRITICAL DISAMBIGUATION RULES:
-- "generate/create/draft/compose application|letter|email|document|code|message" → generate_content (shows in panel for review)
-- "write/type/input application|letter|email|document" → type_text (direct typing)
-- "open/launch/start/run app" → open_app (launch software)
-- "application" alone: "generate/create/draft/compose" → generate_content; "write/type/input" → type_text; "open/launch/start/run" → open_app
-- "open X and write Y" → open_app(X) then type_text(Y)
-- "generate X and insert it" → generate_content(X) then insert_content
-- "insert it", "type it here", "paste it", "put it in" → insert_content (clipboard paste)
-- type_text: omit "app" param for current window; only include if user says "in vscode", "in word", etc.
-- "previous/last/back track" → prev_track; "next/skip/forward track" → next_track
-- City names in get_weather MUST be capitalized (e.g., "London", "Tokyo", "New York")
-- set_volume action MUST be one of: mute, volume_up, volume_down, set_volume (NOT "up", "down", "mute on/off"). "set volume to N" → action: set_volume, level: N. "turn up/down volume" → action: volume_up/volume_down. "mute/unmute" → action: mute.
-- DOCUMENT QA vs MEMORY RECALL: "what is my PNR", "show my booking", "read my ticket", "flight details", "hotel reservation", "document", "file", "PDF", "receipt", "confirmation" → document_qa (searches LOCAL FILES/DOCUMENTS). "what did I tell you", "remember my name", "my preference", "I told you", "recall that" → memory_recall (recalls SAVED PERSONAL FACTS).
+SPECIFIC RESOLUTION RULES:
+- "play it again", "play that again", "replay", "repeat" -> Use the song from ACTIVE STATE "Last Media" or the most recent "play_youtube" in CONVERSATION HISTORY
+- "open that", "open it" -> Use the app/file from the most recent "open_app" or "find_file" in CONVERSATION HISTORY
+- "search for that", "search that" -> Use the query from the most recent "web_search" in CONVERSATION HISTORY
+- "close that", "close it" -> Use the app from the most recent "open_app" in CONVERSATION HISTORY
 
-- MUSIC PLAYBACK INTENT GUIDE:
-  - PLAY REQUEST: User wants to hear music now ("play X", "put on X", "stream X", "I want to hear X") → play_youtube
-  - APPRECIATION: User expresses enjoyment of currently playing music ("I like this", "love this song", "great track", "this is good") → chat (respond warmly, do NOT replay)
-  - REPLAY REQUEST: User explicitly wants to hear the current song again ("play it again", "replay", "repeat", "one more time") → play_youtube
-  - PLAYBACK CONTROL: User wants to control playback ("pause", "stop", "resume", "skip") → pause_media / play_media / next_track / prev_track
-  - CONFIRMATION: User agrees to your suggestion to play something ("yes", "yeah", "sure", "go ahead") → play_youtube with the song you mentioned
-  - NEVER say "I don't have access to play music" - you CAN play music on YouTube via play_youtube tool
-  - KEY DISTINCTION: Appreciation = commentary on current experience (chat). Replay/Play = desire for action (play_youtube). If unsure, check: does the user want something TO HAPPEN (action) or are they SHARING A FEELING (chat)?
+INSTRUCTIONS FOR SELECTING TOOLS:
+- For ANY request to play music, songs, tracks, artists, or audio on YouTube (e.g. "play X", "play X on youtube"): ALWAYS use "play_youtube" with {{"query": "song name and artist"}}
+- To resume playback: use "play_media". To pause music: use "pause_media"
+- For next song/track: use "next_track". For previous track/song: use "prev_track"
+- To check what song is currently playing: use "current_media"
+- For volume (mute, unmute, turn up, turn down, set to number): ALWAYS use "set_volume" with {{"action": "mute"|"volume_up"|"volume_down"|"set_volume", "level": N}}
+- To take a screenshot or capture the screen: ALWAYS use "take_screenshot" with {{}}
+- To open or launch apps: use "open_app" with {{"name": "app name"}}
+- To close or exit apps: use "close_app" with {{"name": "app name"}}
+- To minimize, maximize, restore windows: use "window_mgmt" with {{"action": "minimize_all" | "maximize" | "restore" | "switch_window"}}
+- To lock PC: use "lock_pc". To put PC to sleep: use "sleep_pc". To restart PC: use "restart_pc"
+- To empty recycle bin: use "empty_recycle_bin"
+- To check system status, battery, CPU, RAM: use "system_status"
+- To search the web: ALWAYS use "web_search" with {{"query": "..."}}
+- To search or find local files: ALWAYS use "find_file" with {{"query": "..."}}
+- To ask about, read, or summarize documents, tickets, or files: use "document_qa" with {{"query": "..."}}
+- To check calendar events or schedule: ALWAYS use "get_calendar"
+- To check unread emails: ALWAYS use "unread_emails"
+- To set timers: use "set_timer" with {{"query": "..."}}
+- To set reminders: use "set_reminder" with {{"query": "..."}}
+- For weather forecast: use "get_weather" with {{"city": "CityName"}} (Capitalize city name)
+- For general conversation, greeting, jokes, or explanations: output {{"tool": "chat", "params": {{"response": "your answer"}}, "speak": "your answer"}}
 
-- WRITING & CONTENT GENERATION GUIDE:
-  - "generate/create/draft/compose an email" → generate_content(type="email", topic="...")
-  - "generate/create/draft/compose a letter" → generate_content(type="letter", topic="...")
-  - "generate/create/draft/compose an application" → generate_content(type="application", topic="...")
-  - "generate/create/draft/compose a document" → generate_content(type="document", topic="...")
-  - "generate/create/draft/compose code" or "generate/create/draft/compose a script" → generate_content(type="code", topic="...")
-  - "generate/create/draft/compose a message" → generate_content(type="message", topic="...")
-  - "draft/compose a message to [person]" → generate_content(type="message", topic="message to [person]") - do NOT ask for more details
-  - "compose a message" (alone) → generate_content(type="message", topic="compose a message") - do NOT ask for topic
-  - "write/type/input an email/letter/application/document" → type_text (direct typing into active window)
-  - "insert it", "paste it", "type it here", "put it in" → insert_content (requires content from previous generate_content)
-  - ALWAYS use generate_content for GENERATE/CREATE/DRAFT/COMPOSE requests - do NOT respond with chat asking for more details
-  - The generate_content tool shows a review panel - the user can then say "insert it" to paste the content
-  - NEVER say "Would you like me to generate..." or "I can help you draft..." or "What would you like it to be about?" - just call generate_content directly
+EXAMPLES:
+User: what time is it
+Assistant: {{"tool": "get_time", "params": {{}}}}
 
-Think about what the user ACTUALLY wants, not just keywords. Understand the INTENT behind their words.
+User: what's the date today
+Assistant: {{"tool": "get_date", "params": {{}}}}
+
+User: play believer by imagine dragons on youtube
+Assistant: {{"tool": "play_youtube", "params": {{"query": "believer by imagine dragons"}}}}
+
+User: pause the music
+Assistant: {{"tool": "pause_media", "params": {{}}}}
+
+User: resume playback
+Assistant: {{"tool": "play_media", "params": {{}}}}
+
+User: search for python tutorials
+Assistant: {{"tool": "web_search", "params": {{"query": "python tutorials"}}}}
+
+User: find file report.pdf
+Assistant: {{"tool": "find_file", "params": {{"query": "report.pdf"}}}}
+
+User: check my calendar
+Assistant: {{"tool": "get_calendar", "params": {{}}}}
+
+User: lock my pc
+Assistant: {{"tool": "lock_pc", "params": {{}}}}
+
+User: check system status
+Assistant: {{"tool": "system_status", "params": {{}}}}
+
+User: empty recycle bin
+Assistant: {{"tool": "empty_recycle_bin", "params": {{}}}}
+
+User: close chrome
+Assistant: {{"tool": "close_app", "params": {{"name": "chrome"}}}}
+
+User: next song
+Assistant: {{"tool": "next_track", "params": {{}}}}
+
+User: previous track
+Assistant: {{"tool": "prev_track", "params": {{}}}}
+
+User: what song is playing
+Assistant: {{"tool": "current_media", "params": {{}}}}
+
+User: set volume to 50
+Assistant: {{"tool": "set_volume", "params": {{"action": "set_volume", "level": 50}}}}
+
+User: mute the volume
+Assistant: {{"tool": "set_volume", "params": {{"action": "mute"}}}}
+
+User: turn up the volume
+Assistant: {{"tool": "set_volume", "params": {{"action": "volume_up"}}}}
+
+User: turn down the volume
+Assistant: {{"tool": "set_volume", "params": {{"action": "volume_down"}}}}
+
+User: take a screenshot
+Assistant: {{"tool": "take_screenshot", "params": {{}}}}
+
+User: what's the weather in london
+Assistant: {{"tool": "get_weather", "params": {{"city": "London"}}}}
+
+User: minimize all windows
+Assistant: {{"tool": "window_mgmt", "params": {{"action": "minimize_all"}}}}
+
+User: maximize this window
+Assistant: {{"tool": "window_mgmt", "params": {{"action": "maximize"}}}}
+
+User: put pc to sleep
+Assistant: {{"tool": "sleep_pc", "params": {{}}}}
+
+User: restart computer
+Assistant: {{"tool": "restart_pc", "params": {{}}}}
+
+User: remind me to call mom in 30 minutes
+Assistant: {{"tool": "set_reminder", "params": {{"query": "call mom in 30 minutes"}}}}
+
+User: what does this document say
+Assistant: {{"tool": "document_qa", "params": {{"query": "what does this document say"}}}}
+
+User: how are you today
+Assistant: {{"tool": "chat", "params": {{"response": "I'm doing well, thank you! How can I help you today?"}}}}
+
+User: tell me a joke
+Assistant: {{"tool": "chat", "params": {{"response": "Why do programmers prefer dark mode? Because light attracts bugs!"}}}}
 """
-
-    if is_thinking_enabled():
-        prompt += "\nReasoning mode: Think step-by-step inside tags before providing your final answer outside of ."
-    else:
-        prompt += "\nDirect answer mode: Respond directly with your answer. Do NOT output  tags or internal deliberation."
-
     return prompt
 
 
@@ -490,69 +549,155 @@ def _parse_tool_calls(response: str) -> list[dict]:
     """Parse tool calls from LLM response. Supports JSON and XML tool calls formats."""
     tool_calls = []
 
-    # Try to find JSON tool calls in the response
-    # Format: {"tool": "tool_name", "params": {...}}
-    import re
-    
-    # More robust pattern that handles nested braces
-    # Find all {...} blocks that contain "tool":
-    json_pattern = r'\{(?:[^{}]|(?:\{[^{}]*\}))*"tool"\s*:\s*"[^"]+"(?:[^{}]|(?:\{[^{}]*\}))*\}'
-    matches = re.findall(json_pattern, response)
+    # 1. Depth-based balanced-brace parser for JSON blocks
+    start = 0
+    text = response
+    while True:
+        idx = text.find('{', start)
+        if idx == -1:
+            break
+        depth = 0
+        end = -1
+        in_string = False
+        escape = False
+        for i in range(idx, len(text)):
+            c = text[i]
+            if escape:
+                escape = False
+                continue
+            if c == '\\':
+                escape = True
+                continue
+            if c == '"':
+                in_string = not in_string
+                continue
+            if not in_string:
+                if c == '{':
+                    depth += 1
+                elif c == '}':
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+        if end != -1:
+            chunk = text[idx:end]
+            try:
+                data = json.loads(chunk)
+                if isinstance(data, dict):
+                    tool_name = data.get("tool") or data.get("name")
+                    if tool_name:
+                        if tool_name == "window_management":
+                            tool_name = "window_mgmt"
+                        params = data.get("params") or data.get("arguments", {})
+                        speak = data.get("speak", "")
+                        tool_calls.append({
+                            "tool": tool_name,
+                            "params": params if isinstance(params, dict) else {},
+                            "speak": speak if isinstance(speak, str) else "",
+                        })
+            except Exception:
+                pass
+            start = end
+        else:
+            start = idx + 1
 
-    for match in matches:
-        try:
-            call = json.loads(match)
-            if "tool" in call:
-                tool_calls.append({
-                    "tool": call["tool"],
-                    "params": call.get("params", {}),
-                    "speak": call.get("speak", "")
-                })
-        except json.JSONDecodeError:
-            continue
+    if tool_calls:
+        return tool_calls
 
-    # Also try to find function calling format: {"name": "tool", "arguments": {...}}
-    func_pattern = r'\{(?:[^{}]|(?:\{[^{}]*\}))*"name"\s*:\s*"[^"]+"(?:[^{}]|(?:\{[^{}]*\}))*"arguments"\s*:\s*\{(?:[^{}]|(?:\{[^{}]*\}))*\}(?:[^{}]|(?:\{[^{}]*\}))*\}'
-    matches = re.findall(func_pattern, response)
-    for match in matches:
-        try:
-            call = json.loads(match)
-            if "name" in call:
-                tool_calls.append({
-                    "tool": call["name"],
-                    "params": call.get("arguments", {}),
-                    "speak": ""
-                })
-        except json.JSONDecodeError:
-            continue
-
-    # Also try to find MiniCPM 5 2B XML format: name="tool_name"> name="param1">value1 name="param2">value2 ...
-    # First find the tool name
-    tool_name_match = re.search(r'name="([^"]+)">', response)
-    if tool_name_match:
-        tool_name = tool_name_match.group(1)
-        # Find all parameters after the tool name
-        # Format: name="param">value (value can contain spaces, ends before next name=" or end of string)
+    # 2. MiniCPM native XML format: <function name="tool_name"><param name="param_name">param_value</param></function>
+    xml_matches = re.finditer(r'<function\s+name="([^"]+)">([\s\S]*?)</function>', response)
+    for match in xml_matches:
+        tool_name = match.group(1).strip()
+        if tool_name == "window_management":
+            tool_name = "window_mgmt"
+        body = match.group(2)
         params = {}
-        # Find all name="param">value patterns in the remaining string
-        remaining = response[tool_name_match.end():]
-        # Pattern: name="param_name">param_value (where param_value goes until next name=" or end)
-        param_pattern = r'name="([^"]+)">\s*([^<]*?)(?=\s+name="|$)'
-        param_matches = re.findall(param_pattern, remaining)
-        for param_name, param_value in param_matches:
-            if param_value:
-                params[param_name] = param_value.strip()
-        if tool_name:
-            tool_calls.append({
-                "tool": tool_name,
-                "params": params,
-                "speak": ""
-            })
+        for param_m in re.finditer(r'<param\s+name="([^"]+)">([\s\S]*?)</param>', body):
+            p_val = param_m.group(2).strip()
+            if p_val.startswith("<![CDATA[") and p_val.endswith("]]>"):
+                p_val = p_val[9:-3]
+            params[param_m.group(1).strip()] = p_val
+        tool_calls.append({
+            "tool": tool_name,
+            "params": params,
+            "speak": "",
+        })
+
+    if not tool_calls:
+        # Fallback legacy regex pattern
+        tool_name_match = re.search(r'name="([^"]+)">', response)
+        if tool_name_match:
+            tool_name = tool_name_match.group(1).strip()
+            if tool_name == "window_management":
+                tool_name = "window_mgmt"
+            params = {}
+            remaining = response[tool_name_match.end():]
+            param_pattern = r'name="([^"]+)">\s*([^<]*?)(?=\s+name="|$)'
+            param_matches = re.findall(param_pattern, remaining)
+            for param_name, param_value in param_matches:
+                if param_value:
+                    params[param_name] = param_value.strip()
+            if tool_name:
+                tool_calls.append({
+                    "tool": tool_name,
+                    "params": params,
+                    "speak": "",
+                })
 
     return tool_calls
 
 
-def get_agent_actions(query: str, conversation_history: list | None = None) -> list[dict]:
+def _resolve_references(query: str, conversation_history: list | None = None) -> str:
+    """Preprocess query to resolve common references like 'it', 'that', 'again' using conversation history."""
+    if not conversation_history:
+        return query
+
+    query_lower = query.lower().strip()
+
+    # "play it again", "play that again", "replay", "repeat" -> use last played song
+    if any(phrase in query_lower for phrase in ["play it again", "play that again", "replay", "repeat the song", "play again"]):
+        last_song = get_last_played_song(conversation_history)
+        if last_song and last_song.get("title"):
+            return f"play {last_song['title']}"
+
+    # "open that", "open it" -> use last opened app/file
+    if query_lower in ("open that", "open it", "open this"):
+        for turn in reversed(conversation_history):
+            tool = turn.get("tool", "")
+            if tool == "open_app":
+                app_name = turn.get("params", {}).get("name", "")
+                if app_name:
+                    return f"open {app_name}"
+            elif tool == "find_file":
+                file_query = turn.get("params", {}).get("query", "")
+                if file_query:
+                    return f"open {file_query}"
+
+    # "close that", "close it" -> use last opened app
+    if query_lower in ("close that", "close it", "close this"):
+        for turn in reversed(conversation_history):
+            tool = turn.get("tool", "")
+            if tool == "open_app":
+                app_name = turn.get("params", {}).get("name", "")
+                if app_name:
+                    return f"close {app_name}"
+
+    # "search for that", "search that" -> use last search query
+    if query_lower in ("search for that", "search that", "search this"):
+        for turn in reversed(conversation_history):
+            tool = turn.get("tool", "")
+            if tool == "web_search":
+                search_query = turn.get("params", {}).get("query", "")
+                if search_query:
+                    return f"search for {search_query}"
+
+    return query
+
+
+def get_agent_actions(
+    query: str,
+    conversation_history: list | None = None,
+        ) -> list[dict] | tuple[list[dict], str]:
     """
     Main entry point: Get agent actions for a user query using LLM reasoning.
     Returns a list of tool actions to execute.
@@ -561,8 +706,11 @@ def get_agent_actions(query: str, conversation_history: list | None = None) -> l
     if not initialize_agent():
         return [{"tool": "chat", "params": {}, "speak": "I'm having trouble initializing my AI engine. Please try again."}]
 
-    # Build system prompt with full context (without conversation history - we'll pass it as messages)
-    system_prompt = build_agent_system_prompt(query, conversation_history=None)
+    # Preprocess query to resolve references like "it", "that", "again"
+    resolved_query = _resolve_references(query, conversation_history)
+
+    # Build system prompt with full context
+    system_prompt = build_agent_system_prompt(resolved_query, conversation_history=conversation_history)
 
     # Build conversation messages including history
     messages = [{"role": "system", "content": system_prompt}]
@@ -578,74 +726,18 @@ def get_agent_actions(query: str, conversation_history: list | None = None) -> l
             if a:
                 messages.append({"role": "assistant", "content": a[:1500]})
     
-    # Add current query
-    messages.append({"role": "user", "content": query})
-
-    # Build concise tool schema for the prompt
-    tool_schema_lines = []
-    for tool in TOOL_DEFINITIONS:
-        name = tool["name"]
-        desc = tool["description"]
-        props = tool["parameters"]["properties"]
-        required = tool["parameters"].get("required", [])
-        
-        if not props:
-            tool_schema_lines.append(f'- {name}: {desc}')
-        else:
-            param_details = []
-            for param_name, param_info in props.items():
-                ptype = param_info.get("type", "string")
-                req = " (req)" if param_name in required else ""
-                param_details.append(f"{param_name}: {ptype}{req}")
-            tool_schema_lines.append(f'- {name}: {desc} | Params: {", ".join(param_details)}')
-
-    tool_schema_block = "\n".join(tool_schema_lines)
-
-    # Tool calling instructions appended to the user message
-    tool_prompt = f"""
-
-You have access to the following tools. When the user asks you to do something, you MUST decide which tool(s) to use and call them with the appropriate parameters.
-
-TOOL SCHEMAS (use EXACTLY these parameters):
-{tool_schema_block}
-
-CRITICAL RULES:
-1. Only use tools from the list above
-2. Only use parameters defined in each tool's schema
-3. For enum parameters, ONLY use the exact values listed
-4. Do NOT add extra parameters not in the schema
-5. Do NOT include parameters for tools that have no parameters (empty object {{}})
-6. For MULTIPLE actions, output MULTIPLE JSON objects, ONE PER LINE:
-   {{"tool": "tool1", "params": {{...}}, "speak": "..."}}
-   {{"tool": "tool2", "params": {{...}}, "speak": "..."}}
-7. After tool calls, provide your final response to the user
-
-EXAMPLE - Single action:
-{{"tool": "open_app", "params": {{"name": "vscode"}}, "speak": "Ooh, VS Code coming right up!"}}
-
-EXAMPLE - Multiple actions (MUST be on separate lines):
-{{"tool": "close_app", "params": {{"name": "chrome"}}, "speak": "Bye-bye Chrome!"}}
-{{"tool": "web_search", "params": {{"query": "best browser to use"}}, "speak": "Alright, digging into the great browser debate..."}}
-
-EXAMPLE - Generate then insert:
-{{"tool": "generate_content", "params": {{"type": "application", "topic": "leave application"}}, "speak": "One leave application, coming right up!"}}
-{{"tool": "insert_content", "params": {{"content": "..."}}, "speak": "And... pasted in! Done!"}}
-
-EXAMPLE - Open then type:
-{{"tool": "open_app", "params": {{"name": "notepad"}}, "speak": "Notepad's up, let's write!"}}
-{{"tool": "type_text", "params": {{"text": "Hello world"}}, "speak": "Typing away!"}}"""
-
-    # Append tool prompt to the last user message
-    messages[-1]["content"] += tool_prompt
+    # Add current query (use resolved query for LLM)
+    messages.append({"role": "user", "content": resolved_query})
 
     try:
         response = query_local_llm(
-            messages,
-            system_prompt="",  # System prompt is already in messages
-            max_tokens=1024,
-            temperature=0.4,
-            thinking=is_thinking_enabled(),
-            sanitize=False
+    messages,
+    system_prompt="",  # System prompt is already in messages
+    max_tokens=256,
+    temperature=0.0,
+    thinking=False,
+    sanitize=False,
+    response_format={"type": "json_object"},
         )
 
         # Parse tool calls from response
@@ -657,11 +749,10 @@ EXAMPLE - Open then type:
         # If no tool calls found, default to chat
         if not tool_calls:
             # Check if it's a probe query (like "are you there")
-            from local_llm import _RE_PROBE_GUARD
+            from amigo.core.local_llm import _RE_PROBE_GUARD
             if _RE_PROBE_GUARD.search(query):
                 return [{"tool": "chat", "params": {}, "speak": ""}], ""
-            # Otherwise treat as chat - let the LLM respond naturally with creativity enabled
-            return [{"tool": "chat", "params": {}, "speak": final_response}], final_response
+            return [{"tool": "chat", "params": {"response": final_response}, "speak": final_response}], final_response
 
         # Return both tool calls and final response
         return tool_calls, final_response
@@ -722,26 +813,24 @@ def get_agent_response_stream(
 
     system_prompt = build_agent_system_prompt(query, conversation_history=conversation_history)
 
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": query}
-    ]
-
-    tool_prompt = f"""The user said: "{query}"
-
-Analyze what they want and decide which tool(s) to use. Respond with tool calls in this format:
-{{"tool": "tool_name", "params": {{"param": "value"}}, "speak": "optional confirmation message"}}
-
-You can include multiple tool calls if needed. After the tool calls, provide your final response to the user."""
-
-    full_prompt = system_prompt + "\n\n" + tool_prompt
+    messages = [{"role": "system", "content": system_prompt}]
+    if conversation_history:
+        recent = conversation_history[-10:]
+        for turn in recent:
+            u = (turn.get("user") or "").strip()
+            a = (turn.get("assistant") or "").strip()
+            if u:
+                messages.append({"role": "user", "content": u[:1000]})
+            if a:
+                messages.append({"role": "assistant", "content": a[:1500]})
+    messages.append({"role": "user", "content": query})
 
     try:
         token_gen = query_local_llm_stream(
-            full_prompt,
+            messages,
             system_prompt="",
             max_tokens=1024,
-            temperature=0.4,
+            temperature=0.1,
             thinking=is_thinking_enabled(),
             interruption_event=interruption_event
         )
@@ -793,8 +882,11 @@ def get_agent_action(query: str, conversation_history: list | None = None) -> li
     Main function to resolve user query into tool actions.
     Returns only the tool actions (first element of tuple).
     """
-    actions, _ = get_agent_actions(query, conversation_history)
-    return actions
+    result = get_agent_actions(query, conversation_history)
+    if isinstance(result, tuple):
+        actions, _ = result
+        return actions
+    return result
 
 
 def get_agent_actions_with_response(query: str, conversation_history: list | None = None) -> tuple[list[dict], str]:
@@ -802,7 +894,11 @@ def get_agent_actions_with_response(query: str, conversation_history: list | Non
     Get agent actions AND the final conversational response from the LLM.
     Returns tuple of (actions, final_response).
     """
-    return get_agent_actions(query, conversation_history)
+    result = get_agent_actions(query, conversation_history)
+    if isinstance(result, tuple):
+        actions, final_response = result
+        return actions, final_response
+    return result, ""
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -881,7 +977,8 @@ def get_last_played_song(conversation_history: list | None = None) -> dict | Non
 
     # 2. Check UI server global media state
     try:
-        import ui_server
+        from importlib import import_module
+        ui_server = import_module("ui_server")
         media = getattr(ui_server, "_current_media", None)
         if media and isinstance(media, dict):
             title = media.get("title")
@@ -908,7 +1005,8 @@ def get_last_played_song(conversation_history: list | None = None) -> dict | Non
                 continue
             tool = turn.get("tool")
             assistant = turn.get("assistant") or turn.get("response") or ""
-            turn_params = turn.get("params") if isinstance(turn.get("params"), dict) else {}
+            params = turn.get("params")
+            turn_params = params if isinstance(params, dict) else {}
             if turn_params.get("query"):
                 return {"title": turn_params["query"], "query": turn_params["query"], "url": ""}
 

@@ -6,7 +6,11 @@ Uses safe AST arithmetic evaluation for instant numbers, and the offline Local A
 import ast
 import operator
 import re
-from local_llm import query_local_llm
+
+# Lazy import to avoid circular dependency
+def _get_query_local_llm():
+    from amigo.core.local_llm import query_local_llm
+    return query_local_llm
 
 _RE_ALPHA = re.compile(r"[a-zA-Z_]")
 
@@ -96,7 +100,7 @@ def Calc(query, speak=None):
 
     # Step 3: LLM Fallback (Only reached for true natural-language reasoning / word problems)
     prompt = f"Calculate the exact numerical result for the mathematical problem: {term}. Provide a direct, concise spoken answer with the final result."
-    ai_answer = query_local_llm(prompt)
+    ai_answer = _get_query_local_llm()(prompt)
 
     if ai_answer:
         print(f"Calculation Result: {ai_answer}")

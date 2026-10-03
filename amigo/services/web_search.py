@@ -5,7 +5,6 @@ Beast-mode search + YouTube resolution + Google search + query cleaning.
 
 import asyncio
 import hashlib
-import html
 import json
 import logging
 import re
@@ -15,8 +14,7 @@ import urllib.request
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Optional
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -281,12 +279,12 @@ def _parse_ddgs_lib(query: str, max_results: int = 10, fast_mode: bool = False) 
                 logger.warning(f"[DDGS Lib] All retries failed for query: {query}")
     return results[:10]
 
-def _parse_brave_html(html: str, query: str) -> list[SearchResult]:
+def _parse_brave_html(html_content: str, query: str) -> list[SearchResult]:
     """Parse Brave Search HTML results."""
     results = []
     try:
         from bs4 import BeautifulSoup
-        soup = BeautifulSoup(html, "html.parser")
+        soup = BeautifulSoup(html_content, "html.parser")
         for result in soup.select(".snippet, .result-item"):
             title_elem = result.select_one("h3, .title, .result-title")
             snippet_elem = result.select_one(".snippet-text, .description, p")
@@ -326,12 +324,12 @@ def _parse_searxng_json(json_text: str, query: str) -> list[SearchResult]:
         logger.debug(f"[SearXNG Parse Error]: {e}")
     return results[:10]
 
-def _parse_bing_html(html: str, query: str) -> list[SearchResult]:
+def _parse_bing_html(html_content: str, query: str) -> list[SearchResult]:
     """Parse Bing HTML results."""
     results = []
     try:
         from bs4 import BeautifulSoup
-        soup = BeautifulSoup(html, "html.parser")
+        soup = BeautifulSoup(html_content, "html.parser")
         for result in soup.select(".b_algo"):
             title_elem = result.select_one("h2 a")
             snippet_elem = result.select_one(".b_caption p, .b_snippet")

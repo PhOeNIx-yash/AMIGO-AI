@@ -3,34 +3,42 @@ UI Web Dashboard Server & Background Voice Engine for Amigo Assistant.
 Clean architectural controller: routes, event streaming, and voice loop.
 """
 
+import os
 import sys
 import logging
+
+# Ensure parent package directory is in sys.path when invoked directly
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 # Configure logging FIRST so messages from all imports are visible
 logging.basicConfig(
     level=logging.INFO,
-    format="[%(asctime)s] %(levelname)s %(name)s — %(message)s",
+    format="[%(asctime)s] %(levelname)s %(name)s - %(message)s",
     datefmt="%H:%M:%S",
     stream=sys.stdout,
     force=True,
 )
 # Silence noisy third-party dependency spam in terminal
-logging.getLogger("werkzeug").setLevel(logging.WARNING)
-logging.getLogger("primp").setLevel(logging.WARNING)
-logging.getLogger("phonemizer").setLevel(logging.ERROR)
-logging.getLogger("urllib3").setLevel(logging.WARNING)
-logging.getLogger("chromadb").setLevel(logging.WARNING)
+for _noisy_logger in (
+    "werkzeug", "primp", "phonemizer", "urllib3", "chromadb",
+    "pdfminer", "pdfminer.pdffont", "pdfminer.pdfinterp", "pdfminer.pdfpage",
+    "pdfminer.pdfdocument", "pypdf", "pdfplumber", "pypdfium2",
+    "httpx", "httpcore", "sentence_transformers", "transformers", "huggingface_hub",
+):
+    logging.getLogger(_noisy_logger).setLevel(logging.ERROR)
 
 print("[ AMIGO UI SERVER ] Starting up...", flush=True)
 
 import atexit
 import base64
-import datetime
 import json
 import os
 import queue
 import re
 import signal
+import sys
 import threading
 import time
 import uuid
@@ -40,7 +48,7 @@ from typing import Optional
 import psutil
 from flask import Flask, Response, jsonify, request, send_from_directory
 
-from ai import (
+from amigo.core.ai import (
     add_to_memory,
     get_active_state,
     load_memory,
@@ -49,10 +57,9 @@ from ai import (
     set_thinking_enabled,
     is_thinking_enabled,
     get_last_thought,
-    get_ai_response,
     get_quick_feedback,
 )
-from local_llm import (
+from amigo.core.local_llm import (
     get_active_model_info as get_llm_model_info,
     get_available_models as get_llm_available_models,
     get_agent_action,
@@ -61,36 +68,36 @@ from local_llm import (
     is_vision_ready,
     set_active_model,
 )
-from os_automation import (
+from amigo.services.os_automation import (
     play_pause_media,
     next_track,
     prev_track,
     set_volume,
 )
-from reminder_timer import (
+from amigo.core.reminder_timer import (
     get_active_data,
     init_reminders,
     handle_set_timer,
     handle_set_reminder,
     handle_cancel_reminder,
 )
-from tool_registry import (
+from amigo.utils.tool_registry import (
     UI_TOOL_HANDLERS,
     build_action_cards,
     set_media_update_callback,
     _tool_chat,
 )
-from tts import (
+from amigo.utils.tts import (
     speak,
-    stop_speaking,
     set_tts_callbacks,
     get_tts_engine_name,
     transcribe_b64,
 )
-from weather import get_weather_data
-import rag_engine
-from rag_indexer import start_background_indexer
-from network_utils import is_internet_connected
+from amigo.services.weather import get_weather_data
+import amigo.core.rag_engine as rag_engine
+from amigo.core.rag_indexer import start_background_indexer
+from amigo.utils.network_utils import is_internet_connected
+from amigo.core.proactive_intelligence import init_proactive_intelligence, shutdown_proactive_intelligence, get_proactive_intelligence
 
 print("[ AMIGO UI SERVER ] All imports loaded.", flush=True)
 
@@ -166,7 +173,7 @@ def set_assistant_state(state_name: str) -> None:
 # Wire TTS, Tool Registry, and Hotkey Service to broadcaster
 set_tts_callbacks(state_cb=set_assistant_state, broadcast_cb=broadcaster.broadcast)
 try:
-    import hotkey_service
+    from amigo.ui import hotkey_service
     hotkey_service.set_broadcast_callback(broadcaster.broadcast)
 except Exception:
     pass
@@ -256,7 +263,7 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
     last_params = {}
     last_remember = ""
     last_url = None
-    response_metadata = {}
+    response_metadata: dict[str, object] = {}
 
     for action in actions:
         tool = action.get("tool", "chat")
@@ -303,7 +310,10 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
         if handler_metadata:
                     # Preserve showGeneratedPanel if already set to True by a previous tool
                     if response_metadata.get("showGeneratedPanel") is True:
-                        handler_metadata["showGeneratedPanel"] = True
+                        handler_metadata = {
+                            **handler_metadata,
+                            "showGeneratedPanel": True,
+                        }
                     response_metadata.update(handler_metadata)
         logger.info(
             "[Timing] request_id=%s stage=tool tool=%s duration_ms=%.1f",
@@ -328,7 +338,7 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
     primary_tool = "multi_command" if len(actions) > 1 else last_tool
     final_reply = " ".join(combined_spoken).strip()
     if not final_reply and primary_tool != "chat":
-        from ai import get_quick_feedback
+        from amigo.core.ai import get_quick_feedback
         final_reply = get_quick_feedback(f"finished {primary_tool.replace('_', ' ')}")
     elif not final_reply:
         final_reply = ""
@@ -360,7 +370,6 @@ def process_query(query: str, is_voice: bool = True, display_prompt: str | None 
     """Safely executes a query with error recovery and request telemetry."""
     request_id = uuid.uuid4().hex[:12]
     request_started = time.perf_counter()
-    request_status = "failed"
     logger.info("[Timing] request_id=%s stage=request start", request_id)
 
     try:
@@ -405,9 +414,14 @@ def add_cors_headers(response):
     return response
 
 
+_UI_DIST_DIR = os.path.join(_PROJECT_ROOT, "ui_app", "dist")
+if not os.path.exists(_UI_DIST_DIR):
+    _UI_DIST_DIR = os.path.join(os.path.dirname(__file__), "ui_app", "dist")
+
+
 @app.route("/")
 def index():
-    dist_index = os.path.join(os.path.dirname(__file__), "ui_app", "dist", "index.html")
+    dist_index = os.path.join(_UI_DIST_DIR, "index.html")
     if os.path.exists(dist_index):
         with open(dist_index, "r", encoding="utf-8") as f:
             return f.read()
@@ -428,18 +442,21 @@ def index():
 
 @app.route("/assets/<path:path>")
 def serve_assets(path):
-    dist_assets = os.path.join(os.path.dirname(__file__), "ui_app", "dist", "assets")
+    dist_assets = os.path.join(_UI_DIST_DIR, "assets")
     return send_from_directory(dist_assets, path)
 
 
 @app.route("/favicon.ico")
 def favicon():
+    fav = os.path.join(_UI_DIST_DIR, "favicon.ico")
+    if os.path.exists(fav):
+        return send_from_directory(_UI_DIST_DIR, "favicon.ico")
     return Response(status=204)
 
 
 UPLOAD_DIR = os.environ.get(
     "AMIGO_UPLOAD_DIR",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "rag_data", "uploads")
+    os.path.join(_PROJECT_ROOT, "rag_data", "uploads")
 )
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".svg", ".ico"}
@@ -529,7 +546,7 @@ def api_upload():
     elif file_type == "image":
         try:
             from PIL import Image
-            from screen_vision import read_text_from_image, analyze_image
+            from amigo.services.screen_vision import read_text_from_image, analyze_image
             ocr_text = ""
             with Image.open(saved_path) as img:
                 ocr_text = read_text_from_image(img) or ""
@@ -824,7 +841,6 @@ def api_internal_broadcast():
 @app.route("/api/history")
 def get_history():
     """Fetch all conversation history from RAG engine with fresh cache check."""
-    rag_engine.invalidate_conversations_cache()
     return jsonify(rag_engine.load_memory())
 
 
@@ -865,7 +881,7 @@ def handle_quick_action():
 @app.route("/api/history/clear", methods=["POST", "OPTIONS"])
 @app.route("/api/memory/clear", methods=["POST", "OPTIONS"])
 def clear_memory():
-    """Clear conversation history & RAG vector memory — resets conversations & active state."""
+    """Clear conversation history & RAG vector memory â€” resets conversations & active state."""
     if request.method == "OPTIONS":
         return jsonify({"status": "ok"})
     try:
@@ -1081,14 +1097,27 @@ def get_state_endpoint():
 def _cleanup_all():
     global _running
     _running = False
-    logger.info("[ Amigo ] UI Server stopped. Amigo voice assistant stopped.")
+    try:
+        closed = any(
+            getattr(getattr(h, "stream", None), "closed", False)
+            for h in list(logging.root.handlers) + list(logger.handlers)
+        )
+        if not closed and hasattr(sys, "is_finalizing") and not sys.is_finalizing():
+            logger.info("[ Amigo ] UI Server stopped. Amigo voice assistant stopped.")
+    except Exception:
+        pass
+    # Shutdown proactive intelligence
+    try:
+        shutdown_proactive_intelligence()
+    except Exception as e:
+        logger.warning(f"[Cleanup] Proactive intelligence shutdown error: {e}")
 
 
 atexit.register(_cleanup_all)
 
 
 def launch_server(port: int = 5000, open_browser: bool = True) -> None:
-    def sig_handler(signum, frame):
+    def sig_handler(_signum, _frame):
         print("\n[ AMIGO ] Shutting down UI server and voice assistant...", flush=True)
         _cleanup_all()
         os._exit(0)
@@ -1132,7 +1161,7 @@ def rag_status_endpoint():
     """RAG index statistics."""
     stats = rag_engine.get_index_stats()
     try:
-        from rag_indexer import get_indexer
+        from amigo.core.rag_indexer import get_indexer
         indexer = get_indexer(rag_engine)
         idx_status = indexer.get_status()
         stats["indexer"] = idx_status
@@ -1183,7 +1212,7 @@ def rag_reindex_endpoint():
     try:
         data = request.get_json(silent=True) or {}
         force = data.get("force", True)
-        from rag_indexer import get_indexer
+        from amigo.core.rag_indexer import get_indexer
         indexer = get_indexer(rag_engine)
 
         def _progress_cb(processed, total, indexed, skipped, fname):
@@ -1235,7 +1264,7 @@ def rag_reindex_endpoint():
 def emails_endpoint():
     """Fetch recent emails."""
     try:
-        from mail_integration import get_recent_emails, is_outlook_available
+        from amigo.services.mail_integration import get_recent_emails, is_outlook_available
         if not is_outlook_available():
             return jsonify({"error": "Outlook not available"}), 503
         count = int(request.args.get("count", 5))
@@ -1248,7 +1277,7 @@ def emails_endpoint():
 def emails_unread_endpoint():
     """Unread email count + previews."""
     try:
-        from mail_integration import get_unread_count, get_unread_emails, is_outlook_available
+        from amigo.services.mail_integration import get_unread_count, get_unread_emails, is_outlook_available
         if not is_outlook_available():
             return jsonify({"error": "Outlook not available"}), 503
         count = get_unread_count()
@@ -1262,7 +1291,7 @@ def emails_unread_endpoint():
 def emails_search_endpoint():
     """Search emails by keyword."""
     try:
-        from mail_integration import search_emails, is_outlook_available
+        from amigo.services.mail_integration import search_emails, is_outlook_available
         if not is_outlook_available():
             return jsonify({"error": "Outlook not available"}), 503
         data = request.get_json() or {}
@@ -1278,7 +1307,7 @@ def emails_search_endpoint():
 def calendar_endpoint():
     """Today's calendar events."""
     try:
-        from calendar_integration import get_todays_events, is_outlook_available
+        from amigo.services.calendar_integration import get_todays_events, is_outlook_available
         if not is_outlook_available():
             return jsonify({"error": "Outlook Calendar not available"}), 503
         return jsonify({"events": get_todays_events()})
@@ -1290,7 +1319,7 @@ def calendar_endpoint():
 def calendar_upcoming_endpoint():
     """Upcoming calendar events."""
     try:
-        from calendar_integration import get_upcoming_events, is_outlook_available
+        from amigo.services.calendar_integration import get_upcoming_events, is_outlook_available
         if not is_outlook_available():
             return jsonify({"error": "Outlook Calendar not available"}), 503
         days = int(request.args.get("days", 7))
@@ -1299,11 +1328,67 @@ def calendar_upcoming_endpoint():
         return jsonify({"error": str(e)}), 500
 
 
+# Proactive Intelligence API Endpoints
+@app.route("/api/proactive/status")
+def api_proactive_status():
+    """Get proactive intelligence status."""
+    try:
+        proactive = get_proactive_intelligence()
+        return jsonify(proactive.get_status())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/proactive/config", methods=["GET", "POST"])
+def api_proactive_config():
+    """Get or update proactive intelligence configuration."""
+    try:
+        proactive = get_proactive_intelligence()
+        if request.method == "GET":
+            return jsonify(proactive.config)
+        else:
+            data = request.get_json() or {}
+            proactive.update_config(data)
+            return jsonify({"success": True, "config": proactive.config})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/proactive/dismiss", methods=["POST"])
+def api_proactive_dismiss():
+    """Dismiss a proactive suggestion."""
+    try:
+        data = request.get_json() or {}
+        suggestion_id = data.get("suggestion_id")
+        if not suggestion_id:
+            return jsonify({"error": "Missing suggestion_id"}), 400
+        proactive = get_proactive_intelligence()
+        proactive.dismiss_suggestion(suggestion_id)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/proactive/acknowledge", methods=["POST"])
+def api_proactive_acknowledge():
+    """Acknowledge a proactive suggestion was helpful."""
+    try:
+        data = request.get_json() or {}
+        suggestion_id = data.get("suggestion_id")
+        if not suggestion_id:
+            return jsonify({"error": "Missing suggestion_id"}), 400
+        proactive = get_proactive_intelligence()
+        proactive.acknowledge_suggestion(suggestion_id)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/hotkey/status")
 def api_hotkey_status():
     """Status of global Alt+V vision hotkey service."""
     try:
-        from hotkey_service import is_hotkey_service_running
+        from amigo.ui.hotkey_service import is_hotkey_service_running
         return jsonify({
             "hotkey": "Alt+V",
             "running": is_hotkey_service_running(),
@@ -1339,7 +1424,7 @@ def _start_background_initializations():
     
     # Start hotkey service (already async internally)
     try:
-        import hotkey_service
+        from amigo.ui import hotkey_service
         hotkey_service.set_broadcast_callback(broadcaster.broadcast)
         hotkey_service.start_hotkey_service()
     except Exception as e:
@@ -1389,6 +1474,14 @@ def initialize_amigo_async():
         
         # Wait for LLM with progress (this is the critical path)
         _wait_for_llm_with_progress(executor)
+        
+        # Don't wait for RAG - let it initialize in background
+        # The server will start and RAG will be ready when needed
+        print("[ AMIGO ] RAG engine initializing in background...")
+    
+    # Initialize proactive intelligence after LLM is ready
+    print("[ AMIGO ] Starting proactive intelligence...")
+    init_proactive_intelligence(speak_callback=speak, broadcast_callback=broadcaster.broadcast)
     
     print("[ AMIGO ] All systems ready!")
 
@@ -1404,3 +1497,5 @@ if __name__ == "__main__":
     initialize_amigo_async()
 
     launch_server(port=5000, open_browser=True)
+
+

@@ -253,7 +253,7 @@ def inspect_screen(question: str = "") -> dict:
 
     reply = ""
     try:
-        from ai import get_ai_response
+        from amigo.core.ai import get_ai_response
         reply = get_ai_response(user_prompt, doc_context=screen_context)
     except Exception as e:
         reply = f"I captured your screen ({window_title}), but had trouble analyzing it: {e}"
@@ -290,7 +290,7 @@ def analyze_image(image_input, question: str = "Describe what you see in this im
         if img is not None:
             ocr_text = read_text_from_image(img)
             if ocr_text:
-                from local_llm import query_local_llm, sanitize_for_tts
+                from amigo.core.local_llm import query_local_llm, sanitize_for_tts
                 prompt = f"[Extracted Image Text]:\n{ocr_text[:2000]}\n\nQuestion: {question}"
                 reply = query_local_llm(prompt, max_tokens=250)
                 return sanitize_for_tts(reply) if reply else "I read the text in this image."

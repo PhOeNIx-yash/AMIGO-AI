@@ -1,0 +1,108 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "amigo-voice-assistant"
+version = "2.0.0"
+description = "Amigo Voice Assistant - Local AI Voice Assistant for Windows"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Amigo Team", email = "amigo@example.com"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Desktop Environment :: Window Managers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    # Speech Recognition (STT)
+    "sherpa-onnx>=1.10.0",
+    "SpeechRecognition>=3.10.0",
+    "pyaudio>=0.2.14",
+    "av>=11.0.0",
+    "soundfile>=0.12.1",
+    "num2words>=0.5.13",
+    # Neural Text-to-Speech (TTS)
+    "kokoro-onnx>=0.3.1",
+    "sounddevice>=0.4.6",
+    "numpy>=1.24.0",
+    "pywin32>=306",
+    # Local LLM Engine
+    "llama-cpp-python>=0.2.80",
+    "huggingface-hub>=0.23.0",
+    # Web Dashboard & REST API
+    "Flask>=3.0.0",
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=4.9.0",
+    # Desktop & OS Automation
+    "pyautogui>=0.9.54",
+    "psutil>=5.9.0",
+    "screen-brightness-control>=0.23.0",
+    "comtypes>=1.4.0",
+    "pycaw>=20240210",
+    # Screen Vision & OCR
+    "Pillow>=10.0.0",
+    "winocr>=0.0.15",
+    "pytesseract>=0.3.10",
+    # Clipboard, Timers & Content Integrations
+    "pyperclip>=1.8.2",
+    "python-dateutil>=2.8.2",
+    # RAG Vector Store & Document Parsing
+    "chromadb>=0.4.22",
+    "sentence-transformers>=2.2.2",
+    "pypdf>=3.17.0",
+    "python-docx>=1.1.0",
+    "python-pptx>=0.6.23",
+    "openpyxl>=3.1.0",
+    "pdfplumber>=0.11.0",
+    "pypdfium2>=5.9.0",
+    "rank-bm25>=0.2.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+
+[project.scripts]
+amigo = "amigo.ui.server:launch_server"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["amigo*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.json", "*.txt", "*.md", "models/*", "assets/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "SIM", "T20", "W"]
+ignore = ["E501", "B008"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true

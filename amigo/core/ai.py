@@ -10,21 +10,19 @@ import re
 import threading
 from typing import Generator
 
-from local_llm import (
+from amigo.core.local_llm import (
     query_local_llm,
     query_local_llm_stream,
     stream_sentence_chunks,
-    sanitize_for_tts,
     get_clipboard_text,
-    is_thinking_enabled,
     set_thinking_enabled,
-    is_creativity_enabled,
+    is_thinking_enabled,
     get_sampling_params,
 )
 
 # ── RAG Engine (the new memory backbone) ──
-import rag_engine
-from network_utils import is_internet_connected
+import amigo.core.rag_engine as rag_engine
+from amigo.utils.network_utils import is_internet_connected
 
 logger = logging.getLogger("amigo.ai")
 
@@ -148,17 +146,6 @@ def get_active_context_prompt() -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  LLM Prompt Building  (now RAG-enhanced)
-# ═══════════════════════════════════════════════════════════════
-
-_thread_local = threading.local()
-
-def get_last_thought() -> str:
-    """Return the most recent reasoning/thought block for the current request thread, if any."""
-    return getattr(_thread_local, "last_thought", "")
-
-
-# ════════════════════════════════════════════════════════════════
 #  LLM Prompt Building  (now RAG-enhanced)
 # ═══════════════════════════════════════════════════════════════
 
@@ -386,4 +373,21 @@ def get_ai_response_stream(
         clean = _RE_SPEAKER_PREFIX.sub("", sentence).strip()
         if clean:
             yield clean
+
+
+__all__ = [
+    "get_quick_feedback",
+    "get_user_profile_prompt",
+    "get_active_context_prompt",
+    "get_ai_response",
+    "get_ai_response_stream",
+    "add_to_memory",
+    "get_active_state",
+    "update_active_state",
+    "load_memory",
+    "save_memory",
+    "clear_conversations_memory",
+    "set_thinking_enabled",
+    "is_thinking_enabled",
+]
 

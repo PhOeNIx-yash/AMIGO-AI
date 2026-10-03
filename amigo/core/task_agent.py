@@ -9,10 +9,10 @@ import re
 import time
 from typing import Any, Callable, Dict, List, Optional
 
-import os_automation
-from screen_vision import get_active_window_title
-import tool_registry
-from llm_agent import get_agent_action
+import amigo.services.os_automation as os_automation
+from amigo.services.screen_vision import get_active_window_title
+import amigo.utils.tool_registry as tool_registry
+from amigo.core.llm_agent import get_agent_action
 
 logger = logging.getLogger("amigo.task_agent")
 
@@ -60,7 +60,7 @@ def execute_desktop_action(action: str, params: Dict[str, Any]) -> tuple[bool, s
             text = params.get("text", "")
             target_app = params.get("app", "")
             if target_app:
-                from app_opener import open_windows_app
+                from amigo.services.app_opener import open_windows_app
                 open_windows_app(target_app)
                 # Don't wait for window - clipboard paste (Ctrl+V) works on currently focused text field
             ok = os_automation.type_text(text)
