@@ -6,21 +6,74 @@ Provides natural language understanding using MiniCPM 5 2B with tool calling for
 import json
 import logging
 import re
+import sys
 import threading
-from typing import Generator
+from pathlib import Path
+import typing
 
-from amigo.core.local_llm import (
-    query_local_llm,
-    query_local_llm_stream,
-    init_local_llm,
-    sanitize_for_tts,
-    is_thinking_enabled,
-)
-from amigo.core.ai import get_user_profile_prompt, get_active_context_prompt, get_active_state
-import amigo.core.rag_engine as rag_engine
-from amigo.core.rag_engine import get_recent_conversations
-from amigo.utils.tool_registry import execute_tool
-from amigo.utils.network_utils import is_internet_connected
+file_path = Path(__file__).resolve()
+project_root = None
+
+for parent in (file_path.parent, *file_path.parents):
+    if (parent / "amigo").is_dir():
+        project_root = parent
+        break
+    if (parent / "pyproject.toml").exists() or (parent / "requirements.txt").exists():
+        project_root = parent
+        break
+
+if project_root is None:
+    for parent in (file_path.parent.parent, *file_path.parents):
+        if (parent / "amigo").is_dir():
+            project_root = parent
+            break
+
+if project_root is None:
+    for parent in file_path.parents:
+        if (parent / "core").is_dir() and (parent / "utils").is_dir():
+            project_root = parent
+            break
+
+if project_root is None:
+    if len(file_path.parents) > 1:
+        project_root = file_path.parents[1]
+    else:
+        project_root = file_path.parent
+
+package_root = project_root / "amigo" if (project_root / "amigo").is_dir() else project_root
+for candidate in {project_root, package_root}:
+    if candidate and str(candidate) not in sys.path:
+        sys.path.insert(0, str(candidate))
+
+try:
+    from amigo.core.local_llm import (
+        query_local_llm,
+        query_local_llm_stream,
+        init_local_llm,
+        sanitize_for_tts,
+        is_thinking_enabled,
+    )
+    from amigo.core.ai import get_user_profile_prompt, get_active_context_prompt, get_active_state
+    import amigo.core.rag_engine as rag_engine
+    from amigo.core.rag_engine import get_recent_conversations
+    from amigo.utils.tool_registry import execute_tool
+    from amigo.utils.network_utils import is_internet_connected
+except ModuleNotFoundError:
+    for candidate in {project_root, package_root}:
+        if candidate and str(candidate) not in sys.path:
+            sys.path.insert(0, str(candidate))
+    from amigo.core.local_llm import (
+        query_local_llm,
+        query_local_llm_stream,
+        init_local_llm,
+        sanitize_for_tts,
+        is_thinking_enabled,
+    )
+    from amigo.core.ai import get_user_profile_prompt, get_active_context_prompt, get_active_state
+    import amigo.core.rag_engine as rag_engine
+    from amigo.core.rag_engine import get_recent_conversations
+    from amigo.utils.tool_registry import execute_tool
+    from amigo.utils.network_utils import is_internet_connected
 
 logger = logging.getLogger("amigo.llm_agent")
 
@@ -31,7 +84,7 @@ logger = logging.getLogger("amigo.llm_agent")
 TOOL_DEFINITIONS = [
     {
         "name": "chat",
-        "description": "General conversation, questions, explanations, advice, coding help, greetings, jokes. Do NOT use for WRITE/TYPE/GENERATE/COMPOSE requests - use 'type_text' or 'generate_content'.",
+            "description": "General conversation, questions, explanations, advice, coding help, greetings, jokes, chit-chat. Use for: 'how are you', 'tell me a joke', 'explain X', 'what do you think', casual chat. Do NOT use for: media playback (play/stream/watch), writing/typing/generating content, or app control.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -42,11 +95,11 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "open_app",
-        "description": "Launch an installed application by name (e.g., 'vscode', 'chrome', 'calculator', 'word').",
+            "description": "Launch an installed application by name. Use for: 'open notepad', 'launch chrome', 'start calculator', 'run word'. The app name MUST be extracted from the user's request.",
         "parameters": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Application name to open"}
+                    "name": {"type": "string", "description": "Application name to open (e.g., 'notepad', 'chrome', 'calculator', 'word')"}
             },
             "required": ["name"]
         }
@@ -64,22 +117,22 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "play_youtube",
-        "description": "Play music, songs, videos, or audio on YouTube. Use this for ANY request to play music, stream a song, listen to a track, or watch a video. This works online via YouTube - you DO have access to this. Do NOT say you cannot play music.",
+            "description": "Play music, songs, videos, or audio on YouTube. Use ONLY for requests to PLAY media content: 'play [song]', 'play [video]', 'stream [music]', 'listen to [track]', 'watch [video]'. The song/video query MUST be extracted from the user's request and passed as the 'query' parameter. Do NOT use for jokes, conversation, questions, or general chat - use 'chat' for those.",
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "What to search and play on YouTube (song name, artist, video title, etc.)"}
+                    "query": {"type": "string", "description": "What to search and play on YouTube (song name, artist, video title, etc.) - MUST be extracted from user request and passed as query parameter"}
             },
             "required": ["query"]
         }
     },
     {
         "name": "web_search",
-        "description": "Search the web for information, facts, news, or current events.",
+            "description": "Search the web for PUBLIC KNOWLEDGE: current events, news, weather, stock prices, general facts, how-to guides, definitions, product reviews, or any information NOT stored on the user's local machine. Do NOT use for local actions (reminders, timers, apps, files, system controls) or personal data.",
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Search query"}
+                    "query": {"type": "string", "description": "Search query for public information"}
             },
             "required": ["query"]
         }
@@ -107,7 +160,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "set_volume",
-        "description": "Adjust system audio volume. Valid actions: mute, volume_up, volume_down, set_volume (with level 0-100).",
+            "description": "Adjust system audio volume. Actions: 'mute' (silence completely), 'volume_up' (increase), 'volume_down' (decrease), 'set_volume' (specific level 0-100). Use 'mute' ONLY when user explicitly says 'mute', 'silence', or 'turn off sound'. Use 'volume_down' for 'lower', 'turn down', 'quieter'. Use 'set_volume' with level for specific levels like 'set volume to 50'.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -139,7 +192,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "current_media",
-        "description": "Check what song/track is currently playing.",
+            "description": "Check what song/track is currently playing. Use for: 'what song is playing', 'what's playing', 'current song', 'now playing', 'which song is playing'. Do NOT use for playing music - use 'play_youtube' for that. This tool has NO parameters.",
         "parameters": {"type": "object", "properties": {}}
     },
     {
@@ -175,7 +228,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "get_calendar",
-        "description": "Check the user's LOCAL Outlook calendar events, appointments, or meetings. This accesses the user's calendar data stored locally on their machine - NO cloud access.",
+            "description": "Check the user's LOCAL Outlook calendar events, appointments, or meetings. This accesses the user's calendar data stored locally on their machine - NO cloud access. Use for: 'check my calendar', 'what's on my calendar', 'show my schedule', 'upcoming meetings'.",
         "parameters": {"type": "object", "properties": {}}
     },
     {
@@ -185,7 +238,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "set_timer",
-        "description": "Set a countdown timer or alarm.",
+            "description": "Set a countdown timer or alarm. Use for: 'set a timer for 5 minutes', 'timer for 1 hour', 'countdown 30 seconds'. Do NOT use for reminders (use set_reminder) or alarms.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -196,15 +249,26 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "set_reminder",
-        "description": "Set a reminder or task alert.",
+            "description": "Set a reminder or task alert. Use for: 'remind me to call mom in 30 minutes', 'set reminder for meeting at 3pm', 'remind me to take a break in 1 hour'. The reminder text and time MUST be extracted from the user's request.",
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Reminder text and when (e.g., 'call mom in 30 minutes', 'meeting at 3pm')"}
+                    "query": {"type": "string", "description": "Reminder text and when (e.g., 'call mom in 30 minutes', 'meeting at 3pm') - MUST be extracted from user request"}
             },
             "required": ["query"]
         }
     },
+        {
+            "name": "cancel_reminder",
+                "description": "Cancel or delete existing reminders. Use for: 'delete all reminders', 'cancel reminder', 'remove reminder', 'clear reminders'. The reminder identifier or 'all' MUST be extracted from the user's request.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                        "query": {"type": "string", "description": "Which reminder to cancel (e.g., 'all', 'call mom', 'meeting at 3pm') - MUST be extracted from user request"}
+                },
+                "required": ["query"]
+            }
+        },
     {
         "name": "find_file",
         "description": "Find or locate local files or folders on the user's computer. This searches the user's LOCAL file system - NO cloud access.",
@@ -324,8 +388,9 @@ def build_agent_system_prompt(query: str = "", conversation_history: list | None
     active_context = get_active_context_prompt()
 
     # Get recent conversation history - use passed history if available, otherwise from RAG
+    # For tool selection, we only need recent USER queries (not assistant responses) to avoid biasing the LLM
     if conversation_history:
-        recent = conversation_history[-10:]  # Use last 10 turns from passed history
+        recent = conversation_history[-6:]  # Last 6 turns = ~3 user queries
         last_s = get_last_played_song(conversation_history)
         if last_s and last_s.get("title") and "Playing" not in active_context:
             if active_context:
@@ -333,15 +398,14 @@ def build_agent_system_prompt(query: str = "", conversation_history: list | None
             else:
                 active_context = f"[Active State: Last Media: '{last_s['title']}']"
     else:
-        recent = rag_engine.get_recent_conversations(10)
+        recent = rag_engine.get_recent_conversations(6)
     history_lines = []
     for turn in recent:
         u = (turn.get("user") or "").strip()
-        a = (turn.get("assistant") or "").strip()
+        # Only include user queries in history for tool selection context
+        # Assistant responses can bias the LLM toward previous topics
         if u:
             history_lines.append(f"User: {u}")
-        if a:
-            history_lines.append(f"Assistant: {a[:200]}")
     history_block = "\n".join(history_lines) if history_lines else "No recent conversation."
 
     # Build concise tool schema for the prompt
@@ -395,8 +459,15 @@ CONVERSATION HISTORY (most recent last):
 {user_profile}
 
 OUTPUT FORMAT:
-Every response MUST be a JSON object:
+Every response MUST be one or more JSON objects (one per tool call):
 {{"tool": "tool_name", "params": {{...}}, "speak": "optional confirmation"}}
+{{"tool": "tool_name2", "params": {{...}}, "speak": "optional confirmation"}}
+For compound requests with multiple distinct actions, output multiple JSON objects sequentially.
+
+COMPOUND REQUEST EXAMPLE:
+User: close chrome and search for best browser
+Assistant: {{"tool": "close_app", "params": {{"name": "chrome"}}, "speak": "Closing Chrome."}}
+{{"tool": "web_search", "params": {{"query": "best browser 2024"}}, "speak": "Searching for best browser."}}
 
 CONTEXT RESOLUTION:
 When the user refers to something from recent conversation (e.g., "play it again", "play that song", "open that file", "search for that", "the same", "again", "it", "that"), you MUST resolve the reference using the CONVERSATION HISTORY and ACTIVE STATE above. Look at the most recent relevant user request and use those details in your tool parameters.
@@ -427,8 +498,12 @@ INSTRUCTIONS FOR SELECTING TOOLS:
 - To check unread emails: ALWAYS use "unread_emails"
 - To set timers: use "set_timer" with {{"query": "..."}}
 - To set reminders: use "set_reminder" with {{"query": "..."}}
+- To cancel or delete reminders: use "cancel_reminder" with {{"query": "all" or "specific reminder text"}}
 - For weather forecast: use "get_weather" with {{"city": "CityName"}} (Capitalize city name)
 - For general conversation, greeting, jokes, or explanations: output {{"tool": "chat", "params": {{"response": "your answer"}}, "speak": "your answer"}}
+
+COMPOUND REQUESTS:
+When the user asks for multiple distinct actions in one sentence (e.g., "close chrome and search for browsers", "play music and set volume to 50"), you MUST output multiple JSON objects - one for each action. Each action gets its own tool call with appropriate parameters. Output them sequentially without any text between them.
 
 EXAMPLES:
 User: what time is it
@@ -488,6 +563,15 @@ Assistant: {{"tool": "set_volume", "params": {{"action": "volume_up"}}}}
 User: turn down the volume
 Assistant: {{"tool": "set_volume", "params": {{"action": "volume_down"}}}}
 
+User: mute the volume
+Assistant: {{"tool": "set_volume", "params": {{"action": "mute"}}}}
+
+User: what song is playing
+Assistant: {{"tool": "current_media", "params": {{}}}}
+
+User: play believer by imagine dragons on youtube
+Assistant: {{"tool": "play_youtube", "params": {{"query": "believer by imagine dragons"}}}}
+
 User: take a screenshot
 Assistant: {{"tool": "take_screenshot", "params": {{}}}}
 
@@ -509,6 +593,15 @@ Assistant: {{"tool": "restart_pc", "params": {{}}}}
 User: remind me to call mom in 30 minutes
 Assistant: {{"tool": "set_reminder", "params": {{"query": "call mom in 30 minutes"}}}}
 
+User: delete all reminders
+Assistant: {{"tool": "cancel_reminder", "params": {{"query": "all"}}}}
+
+User: cancel reminder
+Assistant: {{"tool": "cancel_reminder", "params": {{"query": "all"}}}}
+
+User: remove reminder
+Assistant: {{"tool": "cancel_reminder", "params": {{"query": "all"}}}}
+
 User: what does this document say
 Assistant: {{"tool": "document_qa", "params": {{"query": "what does this document say"}}}}
 
@@ -517,6 +610,48 @@ Assistant: {{"tool": "chat", "params": {{"response": "I'm doing well, thank you!
 
 User: tell me a joke
 Assistant: {{"tool": "chat", "params": {{"response": "Why do programmers prefer dark mode? Because light attracts bugs!"}}}}
+
+User: tell me another joke
+Assistant: {{"tool": "chat", "params": {{"response": "Why don't scientists trust atoms? Because they make up everything!"}}}}
+
+User: make me laugh
+Assistant: {{"tool": "chat", "params": {{"response": "I told my computer I needed a break, and now it won't stop sending me vacation ads!"}}}}
+
+User: what's the date today
+Assistant: {{"tool": "get_date", "params": {{}}}}
+
+User: what is today's date
+Assistant: {{"tool": "get_date", "params": {{}}}}
+
+User: check system status
+Assistant: {{"tool": "system_status", "params": {{}}}}
+
+User: show system status
+Assistant: {{"tool": "system_status", "params": {{}}}}
+
+User: lock my pc
+Assistant: {{"tool": "lock_pc", "params": {{}}}}
+
+User: lock the computer
+Assistant: {{"tool": "lock_pc", "params": {{}}}}
+
+User: maximize this window
+Assistant: {{"tool": "window_mgmt", "params": {{"action": "maximize"}}}}
+
+User: set a timer for 5 minutes
+Assistant: {{"tool": "set_timer", "params": {{"query": "5 minutes"}}}}
+
+User: check my calendar
+Assistant: {{"tool": "get_calendar", "params": {{}}}}
+
+User: mute the volume
+Assistant: {{"tool": "set_volume", "params": {{"action": "mute"}}}}
+
+User: set volume to 50
+Assistant: {{"tool": "set_volume", "params": {{"action": "set_volume", "level": 50}}}}
+
+User: remind me to call mom in 30 minutes
+Assistant: {{"tool": "set_reminder", "params": {{"query": "call mom in 30 minutes"}}}}
 """
     return prompt
 
@@ -716,15 +851,13 @@ def get_agent_actions(
     messages = [{"role": "system", "content": system_prompt}]
     
     # Add conversation history as proper chat messages
+    # Only include USER queries to avoid biasing the LLM toward previous assistant responses
     if conversation_history:
-        recent = conversation_history[-10:]  # Use last 10 turns
+        recent = conversation_history[-6:]  # Use last 6 turns (~3 user queries)
         for turn in recent:
             u = (turn.get("user") or "").strip()
-            a = (turn.get("assistant") or "").strip()
             if u:
                 messages.append({"role": "user", "content": u[:1000]})
-            if a:
-                messages.append({"role": "assistant", "content": a[:1500]})
     
     # Add current query (use resolved query for LLM)
     messages.append({"role": "user", "content": resolved_query})
@@ -802,7 +935,7 @@ def get_agent_response_stream(
     query: str,
     conversation_history: list | None = None,
     interruption_event: threading.Event | None = None
-) -> Generator[str, None, None]:
+) -> typing.Generator[str, None, None]:
     """
     Streaming version for real-time responses.
     Yields sentences as they're generated.
@@ -815,14 +948,12 @@ def get_agent_response_stream(
 
     messages = [{"role": "system", "content": system_prompt}]
     if conversation_history:
-        recent = conversation_history[-10:]
+        recent = conversation_history[-6:]  # Use last 6 turns (~3 user queries)
         for turn in recent:
             u = (turn.get("user") or "").strip()
-            a = (turn.get("assistant") or "").strip()
+            # Only include user queries to avoid biasing the LLM
             if u:
                 messages.append({"role": "user", "content": u[:1000]})
-            if a:
-                messages.append({"role": "assistant", "content": a[:1500]})
     messages.append({"role": "user", "content": query})
 
     try:
