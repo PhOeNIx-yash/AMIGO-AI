@@ -92,26 +92,38 @@ def _broadcast(event_type: str, data: dict = None):
 
 
 def _play_sound_async(sound_path: str):
-    """Play an MP3 sound file asynchronously using Windows default player."""
-    try:
-        if os.path.exists(sound_path):
-            # Use Windows start command to play MP3 with default handler
-            subprocess.Popen(
-                ["cmd.exe", "/c", "start", "", sound_path],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-    except Exception as e:
-        logger.debug(f"[Sound] Failed to play {sound_path}: {e}")
+    """Play an audio file asynchronously using sounddevice directly without popping up any window."""
+    def _worker():
+        try:
+            if os.path.exists(sound_path):
+                import sounddevice as sd
+                import soundfile as sf
+                data, sr = sf.read(sound_path, dtype="float32")
+                sd.play(data, sr)
+                sd.wait()
+        except Exception as e:
+            logger.debug(f"[Sound] Failed to play {sound_path}: {e}")
+
+    threading.Thread(target=_worker, daemon=True, name="HotkeySoundThread").start()
 
 
-def _play_activating_sound():
-    """Plays the activation sound (Alt+V pressed)."""
+def _play_activating_sound(wait_finish: bool = True):
+    """Plays the activation sound (Alt+V pressed) cleanly before mic opens."""
+    if wait_finish and os.path.exists(ACTIVATING_SOUND):
+        try:
+            import sounddevice as sd
+            import soundfile as sf
+            data, sr = sf.read(ACTIVATING_SOUND, dtype="float32")
+            sd.play(data, sr)
+            sd.wait()
+            return
+        except Exception as e:
+            logger.debug(f"[Sound] Failed to play activating sound synchronously: {e}")
     _play_sound_async(ACTIVATING_SOUND)
 
 
 def _play_searching_sound():
-    """Plays the searching/thinking sound."""
+    """Plays the searching/thinking sound immediately when speech ends and search begins."""
     _play_sound_async(SEARCHING_SOUND)
 
 
@@ -138,20 +150,23 @@ def _handle_wake_action():
             return screenshot
 
         # Step 2: Play activating sound and update UI state to 'listening'
-        _play_activating_sound()
         _broadcast("state_change", {"state": "listening"})
+        _play_activating_sound(wait_finish=True)
 
-        # Step 3: Listen for user speech via microphone
+        # Step 3: Listen for user speech via microphone with fast, calibrated silence detection
         import speech_recognition as sr
         recognizer = sr.Recognizer()
-        recognizer.energy_threshold = 300
         recognizer.dynamic_energy_threshold = True
-        recognizer.pause_threshold = 0.75
+        recognizer.pause_threshold = 0.55  # Ends listening 0.55s after user stops talking
         recognizer.phrase_threshold = 0.2
+        recognizer.non_speaking_duration = 0.4
 
         query = ""
         try:
             with sr.Microphone() as source:
+                # Fast 0.25s ambient noise sample to prevent room noise from hanging the listener
+                recognizer.adjust_for_ambient_noise(source, duration=0.25)
+                recognizer.energy_threshold = max(recognizer.energy_threshold, 250)
                 logger.info("[Hotkey Wake] Listening for voice command...")
                 audio = recognizer.listen(source, timeout=4.5, phrase_time_limit=10.0)
             from amigo.utils.tts import transcribe_audio_data
@@ -169,7 +184,8 @@ def _handle_wake_action():
             query = "What is on my screen?"
             logger.info("[Hotkey Wake] Defaulting to general screen description.")
 
-        # Update UI with user's query and set state to 'processing'
+        # Step 4: Play searching/thinking sound and update UI state to 'processing'
+        _play_searching_sound()
         tool_name = "hotkey"
         _broadcast("chat_message", {
             "sender": "user",
@@ -178,13 +194,14 @@ def _handle_wake_action():
         })
         _broadcast("state_change", {"state": "processing"})
 
-        # Step 4: Dispatch Query via Intelligent Agent Action Router
+        # Step 5: Dispatch Query via Intelligent Agent Action Router
         from amigo.utils.tts import speak
         from amigo.core import llm_agent
         from amigo.core import rag_engine
         from amigo.utils.tool_registry import get_agent_action, execute_tool
 
         reply = ""
+        res_url = None
         history = []
         try:
             history = rag_engine.get_recent_conversations(15)
@@ -197,6 +214,13 @@ def _handle_wake_action():
                 tool = act.get("tool", "chat")
                 params = act.get("params", {})
                 spoken = act.get("speak", "")
+
+                # Notify UI of detected intent
+                _broadcast("intent_detected", {
+                    "intent": tool.lower(),
+                    "tool": tool.lower(),
+                    "params": params,
+                })
 
                 if tool in ("read_screen", "screen_vision"):
                     shot = _get_screenshot()
@@ -215,7 +239,9 @@ def _handle_wake_action():
                             max_tokens=350,
                         ) or screen_vision.answer_screen_question(query)
                 else:
-                    res_spoken, _, _ = execute_tool(
+                    if tool == "web_search":
+                        spoken = ""
+                    res_spoken, action_url, _ = execute_tool(
                         tool,
                         params,
                         query=query,
@@ -223,6 +249,8 @@ def _handle_wake_action():
                         conversation_history=history,
                     )
                     reply = res_spoken or spoken
+                    if action_url:
+                        res_url = action_url
 
                 if reply:
                     tool_name = tool
@@ -237,7 +265,7 @@ def _handle_wake_action():
         clean_reply = llm_agent.sanitize_for_tts(reply) or reply
         logger.info(f"[Hotkey Wake] Amigo responding: '{clean_reply}'")
 
-        # Step 5: Save interaction to RAG memory (CRUCIAL for History Tab & Vector Recall)
+        # Step 6: Save interaction to RAG memory (CRUCIAL for History Tab & Vector Recall)
         try:
             from amigo.core.llm_agent import add_to_memory
             add_to_memory(
@@ -255,10 +283,11 @@ def _handle_wake_action():
             "text": clean_reply,
             "tool": tool_name,
             "user_query": query,
+            "url": res_url,
         })
         _broadcast("state_change", {"state": "speaking"})
 
-        # Step 6: Speak output via Kokoro Neural TTS
+        # Step 7: Speak output via Kokoro Neural TTS
         speak(clean_reply, block=True)
 
     except Exception as e:
@@ -280,7 +309,6 @@ def _handle_wake_action():
         except Exception:
             pass
     finally:
-        _play_searching_sound()
         _broadcast("state_change", {"state": "idle"})
         with _lock:
             _is_processing = False

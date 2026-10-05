@@ -397,7 +397,10 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
                       : `${theme.primary}18`,
                     boxShadow: isExpanded ? `0 4px 20px -2px ${theme.primary}20` : undefined,
                   }}
-                  onClick={() => toggleExpand(item.id)}
+                  onClick={() => {
+                    sfx.playClick();
+                    onSelectHistoryEntry(item);
+                  }}
                 >
                   {/* Top Row: Intent & Time */}
                   <div className="flex items-center justify-between text-[11px] mb-1.5">
@@ -467,8 +470,10 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
                               sfx.playClick();
                               onSelectHistoryEntry(item);
                             }}
-                            className="text-[10px] font-medium opacity-70 hover:opacity-100 flex items-center space-x-1 underline"
+                            className="flex items-center space-x-1 px-2 py-1 rounded-md text-white transition-all text-[10px] font-medium shadow-sm active:scale-95"
+                            style={{ background: theme.gradient }}
                           >
+                            <Sparkles className="w-2.5 h-2.5" />
                             <span>Open on stage</span>
                           </button>
 

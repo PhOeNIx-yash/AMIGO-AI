@@ -922,9 +922,9 @@ def _tool_chat(params, query, spoken, conversation_history=None):
 
     doc_context = ""
     try:
-        # Check if the query has a high-confidence match in indexed documents or user facts
+        # Only inject document context if there is a genuine high-confidence semantic match
         results = rag_engine.search(query, target_collections=[rag_engine.DOCUMENTS, rag_engine.USER_FACTS], top_k=3)
-        if results and any(r.get("score", 0) >= 0.35 or r.get("rerank_score", 0) >= 0.35 for r in results):
+        if results and any(r.get("rerank_score", 0) >= 0.65 or r.get("score", 0) >= 0.68 for r in results):
             doc_context = rag_engine.build_rag_context(query, top_k=3, conversation_history=conv_history)
     except Exception as e:
         logger.debug(f"[Chat RAG context]: {e}")
@@ -1412,7 +1412,21 @@ def _tool_ask_document(params, query, spoken):
 
     if ctx:
         meta = {"matched_docs": [target_path]} if target_path else {"doc_context_used": True}
-        return get_ai_response(question, doc_context=ctx), None, meta
+        response = get_ai_response(question, doc_context=ctx)
+
+        # Natural fallback if model outputs generic cloud AI disclaimer claiming lack of access
+        refusal_patterns = (
+            "don't have access to",
+            "do not have access to",
+            "cannot access your personal",
+            "can't access your personal",
+            "as an ai, i do not have access",
+            "as an ai, i don't have access",
+        )
+        if any(pat in response.lower() for pat in refusal_patterns):
+            response = "I checked your saved documents, but I couldn't find that information."
+
+        return response, None, meta
     return "I couldn't find anything relevant in your documents.", None
 
 

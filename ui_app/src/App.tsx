@@ -25,8 +25,36 @@ import { KineticHeading, KineticStateBadge, TextAnimationStyle, normalizeAnimati
 import { IntentBridgeHUD, isActionIntent } from "./components/IntentBridgeHUD";
 import { COLOR_THEMES, GREETING_PRESETS } from "./data/presets";
 import { speakText, sfx } from "./utils/audio";
-import { processVoiceCommand, executeBackendAction } from "./services/assistantApi";
-import { Sparkles, ChevronUp, Shuffle } from "lucide-react";
+import { Sparkles, ChevronUp, Shuffle, Copy, Check, Volume2, X } from "lucide-react";
+
+function renderFormattedContent(text: string) {
+  if (!text) return null;
+  const blocks = text.split(/\n\s*\n/).filter((b) => b.trim());
+  if (blocks.length <= 1) {
+    const lines = text.split(/\n/).filter((l) => l.trim());
+    if (lines.length > 1) {
+      return (
+        <div className="space-y-2">
+          {lines.map((line, idx) => (
+            <p key={idx} className="leading-relaxed">
+              {line.trim()}
+            </p>
+          ))}
+        </div>
+      );
+    }
+    return <p className="leading-relaxed whitespace-pre-wrap">{text.trim()}</p>;
+  }
+  return (
+    <div className="space-y-3">
+      {blocks.map((block, idx) => (
+        <p key={idx} className="leading-relaxed whitespace-pre-wrap">
+          {block.trim()}
+        </p>
+      ))}
+    </div>
+  );
+}
 
 export default function App() {
   const [isDark, setIsDark] = useState<boolean>(() => {
@@ -298,7 +326,27 @@ export default function App() {
               },
             };
           });
-          setHistory(formatted.reverse());
+          const reversed = formatted.reverse();
+          setHistory(reversed);
+
+          // Restore latest conversation onto stage on mount if stage is currently idle/greeting
+          if (reversed.length > 0 && !activePromptRef.current) {
+            const latest = reversed[0];
+            const reply = latest.response.speechReply || latest.response.executionSummary?.details;
+            if (reply) {
+              setDisplayText((current) => {
+                const isGreeting = GREETING_PRESETS.some((g) => g.text === current) || current === greetingText;
+                if (isGreeting) {
+                  setActivePrompt(latest.prompt);
+                  activePromptRef.current = latest.prompt;
+                  setAssistantData(latest.response);
+                  setState("completed");
+                  return reply;
+                }
+                return current;
+              });
+            }
+          }
         }
       }
     } catch (e) {}
@@ -362,6 +410,27 @@ export default function App() {
     topic: string;
   } | null>(null);
 
+  // Response card toolbar state and actions
+  const [copiedResponse, setCopiedResponse] = useState<boolean>(false);
+  const handleCopyResponse = (text: string) => {
+    try {
+      navigator.clipboard.writeText(text);
+      setCopiedResponse(true);
+      sfx.playClick();
+      setTimeout(() => setCopiedResponse(false), 2000);
+    } catch (e) {
+      console.warn("Clipboard copy failed:", e);
+    }
+  };
+
+  const handleDismissResponse = () => {
+    sfx.playClick();
+    setState("idle");
+    setActivePrompt("");
+    activePromptRef.current = "";
+    setDisplayText(greetingText);
+  };
+
   // Real-time bidirectional SSE sync with Amigo Python voice loop & server events
   useEffect(() => {
     let es: EventSource | null = null;
@@ -382,7 +451,15 @@ export default function App() {
               } else if (s === "idle") {
                 setIsListening(false);
                 if (!loadingRef.current) {
-                  setState((current) => (current === "action_card" || current === "completed") ? current : "idle");
+                  setState((current) => {
+                    if (current === "action_card" || current === "completed" || current === "generated_content") {
+                      return current;
+                    }
+                    if (activePromptRef.current) {
+                      return "completed";
+                    }
+                    return "idle";
+                  });
                 }
               } else if (s === "speaking") {
                 setState("completed");
@@ -398,12 +475,14 @@ export default function App() {
                 setLiveParams(null);
                 setHudActive(isActionIntent(data.text));
               } else if (data.sender === "assistant" || data.sender === "amigo") {
+                const userPrompt = data.user_query || activePromptRef.current || "Voice Command";
+                const cleanUser = cleanHistoryPrompt(userPrompt);
+                setActivePrompt(cleanUser);
+                activePromptRef.current = cleanUser;
                 setDisplayText(data.text);
                 setState("completed");
 
                 // Optimistically update History Drawer immediately
-                const userPrompt = data.user_query || activePromptRef.current || "Voice Command";
-                const cleanUser = cleanHistoryPrompt(userPrompt);
                 const optimisticEntry: HistoryEntry = {
                   id: `hist-live-${Date.now()}`,
                   prompt: cleanUser,
@@ -487,25 +566,25 @@ export default function App() {
     };
   }, []);
 
-  // Dynamic auto-cycling of greeting phrases when idle
+  // Dynamic auto-cycling of greeting phrases when idle and no active response is displayed
   useEffect(() => {
-    if (!autoCycleGreetings || state !== "idle") return;
+    if (!autoCycleGreetings || state !== "idle" || activePrompt) return;
 
     const interval = setInterval(() => {
       setGreetingIndex((prevIndex) => (prevIndex + 1) % GREETING_PRESETS.length);
     }, autoCycleInterval * 1000);
 
     return () => clearInterval(interval);
-  }, [autoCycleGreetings, state, autoCycleInterval]);
+  }, [autoCycleGreetings, state, autoCycleInterval, activePrompt]);
 
-  // Update greeting text only if currently in idle state and no active response displayed
+  // Update greeting text only if currently in idle state and no active prompt/response displayed
   useEffect(() => {
-    if (state === "idle" && autoCycleGreetings) {
+    if (state === "idle" && autoCycleGreetings && !activePrompt) {
       const activeText = GREETING_PRESETS[greetingIndex]?.text || GREETING_PRESETS[0].text;
       setGreetingText(activeText);
       setDisplayText((current) => (GREETING_PRESETS.some((g) => g.text === current) ? activeText : current));
     }
-  }, [greetingIndex, autoCycleGreetings, state]);
+  }, [greetingIndex, autoCycleGreetings, state, activePrompt]);
 
   // Quick cycle to next greeting phrase on click
   const handleShuffleGreeting = () => {
@@ -1037,15 +1116,15 @@ export default function App() {
 
                   {/* Main Central Spoken / Heading Text (for idle, listening, processing, working, completed) */}
                   {!isCompact && (
-                    <div className="text-center max-w-2xl sm:max-w-3xl md:max-w-4xl mx-auto px-4 drop-shadow-[0_4px_24px_rgba(0,0,0,0.85)] pointer-events-auto">
+                    <div className="w-full max-w-2xl sm:max-w-3xl md:max-w-4xl mx-auto px-4 drop-shadow-[0_4px_24px_rgba(0,0,0,0.85)] pointer-events-auto">
                       {(state === "listening" || isListening) && liveTranscript ? (
-                        <div className="flex min-w-0 w-full flex-col items-center px-2">
+                        <div className="flex min-w-0 w-full flex-col items-center px-2 text-center">
                           <p className="w-full min-w-0 max-w-2xl break-words text-center text-xl font-semibold leading-snug text-slate-100 sm:text-2xl md:text-3xl">
                             {liveTranscript}
                           </p>
                         </div>
                       ) : (state === "listening" || isListening) ? (
-                        <div className="flex flex-col items-center space-y-1">
+                        <div className="flex flex-col items-center space-y-1 text-center">
                           <KineticHeading
                             text="Listening... speak now"
                             isDark={isDark}
@@ -1057,46 +1136,131 @@ export default function App() {
                             Your voice will transcribe seamlessly in real time
                           </p>
                         </div>
-                      ) : (
-                        <div
-                          className={`group relative inline-flex flex-col items-center select-none max-h-[46vh] overflow-y-auto no-scrollbar px-2 ${
-                            state === "idle" ? "cursor-pointer" : ""
-                          }`}
-                          onClick={state === "idle" ? handleShuffleGreeting : undefined}
-                          title={state === "idle" ? "Click to cycle greeting phrase" : undefined}
-                        >
-                          <KineticHeading
-                            text={
-                              state === "processing" || state === "working"
-                                ? (activePrompt || "Thinking...")
-                                : (displayText || greetingText)
-                            }
-                            isDark={isDark}
-                            colorTheme={colorTheme}
-                            animationStyle={textAnimationStyle}
-                            className={`${
-                              (() => {
-                                const raw = displayText || "";
-                                const len = raw.length;
-                                const words = raw.trim().split(/\s+/).filter(Boolean).length;
-                                if (words > 22 || len > 90) {
-                                  return "text-sm sm:text-base md:text-lg leading-relaxed font-normal";
+                      ) : (() => {
+                        const isGreeting = GREETING_PRESETS.some((g) => g.text.toLowerCase() === (displayText || "").toLowerCase()) || !displayText;
+                        const isResponseContent = !isGreeting && (state === "completed" || (state === "idle" && Boolean(activePrompt))) && Boolean(displayText && (displayText.length > 50 || displayText.includes("\n") || displayText.split(/\s+/).length > 12));
+
+                        if (isResponseContent) {
+                          const theme = COLOR_THEMES[colorTheme] || COLOR_THEMES.violet;
+                          return (
+                            <motion.div
+                              initial={{ opacity: 0, y: 12, scale: 0.98 }}
+                              animate={{ opacity: 1, y: 0, scale: 1 }}
+                              exit={{ opacity: 0, y: -8, scale: 0.98 }}
+                              transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+                              className="w-full max-w-2xl sm:max-w-3xl mx-auto rounded-2xl border backdrop-blur-2xl shadow-2xl p-5 sm:p-6 text-left select-text pointer-events-auto flex flex-col max-h-[52vh] transition-all"
+                              style={{
+                                background: isDark ? "rgba(18, 18, 26, 0.82)" : "rgba(255, 255, 255, 0.92)",
+                                borderColor: isDark ? `${theme.primary}40` : `${theme.primary}25`,
+                                boxShadow: `0 16px 48px -12px ${theme.primary}30`,
+                              }}
+                            >
+                              {/* Header: Prompt Badge + Action Toolbar */}
+                              <div className="flex items-center justify-between gap-3 pb-3 mb-3 border-b border-white/10 dark:border-white/10 shrink-0">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <div
+                                    className="w-6 h-6 rounded-lg flex items-center justify-center text-white shrink-0 shadow-sm"
+                                    style={{ background: theme.gradient }}
+                                  >
+                                    <Sparkles className="w-3.5 h-3.5" />
+                                  </div>
+                                  <p className="text-xs sm:text-sm font-semibold truncate text-slate-800 dark:text-slate-100">
+                                    {activePrompt ? `"${activePrompt}"` : "Amigo Assistant Response"}
+                                  </p>
+                                </div>
+
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCopyResponse(displayText)}
+                                    className="px-2.5 py-1 rounded-lg text-xs font-medium transition-all flex items-center gap-1 bg-white/10 hover:bg-white/20 active:scale-95 text-slate-700 dark:text-slate-200 border border-white/10"
+                                    title="Copy response to clipboard"
+                                  >
+                                    {copiedResponse ? (
+                                      <>
+                                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                                        <span className="text-[11px] text-emerald-400 font-semibold">Copied</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Copy className="w-3.5 h-3.5" />
+                                        <span className="text-[11px]">Copy</span>
+                                      </>
+                                    )}
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => speakText(displayText)}
+                                    className="px-2.5 py-1 rounded-lg text-xs font-medium transition-all flex items-center gap-1 bg-white/10 hover:bg-white/20 active:scale-95 text-slate-700 dark:text-slate-200 border border-white/10"
+                                    title="Read response aloud via Kokoro Neural TTS"
+                                  >
+                                    <Volume2 className="w-3.5 h-3.5" />
+                                    <span className="text-[11px] hidden sm:inline">Listen</span>
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={handleDismissResponse}
+                                    className="p-1 rounded-lg text-xs font-medium transition-all hover:bg-white/20 active:scale-95 text-slate-400 hover:text-slate-100"
+                                    title="Close and return to home screen"
+                                  >
+                                    <X className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              </div>
+
+                              {/* Formatted Scrollable Text Body with Paragraphs */}
+                              <div className="overflow-y-auto pr-2 space-y-3 text-sm sm:text-[15px] leading-relaxed text-slate-800 dark:text-slate-200 font-normal no-scrollbar select-text">
+                                {renderFormattedContent(displayText)}
+                              </div>
+                            </motion.div>
+                          );
+                        }
+
+                        return (
+                          <div className="text-center">
+                            <div
+                              className={`group relative inline-flex flex-col items-center select-none max-h-[46vh] overflow-y-auto no-scrollbar px-2 ${
+                                state === "idle" ? "cursor-pointer" : ""
+                              }`}
+                              onClick={state === "idle" ? handleShuffleGreeting : undefined}
+                              title={state === "idle" ? "Click to cycle greeting phrase" : undefined}
+                            >
+                              <KineticHeading
+                                text={
+                                  state === "processing" || state === "working"
+                                    ? (activePrompt || "Thinking...")
+                                    : (displayText || greetingText)
                                 }
-                                if (words > 8 || len > 36) {
-                                  return "text-base sm:text-lg md:text-xl leading-relaxed font-medium";
-                                }
-                                return "text-xl sm:text-2xl md:text-3xl font-medium tracking-tight leading-snug";
-                              })()
-                            } group-hover:opacity-90 transition-opacity`}
-                          />
-                          {state === "idle" && (
-                            <span className="opacity-0 group-hover:opacity-60 transition-opacity text-[10px] mt-1.5 flex items-center space-x-1 font-medium tracking-wide">
-                              <Shuffle className="w-2.5 h-2.5" />
-                              <span>Click to shuffle greeting</span>
-                            </span>
-                          )}
-                        </div>
-                      )}
+                                isDark={isDark}
+                                colorTheme={colorTheme}
+                                animationStyle={textAnimationStyle}
+                                className={`${
+                                  (() => {
+                                    const raw = displayText || "";
+                                    const len = raw.length;
+                                    const words = raw.trim().split(/\s+/).filter(Boolean).length;
+                                    if (words > 22 || len > 90) {
+                                      return "text-sm sm:text-base md:text-lg leading-relaxed font-normal";
+                                    }
+                                    if (words > 8 || len > 36) {
+                                      return "text-base sm:text-lg md:text-xl leading-relaxed font-medium";
+                                    }
+                                    return "text-xl sm:text-2xl md:text-3xl font-medium tracking-tight leading-snug";
+                                  })()
+                                } group-hover:opacity-90 transition-opacity`}
+                              />
+                              {state === "idle" && (
+                                <span className="opacity-0 group-hover:opacity-60 transition-opacity text-[10px] mt-1.5 flex items-center space-x-1 font-medium tracking-wide">
+                                  <Shuffle className="w-2.5 h-2.5" />
+                                  <span>Click to shuffle greeting</span>
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </div>
                   )}
 

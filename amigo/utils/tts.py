@@ -715,6 +715,7 @@ def transcribe_samples(samples: np.ndarray, sample_rate: int = 16000) -> str:
         with _sherpa_model_lock:
             stream = model.create_stream()
             stream.accept_waveform(16000, samples)
+            stream.input_finished()
             while model.is_ready(stream):
                 model.decode_stream(stream)
             res = model.get_result(stream)

@@ -353,6 +353,7 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
         "tool": primary_tool,
         "url": last_url,
         "thought": last_thought,
+        "user_query": display_prompt or query,
     })
 
     return {"tool": primary_tool, "params": last_params, "response": final_reply, "url": last_url, "metadata": response_metadata, "thought": last_thought}
