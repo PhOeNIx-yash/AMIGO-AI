@@ -180,14 +180,19 @@ def _handle_wake_action():
 
         # Step 4: Dispatch Query via Intelligent Agent Action Router
         from amigo.utils.tts import speak
-        from amigo.core import local_llm
+        from amigo.core import llm_agent
+        from amigo.core import rag_engine
+        from amigo.utils.tool_registry import get_agent_action, execute_tool
 
         reply = ""
+        history = []
+        try:
+            history = rag_engine.get_recent_conversations(15)
+        except Exception:
+            history = []
 
         try:
-            from amigo.core.local_llm import get_agent_action
-            from amigo.utils.tool_registry import execute_tool
-            actions = get_agent_action(query)
+            actions = get_agent_action(query, conversation_history=history)
             for act in actions:
                 tool = act.get("tool", "chat")
                 params = act.get("params", {})
@@ -199,7 +204,7 @@ def _handle_wake_action():
                         prompt = query
                         if window_title:
                             prompt = f"The user is viewing '{window_title}'. Question: {query}"
-                        reply = local_llm.query_local_vision(
+                        reply = llm_agent.query_local_vision(
                             shot,
                             prompt=prompt,
                             system_prompt=(
@@ -210,7 +215,13 @@ def _handle_wake_action():
                             max_tokens=350,
                         ) or screen_vision.answer_screen_question(query)
                 else:
-                    res_spoken, _, _ = execute_tool(tool, params, query, spoken)
+                    res_spoken, _, _ = execute_tool(
+                        tool,
+                        params,
+                        query=query,
+                        spoken=spoken,
+                        conversation_history=history,
+                    )
                     reply = res_spoken or spoken
 
                 if reply:
@@ -221,14 +232,14 @@ def _handle_wake_action():
 
         # Fallback to general LLM response
         if not reply:
-            reply = local_llm.query_local_llm(query, max_tokens=250)
+            reply = llm_agent.query_local_llm(query, max_tokens=250)
 
-        clean_reply = local_llm.sanitize_for_tts(reply) or reply
+        clean_reply = llm_agent.sanitize_for_tts(reply) or reply
         logger.info(f"[Hotkey Wake] Amigo responding: '{clean_reply}'")
 
         # Step 5: Save interaction to RAG memory (CRUCIAL for History Tab & Vector Recall)
         try:
-            from amigo.core.ai import add_to_memory
+            from amigo.core.llm_agent import add_to_memory
             add_to_memory(
                 user_query=query,
                 assistant_reply=clean_reply,
@@ -254,7 +265,7 @@ def _handle_wake_action():
         logger.error(f"[Hotkey Wake] Unexpected error in wake handler: {e}")
         err_msg = "I encountered an issue processing your request."
         try:
-            from amigo.core.ai import add_to_memory
+            from amigo.core.llm_agent import add_to_memory
             add_to_memory(user_query=query or "Hotkey Request", assistant_reply=err_msg, tool="error")
         except Exception:
             pass

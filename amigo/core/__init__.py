@@ -1,8 +1,13 @@
-"""
-Amigo Core Modules
-"""
+import sys
+import amigo.core.llm_agent as llm_agent
+import amigo.core.llm_agent as local_llm
+import amigo.core.llm_agent as ai
 
-from amigo.core.ai import (
+# Register legacy module names to prevent broken imports
+sys.modules.setdefault("amigo.core.local_llm", llm_agent)
+sys.modules.setdefault("amigo.core.ai", llm_agent)
+
+from amigo.core.llm_agent import (
     get_ai_response,
     get_ai_response_stream,
     get_quick_feedback,
@@ -16,11 +21,15 @@ from amigo.core.ai import (
     get_user_profile_prompt,
     get_active_context_prompt,
     get_last_thought,
-    set_thinking_enabled,
-    is_thinking_enabled,
+    initialize_agent,
 )
 
-from amigo.core.local_llm import (
+from amigo.utils.tool_registry import (
+    get_agent_action,
+    get_agent_actions,
+)
+
+from amigo.core.llm_agent import (
     init_local_llm,
     query_local_llm,
     query_local_llm_stream,
@@ -31,16 +40,10 @@ from amigo.core.local_llm import (
     get_clipboard_text,
     sanitize_for_tts,
     stream_sentence_chunks,
-    set_thinking_enabled as set_llm_thinking_enabled,
-    is_thinking_enabled as is_llm_thinking_enabled,
+    set_thinking_enabled,
+    is_thinking_enabled,
     is_creativity_enabled,
     get_sampling_params,
-)
-
-from amigo.core.llm_agent import (
-    get_agent_action,
-    get_agent_actions,
-    initialize_agent,
 )
 
 from amigo.core.rag_engine import (

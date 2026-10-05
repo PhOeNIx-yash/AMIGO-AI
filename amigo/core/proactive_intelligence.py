@@ -132,6 +132,17 @@ class ProactiveIntelligence:
             return
             
         self._running = True
+        # Grace period on startup: initialize check timestamps to now so alerts don't burst on boot
+        now = time.time()
+        if not self.state.last_weather_check:
+            self.state.last_weather_check = now
+        if not self.state.last_calendar_check:
+            self.state.last_calendar_check = now
+        if not self.state.last_system_check:
+            self.state.last_system_check = now
+        if not self.state.last_notification_time:
+            self.state.last_notification_time = now
+
         self._thread = threading.Thread(target=self._run_loop, daemon=True, name="ProactiveIntelligence")
         self._thread.start()
         logger.info("Proactive intelligence started")
@@ -238,26 +249,20 @@ class ProactiveIntelligence:
         try:
             from amigo.services.weather import get_weather_data
             weather = get_weather_data()
-            if weather and "error" not in weather:
-                # Check for severe weather
+            if weather and weather.get("success"):
                 condition = weather.get("condition", "").lower()
-                temp = weather.get("temperature", 0)
+                temp = weather.get("temp_c") or weather.get("temperature", 0)
                 
-                severe_conditions = ["storm", "thunderstorm", "heavy rain", "snow", "blizzard", "hurricane", "tornado"]
-                for severe in severe_conditions:
-                    if severe in condition:
-                        self._send_notification("weather_severe", 
-                            f"Severe weather alert: {weather.get('condition', 'Unknown')} at {temp}°C", "warning")
+                # Check for extreme weather hazards only
+                extreme_conditions = ["tornado", "hurricane", "blizzard", "cyclone", "typhoon"]
+                for extreme in extreme_conditions:
+                    if extreme in condition:
+                        self._send_notification(
+                            "weather_severe", 
+                            f"Weather advisory: {weather.get('condition', 'Unknown')} at {temp}°C",
+                            "info",
+                        )
                         break
-                
-                # Extreme temperature alerts
-                if temp > 35:
-                    self._send_notification("weather_hot", 
-                        f"Very hot today: {temp}°C. Stay hydrated!", "info")
-                elif temp < 0:
-                    self._send_notification("weather_cold", 
-                        f"Freezing temperatures: {temp}°C. Dress warmly!", "info")
-                        
         except Exception as e:
             logger.debug(f"Weather check error: {e}")
     
@@ -340,8 +345,8 @@ class ProactiveIntelligence:
                 "timestamp": datetime.datetime.now().isoformat()
             })
         
-        # Speak if it's a warning/critical
-        if level in ("warning", "critical") and self._speak_callback:
+        # Speak only if it's a critical emergency (e.g. battery cutoff)
+        if level == "critical" and self._speak_callback:
             self._speak_callback(message)
         
         self.state.last_notification_time = now

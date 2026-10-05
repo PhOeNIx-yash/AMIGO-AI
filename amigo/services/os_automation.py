@@ -310,6 +310,36 @@ def play_pause_media():
         return False
 
 
+def get_system_media_info() -> dict | None:
+    """Queries Windows Global System Media Transport Controls (GSMTC) for real-time media title, artist, and playback status."""
+    try:
+        import subprocess
+        from pathlib import Path
+        ps_file = Path(__file__).parent / "get_media.ps1"
+        if not ps_file.exists():
+            return None
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps_file)],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+        status, title, artist = "", "", ""
+        for line in proc.stdout.splitlines():
+            line = line.strip()
+            if line.startswith("STATUS:"):
+                status = line[7:].strip()
+            elif line.startswith("TITLE:"):
+                title = line[6:].strip()
+            elif line.startswith("ARTIST:"):
+                artist = line[7:].strip()
+        if title:
+            return {"status": status.lower(), "title": title, "artist": artist}
+    except Exception as e:
+        print(f"[OS Automation] Error reading system media info: {e}")
+    return None
+
+
 def volume_up():
     """Increases system audio volume."""
     try:

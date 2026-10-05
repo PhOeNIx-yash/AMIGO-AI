@@ -434,14 +434,16 @@ _init_failed = False
 
 
 def _col(name: str):
-    """Get a ChromaDB collection by name. Returns None if not initialized (non-blocking)."""
+    """Get a ChromaDB collection by name."""
     global _initialized, _init_failed
     if _chroma_client is None:
         if _init_failed:
             return None
         if not _initialized:
-            # Not ready yet - return None instead of blocking on init
-            return None
+            try:
+                _init_chroma()
+            except Exception:
+                return None
     return _collections.get(name)
 
 
@@ -1484,12 +1486,14 @@ def _bm25_search(query: str, top_k: int, metadata_filter: dict | None = None) ->
                         if not match:
                             continue
                     
+                    raw_bm25 = float(scores[idx])
+                    norm_bm25 = min(1.0, raw_bm25 / 25.0)
                     results.append(SearchResult(
                         text=doc_info['text'],
                         source=DOCUMENTS,
-                        score=float(scores[idx]),
+                        score=norm_bm25,
                         metadata=doc_info['metadata'],
-                        keyword_score=float(scores[idx]),
+                        keyword_score=raw_bm25,
                     ))
                     if len(results) >= top_k:
                         break
@@ -1509,9 +1513,14 @@ def _rerank_results(query: str, results: list[SearchResult], top_k: int) -> list
         pairs = [(query, r.text) for r in results]
         scores = _reranker.predict(pairs)
         
-        # Update rerank scores
+        # Update rerank scores with calibrated sigmoid
+        import math
         for r, score in zip(results, scores):
-            r.rerank_score = float(score)
+            s = float(score)
+            try:
+                r.rerank_score = 1.0 / (1.0 + math.exp(-s)) if s < 20 else 1.0
+            except OverflowError:
+                r.rerank_score = 0.0 if s < 0 else 1.0
         
         # Sort by rerank score
         results.sort(key=lambda x: x.rerank_score, reverse=True)
@@ -1614,21 +1623,17 @@ def _hybrid_search(
         # Sort by semantic score
         reranked.sort(key=lambda x: x.score, reverse=True)
     
-    # Final scoring: combine semantic, keyword, and rerank scores
+    # Final scoring: combine semantic, keyword, and rerank scores smoothly
     for r in reranked:
         sem_score = max(0.0, min(1.0, r.score))
-        # Keyword boost: normalized BM25 score (0-1) * 0.2
-        kw_boost = 0.2 * min(r.keyword_score / 10.0, 1.0) if r.keyword_score > 0 else 0.0
+        kw_norm = min(1.0, r.keyword_score / 25.0) if r.keyword_score > 0 else 0.0
         
-        # Rerank boost: cross-encoder outputs sigmoid values (0-1), scale appropriately
-        rerank_boost = 0.0
         if _reranker is not None and r.rerank_score > 0:
-            # Cross-encoder typically outputs 0-1 sigmoid values
-            # Use a gentle boost that doesn't saturate immediately
-            rerank_boost = 0.15 * r.rerank_score
-        
-        combined = min(1.0, sem_score + kw_boost + rerank_boost)
-        r.score = round(combined * r.importance, 4)
+            combined = 0.65 * r.rerank_score + 0.25 * sem_score + 0.10 * kw_norm
+        else:
+            combined = 0.75 * sem_score + 0.25 * kw_norm
+            
+        r.score = round(min(1.0, max(0.0, combined)) * r.importance, 4)
     
     reranked.sort(key=lambda x: x.score, reverse=True)
     return reranked[:top_k]
@@ -1820,6 +1825,18 @@ def build_rag_context(query: str, top_k: int = 5, conversation_history: list | N
     seen_files: set[str] = set()
     total_chars = 0
     max_chars = MAX_VOICE_CONTEXT_CHARS if for_voice else 8000
+
+    # Prioritize documents whose filename matches words in the query
+    q_lower = query.lower()
+    def _doc_priority(res):
+        meta = res.get("metadata", {})
+        fname = (meta.get("filename") or "").lower()
+        base_name = os.path.splitext(fname)[0] if fname else ""
+        if fname and (fname in q_lower or (len(base_name) >= 3 and base_name in q_lower)):
+            return 10.0 + res.get("score", 0)
+        return res.get("score", 0)
+
+    relevant.sort(key=_doc_priority, reverse=True)
 
     for r in relevant:
         if len(seen_files) >= top_k or total_chars >= max_chars:
@@ -2053,17 +2070,19 @@ def index_calendar_event(subject: str, start: str, end: str,
 # ═══════════════════════════════════════════════════════════════
 
 def _clean_stt_name(name: str) -> str:
-    """Clean STT-extracted name: remove stop words, limit to 3 tokens, handle common mishearings."""
+    """Clean STT-extracted name: stop at clause-breakers, remove stop words, limit to 2 tokens, handle common mishearings."""
     tokens = name.strip().split()
-    # Filter out stop words
-    tokens = [t for t in tokens if t.lower() not in STOP_WORDS]
-    # Limit to 3 tokens max
-    tokens = tokens[:3]
-    if not tokens:
+    name_tokens = []
+    clause_breakers = {"and", "your", "yours", "you", "amigo", "is", "are", "what", "whats", "what's", "who", "whose", "how", "but", "so"}
+    for t in tokens:
+        if t.lower() in clause_breakers:
+            break
+        if t.lower() not in STOP_WORDS:
+            name_tokens.append(t)
+    name_tokens = name_tokens[:2]
+    if not name_tokens:
         return ""
-    # Join and title-case (but preserve apostrophes)
-    cleaned = " ".join(tokens)
-    # Handle common STT mishearings
+    cleaned = " ".join(name_tokens)
     cleaned = cleaned.replace("Mcdonald", "McDonald").replace("Obrien", "O'Brien")
     return cleaned.title()
 
@@ -2127,7 +2146,11 @@ def get_user_profile_prompt(query: str = "") -> str:
     parts: list[str] = []
     user_name = profile.get("identity", {}).get("name")
     if user_name:
-        parts.append(f"The user's name is {user_name}. You know their name. Do NOT say 'Hello {user_name}!' repeatedly on every turn in an ongoing conversation; speak naturally as a companion.")
+        parts.append(
+            f"The human user speaking with you is named {user_name}. "
+            f"Remember: your name is Amigo, and the user's name is {user_name}. "
+            f"Address them as {user_name} naturally when appropriate, but never call yourself {user_name}."
+        )
     if artists := profile.get("preferences", {}).get("favorite_artists"):
         parts.append(f"User's favorite artists: {', '.join(artists[:3])}.")
     if city := profile.get("preferences", {}).get("favorite_city"):
@@ -2138,17 +2161,13 @@ def get_user_profile_prompt(query: str = "") -> str:
     if query and query.strip():
         q_clean = query.strip().lower()
         words = q_clean.split()
-        is_memory_signal = any(kw in q_clean for kw in ("remember", "recall", "my ", "favorite", "about me", "note", "prefer", "know about me", "where do i", "who is", "what is my", "personal", "data", "who am i", "facts"))
-        should_search_facts = (is_memory_signal or len(words) >= 4) and not any(
-            q_clean.startswith(prefix) for prefix in ("open ", "launch ", "close ", "play ", "pause", "mute", "unmute", "volume ", "set timer", "scroll ", "click ")
-        )
-        if should_search_facts:
+        if len(words) >= 2:
             try:
-                matched_facts = search(query, target_collections=[USER_FACTS], top_k=5)
+                matched_facts = search(query, target_collections=[USER_FACTS], top_k=3)
                 for mf in matched_facts:
                     doc = (mf.get("text") or mf.get("document") or "").strip()
                     score = mf.get("score", 0)
-                    if doc and score > 0.35 and not doc.startswith("Uploaded image"):
+                    if doc and score > 0.45 and not doc.startswith("Uploaded image"):
                         # Fence retrieved facts to prevent prompt injection
                         parts.append(f"Relevant remembered fact: <<BEGIN_FACT>>{doc}<<END_FACT>>")
                         facts_retrieved = True

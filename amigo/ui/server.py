@@ -48,21 +48,18 @@ from typing import Optional
 import psutil
 from flask import Flask, Response, jsonify, request, send_from_directory
 
-from amigo.core.ai import (
+from amigo.core.llm_agent import (
     add_to_memory,
     get_active_state,
     load_memory,
     save_memory,
     clear_conversations_memory,
-    set_thinking_enabled,
-    is_thinking_enabled,
     get_last_thought,
     get_quick_feedback,
-)
-from amigo.core.local_llm import (
+    set_thinking_enabled,
+    is_thinking_enabled,
     get_active_model_info as get_llm_model_info,
     get_available_models as get_llm_available_models,
-    get_agent_action,
     get_clipboard_text,
     init_local_llm,
     is_vision_ready,
@@ -85,6 +82,8 @@ from amigo.utils.tool_registry import (
     UI_TOOL_HANDLERS,
     build_action_cards,
     set_media_update_callback,
+    get_agent_action,
+    execute_tool,
     _tool_chat,
 )
 from amigo.utils.tts import (
@@ -291,30 +290,23 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
             "params": params,
         })
 
-        handler = UI_TOOL_HANDLERS.get(tool, _tool_chat)
         tool_started = time.perf_counter()
         step_query = action.get("step_text") or query
-        handler_result = handler(params, step_query, spoken)
-        if isinstance(handler_result, tuple):
-            if len(handler_result) == 3:
-                res_spoken, res_url, handler_metadata = handler_result
-            elif len(handler_result) == 2:
-                res_spoken, res_url = handler_result
-                handler_metadata = {}
-            else:
-                res_spoken = handler_result[0] if handler_result else ""
-                res_url, handler_metadata = None, {}
-        else:
-            res_spoken = handler_result or ""
-            res_url, handler_metadata = None, {}
+        res_spoken, res_url, handler_metadata = execute_tool(
+            tool,
+            params,
+            query=step_query,
+            spoken=spoken,
+            conversation_history=history,
+        )
         if handler_metadata:
-                    # Preserve showGeneratedPanel if already set to True by a previous tool
-                    if response_metadata.get("showGeneratedPanel") is True:
-                        handler_metadata = {
-                            **handler_metadata,
-                            "showGeneratedPanel": True,
-                        }
-                    response_metadata.update(handler_metadata)
+            # Preserve showGeneratedPanel if already set to True by a previous tool
+            if response_metadata.get("showGeneratedPanel") is True:
+                handler_metadata = {
+                    **handler_metadata,
+                    "showGeneratedPanel": True,
+                }
+            response_metadata.update(handler_metadata)
         logger.info(
             "[Timing] request_id=%s stage=tool tool=%s duration_ms=%.1f",
             request_id or "unknown", tool, (time.perf_counter() - tool_started) * 1000,
@@ -338,7 +330,7 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
     primary_tool = "multi_command" if len(actions) > 1 else last_tool
     final_reply = " ".join(combined_spoken).strip()
     if not final_reply and primary_tool != "chat":
-        from amigo.core.ai import get_quick_feedback
+        from amigo.core.llm_agent import get_quick_feedback
         final_reply = get_quick_feedback(f"finished {primary_tool.replace('_', ' ')}")
     elif not final_reply:
         final_reply = ""
@@ -725,18 +717,13 @@ def api_action_execute():
     data = request.get_json() or {}
     payload = data.get("payload") or {}
     tool = payload.get("tool") or data.get("type", "chat")
-    handler = UI_TOOL_HANDLERS.get(tool)
-    if handler:
+    if tool in UI_TOOL_HANDLERS:
         try:
-            handler_result = handler(payload, data.get("title", ""), "")
-            metadata = {}
-            if isinstance(handler_result, tuple):
-                spoken = handler_result[0] if len(handler_result) > 0 else ""
-                url = handler_result[1] if len(handler_result) > 1 else None
-                metadata = handler_result[2] if len(handler_result) > 2 and isinstance(handler_result[2], dict) else {}
-            else:
-                spoken = str(handler_result)
-                url = None
+            spoken, url, metadata = execute_tool(
+                tool,
+                payload,
+                query=data.get("title", ""),
+            )
 
             # Record user clarification selection in RAG neural memory
             orig_prompt = payload.get("original_prompt") or payload.get("query")
@@ -1040,9 +1027,7 @@ def handle_media_control():
     elif action == "play_query":
         q = data.get("query", "").strip()
         if q:
-            handler = UI_TOOL_HANDLERS.get("play_youtube")
-            if handler:
-                handler({"query": q}, q, f"Playing {q}")
+            execute_tool("play_youtube", {"query": q}, query=q, spoken=f"Playing {q}")
         return jsonify({"success": True})
     return jsonify({"error": "Unknown action"}), 400
 
@@ -1421,6 +1406,13 @@ def _start_background_initializations():
     
     # Start background file indexer
     start_background_indexer(rag_engine, interval_minutes=30)
+
+    # Warm up web search & YouTube connections
+    try:
+        from amigo.services.web_search import warmup
+        warmup()
+    except Exception as e:
+        logger.debug(f"[WebSearch] Warmup failed: {e}")
     
     # Start hotkey service (already async internally)
     try:

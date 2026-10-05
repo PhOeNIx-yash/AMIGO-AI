@@ -27,6 +27,7 @@ from amigo.services.os_automation import (
     prev_track,
     set_volume,
     get_system_status,
+    get_system_media_info,
 )
 from amigo.services.screen_vision import (
     read_text_from_image,

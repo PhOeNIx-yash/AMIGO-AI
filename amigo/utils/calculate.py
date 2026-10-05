@@ -9,7 +9,7 @@ import re
 
 # Lazy import to avoid circular dependency
 def _get_query_local_llm():
-    from amigo.core.local_llm import query_local_llm
+    from amigo.core.llm_agent import query_local_llm
     return query_local_llm
 
 _RE_ALPHA = re.compile(r"[a-zA-Z_]")

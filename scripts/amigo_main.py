@@ -21,9 +21,9 @@ try:
 except Exception:
     _sd = None
 
-from amigo.core.ai import add_to_memory, get_ai_response_stream, load_memory
+from amigo.core.llm_agent import add_to_memory, get_ai_response_stream, load_memory, get_quick_feedback
 from amigo.services.app_opener import ensure_built
-from amigo.core.local_llm import get_active_model_info, get_clipboard_text, init_local_llm, sanitize_for_tts, _RE_PROBE_GUARD
+from amigo.core.llm_agent import get_active_model_info, get_clipboard_text, init_local_llm, sanitize_for_tts, _RE_PROBE_GUARD
 from amigo.core.llm_agent import get_agent_action, get_agent_actions
 from amigo.core.reminder_timer import init_reminders
 from amigo.services.web_search import search_web, format_for_llm, scrape_web_info
@@ -222,7 +222,6 @@ def process_agent_query(query: str) -> None:
         final_reply = " ".join(combined_spoken).strip()
     
     if not final_reply:
-        from amigo.core.ai import get_quick_feedback
         final_reply = get_quick_feedback(f"finished {last_tool.replace('_', ' ')}")
     add_to_memory(query, final_reply, tool=last_tool, clipboard_used=clipboard_used)
 
