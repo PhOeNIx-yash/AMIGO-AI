@@ -42,13 +42,8 @@ _CLEAN_WORDS = frozenset({
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, "..", ".."))
 
-APP_CACHE_FILE = os.path.join(_PROJECT_ROOT, "app_index.json")
-if not os.path.exists(APP_CACHE_FILE) and os.path.exists(os.path.join(BASE_DIR, "app_index.json")):
-    APP_CACHE_FILE = os.path.join(BASE_DIR, "app_index.json")
-
-FILE_CACHE_FILE = os.path.join(_PROJECT_ROOT, "file_index.json")
-if not os.path.exists(FILE_CACHE_FILE) and os.path.exists(os.path.join(BASE_DIR, "file_index.json")):
-    FILE_CACHE_FILE = os.path.join(BASE_DIR, "file_index.json")
+APP_CACHE_FILE = os.path.join(_PROJECT_ROOT, "rag_data", "app_index.json")
+FILE_CACHE_FILE = os.path.join(_PROJECT_ROOT, "rag_data", "file_index.json")
 
 _app_dict: Dict[str, str] = {}
 _index_built: bool = False
@@ -275,6 +270,7 @@ def _load_cached_app_index() -> bool:
 
 def _save_cached_app_index(apps: Dict[str, str]) -> None:
     try:
+        os.makedirs(os.path.dirname(APP_CACHE_FILE), exist_ok=True)
         with open(APP_CACHE_FILE, "w", encoding="utf-8") as f:
             json.dump({"timestamp": time.time(), "apps": apps}, f, indent=2)
     except Exception:
@@ -345,6 +341,7 @@ def _load_cached_file_index() -> bool:
 
 def _save_cached_file_index(files: List[Tuple[str, str, float]]) -> None:
     try:
+        os.makedirs(os.path.dirname(FILE_CACHE_FILE), exist_ok=True)
         with open(FILE_CACHE_FILE, "w", encoding="utf-8") as f:
             json.dump({"timestamp": time.time(), "files": files}, f)
     except Exception:

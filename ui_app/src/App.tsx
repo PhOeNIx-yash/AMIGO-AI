@@ -439,6 +439,32 @@ export default function App() {
                 setLiveParams(data.params);
               }
               setState("working");
+            } else if (data.type === "proactive_notification") {
+              const msg = data.message || data.text;
+              if (msg) {
+                setDisplayText(msg);
+                setState("completed");
+                const entry: HistoryEntry = {
+                  id: `proactive-${Date.now()}`,
+                  prompt: `Proactive Alert (${data.level || "Info"})`,
+                  timestamp: Date.now(),
+                  status: "completed",
+                  response: {
+                    speechReply: msg,
+                    displayTitle: `Proactive Alert (${data.level || "Info"})`,
+                    intent: "proactive",
+                    requiresDisambiguation: false,
+                    actionCards: [],
+                    executionSummary: {
+                      status: "completed",
+                      headline: "Amigo Proactive Suggestion",
+                      details: msg,
+                    },
+                  },
+                };
+                setHistory((prev) => [entry, ...prev]);
+                fetchBackendHistory();
+              }
             } else if (data.type === "history_cleared") {
               setHistory([]);
             }

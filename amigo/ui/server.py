@@ -24,7 +24,7 @@ logging.basicConfig(
 for _noisy_logger in (
     "werkzeug", "primp", "phonemizer", "urllib3", "chromadb",
     "pdfminer", "pdfminer.pdffont", "pdfminer.pdfinterp", "pdfminer.pdfpage",
-    "pdfminer.pdfdocument", "pypdf", "pdfplumber", "pypdfium2",
+    "pdfminer.pdfdocument", "pypdf", "pdfplumber",
     "httpx", "httpcore", "sentence_transformers", "transformers", "huggingface_hub",
 ):
     logging.getLogger(_noisy_logger).setLevel(logging.ERROR)
@@ -1367,6 +1367,21 @@ def api_proactive_acknowledge():
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/proactive/trigger", methods=["POST"])
+def api_proactive_trigger():
+    """Trigger a proactive notification manually for testing/feedback."""
+    try:
+        data = request.get_json(silent=True) or {}
+        msg = data.get("message") or "This is a proactive alert from Amigo."
+        level = data.get("level") or "info"
+        proactive = get_proactive_intelligence()
+        proactive.trigger_notification(msg, level)
+        return jsonify({"success": True, "message": msg, "level": level})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 
 @app.route("/api/hotkey/status")

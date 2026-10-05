@@ -11,5 +11,6 @@
   "max_suggestions_per_hour": 5,
   "quiet_hours_start": 22,
   "quiet_hours_end": 7,
-  "notification_cooldown_minutes": 15
+  "notification_cooldown_minutes": 15,
+  "voice_enabled": true
 }

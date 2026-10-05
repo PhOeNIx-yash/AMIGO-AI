@@ -19,22 +19,22 @@ _PROJECT_ROOT = os.path.abspath(os.path.join(_BASE_DIR, "..", ".."))
 _HOME = os.path.expanduser("~")
 
 FILE_HASHES_PATH = os.path.join(_PROJECT_ROOT, "rag_data", "file_hashes.json")
-if not os.path.exists(FILE_HASHES_PATH) and os.path.exists(os.path.join(_BASE_DIR, "rag_data", "file_hashes.json")):
-    FILE_HASHES_PATH = os.path.join(_BASE_DIR, "rag_data", "file_hashes.json")
 
-# Default directories to scan (supports both standard and OneDrive-synced folders)
+# Default directories to scan (supports standard, OneDrive, and custom user folders)
 DEFAULT_SCAN_DIRS = [
     os.path.join(_HOME, "Documents"),
     os.path.join(_HOME, "OneDrive", "Documents"),
+    os.path.join(_HOME, "OneDrive - Personal", "Documents"),
     os.path.join(_HOME, "Desktop"),
     os.path.join(_HOME, "OneDrive", "Desktop"),
+    os.path.join(_HOME, "OneDrive - Personal", "Desktop"),
     os.path.join(_HOME, "Downloads"),
 ]
 
-# Skip these directory names entirely
+# Skip these directory names entirely (case-insensitive)
 SKIP_DIRS = {
     "node_modules", ".git", ".venv", "venv", "env", "envs", "__pycache__",
-    ".idea", ".vscode", ".cache", ".npm", ".nuget", "AppData", ".checkpoints",
+    ".idea", ".vscode", ".cache", ".npm", ".nuget", "appdata", ".checkpoints",
     "rag_data", "dist", "build", ".next", ".turbo", "vendor", "target",
     "bin", "obj", "packages", "site-packages", "temp", "tmp",
 }
@@ -47,6 +47,7 @@ class RAGIndexer:
         self._rag = rag_engine
         self._file_hashes: dict[str, str] = {}
         self._is_indexing = False
+        self._index_lock = threading.Lock()
         self._daemon_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._stats = {
@@ -99,37 +100,55 @@ class RAGIndexer:
         return self._file_hashes.get(filepath) != current_hash
 
     def get_scan_directories(self) -> list[str]:
-        """Return list of directories to scan."""
+        """Return list of directories to scan, always ensuring Downloads is included."""
+        dirs = []
         if self._rag:
-            profile = self._rag.load_profile()
-            custom_dirs = profile.get("preferences", {}).get("rag_scan_dirs", [])
-            if custom_dirs:
-                return [d for d in custom_dirs if os.path.isdir(d)]
+            try:
+                profile = self._rag.load_profile()
+                custom_dirs = profile.get("preferences", {}).get("rag_scan_dirs", [])
+                if custom_dirs:
+                    dirs = [d for d in custom_dirs if os.path.isdir(d)]
+            except Exception:
+                pass
 
-        return [d for d in DEFAULT_SCAN_DIRS if os.path.isdir(d)]
+        if not dirs:
+            dirs = [d for d in DEFAULT_SCAN_DIRS if os.path.isdir(d)]
+
+        # Always include Downloads folder if it exists
+        downloads = os.path.join(_HOME, "Downloads")
+        if os.path.isdir(downloads) and downloads not in dirs:
+            dirs.append(downloads)
+
+        return dirs
 
     def _discover_files(self, directories: list[str]) -> list[str]:
         """Walk directories and return list of indexable file paths."""
         files: list[str] = []
+
+        supported_exts = set()
+        max_size = 50 * 1024 * 1024
+        if self._rag and hasattr(self._rag, "SUPPORTED_EXTENSIONS"):
+            supported_exts = self._rag.SUPPORTED_EXTENSIONS
+            max_size = getattr(self._rag, "MAX_FILE_SIZE", max_size)
 
         for scan_dir in directories:
             if not os.path.isdir(scan_dir):
                 continue
             try:
                 for root, dirs, filenames in os.walk(scan_dir, topdown=True):
-                    # Prune skipped directories
-                    dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
+                    # Case-insensitive prune of skipped directories
+                    dirs[:] = [d for d in dirs if d.lower() not in SKIP_DIRS and not d.startswith(".")]
 
                     for fname in filenames:
                         if fname.startswith("~$") or fname.startswith(".~"):
                             continue
                         ext = os.path.splitext(fname)[1].lower()
-                        if ext not in self._rag.SUPPORTED_EXTENSIONS:
+                        if supported_exts and ext not in supported_exts:
                             continue
                         filepath = os.path.join(root, fname)
                         try:
                             fsize = os.path.getsize(filepath)
-                            if 10 < fsize < self._rag.MAX_FILE_SIZE:
+                            if 10 < fsize < max_size:
                                 files.append(filepath)
                         except OSError:
                             continue
@@ -140,10 +159,11 @@ class RAGIndexer:
 
     def full_index(self, force: bool = False, progress_cb: Callable | None = None) -> dict:
         """Full crawl and index of all scan directories. If force=True, re-indexes even if files are unchanged."""
-        if self._is_indexing:
-            return {"status": "already_running"}
+        with self._index_lock:
+            if self._is_indexing:
+                return {"status": "already_running"}
+            self._is_indexing = True
 
-        self._is_indexing = True
         self._stats.update({
             "is_indexing": True,
             "status_message": "Scanning directories...",
@@ -161,12 +181,35 @@ class RAGIndexer:
         errors = 0
 
         try:
+            # Guard: If Chroma is empty but hash cache has entries, force full re-index
+            if self._rag and hasattr(self._rag, "_col") and hasattr(self._rag, "DOCUMENTS"):
+                try:
+                    col = self._rag._col(self._rag.DOCUMENTS)
+                    if col is not None and col.count() == 0 and self._file_hashes:
+                        logger.warning("[Indexer] Chroma is empty but hash cache isn't; forcing re-index")
+                        self._file_hashes.clear()
+                        force = True
+                except Exception:
+                    pass
+
             directories = self.get_scan_directories()
             files = self._discover_files(directories)
             total = len(files)
             self._stats["files_total"] = total
             self._stats["files_left"] = total
             logger.info("[Indexer] Full index (force=%s): %d files found in %s", force, total, directories)
+
+            # Clean up deleted files from index and hash cache
+            deleted = [fp for fp in list(self._file_hashes.keys()) if not os.path.exists(fp)]
+            for df in deleted:
+                self._file_hashes.pop(df, None)
+                if self._rag and hasattr(self._rag, "_col") and hasattr(self._rag, "DOCUMENTS"):
+                    try:
+                        col = self._rag._col(self._rag.DOCUMENTS)
+                        if col:
+                            col.delete(where={"filepath": os.path.normpath(df)})
+                    except Exception:
+                        pass
 
             if progress_cb:
                 try:
@@ -199,11 +242,13 @@ class RAGIndexer:
                     continue
 
                 try:
-                    if self._rag.index_document(filepath):
+                    if self._rag and self._rag.index_document(filepath):
                         indexed += 1
                         self._file_hashes[filepath] = self._file_hash(filepath)
                         self._stats["files_indexed"] = indexed
                     else:
+                        logger.warning("[Indexer] No text indexed for %s (scanned/empty/unreadable?)", filepath)
+                        self._file_hashes[filepath] = self._file_hash(filepath)  # don't retry until changed
                         skipped += 1
                         self._stats["files_skipped"] = skipped
                 except Exception as e:
@@ -217,6 +262,11 @@ class RAGIndexer:
                         pass
 
             self._save_hashes()
+            if indexed > 0 and self._rag and hasattr(self._rag, "_schedule_bm25_rebuild"):
+                try:
+                    self._rag._schedule_bm25_rebuild()
+                except Exception:
+                    pass
 
         finally:
             duration = round(time.time() - start_time, 1)
@@ -253,6 +303,11 @@ class RAGIndexer:
         if ok:
             self._file_hashes[filepath] = self._file_hash(filepath)
             self._save_hashes()
+            if hasattr(self._rag, "_schedule_bm25_rebuild"):
+                try:
+                    self._rag._schedule_bm25_rebuild()
+                except Exception:
+                    pass
         return ok
 
     def start_background_daemon(self, interval_minutes: int = 30, initial_delay: int = 10) -> None:
@@ -301,6 +356,8 @@ def get_indexer(rag_engine=None) -> RAGIndexer:
     global _indexer_instance
     if _indexer_instance is None:
         _indexer_instance = RAGIndexer(rag_engine)
+    elif rag_engine is not None and _indexer_instance._rag is None:
+        _indexer_instance._rag = rag_engine
     return _indexer_instance
 
 

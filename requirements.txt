@@ -45,13 +45,12 @@ python-dateutil>=2.8.2         # Natural datetime & reminder parsing
 
 # ── RAG Vector Store & Document Parsing ───────────────────────
 chromadb>=0.4.22               # Local embedded ChromaDB vector store
-sentence-transformers>=2.2.2   # Local embedding models (BAAI/bge-large-en-v1.5, BAAI/bge-reranker-base)
+sentence-transformers>=2.2.2   # Local embedding models (all-MiniLM-L6-v2, BAAI/bge-reranker-base)
 pypdf>=3.17.0                  # PDF document text extraction
 python-docx>=1.1.0             # Word document (.docx) extraction
 python-pptx>=0.6.23            # PowerPoint (.pptx) extraction
 openpyxl>=3.1.0                # Excel spreadsheet (.xlsx) extraction
 pdfplumber>=0.11.0             # Enhanced PDF extraction with layout/table detection
-pypdfium2>=5.9.0               # PDF rendering for pdfplumber
 rank-bm25>=0.2.2               # BM25 keyword search for hybrid retrieval
 
 

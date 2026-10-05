@@ -41,7 +41,9 @@ DEFAULT_CONFIG = {
     "quiet_hours_start": 22,  # 10 PM
     "quiet_hours_end": 7,     # 7 AM
     "notification_cooldown_minutes": 30,
+    "voice_enabled": True,
 }
+
 
 @dataclass
 class ProactiveState:
@@ -335,8 +337,9 @@ class ProactiveIntelligence:
         if now - self.state.last_notification_time < self.config.get("notification_cooldown_minutes", 30) * 60:
             return
         
-        # Broadcast to UI
+        # 1. Broadcast to UI
         if self._broadcast_callback:
+            # Dedicated proactive notification event
             self._broadcast_callback("proactive_notification", {
                 "id": notification_id,
                 "message": message,
@@ -344,16 +347,56 @@ class ProactiveIntelligence:
                 "suggestion_id": suggestion_id,
                 "timestamp": datetime.datetime.now().isoformat()
             })
+            # Chat message event so UI displays message on screen and registers it in history drawer
+            self._broadcast_callback("chat_message", {
+                "sender": "assistant",
+                "text": message,
+                "user_query": f"Proactive ({level.title()})",
+                "tool": "proactive",
+                "level": level,
+            })
         
-        # Speak only if it's a critical emergency (e.g. battery cutoff)
-        if level == "critical" and self._speak_callback:
-            self._speak_callback(message)
+        # 2. Voice output
+        voice_allowed = self.config.get("voice_enabled", True)
+        if (voice_allowed or level == "critical") and self._speak_callback:
+            try:
+                self._speak_callback(message)
+            except Exception as e:
+                logger.error(f"[Proactive] Error speaking notification: {e}")
         
         self.state.last_notification_time = now
         if level == "suggestion":
             self.state.suggestions_this_hour += 1
         
         logger.info(f"Proactive notification [{level}]: {message}")
+
+    def trigger_notification(self, message: str, level: str = "info", notification_id: str = "manual_trigger") -> None:
+        """Manually trigger a proactive notification bypassing cooldown."""
+        if self._broadcast_callback:
+            self._broadcast_callback("proactive_notification", {
+                "id": notification_id,
+                "message": message,
+                "level": level,
+                "timestamp": datetime.datetime.now().isoformat()
+            })
+            self._broadcast_callback("chat_message", {
+                "sender": "assistant",
+                "text": message,
+                "user_query": f"Proactive ({level.title()})",
+                "tool": "proactive",
+                "level": level,
+            })
+
+        voice_allowed = self.config.get("voice_enabled", True)
+        if (voice_allowed or level == "critical") and self._speak_callback:
+            try:
+                self._speak_callback(message)
+            except Exception as e:
+                logger.error(f"[Proactive] Error speaking notification: {e}")
+
+        self.state.last_notification_time = time.time()
+        logger.info(f"Proactive notification [{level}]: {message}")
+
     
     def record_user_action(self, action: str, context: Dict = None) -> None:
         """Record user action for pattern learning."""

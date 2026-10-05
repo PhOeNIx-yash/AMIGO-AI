@@ -1,7 +1,7 @@
 """
 Enhanced RAG Engine for Amigo Voice Assistant.
 Improvements over v1:
-- Better embedding model (bge-large-en-v1.5)
+- Fast local embedding model (all-MiniLM-L6-v2)
 - Semantic chunking with recursive splitting
 - Hybrid search (semantic + BM25 keyword)
 - Cross-encoder reranking
@@ -29,6 +29,19 @@ from typing import Any
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
 
+
+class RAGEngineError(Exception):
+    """Custom exception for RAG engine initialization and runtime errors.
+    
+    This exception is raised when the RAG engine fails to initialize or encounters
+    a critical error that prevents it from functioning. The UI/voice layer should
+    catch this exception to display an explicit notification to the user and
+    implement automated restart or retry logic.
+    """
+    def __init__(self, message: str, original_error: Exception | None = None):
+        super().__init__(message)
+        self.original_error = original_error
+
 # Pre-compiled regex patterns
 _RE_PDF_NEWLINES = re.compile(r'(?<=[a-zA-Z0-9])\n(?=[a-zA-Z0-9])')
 _RE_PDF_ADJACENT = re.compile(r"([A-Z0-9]{2,})([A-Z][a-z]+)")
@@ -42,7 +55,7 @@ logger = logging.getLogger("amigo.rag_engine_v2")
 for _log_name in (
     "httpx", "httpcore", "sentence_transformers", "transformers", "huggingface_hub",
     "urllib3", "chromadb", "pdfminer", "pdfminer.pdffont", "pdfminer.pdfinterp",
-    "pdfminer.pdfpage", "pdfminer.pdfdocument", "pypdf", "pdfplumber", "pypdfium2",
+    "pdfminer.pdfpage", "pdfminer.pdfdocument", "pypdf", "pdfplumber",
 ):
     logging.getLogger(_log_name).setLevel(logging.ERROR)
 
@@ -52,17 +65,12 @@ _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.abspath(os.path.join(_BASE_DIR, "..", ".."))
 
 RAG_DATA_DIR = os.path.join(_PROJECT_ROOT, "rag_data")
-if not os.path.exists(RAG_DATA_DIR) and os.path.exists(os.path.join(_BASE_DIR, "rag_data")):
-    RAG_DATA_DIR = os.path.join(_BASE_DIR, "rag_data")
 os.makedirs(RAG_DATA_DIR, exist_ok=True)
 
 CHROMA_DIR = os.path.join(RAG_DATA_DIR, "chroma")
 os.makedirs(CHROMA_DIR, exist_ok=True)
 
 PROFILE_FILE = os.path.join(_PROJECT_ROOT, "amigo_profile.json")
-if not os.path.exists(PROFILE_FILE) and os.path.exists(os.path.join(_BASE_DIR, "amigo_profile.json")):
-    PROFILE_FILE = os.path.join(_BASE_DIR, "amigo_profile.json")
-
 BM25_INDEX_PATH = os.path.join(RAG_DATA_DIR, "bm25_index.pkl")
 
 # ── Constants ──────────────────────────────────────────────────
@@ -74,9 +82,9 @@ CALENDAR = "calendar"
 ALL_COLLECTIONS = [CONVERSATIONS, USER_FACTS, DOCUMENTS, EMAILS, CALENDAR]
 
 SUPPORTED_EXTENSIONS = {
-    # Essential document types only
+    # Essential document types
     ".pdf",           # PDF documents
-    ".docx",          # Word documents (modern .docx only; legacy .doc not supported by python-docx)
+    ".docx",          # Word documents (modern .docx only)
     ".txt",           # Notepad/text files
     ".xlsx", ".csv",  # Excel/spreadsheet files
     ".pptx",          # PowerPoint presentations
@@ -92,8 +100,8 @@ SKIP_RAG_TOOLS = {
     "system_volume", "system_brightness", "system_power",
 }
 
-# Max context tokens for voice responses (~1.5k chars ≈ 400 tokens)
-MAX_VOICE_CONTEXT_CHARS = 1500
+# Max context tokens for voice responses (~4k chars ≈ 1000 tokens)
+MAX_VOICE_CONTEXT_CHARS = 4000
 
 # Low-value tools that shouldn't be stored in conversation memory
 # Only skip truly mechanical/system commands, not user-facing interactions
@@ -124,8 +132,8 @@ QUESTION_WORDS = {"what", "when", "who", "where", "why", "how", "which", "whose"
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 CHUNK_SIZE = 512
 CHUNK_OVERLAP = 128
-EMBEDDING_MODEL = "BAAI/bge-large-en-v1.5"  # 1024 dim, better quality
-RERANKER_MODEL = "BAAI/bge-reranker-base"  # Cross-encoder for reranking
+EMBEDDING_MODEL = "all-MiniLM-L6-v2"  # 384 dim, CPU-friendly, fast
+RERANKER_MODEL = "BAAI/bge-reranker-base"  # Cross-encoder for reranking (consider offloading to Ollama/vLLM for GPU acceleration)
 
 MEDIA_STATE_TTL = 1800
 APP_STATE_TTL = 1800
@@ -243,7 +251,7 @@ def _init_chroma() -> None:
                     _embedding_fn = _make_embedding_fn(use_offline=False)
 
             # Check if collections need to be recreated due to embedding dimension change
-            _recreate_collections_if_needed()
+            _recreate_collections_if_needed(client, _embedding_fn)
 
             for name in ALL_COLLECTIONS:
                 _collections[name] = client.get_or_create_collection(
@@ -251,6 +259,20 @@ def _init_chroma() -> None:
                     embedding_function=_embedding_fn,
                     metadata={"hnsw:space": "cosine"},
                 )
+
+            # Restore user facts if they were saved before recreation
+            global _pending_facts_restore
+            if _pending_facts_restore and USER_FACTS in _collections:
+                try:
+                    _collections[USER_FACTS].add(
+                        ids=_pending_facts_restore["ids"],
+                        documents=_pending_facts_restore["documents"],
+                        metadatas=_pending_facts_restore["metadatas"],
+                    )
+                    logger.info("[RAG v2] Restored %d user facts with new embedding model", len(_pending_facts_restore["ids"]))
+                except Exception as ex:
+                    logger.warning("[RAG v2] Could not restore user facts: %s", ex)
+                _pending_facts_restore.clear()
 
             # Set client AFTER collections are created to avoid race condition
             _chroma_client = client
@@ -272,54 +294,85 @@ def _init_chroma() -> None:
             raise
 
 
-def _recreate_collections_if_needed() -> None:
-    """Check if existing collections have different embedding dimensions and recreate if needed.
-    WARNING: This deletes all data in collections with mismatched dimensions.
-    """
+_pending_facts_restore: dict = {}
+
+
+def _recreate_collections_if_needed(client, embedding_fn) -> None:
+    """Check if existing collections have different embedding dimensions and recreate if needed."""
+    global _pending_facts_restore
     try:
-        # Get the expected dimension from the new embedding model
-        test_embedding = _embedding_fn(["test"])
-        expected_dim = len(test_embedding[0]) if test_embedding else 1024
+        test_embedding = embedding_fn(["test"])
+        expected_dim = len(test_embedding[0]) if test_embedding else 384
+        collections_recreated = False
         
         for name in ALL_COLLECTIONS:
             try:
-                existing_col = _chroma_client.get_collection(name=name)
+                existing_col = client.get_collection(name=name)
                 if existing_col:
-                    # Check the dimension of existing embeddings
                     count = existing_col.count()
                     if count > 0:
-                        # Get a sample embedding to check dimension using get with include=["embeddings"]
                         sample = existing_col.get(limit=1, include=["embeddings"])
-                        if sample and 'embeddings' in sample and sample['embeddings'] is not None:
-                            emb = sample['embeddings']
-                            existing_dim = None
-                            if isinstance(emb, list) and len(emb) > 0:
-                                first_emb = emb[0]
-                                if isinstance(first_emb, list):
-                                    existing_dim = len(first_emb)
-                                elif hasattr(first_emb, 'shape'):  # numpy array
-                                    existing_dim = first_emb.shape[0]
-                            elif hasattr(emb, 'shape'):  # numpy array directly
-                                existing_dim = emb.shape[1] if len(emb.shape) > 1 else emb.shape[0]
+                        if sample and sample.get("embeddings") is not None and len(sample["embeddings"]) > 0:
+                            first_emb = sample["embeddings"][0]
+                            existing_dim = len(first_emb) if hasattr(first_emb, "__len__") else getattr(first_emb, "shape", [None])[0]
                             
                             if existing_dim is not None and existing_dim != expected_dim:
-                                logger.warning("[RAG v2] Collection '%s' has dimension %d, expected %d. "
-                                               "ALL DATA IN THIS COLLECTION WILL BE DELETED.", 
-                                               name, existing_dim, expected_dim)
-                                _chroma_client.delete_collection(name=name)
+                                logger.warning(
+                                    "[RAG v2] Collection '%s' has dimension %d, expected %d. Recreating for new model.", 
+                                    name, existing_dim, expected_dim
+                                )
+                                if name == USER_FACTS:
+                                    try:
+                                        facts_all = existing_col.get(include=["documents", "metadatas", "ids"])
+                                        if facts_all and facts_all.get("documents"):
+                                            _pending_facts_restore = facts_all
+                                    except Exception as ex:
+                                        logger.debug("[RAG v2] Could not extract user facts before recreation: %s", ex)
+                                client.delete_collection(name=name)
+                                collections_recreated = True
             except Exception as e:
                 logger.debug("[RAG v2] Could not check collection '%s': %s", name, e)
-                # Collection doesn't exist or other error, will be created fresh
-                pass
+
+        if collections_recreated:
+            # Clear file hashes and BM25 index so documents are re-indexed cleanly with new dimensions
+            hashes_file = os.path.join(RAG_DATA_DIR, "file_hashes.json")
+            if os.path.exists(hashes_file):
+                try:
+                    os.remove(hashes_file)
+                except Exception:
+                    pass
+            if os.path.exists(BM25_INDEX_PATH):
+                try:
+                    os.remove(BM25_INDEX_PATH)
+                except Exception:
+                    pass
+            logger.info("[RAG v2] Reset index metadata for dimension change to %d", expected_dim)
+            
+            # Trigger background re-indexing of all user files
+            def _reindex_bg():
+                try:
+                    time.sleep(1.0)
+                    from amigo.core.rag_indexer import get_indexer
+                    indexer = get_indexer(sys.modules[__name__])
+                    indexer.full_index(force=True)
+                    logger.info("[RAG v2] Automatic full re-index completed for new embedding dimension %d", expected_dim)
+                except Exception as ex:
+                    logger.error("[RAG v2] Background re-indexing error: %s", ex)
+            _executor.submit(_reindex_bg)
     except Exception as e:
         logger.warning("[RAG v2] Could not check collection dimensions: %s", e)
 
 
 def _init_reranker() -> None:
-    """Initialize cross-encoder reranker."""
+    """Initialize cross-encoder reranker with offline protection."""
     global _reranker
     try:
         from sentence_transformers import CrossEncoder
+        cache_root = os.path.expanduser(os.path.join("~", ".cache", "huggingface", "hub"))
+        reranker_dir = f"models--{RERANKER_MODEL.replace('/', '--')}"
+        if os.path.exists(os.path.join(cache_root, reranker_dir)):
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
         _reranker = CrossEncoder(RERANKER_MODEL, max_length=512)
         logger.info("[RAG v2] Cross-encoder reranker initialized: %s", RERANKER_MODEL)
     except Exception as e:
@@ -328,7 +381,7 @@ def _init_reranker() -> None:
 
 
 def _init_bm25_index() -> None:
-    """Initialize BM25 index for keyword search."""
+    """Initialize BM25 index for keyword search. Rebuilds if missing and documents exist."""
     global _bm25_index, _bm25_doc_map
     try:
         import pickle
@@ -341,6 +394,10 @@ def _init_bm25_index() -> None:
         else:
             _bm25_index = None
             _bm25_doc_map = {}
+            col = _collections.get(DOCUMENTS)
+            if col and col.count() > 0:
+                logger.info("[RAG v2] BM25 pickle missing but %d documents exist, scheduling rebuild...", col.count())
+                _schedule_bm25_rebuild()
     except Exception as e:
         logger.warning("[RAG v2] BM25 index load failed: %s", e)
         _bm25_index = None
@@ -416,13 +473,53 @@ def _bm25_update_worker():
 
 
 def _schedule_bm25_rebuild():
-    """Schedule a BM25 rebuild, coalescing multiple requests within a short window."""
+    """Schedule a BM25 rebuild, coalescing multiple requests within a short window.
+    
+    NOTE: This is now only used for manual/forced rebuilds. Regular rebuilds happen
+    nightly via _schedule_nightly_bm25_rebuild() to avoid memory issues.
+    """
     global _bm25_rebuild_pending
     with _bm25_rebuild_lock:
         if _bm25_rebuild_pending:
             return
         _bm25_rebuild_pending = True
     _bm25_update_queue.put(True)
+
+
+def _schedule_nightly_bm25_rebuild() -> None:
+    """Schedule a nightly BM25 index rebuild.
+    
+    This runs once per day (at ~3 AM) to rebuild the BM25 index from all documents.
+    This avoids the memory issues of rebuilding on every document insertion.
+    """
+    import datetime
+    
+    def _nightly_worker():
+        while True:
+            try:
+                now = datetime.datetime.now()
+                # Calculate time until next 3 AM
+                next_run = now.replace(hour=3, minute=0, second=0, microsecond=0)
+                if next_run <= now:
+                    next_run += datetime.timedelta(days=1)
+                sleep_seconds = (next_run - now).total_seconds()
+                
+                logger.info("[RAG v2] Next BM25 nightly rebuild scheduled for %s", next_run.isoformat())
+                time.sleep(sleep_seconds)
+                
+                logger.info("[RAG v2] Starting nightly BM25 rebuild...")
+                _rebuild_bm25_index()
+                logger.info("[RAG v2] Nightly BM25 rebuild complete")
+            except Exception as e:
+                logger.error("[RAG v2] Nightly BM25 rebuild failed: %s", e)
+                # Sleep a bit before retrying
+                time.sleep(3600)
+    
+    threading.Thread(target=_nightly_worker, daemon=True, name="BM25-Nightly-Rebuild").start()
+
+
+# Start the nightly BM25 rebuild scheduler
+_schedule_nightly_bm25_rebuild()
 
 
 threading.Thread(target=_bm25_update_worker, daemon=True, name="BM25-Updater").start()
@@ -434,16 +531,20 @@ _init_failed = False
 
 
 def _col(name: str):
-    """Get a ChromaDB collection by name."""
+    """Get a ChromaDB collection by name.
+    
+    Raises:
+        RAGEngineError: If the RAG engine failed to initialize.
+    """
     global _initialized, _init_failed
     if _chroma_client is None:
         if _init_failed:
-            return None
+            raise RAGEngineError("RAG engine initialization failed. Search is unavailable.")
         if not _initialized:
             try:
                 _init_chroma()
-            except Exception:
-                return None
+            except Exception as e:
+                raise RAGEngineError("RAG engine initialization failed", e) from e
     return _collections.get(name)
 
 
@@ -694,7 +795,7 @@ def extract_text(filepath: str) -> str:
 
 
 def _extract_pdf_enhanced(filepath: str) -> str:
-    """Enhanced PDF extraction with layout awareness and table detection."""
+    """Enhanced PDF extraction with layout awareness and deduplicated table handling."""
     try:
         import pdfplumber
     except ImportError:
@@ -706,23 +807,23 @@ def _extract_pdf_enhanced(filepath: str) -> str:
             for page in pdf.pages:
                 # Extract text with layout preservation
                 text = page.extract_text(x_tolerance=2, y_tolerance=2) or ""
-                
-                # Extract tables - but avoid duplicating text already in extract_text
-                tables = page.extract_tables()
-                table_texts = []
-                if tables:
-                    for table in tables:
-                        table_text = "\n".join([" | ".join([cell or "" for cell in row]) for row in table])
-                        table_texts.append(table_text)
-                
-                if text:
+                if text and len(text.strip()) > 30:
                     cleaned = _RE_PDF_NEWLINES.sub(' ', text)
                     cleaned = _RE_PDF_ADJACENT.sub(r"\1 \2", cleaned)
-                    if table_texts:
-                        cleaned += "\n\n[Tables]\n" + "\n\n".join(table_texts)
                     pages.append(cleaned.strip())
-                elif table_texts:
-                    pages.append("[Tables]\n" + "\n\n".join(table_texts))
+                else:
+                    # Only fallback to extract_tables if text extraction is sparse/empty
+                    tables = page.extract_tables()
+                    table_texts = []
+                    if tables:
+                        for table in tables:
+                            table_text = "\n".join([" | ".join([cell or "" for cell in row if cell]) for row in table])
+                            if table_text.strip():
+                                table_texts.append(table_text)
+                    if table_texts:
+                        pages.append("\n\n".join(table_texts).strip())
+                    elif text.strip():
+                        pages.append(text.strip())
     except Exception as e:
         logger.debug("[RAG v2] pdfplumber error for %s: %s", filepath, e)
         return _extract_pdf_fallback(filepath)
@@ -1346,12 +1447,22 @@ def expand_query(query: str, conversation_history: list | None = None) -> list[s
     """
     Expand query with synonyms, related terms, and context from history.
     Returns list of query variations for better recall.
+    
+    For standard lookups (short queries <= 3 words): returns only original query (no expansion).
+    For complex queries (> 3 words): returns max 2 variations.
     """
     if not query or not query.strip():
         return [query]
     
-    queries = [query.strip()]
+    query = query.strip()
     q_lower = query.lower()
+    word_count = len(query.split())
+    
+    # For standard lookups (short queries), disable expansion entirely
+    if word_count <= 3:
+        return [query]
+    
+    queries = [query]
     
     # Add synonyms for common terms using word boundaries to avoid substring issues
     synonyms = {
@@ -1375,9 +1486,14 @@ def expand_query(query: str, conversation_history: list | None = None) -> list[s
                 # Replace whole word only
                 new_q = re.sub(rf'\b{re.escape(term)}\b', syn, query, flags=re.IGNORECASE)
                 queries.append(new_q)
+                # Limit to 2 variations for complex queries
+                if len(queries) >= 2:
+                    break
+        if len(queries) >= 2:
+            break
     
-    # Add context from conversation history
-    if conversation_history:
+    # Add context from conversation history (only if we haven't hit limit)
+    if conversation_history and len(queries) < 2:
         recent_topics = []
         for turn in conversation_history[-3:]:
             user_msg = turn.get("user", "").lower()
@@ -1391,6 +1507,8 @@ def expand_query(query: str, conversation_history: list | None = None) -> list[s
         for topic, count in topic_counts.most_common(3):
             if topic not in q_lower:
                 queries.append(f"{query} {topic}")
+                if len(queries) >= 2:
+                    break
     
     # Deduplicate while preserving order
     seen = set()
@@ -1400,7 +1518,7 @@ def expand_query(query: str, conversation_history: list | None = None) -> list[s
             seen.add(q)
             unique_queries.append(q)
     
-    return unique_queries[:5]  # Limit to 5 variations
+    return unique_queries[:2]  # Limit to 2 variations for complex queries
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1509,22 +1627,23 @@ def _rerank_results(query: str, results: list[SearchResult], top_k: int) -> list
         return results[:top_k]
     
     try:
-        # Prepare pairs for cross-encoder
-        pairs = [(query, r.text) for r in results]
+        # Rerank up to 20 candidates with truncated text for fast sub-200ms CPU inference
+        candidates = results[:min(len(results), 20)]
+        pairs = [(query, r.text[:350]) for r in candidates]
         scores = _reranker.predict(pairs)
         
         # Update rerank scores with calibrated sigmoid
         import math
-        for r, score in zip(results, scores):
+        for r, score in zip(candidates, scores):
             s = float(score)
             try:
                 r.rerank_score = 1.0 / (1.0 + math.exp(-s)) if s < 20 else 1.0
             except OverflowError:
                 r.rerank_score = 0.0 if s < 0 else 1.0
         
-        # Sort by rerank score
-        results.sort(key=lambda x: x.rerank_score, reverse=True)
-        return results[:top_k]
+        # Sort candidates by rerank score
+        candidates.sort(key=lambda x: x.rerank_score, reverse=True)
+        return candidates[:top_k]
     except Exception as e:
         logger.debug("[RAG v2] Reranking error: %s", e)
         return results[:top_k]
@@ -1540,14 +1659,7 @@ def _hybrid_search(
     """
     Perform hybrid search combining semantic, keyword, and reranking.
     Preserves calibrated [0..1] confidence scores across both documents and facts.
-    Optimizations:
-    - Skip query expansion for short queries (voice)
-    - Batch embeddings for all query variants
-    - Skip reranker unless top semantic scores are close (within 0.1)
-    - Only rerank for document questions, not fact lookups
     """
-    # Skip query expansion for short queries (voice-friendly)
-    # Short queries don't benefit from expansion and it adds latency
     if len(query.split()) <= 3:
         expanded_queries = [query]
     else:
@@ -1564,43 +1676,37 @@ def _hybrid_search(
         pass
     
     all_results = []
+    candidate_pool_size = max(top_k * 3, 15)
     
-    # Semantic search for each expanded query (using pre-computed embeddings)
+    # Semantic search for each expanded query
     for eq in expanded_queries:
         eq_embedding = query_embeddings.get(eq)
-        semantic_results = _semantic_search(eq, target_collections, top_k * 2, metadata_filter=metadata_filter, query_embedding=eq_embedding)
+        semantic_results = _semantic_search(eq, target_collections, candidate_pool_size, metadata_filter=metadata_filter, query_embedding=eq_embedding)
         all_results.extend(semantic_results)
     
     # BM25 keyword search for documents
     if DOCUMENTS in target_collections:
-        bm25_results = _bm25_search(query, top_k * 2, metadata_filter=metadata_filter)
+        bm25_results = _bm25_search(query, candidate_pool_size, metadata_filter=metadata_filter)
         all_results.extend(bm25_results)
     
-    # Deduplicate by text content, MERGING scores when same chunk found by both
+    # Deduplicate by text content, merging scores when same chunk found by both
     seen_texts = {}
     for r in all_results:
-        text_key = r.text[:200]  # Use first 200 chars as key
+        text_key = r.text[:200]
         if text_key not in seen_texts:
             seen_texts[text_key] = r
         else:
-            # Same chunk found by both semantic and BM25 - merge scores
             existing = seen_texts[text_key]
-            # Keep the higher semantic score
             if r.score > existing.score:
                 existing.score = r.score
-            # Keep the higher keyword score
             if r.keyword_score > existing.keyword_score:
                 existing.keyword_score = r.keyword_score
-            # Keep rerank score if present
             if r.rerank_score > existing.rerank_score:
                 existing.rerank_score = r.rerank_score
     
     unique_results = list(seen_texts.values())
+    unique_results.sort(key=lambda x: max(x.score, x.keyword_score / 25.0), reverse=True)
     
-    # Decide whether to rerank:
-    # - Only for document questions (DOCUMENTS in target)
-    # - Only if top semantic scores are close (within 0.15)
-    # - Skip if reranker not available
     should_rerank = (
         _reranker is not None 
         and DOCUMENTS in target_collections
@@ -1608,19 +1714,9 @@ def _hybrid_search(
     )
     
     if should_rerank:
-        # Check if top scores are close enough to benefit from reranking
-        unique_results.sort(key=lambda x: x.score, reverse=True)
-        top_score = unique_results[0].score
-        second_score = unique_results[1].score if len(unique_results) > 1 else 0
-        if top_score - second_score > 0.15:
-            # Clear winner, skip reranking
-            should_rerank = False
-    
-    if should_rerank:
         reranked = _rerank_results(query, unique_results, top_k * 2)
     else:
         reranked = unique_results
-        # Sort by semantic score
         reranked.sort(key=lambda x: x.score, reverse=True)
     
     # Final scoring: combine semantic, keyword, and rerank scores smoothly
@@ -1676,7 +1772,7 @@ def search(
     # Fast path for simple queries (short, no expansion needed, no metadata filter)
     # Skip query expansion for voice (short queries don't benefit)
     is_simple = len(query.split()) <= 3 and not any(c in query for c in '"\'') and not metadata_filter
-    if is_simple and top_k <= 3:
+    if is_simple and top_k <= 3 and DOCUMENTS not in target_collections:
         # Use only semantic search for simple queries (faster)
         # Compute embedding once
         query_embedding = None
@@ -1803,6 +1899,7 @@ def build_rag_context(query: str, top_k: int = 5, conversation_history: list | N
     """
     Build enhanced RAG context for LLM prompt injection.
     Uses hybrid search with query expansion and reranking.
+    Assembles context STRICTLY from pre-indexed ChromaDB search results (no synchronous file parsing).
     For voice: caps total context at MAX_VOICE_CONTEXT_CHARS (~1.5k chars).
     """
     if not query or not query.strip():
@@ -1815,8 +1912,10 @@ def build_rag_context(query: str, top_k: int = 5, conversation_history: list | N
     if not results:
         return ""
 
-    # Filter by relevance threshold
-    relevant = [r for r in results if r.get("score", 0) >= 0.3]
+    # Filter by relevance threshold (falling back to top results if scores are lower)
+    relevant = [r for r in results if r.get("score", 0) >= 0.25]
+    if not relevant and results:
+        relevant = results[:top_k]
     if not relevant:
         return ""
 
@@ -1838,9 +1937,7 @@ def build_rag_context(query: str, top_k: int = 5, conversation_history: list | N
 
     relevant.sort(key=_doc_priority, reverse=True)
 
-    for r in relevant:
-        if len(seen_files) >= top_k or total_chars >= max_chars:
-            break
+    for r in relevant[:4]:
         src = r.get("source", "")
         if src == DOCUMENTS:
             meta = r.get("metadata", {})
@@ -1848,28 +1945,33 @@ def build_rag_context(query: str, top_k: int = 5, conversation_history: list | N
             fpath = meta.get("filepath", "")
             if not top_doc and fpath and os.path.exists(fpath):
                 top_doc = {"path": fpath, "name": fname}
-            if fpath and fpath not in seen_files:
+
+            file_text = ""
+            if fpath and os.path.exists(fpath) and fpath not in seen_files:
                 seen_files.add(fpath)
-                if os.path.exists(fpath):
-                    # Use build_file_context which handles both small and large documents
-                    file_context = build_file_context(fpath, query, max_chars=max_chars - total_chars)
-                    if file_context:
-                        parts.append(file_context)
-                        total_chars += len(file_context)
-                        continue
-                text = r.get("text", "")[:1500]
+                try:
+                    if os.path.getsize(fpath) < 2 * 1024 * 1024:
+                        extracted = extract_text(fpath)
+                        if extracted and len(extracted.strip()) <= 8000:
+                            file_text = extracted.strip()[:max_chars - total_chars]
+                except Exception:
+                    pass
+
+            if file_text:
+                parts.append(f"[From document '{fname}']:\n{file_text}")
+                total_chars += len(file_text)
+            else:
+                text = r.get("text", "")[:900]
                 if total_chars + len(text) > max_chars:
-                    text = text[:max_chars - total_chars]
-                if text:
-                    parts.append(f"[From document '{fname}']:\n{text}")
-                    total_chars += len(text)
-        elif src == USER_FACTS:
-            text = r.get("text", "")[:1000]
-            if total_chars + len(text) > max_chars:
-                text = text[:max_chars - total_chars]
-            if text:
-                parts.append(f"[Known fact]: {text}")
+                    break
+                parts.append(f"[From '{fname}']: {text}")
                 total_chars += len(text)
+        elif src == USER_FACTS:
+            text = r.get("text", "")[:900]
+            if total_chars + len(text) > max_chars:
+                break
+            parts.append(f"[Known fact]: {text}")
+            total_chars += len(text)
 
     if top_doc:
         try:
@@ -1881,12 +1983,13 @@ def build_rag_context(query: str, top_k: int = 5, conversation_history: list | N
 
 
 def build_file_context(filepath: str, question: str, max_chars: int = 8000) -> str:
-    """Retrieve relevant chunks or full text from a specific file for Q&A.
-    Respects max_chars limit for voice context capping."""
+    """Retrieve relevant chunks from a specific file for Q&A.
+    For personal documents and compact files (tickets, invoices, forms, notes <= max_chars),
+    extracts the content directly for 100% precision and complete details (PNR, dates, totals).
+    For larger files, prioritizes the document header chunk plus top relevant chunks from ChromaDB."""
     if not os.path.exists(filepath):
         return ""
     
-    # Check file size first without extracting full text
     try:
         fsize = os.path.getsize(filepath)
         if fsize > MAX_FILE_SIZE or fsize == 0:
@@ -1894,37 +1997,46 @@ def build_file_context(filepath: str, question: str, max_chars: int = 8000) -> s
     except OSError:
         return ""
 
-    # For small files, extract and return full content (capped)
-    if fsize <= 8000:
+    # Fast direct extraction for documents within character budget
+    try:
         text = extract_text(filepath)
-        if text:
-            text = text[:max_chars]
-            return f"[Full content of '{os.path.basename(filepath)}']:\n{text}"
-        return ""
+        if text and len(text.strip()) <= max_chars:
+            return f"[Content from '{os.path.basename(filepath)}']:\n{text.strip()}"
+    except Exception as e:
+        logger.debug("[RAG v2] extract_text in build_file_context error: %s", e)
 
-    # For larger documents, query relevant chunks from index
+    # For larger documents, query chunks from ChromaDB including header
     try:
         col = _col(DOCUMENTS)
         if col and col.count() > 0:
             normalized_path = os.path.normpath(filepath)
-            results = col.query(
-                query_texts=[question],
-                n_results=10,
-                where={"filepath": normalized_path},
-                include=["documents", "distances"],
-            )
-            if results and results.get("documents") and results["documents"][0]:
-                content = "\n\n".join(results["documents"][0])
+            file_docs = col.get(where={"filepath": normalized_path})
+            docs_list = file_docs.get("documents", []) if file_docs else []
+            if docs_list:
+                selected = [docs_list[0]]
+                seen = {docs_list[0][:100]}
+                query_res = col.query(
+                    query_texts=[question],
+                    n_results=min(10, len(docs_list)),
+                    where={"filepath": normalized_path},
+                    include=["documents"],
+                )
+                if query_res and query_res.get("documents") and query_res["documents"][0]:
+                    for d in query_res["documents"][0]:
+                        if d[:100] not in seen:
+                            seen.add(d[:100])
+                            selected.append(d)
+                
+                content = "\n\n".join(selected)
                 content = content[:max_chars]
                 return f"[Relevant sections from '{os.path.basename(filepath)}']:\n{content}"
     except Exception as e:
         logger.debug("[RAG v2] build_file_context error: %s", e)
 
-    # Fallback: extract and truncate
+    # Fallback
     text = extract_text(filepath)
     if text:
-        text = text[:max_chars]
-        return f"[Content from '{os.path.basename(filepath)}']:\n{text}"
+        return f"[Content from '{os.path.basename(filepath)}']:\n{text[:max_chars]}"
     return ""
 
 
@@ -1958,6 +2070,7 @@ def index_document(filepath: str) -> bool:
 
     text = extract_text(filepath)
     if not text or len(text.strip()) < 20:
+        logger.warning("[RAG v2] No text extracted from '%s' (possibly scanned PDF or image without OCR layer)", filepath)
         return False
 
     # Use semantic chunking
@@ -2002,8 +2115,8 @@ def index_document(filepath: str) -> bool:
         for i in range(0, len(ids), batch_size):
             col.upsert(ids=ids[i:i+batch_size], documents=docs[i:i+batch_size], metadatas=metas[i:i+batch_size])
         
-        # Trigger BM25 index rebuild (coalesced by worker)
-        _schedule_bm25_rebuild()
+                # NOTE: BM25 rebuild is now scheduled nightly via _schedule_nightly_bm25_rebuild()
+                # instead of on every index_document call to avoid memory issues with large datasets
         clear_search_cache()
         
         logger.info("[RAG v2] Indexed '%s' (%d semantic chunks)", filename, len(chunks))
@@ -2274,14 +2387,22 @@ _initialized = False
 _init_failed = False
 
 
+# Module-level variable to store initialization error for background mode
+_init_error: Exception | None = None
+
+
 def init_rag(background: bool = True) -> None:
-    """Initialize RAG engine asynchronously in the background."""
-    global _initialized, _init_failed
+    """Initialize RAG engine asynchronously in the background.
+    
+    If background=False, raises RAGEngineError on failure.
+    If background=True, stores the error in _init_error for later retrieval.
+    """
+    global _initialized, _init_failed, _init_error
     if _initialized or _init_failed:
         return
 
     def _worker():
-        global _initialized, _init_failed
+        global _initialized, _init_failed, _init_error
         try:
             _init_chroma()
             # _init_chroma sets _initialized and _init_failed
@@ -2289,13 +2410,21 @@ def init_rag(background: bool = True) -> None:
         except Exception as e:
             _init_failed = True
             _initialized = False
-            logger.warning("[RAG v2] Background init note: %s", e)
+            _init_error = e
+            logger.error("[RAG v2] Background init failed: %s", e)
 
     if background:
         t = threading.Thread(target=_worker, daemon=True, name="RAG-Init-Thread")
         t.start()
     else:
         _worker()
+        if _init_error:
+            raise RAGEngineError("RAG engine initialization failed", _init_error) from _init_error
+
+
+def get_init_error() -> Exception | None:
+    """Get the initialization error if background init failed."""
+    return _init_error
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -2303,15 +2432,23 @@ def init_rag(background: bool = True) -> None:
 # ═══════════════════════════════════════════════════════════════
 
 def search_async(query: str, target_collections: list[str] | None = None, top_k: int = 5, callback=None):
-    """Perform search asynchronously with callback."""
+    """Perform search asynchronously with callback.
+    
+    If callback is provided, it will be called with either the results or a RAGEngineError.
+    """
     def _search_task():
         try:
             results = search(query, target_collections, top_k)
+            if callback:
+                callback(results)
+        except RAGEngineError:
+            # Re-raise RAGEngineError for the callback to handle
+            if callback:
+                callback(RAGEngineError("Search failed: RAG engine not initialized"))
         except Exception as e:
             logger.error("[RAG v2] Async search error: %s", e)
-            results = []
-        if callback:
-            callback(results)
+            if callback:
+                callback(RAGEngineError("Search failed", e))
     
     _executor.submit(_search_task)
 

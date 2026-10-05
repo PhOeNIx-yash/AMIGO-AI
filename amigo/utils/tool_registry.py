@@ -25,7 +25,8 @@ from amigo.core.reminder_timer import (
     parse_relative_seconds,
 )
 from amigo.services.web_search import (searchGoogle, resolve_youtube_video, 
-                           clean_search_query, search_web, format_for_llm)
+                           clean_search_query, search_web, format_for_llm,
+                           get_stock_quote, format_quote)
 from amigo.utils.settings_resolver import open_setting
 from amigo.services.weather import weather_command, get_weather_data
 from amigo.utils.network_utils import is_internet_connected
@@ -148,6 +149,32 @@ def _tool_web_search(params, query, spoken):
         conversation_history=conv_history,
     )
     return response, search_url, {"status": "no_results"}
+
+
+def _tool_stock_quote(params, query, spoken):
+    params = params if isinstance(params, dict) else {}
+    target = str(params.get("symbol") or params.get("query") or query or "").strip()
+    if not is_internet_connected():
+        reply = _offline_reply(query, "you cannot check market or stock quotes without an internet connection")
+        return reply, None, {"status": "offline", "error": "No internet connection"}
+
+    quote = get_stock_quote(target)
+    if quote:
+        formatted = format_quote(quote)
+        meta = {
+            "status": "success",
+            "symbol": quote.symbol,
+            "name": quote.name,
+            "price": quote.price,
+            "currency": quote.currency,
+            "change_pct": quote.change_pct,
+            "exchange": quote.exchange,
+            "url": quote.url,
+        }
+        return formatted, quote.url, meta
+
+    return f"I couldn't find a live stock or market quote for '{target}'.", None, {"status": "not_found"}
+
 
 
 def _tool_open_website(params, query, spoken):
@@ -535,14 +562,15 @@ def _tool_memory_recall(params, query, spoken):
     return "I don't have anything saved about that yet.", None
 
 
-def _tool_document_qa(params, query, spoken):
+def _tool_document_qa(params, query, spoken, conversation_history=None):
     params = params if isinstance(params, dict) else {}
     q = str(params.get("query") or query or "").strip() or query
+    call = getattr(_call_ctx, "value", None) or {}
+    conv_history = conversation_history if conversation_history is not None else call.get("conversation_history")
     try:
-        doc_context = rag_engine.build_rag_context(q, top_k=5)
+        doc_context = rag_engine.build_rag_context(q, top_k=5, conversation_history=conv_history)
         if doc_context:
-            prompt = f"The user is asking about their local documents: '{q}'\nAnswer accurately using the document context above."
-            return get_ai_response(prompt, doc_context=doc_context), None, {"doc_context_used": True}
+            return get_ai_response(q, doc_context=doc_context, conversation_history=conv_history), None, {"doc_context_used": True}
     except Exception as e:
         logger.debug(f"[Document QA]: {e}")
     # Answering from general model knowledge here would invent details about the user's own files.
@@ -691,7 +719,7 @@ def _tool_pause_media(params, query, spoken):
 
     state = get_active_state(clean_expired=True)
     media = state.get("current_media") if isinstance(state, dict) else None
-    has_tracked_media = bool(media and isinstance(media, dict))
+    has_tracked_media = isinstance(media, dict)
     is_playing = has_tracked_media and media.get("status") in ("playing", None)
 
     if not is_playing:
@@ -730,10 +758,10 @@ def _tool_play_media(params, query, spoken):
 
     state = get_active_state(clean_expired=False)
     media = state.get("current_media") if isinstance(state, dict) else None
-    has_tracked_media = bool(media and isinstance(media, dict))
+    has_tracked_media = isinstance(media, dict)
 
     # Only send play key if media is actually paused
-    is_paused = (has_tracked_media and media.get("status") == "paused")
+    is_paused = has_tracked_media and media.get("status") == "paused"
 
     if is_paused:
         try:
@@ -892,7 +920,16 @@ def _tool_chat(params, query, spoken, conversation_history=None):
     call = getattr(_call_ctx, "value", None) or {}
     conv_history = conversation_history if conversation_history is not None else call.get("conversation_history")
 
-    return get_ai_response(query, conversation_history=conv_history), None
+    doc_context = ""
+    try:
+        # Check if the query has a high-confidence match in indexed documents or user facts
+        results = rag_engine.search(query, target_collections=[rag_engine.DOCUMENTS, rag_engine.USER_FACTS], top_k=3)
+        if results and any(r.get("score", 0) >= 0.35 or r.get("rerank_score", 0) >= 0.35 for r in results):
+            doc_context = rag_engine.build_rag_context(query, top_k=3, conversation_history=conv_history)
+    except Exception as e:
+        logger.debug(f"[Chat RAG context]: {e}")
+
+    return get_ai_response(query, doc_context=doc_context, conversation_history=conv_history), None
 
 
 def _tool_generate_content(params, query, spoken):
@@ -1193,8 +1230,9 @@ def _tool_set_volume(params, query, spoken):
         os_automation.mute()
         return "Audio muted.", None
     if action == "unmute":
-        if hasattr(os_automation, "unmute"):
-            os_automation.unmute()
+        unmute_fn = getattr(os_automation, "unmute", None)
+        if callable(unmute_fn):
+            unmute_fn()
         else:
             os_automation.mute()
         return "Audio unmuted.", None
@@ -1242,7 +1280,11 @@ def _tool_system_control(params, query, spoken):
         confirm_result = _require_confirmation("Shutdown PC", params, query, "Shutting down PC")
         if confirm_result[2].get("requires_confirmation"):
             return confirm_result
-        os_automation.shutdown_pc(30)
+        shutdown_fn = getattr(os_automation, "shutdown_pc", None)
+        if callable(shutdown_fn):
+            shutdown_fn(30)
+        else:
+            os.system("shutdown /s /t 30")
         return "Shutting down in 30 seconds.", None
     elif action in ("cancel_shutdown",):
         os_automation.cancel_shutdown()
@@ -1311,6 +1353,10 @@ UI_TOOL_HANDLERS = {
     "play_media":        _tool_play_media,
     "resume_media":      _tool_play_media,
     "resume_playback":   _tool_play_media,
+    "stock_quote":       _tool_stock_quote,
+    "get_stock_quote":   _tool_stock_quote,
+    "market_quote":      _tool_stock_quote,
+    "stock_price":       _tool_stock_quote,
     "stop":              _tool_stop,
     "stop_speaking":     _tool_stop,
     "next_track":        _tool_next_track,
@@ -1628,6 +1674,8 @@ TOOL_DEFINITIONS = [
     _tool("web_search", "Search the web for news, real-time facts, current events, definitions, people, or external knowledge.",
           {"query": _p("string", "Search query resolved from context"),
            "show_in_browser": _p("boolean", "True if user asked to open search results in a browser")}, ["query"]),
+    _tool("stock_quote", "Look up real-time stock prices, share prices, market quotes, or cryptocurrency rates.",
+          {"symbol": _p("string", "Company name, ticker symbol, or cryptocurrency name")}, ["symbol"]),
     _tool("open_website", "Open a specific website or URL in the browser.", {"url": _p("string", "Website address or domain")}, ["url"]),
     _tool("show_images", "Show image search results for a topic in the browser.", {"query": _p("string", "Image search topic")}, ["query"]),
     _tool("play_youtube", "Search and play songs, music, artist tracks, albums, or videos on YouTube.",
@@ -1680,8 +1728,8 @@ TOOL_DEFINITIONS = [
           {"path": _p("string", "File path or name")}, ["path"]),
     _tool("copy_file_path", "Copy a file's full path to clipboard.", {"path": _p("string", "File path")}, ["path"]),
     _tool("open_folder", "Open a folder in File Explorer.", {"name": _p("string", "Folder name or path")}, ["name"]),
-    _tool("document_qa", "Answer questions from the user's indexed local documents.",
-          {"query": _p("string", "Question about document contents")}, ["query"]),
+    _tool("document_qa", "Answer questions from the user's indexed local documents, files, tickets, bookings, PNR numbers, or personal records.",
+          {"query": _p("string", "Question about document or personal file contents")}, ["query"]),
     _tool("ask_document", "Answer questions about a specific document.",
           {"question": _p("string", "Question"), "filepath": _p("string", "Target document path or name")}, ["question"]),
     _tool("summarize_document", "Summarize the contents of a local document.",
@@ -1710,7 +1758,7 @@ TOOL_DEFINITIONS = [
 ]
 
 # Build a set of valid tool names from TOOL_DEFINITIONS for validation
-VALID_TOOL_NAMES = {tool["name"] for tool in TOOL_DEFINITIONS} | {"play_media", "resume_playback"}
+VALID_TOOL_NAMES = {tool["name"] for tool in TOOL_DEFINITIONS} | {"play_media", "resume_playback", "get_stock_quote", "market_quote", "stock_price"}
 
 
 _TOOLS_BLOCK_CACHE: str | None = None
@@ -1804,6 +1852,23 @@ ROUTING GUIDELINES:
 4. CORRECTIONS & CONFIRMATIONS:
    - If the user corrects or refines an earlier request, route based on the corrected intent.
    - If an action was awaiting confirmation: use 'confirm_action' if the user agrees (e.g., 'yes', 'sure', 'go ahead'), or 'cancel_action' if they decline ('no', 'cancel', 'never mind').
+
+5. LIVE MARKET DATA & WEATHER:
+   - For live stock prices, share prices, market quotes, or cryptocurrency rates, use 'stock_quote' with the company name, ticker symbol, or crypto name.
+   - For weather inquiries or forecasts, use 'get_weather'.
+
+6. LOCAL DOCUMENTS & PERSONAL RECORDS:
+   - For questions about the user's tickets, bookings, flights, trains, PNR numbers, invoices, receipts, resumes, or any details from their local files and documents, use 'document_qa'.
+   - For finding or searching files by topic or meaning, use 'find_document'.
+
+EXAMPLES:
+- "tell me apple stock price" -> {"actions": [{"tool": "stock_quote", "params": {"symbol": "Apple"}}]}
+- "how much is bitcoin" -> {"actions": [{"tool": "stock_quote", "params": {"symbol": "Bitcoin"}}]}
+- "weather in new york" -> {"actions": [{"tool": "get_weather", "params": {"city": "New York"}}]}
+- "play anything from justin bieber" -> {"actions": [{"tool": "play_youtube", "params": {"query": "justin bieber"}}]}
+- "what is my pnr number" -> {"actions": [{"tool": "document_qa", "params": {"query": "what is my pnr number"}}]}
+- "what does my ticket say" -> {"actions": [{"tool": "document_qa", "params": {"query": "what does my ticket say"}}]}
+- "find my resume" -> {"actions": [{"tool": "find_document", "params": {"query": "resume"}}]}
 
 OUTPUT FORMAT:
 Respond with exactly one valid JSON object in this format:
@@ -2051,11 +2116,13 @@ def get_agent_action(query: str, conversation_history: list | None = None) -> li
 def get_last_played_song(conversation_history: list | None = None) -> dict | None:
     """Most recently played media from active state, UI server, or play_youtube turns."""
     try:
-        media = get_active_state(clean_expired=False).get("current_media")
-        if isinstance(media, dict):
-            title = media.get("title") or media.get("query")
-            if title and title != "No music playing":
-                return {"title": title, "query": media.get("query") or title, "url": media.get("url", "")}
+        active_state = get_active_state(clean_expired=False)
+        if isinstance(active_state, dict):
+            media = active_state.get("current_media")
+            if isinstance(media, dict):
+                title = media.get("title") or media.get("query")
+                if title and title != "No music playing":
+                    return {"title": title, "query": media.get("query") or title, "url": media.get("url", "")}
     except Exception:
         pass
 
@@ -2078,7 +2145,9 @@ def get_last_played_song(conversation_history: list | None = None) -> dict | Non
     for turn in reversed(hist or []):
         if not isinstance(turn, dict) or turn.get("tool") != "play_youtube":
             continue
-        params = turn.get("params") if isinstance(turn.get("params"), dict) else {}
+        params = turn.get("params")
+        if not isinstance(params, dict):
+            params = {}
         query = str(params.get("query") or "").strip()
         if query:
             return {"title": query, "query": query, "url": ""}
@@ -2112,6 +2181,7 @@ TOOL_ACTION_PROMPTS = {
     "get_date": "check the current date",
     "get_weather": "check the weather forecast",
     "weather": "check the weather forecast",
+    "stock_quote": "check the live stock or market price",
     "system_control": "perform a system control action",
     "take_screenshot": "take a screenshot of your screen",
     "lock_pc": "lock your PC",
@@ -2219,6 +2289,22 @@ def build_action_cards(tool: str, params: dict, result_metadata: dict, url: str 
             "selected": True,
             "badge": "Weather",
             "payload": {"tool": "get_weather", "city": resolved_city, **w_data},
+        })
+
+    # 2b. Live Stock / Market Quote Visual Card
+    elif tool in ("stock_quote", "market_quote", "stock_price", "get_stock_quote") and result_metadata.get("price") is not None:
+        sym = result_metadata.get("symbol", "")
+        name = result_metadata.get("name", sym)
+        price = result_metadata.get("price", "")
+        curr = result_metadata.get("currency", "$")
+        cards.append({
+            "id": f"act-stock-{sym}",
+            "type": "general",
+            "title": f"{name} ({sym})",
+            "subtitle": response_text,
+            "selected": True,
+            "badge": f"{curr} {price}",
+            "payload": {"tool": "stock_quote", **result_metadata},
         })
 
     # 3. Live Countdown Timer & Stopwatch Widget (only when a timer/stopwatch tool actually ran)
