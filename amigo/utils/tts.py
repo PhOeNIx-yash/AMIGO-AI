@@ -1,6 +1,6 @@
 """
 Unified Speech Engine Module for Amigo Voice Assistant.
-Handles both Offline Neural Text-to-Speech (TTS via Kokoro ONNX)
+Handles both Offline Neural Text-to-Speech (TTS via Supertonic 3)
 and Offline Neural Speech-to-Text (STT via Sherpa-ONNX Zipformer).
 """
 
@@ -23,53 +23,71 @@ except ImportError:
 
 logger = logging.getLogger("amigo.speech")
 
-_kokoro_instance = None
-_USE_KOKORO = False
+_supertonic_instance = None
+_USE_SUPERTONIC = False
 
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _MODELS_ROOT = os.path.join(_PROJECT_ROOT, "models")
 
-_MODEL_DIR = os.path.join(_MODELS_ROOT, "kokoro-onnx")
-if not os.path.exists(_MODEL_DIR):
-    _MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "kokoro-onnx")
-_MODEL_PATH = os.path.join(_MODEL_DIR, "kokoro-v1.0.onnx")
-_VOICES_PATH = os.path.join(_MODEL_DIR, "voices-v1.0.bin")
-
 try:
     import sounddevice as _sd
-    from kokoro_onnx import Kokoro as _KokoroOnnx
+    from supertonic import TTS as _SupertonicTTS
 
-    _USE_KOKORO = True
-    logging.getLogger("phonemizer").setLevel(logging.ERROR)
-    logger.info("[TTS] Kokoro ONNX available.")
+    _USE_SUPERTONIC = True
+    logger.info("[TTS] Supertonic-3 Neural Engine available (44.1kHz).")
 except ImportError:
-    logger.warning("[TTS] kokoro-onnx not available.")
+    _USE_SUPERTONIC = False
+    logger.warning("[TTS] supertonic package not available.")
 
-# ── 10 Curated Best Offline Studio Neural Voices (Kokoro 24kHz) ────────
+# ── 10 Curated Best Offline Studio Neural Voices (Supertonic 3 - 44.1kHz Studio) ────────
 CURATED_VOICES = {
-    # 5 Best Female Neural Voices
-    "nicole":  {"engine": "kokoro", "id": "af_nicole",  "name": "Nicole",  "gender": "Female", "accent": "US", "desc": "Smooth, articulate & studio-clean American female (Recommended)"},
-    "sarah":   {"engine": "kokoro", "id": "af_sarah",   "name": "Sarah",   "gender": "Female", "accent": "US", "desc": "Soft, natural & warm American female"},
-    "heart":   {"engine": "kokoro", "id": "af_heart",   "name": "Heart",   "gender": "Female", "accent": "US", "desc": "Warm & expressive American female"},
-    "sky":     {"engine": "kokoro", "id": "af_sky",     "name": "Sky",     "gender": "Female", "accent": "US", "desc": "Bright, friendly & clear American female"},
-    "bella":   {"engine": "kokoro", "id": "af_bella",   "name": "Bella",   "gender": "Female", "accent": "US", "desc": "Energetic & crisp American female"},
+    # 5 Best Female Neural Voices (Supertonic 3)
+    "nova":    {"engine": "supertonic", "id": "F1", "name": "Nova",    "gender": "Female", "accent": "US", "desc": "Smooth, articulate & studio-clean neural female (Recommended)"},
+    "aria":    {"engine": "supertonic", "id": "F2", "name": "Aria",    "gender": "Female", "accent": "US", "desc": "Soft, natural & warm conversational female"},
+    "serena":  {"engine": "supertonic", "id": "F3", "name": "Serena",  "gender": "Female", "accent": "US", "desc": "Warm, expressive and friendly conversational tone"},
+    "chloe":   {"engine": "supertonic", "id": "F4", "name": "Chloe",   "gender": "Female", "accent": "US", "desc": "Bright, friendly & clear female delivery"},
+    "luna":    {"engine": "supertonic", "id": "F5", "name": "Luna",    "gender": "Female", "accent": "US", "desc": "Energetic, crisp and articulate female delivery"},
 
-    # 5 Best Male Neural Voices
-    "adam":    {"engine": "kokoro", "id": "am_adam",    "name": "Adam",    "gender": "Male",   "accent": "US", "desc": "Deep, natural & calm American male baritone"},
-    "michael": {"engine": "kokoro", "id": "am_michael", "name": "Michael", "gender": "Male",   "accent": "US", "desc": "Professional, articulate American male"},
-    "echo":    {"engine": "kokoro", "id": "am_echo",    "name": "Echo",    "gender": "Male",   "accent": "US", "desc": "Warm & conversational American male"},
-    "liam":    {"engine": "kokoro", "id": "am_liam",    "name": "Liam",    "gender": "Male",   "accent": "US", "desc": "Young, natural & clear American male"},
-    "george":  {"engine": "kokoro", "id": "bm_george",  "name": "George",  "gender": "Male",   "accent": "GB", "desc": "Distinguished British English gentleman"},
+    # 5 Best Male Neural Voices (Supertonic 3)
+    "orion":   {"engine": "supertonic", "id": "M1", "name": "Orion",   "gender": "Male",   "accent": "US", "desc": "Deep, calm and grounded baritone resonance"},
+    "atlas":   {"engine": "supertonic", "id": "M2", "name": "Atlas",   "gender": "Male",   "accent": "US", "desc": "Professional, crisp and articulate executive tone"},
+    "leo":     {"engine": "supertonic", "id": "M3", "name": "Leo",     "gender": "Male",   "accent": "US", "desc": "Warm, relatable and conversational companion"},
+    "felix":   {"engine": "supertonic", "id": "M4", "name": "Felix",   "gender": "Male",   "accent": "US", "desc": "Young, natural, and modern male delivery"},
+    "ethan":   {"engine": "supertonic", "id": "M5", "name": "Ethan",   "gender": "Male",   "accent": "US", "desc": "Distinguished, articulate gentleman delivery"},
+
+    # Direct F1-F5 & M1-M5 IDs
+    "f1":      {"engine": "supertonic", "id": "F1", "name": "Nova",    "gender": "Female", "accent": "US", "desc": "Smooth, articulate & studio-clean female"},
+    "f2":      {"engine": "supertonic", "id": "F2", "name": "Aria",    "gender": "Female", "accent": "US", "desc": "Soft, natural & warm female"},
+    "f3":      {"engine": "supertonic", "id": "F3", "name": "Serena",  "gender": "Female", "accent": "US", "desc": "Warm, expressive and natural female"},
+    "f4":      {"engine": "supertonic", "id": "F4", "name": "Chloe",   "gender": "Female", "accent": "US", "desc": "Bright, friendly & clear female"},
+    "f5":      {"engine": "supertonic", "id": "F5", "name": "Luna",    "gender": "Female", "accent": "US", "desc": "Energetic and crisp female"},
+    "m1":      {"engine": "supertonic", "id": "M1", "name": "Orion",   "gender": "Male",   "accent": "US", "desc": "Deep calm baritone male"},
+    "m2":      {"engine": "supertonic", "id": "M2", "name": "Atlas",   "gender": "Male",   "accent": "US", "desc": "Professional executive male"},
+    "m3":      {"engine": "supertonic", "id": "M3", "name": "Leo",     "gender": "Male",   "accent": "US", "desc": "Warm & conversational male"},
+    "m4":      {"engine": "supertonic", "id": "M4", "name": "Felix",   "gender": "Male",   "accent": "US", "desc": "Young & natural modern male"},
+    "m5":      {"engine": "supertonic", "id": "M5", "name": "Ethan",   "gender": "Male",   "accent": "US", "desc": "Distinguished gentleman male"},
+
+    # Seamless backward compatibility with legacy voice names
+    "nicole":  {"engine": "supertonic", "id": "F1", "name": "Nova",    "gender": "Female", "accent": "US", "desc": "Studio-clean neural female"},
+    "sarah":   {"engine": "supertonic", "id": "F2", "name": "Aria",    "gender": "Female", "accent": "US", "desc": "Warm conversational female"},
+    "heart":   {"engine": "supertonic", "id": "F3", "name": "Serena",  "gender": "Female", "accent": "US", "desc": "Warm & expressive female"},
+    "sky":     {"engine": "supertonic", "id": "F4", "name": "Chloe",   "gender": "Female", "accent": "US", "desc": "Bright & clear female"},
+    "bella":   {"engine": "supertonic", "id": "F5", "name": "Luna",    "gender": "Female", "accent": "US", "desc": "Energetic & crisp female"},
+    "adam":    {"engine": "supertonic", "id": "M1", "name": "Orion",   "gender": "Male",   "accent": "US", "desc": "Deep calm baritone male"},
+    "michael": {"engine": "supertonic", "id": "M2", "name": "Atlas",   "gender": "Male",   "accent": "US", "desc": "Professional executive male"},
+    "echo":    {"engine": "supertonic", "id": "M3", "name": "Leo",     "gender": "Male",   "accent": "US", "desc": "Warm & conversational male"},
+    "liam":    {"engine": "supertonic", "id": "M4", "name": "Felix",   "gender": "Male",   "accent": "US", "desc": "Young & natural male"},
+    "george":  {"engine": "supertonic", "id": "M5", "name": "Ethan",   "gender": "Male",   "accent": "US", "desc": "Distinguished gentleman"},
 }
 
 _PROFILE_PATH = os.path.join(_PROJECT_ROOT, "amigo_profile.json")
 if not os.path.exists(_PROFILE_PATH):
     _PROFILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "amigo_profile.json")
 
-ACTIVE_VOICE = "nicole"
-KOKORO_VOICE = "af_nicole"
-KOKORO_SPEED = 1.05
-KOKORO_LANG = "en-us"
+ACTIVE_VOICE = "nova"
+SUPERTONIC_VOICE = "F1"
+SUPERTONIC_SPEED = 1.05
+SUPERTONIC_LANG = "en"
 _tts_lock = threading.Lock()
 _active_stream = None
 _active_stream_lock = threading.Lock()
@@ -77,7 +95,7 @@ _active_stream_lock = threading.Lock()
 
 def sync_voice_from_profile() -> str:
     """Synchronizes active voice selection dynamically from amigo_profile.json."""
-    global ACTIVE_VOICE, KOKORO_VOICE, KOKORO_LANG
+    global ACTIVE_VOICE, SUPERTONIC_VOICE, SUPERTONIC_LANG
     try:
         if os.path.exists(_PROFILE_PATH):
             with open(_PROFILE_PATH, "r", encoding="utf-8") as f:
@@ -92,9 +110,8 @@ def sync_voice_from_profile() -> str:
                 if v_key in CURATED_VOICES:
                     ACTIVE_VOICE = v_key
                     info = CURATED_VOICES[v_key]
-                    if info["engine"] == "kokoro":
-                        KOKORO_VOICE = info["id"]
-                        KOKORO_LANG = "en-gb" if info.get("accent") == "GB" or info["id"].startswith("b") else "en-us"
+                    SUPERTONIC_VOICE = info["id"]
+                    SUPERTONIC_LANG = "en"
                     return v_key
     except Exception as e:
         logger.debug(f"[TTS] Voice profile sync note: {e}")
@@ -106,20 +123,23 @@ sync_voice_from_profile()
 
 
 def set_voice(voice_name: str) -> str:
-    """Sets the active voice, updates language, and immediately persists to user profile."""
-    global ACTIVE_VOICE, KOKORO_VOICE, KOKORO_LANG
+    """Sets the active voice, updates engine settings, and immediately persists to user profile."""
+    global ACTIVE_VOICE, SUPERTONIC_VOICE, SUPERTONIC_LANG
     key = voice_name.lower().strip()
     display_name = voice_name
     if key in CURATED_VOICES:
         ACTIVE_VOICE = key
         info = CURATED_VOICES[key]
         display_name = info["name"]
-        if info["engine"] == "kokoro":
-            KOKORO_VOICE = info["id"]
-            KOKORO_LANG = "en-gb" if info.get("accent") == "GB" or info["id"].startswith("b") else "en-us"
-        logger.info(f"[TTS] Active voice switched to: {info['name']} ({info['engine'].title()})")
+        SUPERTONIC_VOICE = info["id"]
+        SUPERTONIC_LANG = "en"
+        logger.info(f"[TTS] Active voice switched to: {info['name']} (Supertonic-3 {info['id']})")
+    elif voice_name.upper() in ("F1", "F2", "F3", "F4", "F5", "M1", "M2", "M3", "M4", "M5"):
+        SUPERTONIC_VOICE = voice_name.upper()
+        ACTIVE_VOICE = voice_name.lower()
+        display_name = voice_name.upper()
     else:
-        KOKORO_VOICE = voice_name
+        SUPERTONIC_VOICE = "F1"
         ACTIVE_VOICE = voice_name
         display_name = voice_name
 
@@ -141,7 +161,7 @@ def set_voice(voice_name: str) -> str:
 
 
 def get_voice_catalog() -> dict:
-    """Returns dictionary of all 10 curated voices with metadata."""
+    """Returns dictionary of all curated voices with metadata."""
     return CURATED_VOICES
 
 
@@ -166,22 +186,22 @@ def set_tts_callbacks(state_cb=None, broadcast_cb=None):
 
 def get_tts_engine_name() -> str:
     voice_info = CURATED_VOICES.get(ACTIVE_VOICE)
-    vname = voice_info["name"] if voice_info else KOKORO_VOICE
-    return f"Kokoro ONNX Neural ({vname})"
+    vname = voice_info["name"] if voice_info else SUPERTONIC_VOICE
+    if _USE_SUPERTONIC:
+        return f"Supertonic-3 44.1kHz ({vname})"
+    return f"Supertonic-3 ({vname})"
 
 
-def _get_kokoro():
-    """Lazy-load Kokoro ONNX model - thread-safe."""
-    global _kokoro_instance
-    if _kokoro_instance is None:
+def _get_supertonic():
+    """Lazy-load Supertonic-3 TTS model - thread-safe."""
+    global _supertonic_instance
+    if _supertonic_instance is None:
         with _tts_lock:
-            if _kokoro_instance is None:  # Double-check
-                if not os.path.exists(_MODEL_PATH):
-                    raise FileNotFoundError("Kokoro ONNX model not found at " + _MODEL_PATH)
-                logger.info("[TTS] Loading Kokoro ONNX model...")
-                _kokoro_instance = _KokoroOnnx(_MODEL_PATH, _VOICES_PATH)
-                logger.info("[TTS] Kokoro ONNX ready.")
-    return _kokoro_instance
+            if _supertonic_instance is None:
+                logger.info("[TTS] Initializing Supertonic-3 Neural Engine...")
+                _supertonic_instance = _SupertonicTTS(model="supertonic-3", auto_download=True)
+                logger.info("[TTS] Supertonic-3 ready (44.1kHz).")
+    return _supertonic_instance
 
 
 # Pre-compiled regex patterns for zero overhead text sanitization & splitting
@@ -192,27 +212,24 @@ _RE_WHITESPACE = re.compile(r'\s+')
 _RE_SENTENCE_SPLIT = re.compile(r'(?<=[.!?])\s+')
 
 
-def _warmup_kokoro():
-    """Warms up Kokoro ONNX in a background thread so module loading is near-instant."""
-    if _USE_KOKORO:
-        def _warm():
-            try:
-                kokoro = _get_kokoro()
+def _warmup_tts():
+    """Warms up Supertonic-3 ONNX in a background thread so initial speech is instant."""
+    def _warm():
+        try:
+            if _USE_SUPERTONIC:
+                engine = _get_supertonic()
+                style = engine.get_voice_style("F1")
                 with _tts_lock:
-                    kokoro.create(
-                        "Amigo ready.",
-                        voice=KOKORO_VOICE,
-                        speed=KOKORO_SPEED,
-                        lang=KOKORO_LANG,
-                    )
-                logger.info("[TTS] Kokoro inference warmed up.")
-            except Exception as e:
-                logger.debug(f"[TTS Warmup] {e}")
+                    engine.synthesize("Amigo ready.", voice_style=style, speed=1.05, lang="en")
+                logger.info("[TTS] Supertonic-3 inference warmed up.")
+        except Exception as e:
+            logger.debug(f"[TTS Warmup] {e}")
 
-        threading.Thread(target=_warm, daemon=True, name="Kokoro-Warmup").start()
+    threading.Thread(target=_warm, daemon=True, name="TTS-Warmup").start()
 
 
-_warmup_kokoro()
+_warmup_tts()
+
 
 # Asynchronous speech worker queue
 _speech_queue = queue.Queue()
@@ -339,21 +356,22 @@ def _compact_tts_text(text: str, max_chars: int = 1500) -> str:
 
 
 
-def _process_audio_clarity(samples, sr=24000) -> tuple[np.ndarray, int]:
+def _process_audio_clarity(samples, sr=44100) -> tuple[np.ndarray, int]:
     """
     Studio audio mastering pipeline:
-    - High-fidelity polyphase resampling for non-24kHz sources to prevent WASAPI driver distortion.
+    - Preserves native 44.1kHz Supertonic sample rate or resamples non-standard rates.
     - Preserves natural phoneme decay while trimming silence.
     - Soft anti-click fade ramps.
     - Peak gain normalization to 0.92 (-0.7 dBFS).
     """
     if samples is None or len(samples) == 0:
-        return samples, sr
+        return samples, int(sr)
     samples = np.asarray(samples, dtype=np.float32)
 
-    # 1. Resample to 24000 Hz if needed so all speech plays at uniform high-resolution rate
-    target_sr = 24000
-    if sr != target_sr and len(samples) > 0:
+    # 1. Resample only if non-standard
+    target_sr = int(sr)
+    if sr not in (44100, 24000, 48000, 16000) and len(samples) > 0:
+        target_sr = 44100
         try:
             import scipy.signal
             from math import gcd
@@ -367,7 +385,7 @@ def _process_audio_clarity(samples, sr=24000) -> tuple[np.ndarray, int]:
     mask = np.abs(samples) > 0.0002
     if np.any(mask):
         last_idx = int(np.max(np.where(mask)[0]))
-        pad_samples = int(0.12 * sr)
+        pad_samples = int(0.10 * sr)
         end_idx = min(len(samples), last_idx + pad_samples)
         samples = samples[:end_idx]
 
@@ -382,7 +400,7 @@ def _process_audio_clarity(samples, sr=24000) -> tuple[np.ndarray, int]:
         samples[-fade_out_len:] *= np.linspace(1.0, 0.0, fade_out_len, dtype=np.float32)
 
     # 5. Buffer cushion
-    cushion = np.zeros(int(0.04 * sr), dtype=np.float32)
+    cushion = np.zeros(int(0.03 * sr), dtype=np.float32)
     samples = np.concatenate([samples, cushion])
 
     # 6. Peak amplitude normalization to 0.92
@@ -390,11 +408,11 @@ def _process_audio_clarity(samples, sr=24000) -> tuple[np.ndarray, int]:
     if peak > 1e-4:
         samples = samples * (0.92 / peak)
 
-    return samples, sr
+    return samples, int(sr)
 
 
-def _synthesize_and_play_kokoro(kokoro, text, generation):
-    """Natural, high-prosody neural speech synthesis without artificial pauses or clipped endings."""
+def _synthesize_and_play_supertonic(engine, text, generation):
+    """Natural, studio 44.1kHz Supertonic-3 neural speech synthesis with low-latency streaming."""
     global _active_stream
     sync_voice_from_profile()
     clean_text = _compact_tts_text(text)
@@ -409,7 +427,7 @@ def _synthesize_and_play_kokoro(kokoro, text, generation):
     current_chunk = []
     current_len = 0
     for s in raw_sentences:
-        if current_len + len(s) + 1 > 350 and current_chunk:
+        if current_len + len(s) + 1 > 300 and current_chunk:
             chunks.append(" ".join(current_chunk))
             current_chunk = [s]
             current_len = len(s)
@@ -427,31 +445,34 @@ def _synthesize_and_play_kokoro(kokoro, text, generation):
 
     def producer():
         try:
+            voice_info = CURATED_VOICES.get(ACTIVE_VOICE)
+            voice_id = voice_info["id"] if voice_info else SUPERTONIC_VOICE
+            if voice_id not in ("F1", "F2", "F3", "F4", "F5", "M1", "M2", "M3", "M4", "M5"):
+                voice_id = "F1"
+            style = engine.get_voice_style(voice_id)
+
             for chunk in chunks:
                 if not chunk or not _speech_is_current(generation):
                     break
                 spoken_chunk = chunk if chunk.endswith((".", "!", "?", ",", ";", ":")) else chunk + "."
-                samp, sr = None, 24000
-                voice_info = CURATED_VOICES.get(ACTIVE_VOICE)
-                voice_id = voice_info["id"] if voice_info else KOKORO_VOICE
-                lang = "en-gb" if (voice_info and voice_info.get("accent") == "GB") or str(voice_id).startswith("b") else "en-us"
                 with _tts_lock:
-                    samp, sr = kokoro.create(
+                    wav, dur = engine.synthesize(
                         spoken_chunk,
-                        voice=voice_id,
-                        speed=KOKORO_SPEED,
-                        lang=lang,
+                        voice_style=style,
+                        speed=SUPERTONIC_SPEED,
+                        lang="en",
                     )
-                if samp is not None and len(samp) > 0:
-                    samp, sr = _process_audio_clarity(samp, sr=sr)
+                if wav is not None and wav.size > 0:
+                    samples = wav.squeeze(0) if wav.ndim > 1 else wav
+                    samples, sr = _process_audio_clarity(samples, sr=engine.sample_rate)
                     while _speech_is_current(generation):
                         try:
-                            audio_queue.put((samp, sr), timeout=0.1)
+                            audio_queue.put((samples, sr), timeout=0.1)
                             break
                         except queue.Full:
                             continue
         except Exception as e:
-            logger.error(f"[TTS Stream Error] {e}")
+            logger.error(f"[Supertonic TTS Stream Error] {e}")
         finally:
             audio_queue.put(sentinel)
 
@@ -481,7 +502,7 @@ def _synthesize_and_play_kokoro(kokoro, text, generation):
 
             stream.write(samples)
     except Exception as e:
-        logger.debug(f"[TTS Playback Note] {e}")
+        logger.debug(f"[Supertonic Playback Note] {e}")
     finally:
         with _active_stream_lock:
             if _active_stream is stream:
@@ -517,8 +538,11 @@ def _speech_worker():
                 _on_broadcast("chat_message", {"sender": "assistant", "text": text})
 
             try:
-                kokoro = _get_kokoro() if _USE_KOKORO else None
-                _synthesize_and_play_kokoro(kokoro, text, generation)
+                if _USE_SUPERTONIC:
+                    engine = _get_supertonic()
+                    _synthesize_and_play_supertonic(engine, text, generation)
+                else:
+                    logger.warning("[TTS] Supertonic-3 neural TTS engine not available.")
             except Exception as e:
                 logger.error(f"[TTS] Speech synthesis error: {e}")
         finally:

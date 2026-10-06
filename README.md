@@ -1,6 +1,6 @@
 # Amigo Voice Assistant 🎙️✨
 
-A private, intelligent, and agentic personal voice assistant powered locally by the **MiniCPM 5 2B** GGUF model, **Sherpa-ONNX** real-time neural speech recognition, and **Kokoro ONNX** 24kHz studio neural speech synthesis.
+A private, intelligent, and agentic personal voice assistant powered locally by the **MiniCPM 5 2B** GGUF model, **Sherpa-ONNX** real-time neural speech recognition, and **Supertonic 3** 44.1kHz studio neural speech synthesis.
 
 Amigo provides desktop automation, browser & window control, document intelligence (invoices, PDFs, spreadsheets), live interactive action widgets (countdown timers, stopwatches, weather telemetry), deep web browsing, app management, and an adaptive RAG-powered vector memory system — completely offline, with **zero API keys and zero cloud dependencies**.
 
@@ -62,7 +62,7 @@ Amigo provides desktop automation, browser & window control, document intelligen
 - **Desktop & Windows Automation** — Type text, press keys, click screen coordinates, manage windows (minimize all, maximize, switch), and launch or close any Windows application.
 - **Browser & Web Page Control** — Open new tabs, close tabs, switch between tabs, scroll pages up/down, and visit URLs — all via voice.
 - **Offline Speech-to-Text (STT)** — Powered by `Sherpa-ONNX` (`streaming Zipformer`) for ultra-low latency (<50ms) streaming voice command recognition, lightweight memory footprint (~80MB RAM), and zero CPU saturation.
-- **24kHz Studio Neural TTS** — `Kokoro ONNX` delivers expressive, studio-grade speech synthesis with 10 curated voices (5 Female: *Nicole, Sarah, Heart, Sky, Bella*; 5 Male: *Adam, Michael, Echo, Liam, George*), low-latency audio streaming, and built-in phonetic text expansion for numbers, acronyms, scores, dates, and currency.
+- **44.1kHz Studio Neural TTS** — `Supertonic 3` delivers expressive, studio-grade speech synthesis with 10 curated voices (5 Female: *Nova, Aria, Serena, Chloe, Luna*; 5 Male: *Orion, Atlas, Leo, Felix, Ethan*), ultra-fast ONNX inference, low-latency streaming, and built-in phonetic text expansion for numbers, acronyms, scores, dates, and currency.
 - **Curated High-End Kinetic Typography** — 4 luxury, fluid animation styles designed with Apple and Linear aesthetics:
   - **Silk Emerge (`silk_blur`)** — Apple-grade optical Gaussian blur dissipation & gentle vertical drift.
   - **Liquid Glide (`fluid_glide`)** — Organic, critically damped spring upward glide with zero cartoon bounce.
@@ -172,7 +172,7 @@ amigo-main/
 │       ├── network_utils.py        # Internet connectivity checks
 │       ├── settings_resolver.py    # Windows Settings ms-settings: URI resolver
 │       ├── tool_registry.py        # Central tool registry, dispatcher & action cards
-│       └── tts.py                  # Unified speech engine (Kokoro ONNX TTS & Sherpa-ONNX STT)
+│       └── tts.py                  # Unified speech engine (Supertonic 3 TTS & Sherpa-ONNX STT)
 ├── models/                 # AI model weights
 │   ├── minicpm/            # MiniCPM 5 2B GGUF weights
 │   └── sherpa-onnx/        # Sherpa-ONNX streaming Zipformer STT model
@@ -209,7 +209,7 @@ Double-click **`setup.bat`** in the repository root.
 This automatically:
 1. Creates a virtual environment (`venv/`) for isolated dependencies.
 2. Installs all Python dependencies via `pip install -r requirements.txt`.
-3. Downloads the `Kokoro ONNX` neural voice models (`kokoro-v1.0.onnx` & `voices-v1.0.bin`).
+3. Initializes the `Supertonic 3` neural voice engine (44.1kHz studio quality).
 4. Downloads the `MiniCPM 5 2B` quantized GGUF model (~1.56 GB).
 5. Downloads the `Sherpa-ONNX` streaming Zipformer STT model (~80 MB).
 6. Initializes RAG vector data storage directories and default profile.
@@ -435,6 +435,6 @@ Amigo is designed from the ground up for privacy:
 - All LLM reasoning runs locally on your machine via `llama-cpp-python`.
 - All action routing and tool calling run 100% locally on your machine (no cloud inference).
 - All speech recognition (STT) runs 100% locally on your machine via `sherpa-onnx`.
-- All neural TTS speech generation runs locally on your machine via `kokoro-onnx`.
+- All neural TTS speech generation runs locally on your machine via `supertonic`.
 - Memory vector embeddings and user profiles remain entirely on your local filesystem.
 - Zero analytics, zero data harvesting, zero tracking.

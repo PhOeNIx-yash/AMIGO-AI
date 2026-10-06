@@ -11,7 +11,7 @@ import { audioBus } from "../utils/audioBus";
 export interface VoiceOption {
   id: string;
   name: string;
-  engine: "Kokoro";
+  engine: "Supertonic 3";
   gender: "Female" | "Male" | "Robot";
   accent: "US" | "GB";
   desc: string;
@@ -366,116 +366,116 @@ export const FluidOrb: React.FC<FluidOrbProps> = ({
 };
 
 export const VOICES_CATALOG: VoiceOption[] = [
-  // 5 Best Studio Female Neural Voices (Kokoro 24kHz)
+  // 5 Best Studio Female Neural Voices (Supertonic 3 - 44.1kHz)
   {
-    id: "nicole",
-    name: "Nicole",
-    engine: "Kokoro",
+    id: "nova",
+    name: "Nova (F1)",
+    engine: "Supertonic 3",
     gender: "Female",
     accent: "US",
-    desc: "Smooth, articulate & studio-clean American female (Recommended)",
-    previewText: "Hello! I am Nicole, your clear and articulate studio voice.",
+    desc: "Smooth, articulate & studio-clean neural female (Recommended)",
+    previewText: "Hello! I am Nova, your clear and articulate studio voice.",
     avatarGradient: "from-rose-500 to-pink-600",
     color: "#f43f5e",
   },
   {
-    id: "sarah",
-    name: "Sarah",
-    engine: "Kokoro",
+    id: "aria",
+    name: "Aria (F2)",
+    engine: "Supertonic 3",
     gender: "Female",
     accent: "US",
-    desc: "Soft, natural & warm American female conversationalist",
-    previewText: "Hello! I am Sarah, soft, warm and conversational.",
+    desc: "Soft, natural & warm conversational female delivery",
+    previewText: "Hello! I am Aria, soft, warm and conversational.",
     avatarGradient: "from-fuchsia-500 to-rose-600",
     color: "#ec4899",
   },
   {
-    id: "heart",
-    name: "Heart",
-    engine: "Kokoro",
+    id: "serena",
+    name: "Serena (F3)",
+    engine: "Supertonic 3",
     gender: "Female",
     accent: "US",
     desc: "Warm, expressive and friendly conversational tone",
-    previewText: "Hi there! I am Heart, warm, expressive and natural.",
+    previewText: "Hi there! I am Serena, warm, expressive and natural.",
     avatarGradient: "from-violet-500 to-purple-600",
     color: "#8b5cf6",
   },
   {
-    id: "sky",
-    name: "Sky",
-    engine: "Kokoro",
+    id: "chloe",
+    name: "Chloe (F4)",
+    engine: "Supertonic 3",
     gender: "Female",
     accent: "US",
-    desc: "Bright, friendly & clear American female delivery",
-    previewText: "Hey! I am Sky, bright, friendly and clear.",
+    desc: "Bright, friendly & clear neural female delivery",
+    previewText: "Hey! I am Chloe, bright, friendly and clear.",
     avatarGradient: "from-sky-400 to-blue-500",
     color: "#0ea5e9",
   },
   {
-    id: "bella",
-    name: "Bella",
-    engine: "Kokoro",
+    id: "luna",
+    name: "Luna (F5)",
+    engine: "Supertonic 3",
     gender: "Female",
     accent: "US",
     desc: "Crisp, energetic and articulate female delivery",
-    previewText: "Hi there! I am Bella, crisp, energetic and ready to help.",
+    previewText: "Hi there! I am Luna, crisp, energetic and ready to help.",
     avatarGradient: "from-amber-400 to-rose-500",
     color: "#f59e0b",
   },
 
-  // 5 Best Studio Male Neural Voices (Kokoro 24kHz)
+  // 5 Best Studio Male Neural Voices (Supertonic 3 - 44.1kHz)
   {
-    id: "adam",
-    name: "Adam",
-    engine: "Kokoro",
+    id: "orion",
+    name: "Orion (M1)",
+    engine: "Supertonic 3",
     gender: "Male",
     accent: "US",
-    desc: "Deep, calm and grounded American baritone resonance",
-    previewText: "Hello, I am Adam. Deep, calm and ready to assist you.",
+    desc: "Deep, calm and grounded baritone resonance",
+    previewText: "Hello, I am Orion. Deep, calm and ready to assist you.",
     avatarGradient: "from-blue-600 to-indigo-700",
     color: "#3b82f6",
   },
   {
-    id: "michael",
-    name: "Michael",
-    engine: "Kokoro",
+    id: "atlas",
+    name: "Atlas (M2)",
+    engine: "Supertonic 3",
     gender: "Male",
     accent: "US",
     desc: "Professional, crisp and articulate executive tone",
-    previewText: "Greetings! I am Michael. Professional, clear and articulate.",
+    previewText: "Greetings! I am Atlas. Professional, clear and articulate.",
     avatarGradient: "from-cyan-600 to-blue-700",
     color: "#06b6d4",
   },
   {
-    id: "echo",
-    name: "Echo",
-    engine: "Kokoro",
+    id: "leo",
+    name: "Leo (M3)",
+    engine: "Supertonic 3",
     gender: "Male",
     accent: "US",
-    desc: "Warm, relatable and conversational American companion",
-    previewText: "Hey there! I am Echo, warm and easy to talk to.",
+    desc: "Warm, relatable and conversational companion",
+    previewText: "Hey there! I am Leo, warm and easy to talk to.",
     avatarGradient: "from-emerald-500 to-teal-700",
     color: "#10b981",
   },
   {
-    id: "liam",
-    name: "Liam",
-    engine: "Kokoro",
+    id: "felix",
+    name: "Felix (M4)",
+    engine: "Supertonic 3",
     gender: "Male",
     accent: "US",
-    desc: "Young, natural, and modern American male delivery",
-    previewText: "Hey! I am Liam, young, natural and fast.",
+    desc: "Young, natural, and modern male delivery",
+    previewText: "Hey! I am Felix, young, natural and fast.",
     avatarGradient: "from-teal-500 to-cyan-600",
     color: "#14b8a6",
   },
   {
-    id: "george",
-    name: "George",
-    engine: "Kokoro",
+    id: "ethan",
+    name: "Ethan (M5)",
+    engine: "Supertonic 3",
     gender: "Male",
-    accent: "GB",
-    desc: "Distinguished British English gentleman",
-    previewText: "Good day! I am George, speaking distinguished British English.",
+    accent: "US",
+    desc: "Distinguished, articulate gentleman delivery",
+    previewText: "Good day! I am Ethan, speaking distinguished studio English.",
     avatarGradient: "from-amber-600 to-orange-700",
     color: "#ea580c",
   },
@@ -646,12 +646,12 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
                     <span className="text-sm font-semibold tracking-tight">{activeVoice.name}</span>
                     <span
                       className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
-                        activeVoice.engine === "Kokoro"
-                          ? "bg-violet-500/15 text-violet-400 border border-violet-500/20"
+                        activeVoice.engine === "Supertonic 3"
+                          ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20"
                           : "bg-blue-500/15 text-blue-400 border border-blue-500/20"
                       }`}
                     >
-                      {activeVoice.engine} Neural
+                      {activeVoice.engine} 44.1kHz
                     </span>
                     <span
                       className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-mono border"
@@ -779,9 +779,9 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
                   </div>
 
                   <span
-                    className="text-[9px] font-mono px-2 py-0.5 rounded-full font-medium bg-violet-500/15 text-violet-400 border border-violet-500/20"
+                    className="text-[9px] font-mono px-2 py-0.5 rounded-full font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/20"
                   >
-                    Kokoro 24kHz
+                    Supertonic 3 44.1kHz
                   </span>
                 </div>
 

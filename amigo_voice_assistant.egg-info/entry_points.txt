@@ -1,2 +1,0 @@
-[console_scripts]
-amigo = amigo.ui.server:launch_server

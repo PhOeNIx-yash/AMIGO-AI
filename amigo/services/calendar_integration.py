@@ -4,18 +4,25 @@ Reads calendar events from Microsoft Outlook via win32com COM API.
 All data stays local — read-only access.
 """
 
+import os
 import datetime
 import logging
 import threading
 
 logger = logging.getLogger("amigo.calendar_integration")
 
+# Outlook Calendar disabled per user configuration (set AMIGO_ENABLE_OUTLOOK_CALENDAR=1 to re-enable)
+ENABLE_OUTLOOK_CALENDAR = os.getenv("AMIGO_ENABLE_OUTLOOK_CALENDAR", "0").lower() in ("1", "true")
+
 _outlook_ns = None
 _cal_lock = threading.Lock()
 
 
 def _get_namespace():
-    """Lazy-connect to Outlook MAPI namespace."""
+    """Lazy-connect to Outlook MAPI namespace (disabled by default)."""
+    if not ENABLE_OUTLOOK_CALENDAR:
+        return None
+
     global _outlook_ns
     if _outlook_ns is not None:
         return _outlook_ns

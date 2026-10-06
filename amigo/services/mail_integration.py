@@ -4,18 +4,25 @@ Reads emails from Microsoft Outlook via win32com COM API.
 All data stays local — read-only access + draft creation (never auto-sends).
 """
 
+import os
 import logging
 import re
 import threading
 
 logger = logging.getLogger("amigo.mail_integration")
 
+# Outlook Mail disabled per user configuration (set AMIGO_ENABLE_OUTLOOK_MAIL=1 to re-enable)
+ENABLE_OUTLOOK_MAIL = os.getenv("AMIGO_ENABLE_OUTLOOK_MAIL", "0").lower() in ("1", "true")
+
 _outlook = None
 _outlook_lock = threading.Lock()
 
 
 def _get_outlook():
-    """Lazy-connect to Outlook COM object."""
+    """Lazy-connect to Outlook COM object (disabled by default)."""
+    if not ENABLE_OUTLOOK_MAIL:
+        return None
+
     global _outlook
     if _outlook is not None:
         return _outlook

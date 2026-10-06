@@ -12,9 +12,9 @@ soundfile>=0.12.1              # Audio file buffer reading
 num2words>=0.5.13              # Phonetic text expansion for neural TTS
 
 # ── Neural Text-to-Speech (TTS) ───────────────────────────────
-kokoro-onnx>=0.3.1             # Primary neural TTS engine — fast, local, offline
+supertonic>=1.3.1              # High-definition neural TTS engine — Supertonic 3 (44.1kHz studio)
 sounddevice>=0.4.6             # Real-time audio playback backend
-numpy>=1.24.0                  # Audio array processing for Kokoro ONNX
+numpy>=1.24.0                  # Audio array processing
 pywin32>=306                   # Windows shell integrations
 
 # ── Local LLM Engine (MiniCPM 5 2B) ───────────────────

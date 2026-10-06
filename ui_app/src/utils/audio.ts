@@ -24,7 +24,7 @@ class SoundEffects {
 
 export const sfx = new SoundEffects();
 
-// Amigo Local Neural TTS Engine (Kokoro ONNX)
+// Amigo Local Neural TTS Engine (Supertonic-3 44.1kHz)
 export async function speakText(text: string, onEnd?: () => void) {
   if (!text || !text.trim()) {
     if (onEnd) onEnd();

@@ -1,14 +1,10 @@
-import React, { useRef, useEffect, useState, useCallback, useId, type RefObject } from "react";
-import { motion, AnimatePresence, useReducedMotion } from "motion/react";
+import React, { useRef, useEffect, useId } from "react";
+import { motion, AnimatePresence } from "motion/react";
 import {
   CheckCircle2,
-  Loader2,
   AlertCircle,
-  WifiOff,
-  User,
   Sparkles,
   X,
-  Globe,
   Music,
   Terminal,
   Volume2,
@@ -19,154 +15,11 @@ import {
   Cpu,
   Mail,
   Calculator,
-  FileText,
   Layers,
-  Activity,
   Sliders,
-  Play,
 } from "lucide-react";
 import { ColorTheme } from "../types";
 import { COLOR_THEMES } from "../data/presets";
-
-export interface AnimatedBeamProps {
-  containerRef: RefObject<HTMLElement | null>;
-  fromRef: RefObject<HTMLElement | null>;
-  toRef: RefObject<HTMLElement | null>;
-  curvature?: number;
-  reverse?: boolean;
-  duration?: number;
-  delay?: number;
-  pathColor?: string;
-  gradientStart?: string;
-  gradientStop?: string;
-  strokeWidth?: number;
-  className?: string;
-}
-
-export function AnimatedBeam({
-  containerRef,
-  fromRef,
-  toRef,
-  curvature = 0,
-  reverse = false,
-  duration = 2.4,
-  delay = 0,
-  pathColor = "rgba(255, 255, 255, 0.12)",
-  gradientStart = "#8b5cf6",
-  gradientStop = "#ec4899",
-  strokeWidth = 2,
-  className = "",
-}: AnimatedBeamProps) {
-  const gradientId = useId();
-  const [path, setPath] = useState("");
-  const [size, setSize] = useState({ width: 0, height: 0 });
-  const prefersReducedMotion = useReducedMotion();
-
-  const measure = useCallback(() => {
-    const container = containerRef.current;
-    const from = fromRef.current;
-    const to = toRef.current;
-    if (!container || !from || !to) return;
-
-    const containerRect = container.getBoundingClientRect();
-    const fromRect = from.getBoundingClientRect();
-    const toRect = to.getBoundingClientRect();
-
-    setSize({ width: containerRect.width, height: containerRect.height });
-
-    const startX = fromRect.left - containerRect.left + fromRect.width / 2;
-    const startY = fromRect.top - containerRect.top + fromRect.height / 2;
-    const endX = toRect.left - containerRect.left + toRect.width / 2;
-    const endY = toRect.top - containerRect.top + toRect.height / 2;
-
-    const controlX = (startX + endX) / 2;
-    const controlY = (startY + endY) / 2 - curvature;
-
-    setPath(`M ${startX},${startY} Q ${controlX},${controlY} ${endX},${endY}`);
-  }, [containerRef, fromRef, toRef, curvature]);
-
-  useEffect(() => {
-    measure();
-    const t1 = setTimeout(measure, 50);
-    const t2 = setTimeout(measure, 160);
-    const t3 = setTimeout(measure, 360);
-
-    const container = containerRef.current;
-    let observer: ResizeObserver | null = null;
-    if (container) {
-      observer = new ResizeObserver(measure);
-      observer.observe(container);
-      if (fromRef.current) observer.observe(fromRef.current);
-      if (toRef.current) observer.observe(toRef.current);
-    }
-
-    window.addEventListener("resize", measure);
-
-    return () => {
-      clearTimeout(t1);
-      clearTimeout(t2);
-      clearTimeout(t3);
-      if (observer) observer.disconnect();
-      window.removeEventListener("resize", measure);
-    };
-  }, [measure, containerRef, fromRef, toRef]);
-
-  if (!path) return null;
-
-  return (
-    <svg
-      fill="none"
-      width={size.width}
-      height={size.height}
-      viewBox={`0 0 ${size.width} ${size.height}`}
-      aria-hidden="true"
-      className={`pointer-events-none absolute top-0 left-0 overflow-visible ${className}`}
-    >
-      <path
-        d={path}
-        stroke={pathColor}
-        strokeWidth={strokeWidth}
-        strokeLinecap="round"
-        strokeOpacity={0.35}
-      />
-      <path
-        d={path}
-        stroke={`url(#${gradientId})`}
-        strokeWidth={strokeWidth}
-        strokeLinecap="round"
-      />
-      <defs>
-        <motion.linearGradient
-          id={gradientId}
-          gradientUnits="userSpaceOnUse"
-          initial={{ x1: "0%", x2: "0%", y1: "0%", y2: "0%" }}
-          animate={
-            prefersReducedMotion
-              ? { x1: "0%", x2: "100%", y1: "0%", y2: "0%" }
-              : {
-                  x1: reverse ? ["100%", "-10%"] : ["-10%", "100%"],
-                  x2: reverse ? ["110%", "0%"] : ["0%", "110%"],
-                  y1: ["0%", "0%"],
-                  y2: ["0%", "0%"],
-                }
-          }
-          transition={{
-            duration,
-            delay,
-            repeat: prefersReducedMotion ? 0 : Infinity,
-            repeatDelay: 0.35,
-            ease: "easeInOut",
-          }}
-        >
-          <stop stopColor={gradientStart} stopOpacity="0" />
-          <stop stopColor={gradientStart} />
-          <stop offset="35%" stopColor={gradientStop} />
-          <stop offset="100%" stopColor={gradientStop} stopOpacity="0" />
-        </motion.linearGradient>
-      </defs>
-    </svg>
-  );
-}
 
 
 export const NON_ACTION_INTENTS = new Set([
@@ -283,6 +136,16 @@ function extractDynamicParam(params?: Record<string, any>, prompt?: string): str
       }
     }
   }
+
+  // Fallback: extract meaningful target directly from the user's prompt
+  if (prompt && prompt.trim()) {
+    const clean = prompt.trim().replace(/[.!?]+$/, "");
+    const match = clean.match(/^(?:open|launch|start|run|play|search|find|show|check|query)\s+(.+)$/i);
+    if (match && match[1]) {
+      return match[1].trim();
+    }
+  }
+
   return "";
 }
 
@@ -296,6 +159,7 @@ function formatIntentName(raw: string): string {
 
 function getDynamicToolIcon(intentStr: string, name: string): React.ReactNode {
   const s = (intentStr + " " + name).toLowerCase();
+  if (s.includes("antigravity")) return <Cpu className="w-4 h-4 text-cyan-400" />;
   if (s.includes("youtube")) return <YouTubeIcon />;
   if (s.includes("spotify")) return <SpotifyIcon />;
   if (s.includes("google") || s.includes("search") || s.includes("browse") || s.includes("web")) return <GoogleIcon />;
@@ -430,12 +294,19 @@ function resolveActionInfo(intent?: string, params?: Record<string, any>, prompt
 
   // 9. App Launcher
   if (cleanIntent.includes("open") || cleanIntent.includes("launch") || pr.startsWith("open ") || pr.startsWith("launch ")) {
-    const appName = paramVal || (p.app_name || p.application) || "Application";
+    let appName = paramVal || (p.app_name || p.application);
+    if (!appName || appName === "Application") {
+      const match = pr.match(/^(?:open|launch|start|run)\s+(.+)$/i);
+      appName = match ? formatIntentName(match[1]) : "Application";
+    } else {
+      appName = formatIntentName(appName);
+    }
+
     return {
       name: appName,
       actionVerb: `Launching ${appName}...`,
       completedText: `${appName} Running`,
-      icon: <Folder className="w-4 h-4 text-indigo-400" />,
+      icon: getDynamicToolIcon(cleanIntent, appName),
     };
   }
 
@@ -469,8 +340,9 @@ export interface IntentBridgeHUDProps {
 }
 
 /**
- * High-tech Intent Bridge Powered by AnimatedBeam.
- * Visualizes the dynamic bridge from User -> Amigo AI Core Logo -> Resolved Action/Service.
+ * High-tech 2-Node Dynamic Action Capsule Powered by AnimatedBeam.
+ * Visualizes the direct, focused connection: Amigo Core ──laser beam──> Target Action.
+ * Zero background boxes, seamless, compact, zero overlap with central orb.
  */
 export const IntentBridgeHUD: React.FC<IntentBridgeHUDProps> = ({
   prompt,
@@ -485,11 +357,7 @@ export const IntentBridgeHUD: React.FC<IntentBridgeHUDProps> = ({
 }) => {
   const theme = COLOR_THEMES[colorTheme] || COLOR_THEMES.violet;
   const actionInfo = resolveActionInfo(intent, params, prompt);
-
-  const containerRef = useRef<HTMLDivElement>(null);
-  const userNodeRef = useRef<HTMLDivElement>(null);
-  const amigoNodeRef = useRef<HTMLDivElement>(null);
-  const targetNodeRef = useRef<HTMLDivElement>(null);
+  const laserGradId = useId();
 
   const isOffline = status === "offline" || statusText?.toLowerCase().includes("offline");
   const isFailed = status === "failed" || statusText?.toLowerCase().includes("failed");
@@ -514,43 +382,22 @@ export const IntentBridgeHUD: React.FC<IntentBridgeHUDProps> = ({
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 8, scale: 0.98 }}
+      initial={{ opacity: 0, y: 8, scale: 0.96 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: -6, scale: 0.98 }}
-      transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
-      className="relative w-full max-w-xs sm:max-w-sm mx-auto my-1 pointer-events-auto bg-transparent border-0 shadow-none"
+      exit={{ opacity: 0, y: 4, scale: 0.96 }}
+      transition={{ duration: 0.18, ease: "easeOut" }}
+      className="relative w-auto max-w-[240px] sm:max-w-[260px] mx-auto pointer-events-auto select-none bg-transparent border-0 shadow-none"
     >
-      <div
-        ref={containerRef}
-        className="relative w-full py-1 bg-transparent border-0 shadow-none overflow-visible"
-      >
-        {/* 3 Connected Interactive Nodes via AnimatedBeam */}
-        <div className="relative py-1 flex items-center justify-between px-4 sm:px-8">
-          {/* Node 1: User / Voice Prompt Node */}
+      <div className="relative w-full py-1 bg-transparent border-0 shadow-none overflow-visible flex flex-col items-center group">
+        {/* 2 Connected Interactive Nodes via GPU-accelerated Laser Stream */}
+        <div className="relative flex items-center justify-between w-full px-2 py-1">
+          {/* Node 1: Amigo AI Core Logo Node */}
           <div className="flex flex-col items-center text-center z-10">
             <div
-              ref={userNodeRef}
-              className={`relative w-9 h-9 rounded-xl border flex items-center justify-center shadow-md transition-transform hover:scale-105 ${
-                isDark
-                  ? "bg-slate-900/60 border-white/10 text-slate-200"
-                  : "bg-white/60 border-slate-200 text-slate-800"
-              }`}
-            >
-              <User className="w-4 h-4 opacity-90" />
-            </div>
-            <span className="text-[9px] font-medium opacity-60 mt-1 max-w-[70px] truncate">
-              {prompt || "User"}
-            </span>
-          </div>
-
-          {/* Node 2: Amigo AI Core Logo Node (Center) */}
-          <div className="flex flex-col items-center text-center z-10">
-            <div
-              ref={amigoNodeRef}
-              className="relative w-10 h-10 rounded-xl flex items-center justify-center shadow-lg transition-transform hover:scale-105"
+              className="relative w-9 h-9 rounded-xl flex items-center justify-center shadow-lg transition-transform hover:scale-105"
               style={{
                 background: theme.gradient,
-                boxShadow: `0 0 20px -2px ${theme.glow}`,
+                boxShadow: `0 0 16px -2px ${theme.glow}`,
               }}
             >
               {/* Pulsing Aura Ring */}
@@ -558,61 +405,70 @@ export const IntentBridgeHUD: React.FC<IntentBridgeHUDProps> = ({
                 className="absolute inset-0 rounded-xl border animate-pulse opacity-60 pointer-events-none"
                 style={{ borderColor: theme.accent || "#fff" }}
               />
-              <Sparkles className="w-4.5 h-4.5 text-white drop-shadow" />
+              <Sparkles className="w-4 h-4 text-white drop-shadow" />
             </div>
-            <span className="text-[10px] font-semibold mt-1 text-slate-900 dark:text-white">
+            <span className="text-[10px] font-semibold mt-1 text-slate-800 dark:text-white">
               Amigo Core
             </span>
           </div>
 
-          {/* Node 3: Target Action / Service Node */}
+          {/* GPU Hardware-Accelerated 120 FPS Laser Beam Stream */}
+          <div className="relative flex-1 flex items-center justify-center mx-2 h-6 select-none pointer-events-none">
+            <svg className="w-full h-4 overflow-visible" fill="none">
+              <defs>
+                <linearGradient id={laserGradId} x1="0%" y1="0%" x2="100%" y2="0%">
+                  <stop offset="0%" stopColor={beamGradientStart} stopOpacity="0.3" />
+                  <stop offset="50%" stopColor={beamGradientStop} stopOpacity="1" />
+                  <stop offset="100%" stopColor={beamGradientStop} stopOpacity="0.4" />
+                </linearGradient>
+              </defs>
+              {/* Background guide track */}
+              <line
+                x1="2"
+                y1="8"
+                x2="100%"
+                y2="8"
+                stroke={isDark ? "rgba(255, 255, 255, 0.12)" : "rgba(0, 0, 0, 0.10)"}
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+              {/* High-speed GPU compositor laser flow */}
+              <line
+                x1="2"
+                y1="8"
+                x2="100%"
+                y2="8"
+                stroke={isSuccess ? "#10b981" : `url(#${laserGradId})`}
+                strokeWidth={isSuccess ? "2" : "2.5"}
+                strokeLinecap="round"
+                className={isSuccess ? "" : "laser-beam-stream"}
+                style={isSuccess ? { filter: "drop-shadow(0 0 6px #10b981)" } : undefined}
+              />
+            </svg>
+          </div>
+
+          {/* Node 2: Target Action / Service Node */}
           <div className="flex flex-col items-center text-center z-10">
             <div
-              ref={targetNodeRef}
-              className={`relative w-9 h-9 rounded-xl border flex items-center justify-center shadow-md transition-transform hover:scale-105 ${
+              className={`relative w-9 h-9 rounded-xl border flex items-center justify-center shadow-md transition-all hover:scale-105 ${
                 isDark
                   ? "bg-slate-900/60 border-white/10 text-slate-200"
                   : "bg-white/60 border-slate-200 text-slate-800"
               }`}
               style={
                 isSuccess
-                  ? { borderColor: "#10b981", boxShadow: "0 0 12px -3px #10b98160" }
+                  ? { borderColor: "#10b981", boxShadow: "0 0 14px -2px #10b98160" }
+                  : isFailed
+                  ? { borderColor: "#f59e0b", boxShadow: "0 0 14px -2px #f59e0b60" }
                   : {}
               }
             >
               {actionInfo.icon}
             </div>
-            <span className="text-[9px] font-medium opacity-60 mt-1 max-w-[70px] truncate">
+            <span className="text-[10px] font-medium opacity-75 mt-1 max-w-[85px] truncate">
               {actionInfo.name}
             </span>
           </div>
-
-          {/* Beam 1: User Node -> Amigo Core Logo */}
-          <AnimatedBeam
-            containerRef={containerRef}
-            fromRef={userNodeRef}
-            toRef={amigoNodeRef}
-            curvature={0}
-            duration={2.2}
-            pathColor={isDark ? "rgba(255, 255, 255, 0.12)" : "rgba(0, 0, 0, 0.1)"}
-            gradientStart={theme.secondary || "#38bdf8"}
-            gradientStop={theme.primary}
-            strokeWidth={2}
-          />
-
-          {/* Beam 2: Amigo Core Logo -> Target Action Node */}
-          <AnimatedBeam
-            containerRef={containerRef}
-            fromRef={amigoNodeRef}
-            toRef={targetNodeRef}
-            curvature={0}
-            duration={2.2}
-            delay={0.25}
-            pathColor={isDark ? "rgba(255, 255, 255, 0.12)" : "rgba(0, 0, 0, 0.1)"}
-            gradientStart={beamGradientStart}
-            gradientStop={beamGradientStop}
-            strokeWidth={2}
-          />
         </div>
 
         {/* Seamless Status Label */}
@@ -623,13 +479,23 @@ export const IntentBridgeHUD: React.FC<IntentBridgeHUDProps> = ({
             <AlertCircle className="w-3 h-3 text-amber-400 flex-shrink-0" />
           ) : (
             <span
-              className="w-1 h-1 rounded-full animate-ping flex-shrink-0"
+              className="w-1.5 h-1.5 rounded-full animate-ping flex-shrink-0"
               style={{ backgroundColor: theme.primary }}
             />
           )}
-          <span className="opacity-75">
+          <span className="opacity-75 text-slate-700 dark:text-slate-300">
             {statusText || (isSuccess ? actionInfo.completedText : actionInfo.actionVerb)}
           </span>
+          {onDismiss && (
+            <button
+              type="button"
+              onClick={onDismiss}
+              className="opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity ml-1 p-0.5 rounded text-slate-400 hover:text-slate-200"
+              title="Dismiss"
+            >
+              <X className="w-2.5 h-2.5" />
+            </button>
+          )}
         </div>
       </div>
     </motion.div>

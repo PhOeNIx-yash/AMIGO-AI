@@ -1108,9 +1108,9 @@ export default function App() {
                     {/* Central Display & Animated State Cards with 60fps Hardware-Accelerated Smooth Scrolling */}
                     <div
                       id="central-display-area"
-                      className="relative z-20 flex-1 min-h-0 w-full max-w-4xl flex flex-col items-center justify-center px-4 py-4 sm:py-6 overflow-y-auto smooth-scroll-container bg-transparent transition-all duration-300"
+                      className="relative z-20 flex-1 min-h-0 w-full max-w-4xl flex flex-col items-center justify-center px-4 py-4 sm:py-6 overflow-y-auto smooth-scroll-container bg-transparent transition-opacity duration-200"
                     >
-                      <div className="w-full flex flex-col items-center justify-center my-auto transition-all duration-300 max-w-2xl">
+                      <div className="w-full flex flex-col items-center justify-center my-auto transition-opacity duration-200 max-w-2xl">
                   {/* State Pill Badge (Only for listening or interactive pickers) */}
                   {(state === "listening" || isListening) && (
                     <div className="mb-2 sm:mb-3">
@@ -1286,39 +1286,45 @@ export default function App() {
                         />
                       )}
 
-                      {/* 3. Single Unified Action Pill (Smooth Continuous Flow from Intent Routing to Executed) */}
-                      {state !== "action_card" &&
-                        state !== "contact_picker" &&
-                        hudActive &&
-                        !hudDismissed && (
-                        <IntentBridgeHUD
-                          key="intent-bridge-hud"
-                          prompt={activePrompt}
-                          isDark={isDark}
-                          colorTheme={colorTheme}
-                          intent={liveIntent || assistantData?.intent}
-                          params={liveParams || assistantData?.params || assistantData?.metadata?.params}
-                          historyCount={history.length}
-                          isCompleted={state === "completed" || (!loading && Boolean(assistantData))}
-                          status={assistantData?.executionSummary?.status}
-                          onDismiss={() => {
-                            setHudDismissed(true);
-                            setHudActive(false);
-                          }}
-                          statusText={
-                            state === "completed"
-                              ? (assistantData?.executionSummary?.headline || "Completed")
-                              : state === "working"
-                              ? "Executing Action..."
-                              : undefined
-                          }
-                        />
-                      )}
+                      {/* Interactive Selection Panels (when visualizer is compact) */}
                     </AnimatePresence>
                   </div>
                 </div>
               </div>
-                  </div>
+
+              {/* Docked Dynamic Action Capsule below 3D Visualizer Orb (Zero Overlap & Zero Layout Shift) */}
+              <div className="absolute bottom-3 sm:bottom-4 inset-x-0 z-20 flex justify-center pointer-events-none">
+                <AnimatePresence mode="wait">
+                  {state !== "action_card" &&
+                    state !== "contact_picker" &&
+                    hudActive &&
+                    !hudDismissed && (
+                    <IntentBridgeHUD
+                      key="intent-bridge-hud"
+                      prompt={activePrompt}
+                      isDark={isDark}
+                      colorTheme={colorTheme}
+                      intent={liveIntent || assistantData?.intent}
+                      params={liveParams || assistantData?.params || assistantData?.metadata?.params}
+                      historyCount={history.length}
+                      isCompleted={state === "completed" || (!loading && Boolean(assistantData))}
+                      status={assistantData?.executionSummary?.status}
+                      onDismiss={() => {
+                        setHudDismissed(true);
+                        setHudActive(false);
+                      }}
+                      statusText={
+                        state === "completed"
+                          ? (assistantData?.executionSummary?.headline || "Completed")
+                          : state === "working"
+                          ? "Executing Action..."
+                          : undefined
+                      }
+                    />
+                  )}
+                </AnimatePresence>
+              </div>
+            </div>
                 );
               })()}
 

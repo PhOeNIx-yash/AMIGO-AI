@@ -75,23 +75,14 @@ def main():
         subprocess.run([sys.executable, "-m", "pip", "install", "huggingface-hub"])
         from huggingface_hub import hf_hub_download
 
-    # Kokoro ONNX TTS Models
-    kokoro_dir = os.path.join(base_dir, "models", "kokoro-onnx")
-    os.makedirs(kokoro_dir, exist_ok=True)
-    kokoro_model = os.path.join(kokoro_dir, "kokoro-v1.0.onnx")
-    kokoro_voices = os.path.join(kokoro_dir, "voices-v1.0.bin")
-
-    if not os.path.exists(kokoro_model) or not os.path.exists(kokoro_voices):
-        print(" -> Downloading Kokoro Neural TTS model & voices...")
-        try:
-            hf_hub_download(repo_id="hexgrad/Kokoro-82M", filename="kokoro-v1.0.onnx", local_dir=kokoro_dir)
-            hf_hub_download(repo_id="hexgrad/Kokoro-82M", filename="voices-v1.0.bin", local_dir=kokoro_dir)
-            print("    Kokoro TTS models downloaded successfully.")
-        except Exception as e:
-            print(f"    Kokoro model download note: {e}")
-    else:
-        print(" -> Kokoro Neural TTS models already present.")
-
+    # Supertonic 3 ONNX TTS Engine & Models (Primary)
+    try:
+        from supertonic import TTS as SupertonicTTS
+        print(" -> Checking Supertonic 3 Neural TTS engine (44.1kHz)...")
+        _stts = SupertonicTTS(model="supertonic-3", auto_download=True)
+        print("    Supertonic 3 Neural TTS engine is ready (44.1kHz).")
+    except Exception as e:
+        print(f"    Supertonic 3 check note: {e}")
     # Sherpa-ONNX Streaming STT Model Check
     try:
         from amigo.utils.tts import get_stt_recognizer, is_stt_available
@@ -126,7 +117,7 @@ def main():
     print("=" * 60)
     print("\nActive Engine Stack:")
     print("  Agent Engine  — MiniCPM 5 2B  : conversational reasoning & action execution")
-    print("  Speech Engine — Kokoro ONNX   : 24kHz studio neural speech synthesis")
+    print("  Speech Engine — Supertonic-3  : 44.1kHz studio on-device neural speech synthesis")
     print("  Voice Input   — Sherpa-ONNX   : streaming neural speech recognition")
     print("\nHow to launch Amigo:")
     print("  1. Web Dashboard (Recommended):")

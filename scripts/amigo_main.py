@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
 Amigo Voice Assistant - Main Entry Point
-Coordinates voice/type input, LLM agent action dispatching, and Kokoro Neural TTS / Sherpa-ONNX STT.
+Coordinates voice/type input, LLM agent action dispatching, and Supertonic-3 Neural TTS / Sherpa-ONNX STT.
 """
 
 import os

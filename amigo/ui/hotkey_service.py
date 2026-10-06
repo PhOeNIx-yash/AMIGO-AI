@@ -287,7 +287,7 @@ def _handle_wake_action():
         })
         _broadcast("state_change", {"state": "speaking"})
 
-        # Step 7: Speak output via Kokoro Neural TTS
+        # Step 7: Speak output via Supertonic-3 Neural TTS
         speak(clean_reply, block=True)
 
     except Exception as e:

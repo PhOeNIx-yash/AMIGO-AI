@@ -252,3 +252,26 @@ input:-webkit-autofill:active {
   transition: background-color 5000s ease-in-out 0s;
   box-shadow: inset 0 0 20px 20px transparent !important;
 }
+
+/* GPU-Accelerated Hardware Laser Stream for IntentBridgeHUD (Zero JS CPU load, 120 FPS fluid) */
+@keyframes laser-stream-flow {
+  0% {
+    stroke-dashoffset: 64;
+  }
+  100% {
+    stroke-dashoffset: -64;
+  }
+}
+
+.laser-beam-stream {
+  stroke-dasharray: 28 28;
+  animation: laser-stream-flow 1.2s linear infinite;
+  will-change: stroke-dashoffset;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .laser-beam-stream {
+    animation: none;
+    stroke-dasharray: none;
+  }
+}

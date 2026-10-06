@@ -8,7 +8,7 @@ This document provides a comprehensive, transparent inventory of everything **Am
 
 | Area | Rating | Status Details |
 |---|:---:|---|
-| **Local AI Models** | 🟢 **Healthy** | `MiniCPM 5 2B` (1.56 GB GGUF), `Kokoro ONNX` (24kHz TTS), and `Sherpa-ONNX` (Zipformer STT) are downloaded, present, and functional offline. |
+| **Local AI Models** | 🟢 **Healthy** | `MiniCPM 5 2B` (1.56 GB GGUF), `Supertonic 3` (44.1kHz Studio TTS), and `Sherpa-ONNX` (Zipformer STT) are downloaded, present, and functional offline. |
 | **Dependencies** | 🟢 **Healthy** | Core packages (`chromadb`, `sentence-transformers`, `CrossEncoder`, `rank_bm25`, `pdfplumber`, `winocr`, `psutil`) are installed and functional on Python 3.12. |
 | **Web Dashboard UI** | 🟢 **Healthy** | React + Vite frontend in `ui_app/dist` is compiled, including live audio visualizers, countdown timers, stopwatches, weather widgets, and settings. |
 | **OS Automation** | 🟢 **Healthy** | Audio volume, screen capture, app launching, brightness, keyboard shortcuts, window minimizing, and ms-settings URIs are fully operational. |
