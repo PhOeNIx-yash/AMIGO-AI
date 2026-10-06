@@ -1,13 +1,12 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
-  Bot,
-  User,
   Play,
   Square,
   CheckCircle2,
   Check,
 } from "lucide-react";
 import { sfx } from "../utils/audio";
+import { audioBus } from "../utils/audioBus";
 
 export interface VoiceOption {
   id: string;
@@ -18,7 +17,353 @@ export interface VoiceOption {
   desc: string;
   previewText: string;
   avatarGradient: string;
+  color?: string;
 }
+
+const VERT = `
+attribute vec2 a_pos;
+void main() {
+  gl_Position = vec4(a_pos, 0.0, 1.0);
+}
+`;
+
+const FRAG = `
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform vec3 u_color;
+uniform float u_energy;
+
+float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+}
+
+float noise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(hash(i + vec2(0.0, 0.0)), hash(i + vec2(1.0, 0.0)), u.x),
+    mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x),
+    u.y
+  );
+}
+
+float fbm(vec2 p) {
+  float v = 0.0;
+  float a = 0.6;
+  for (int i = 0; i < 3; i++) {
+    v += a * noise(p);
+    p *= 2.0;
+    a *= 0.5;
+  }
+  return v;
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution.xy;
+  float t = u_time * (0.22 + u_energy * 0.45);
+
+  vec2 drift = vec2(
+    sin(t) + (0.6 + u_energy * 0.4) * sin(t * 1.7 + 1.3),
+    cos(t * 0.8) + (0.6 + u_energy * 0.4) * cos(t * 1.3 + 2.1)
+  );
+
+  vec2 p = vec2(uv.x * 1.8, uv.y * 1.0) + drift * (0.7 + u_energy * 0.5);
+
+  vec2 q = vec2(fbm(p + drift), fbm(p + vec2(3.2, 1.5) - drift));
+  float f = fbm(p + 1.2 * q);
+
+  float g = clamp(1.0 - uv.y, 0.0, 1.0);
+  float anchor = smoothstep(0.0, 0.3, uv.y);
+  float shade = clamp(g + (f - 0.5) * 0.8 * anchor, 0.0, 1.0);
+
+  vec3 white = vec3(0.99, 1.0, 1.0);
+  vec3 light = mix(white, u_color, 0.5 + u_energy * 0.25);
+  vec3 dark = u_color;
+
+  vec3 col = white;
+  col = mix(col, light, smoothstep(0.28, 0.52, shade));
+  col = mix(col, dark, smoothstep(0.58, 0.88, shade));
+
+  float radius = 0.49 + u_energy * 0.02 * sin(u_time * 6.0);
+  float edge = smoothstep(radius, radius - 0.015, distance(uv, vec2(0.5)));
+
+  gl_FragColor = vec4(col * edge, edge);
+}
+`;
+
+function hexToRgb(hex: string): [number, number, number] {
+  let h = hex.replace("#", "").trim();
+  if (h.length === 3) {
+    h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+  }
+  const n = parseInt(h, 16);
+  if (h.length !== 6 || Number.isNaN(n)) return [0.1, 0.45, 0.95];
+  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+}
+
+function compileShader(gl: WebGLRenderingContext, type: number, src: string) {
+  const shader = gl.createShader(type);
+  if (!shader) return null;
+  gl.shaderSource(shader, src);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    console.error(gl.getShaderInfoLog(shader));
+    gl.deleteShader(shader);
+    return null;
+  }
+  return shader;
+}
+
+// 1. Shared Master Clock so all orbs share the exact same phase
+const GLOBAL_START_TIME = performance.now();
+
+// 2. Shared Global Audio & Speech Energy Coordinator
+const globalOrbSync = {
+  rawAudioEnergy: 0,
+  speakingEnergy: 0,
+  idleEnergy: 0,
+  lastFrameTime: 0,
+};
+
+let activeOrbCount = 0;
+let audioUnsubscribeFn: (() => void) | null = null;
+
+function retainOrbAudioSync() {
+  activeOrbCount++;
+  if (activeOrbCount === 1 && !audioUnsubscribeFn) {
+    audioUnsubscribeFn = audioBus.subscribe((level) => {
+      globalOrbSync.rawAudioEnergy = Math.max(globalOrbSync.rawAudioEnergy, Math.min(1, level * 1.5));
+    });
+  }
+}
+
+function releaseOrbAudioSync() {
+  activeOrbCount = Math.max(0, activeOrbCount - 1);
+  if (activeOrbCount === 0 && audioUnsubscribeFn) {
+    audioUnsubscribeFn();
+    audioUnsubscribeFn = null;
+  }
+}
+
+function updateGlobalEnergy(now: number) {
+  if (now === globalOrbSync.lastFrameTime) return;
+  globalOrbSync.lastFrameTime = now;
+
+  // Shared organic speech waveform for active voices
+  const speechWave = 0.35 + Math.sin(now * 0.009) * 0.28 + Math.cos(now * 0.017) * 0.18;
+  const targetSpeaking = Math.max(globalOrbSync.rawAudioEnergy, Math.max(0.18, speechWave));
+  const targetIdle = globalOrbSync.rawAudioEnergy * 0.12;
+
+  // Smooth toward targets in lockstep
+  globalOrbSync.speakingEnergy += (targetSpeaking - globalOrbSync.speakingEnergy) * 0.15;
+  globalOrbSync.idleEnergy += (targetIdle - globalOrbSync.idleEnergy) * 0.15;
+
+  // Exponential decay on incoming audio pulse
+  globalOrbSync.rawAudioEnergy *= 0.88;
+}
+
+export interface FluidOrbProps extends React.ComponentProps<"div"> {
+  size?: number;
+  color?: string;
+  isSpeaking?: boolean;
+}
+
+export const FluidOrb: React.FC<FluidOrbProps> = ({
+  size = 64,
+  color = "#1A73F2",
+  isSpeaking = false,
+  className = "",
+  style,
+  ...props
+}) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const isVisibleRef = useRef<boolean>(true);
+
+  const isSpeakingRef = useRef(isSpeaking);
+  const colorRef = useRef(color);
+
+  useEffect(() => {
+    isSpeakingRef.current = isSpeaking;
+  }, [isSpeaking]);
+
+  useEffect(() => {
+    colorRef.current = color;
+  }, [color]);
+
+  // Pause rendering when scrolled out of view
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        isVisibleRef.current = entry.isIntersecting;
+      },
+      { threshold: 0.05 }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    retainOrbAudioSync();
+    return () => {
+      releaseOrbAudioSync();
+    };
+  }, []);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const gl = canvas.getContext("webgl", {
+      antialias: false,
+      alpha: true,
+      powerPreference: "low-power",
+    });
+    if (!gl) return;
+
+    const program = gl.createProgram();
+    const vert = compileShader(gl, gl.VERTEX_SHADER, VERT);
+    const frag = compileShader(gl, gl.FRAGMENT_SHADER, FRAG);
+    if (!program || !vert || !frag) return;
+
+    gl.attachShader(program, vert);
+    gl.attachShader(program, frag);
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      console.error(gl.getProgramInfoLog(program));
+      return;
+    }
+    gl.useProgram(program);
+
+    const buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(
+      gl.ARRAY_BUFFER,
+      new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]),
+      gl.STATIC_DRAW
+    );
+    const aPos = gl.getAttribLocation(program, "a_pos");
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+    const uResolution = gl.getUniformLocation(program, "u_resolution");
+    const uTime = gl.getUniformLocation(program, "u_time");
+    const uColor = gl.getUniformLocation(program, "u_color");
+    const uEnergy = gl.getUniformLocation(program, "u_energy");
+
+    let activeColor = colorRef.current;
+    gl.uniform3f(uColor, ...hexToRgb(activeColor));
+
+    // Efficient DPR: 1.0 for small 36px card orbs, max 1.5 for larger spotlight orb
+    const dpr = size <= 40 ? 1 : Math.min(window.devicePixelRatio || 1, 1.5);
+    const px = Math.round(size * dpr);
+    canvas.width = px;
+    canvas.height = px;
+    gl.viewport(0, 0, px, px);
+    gl.uniform2f(uResolution, px, px);
+
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let raf = 0;
+    let lastRenderTime = 0;
+    let wasSpeaking = false;
+
+    const render = (now: number) => {
+      // 1. Skip completely if offscreen or tab minimized
+      if (!isVisibleRef.current || document.hidden) {
+        raf = requestAnimationFrame(render);
+        return;
+      }
+
+      const speaking = isSpeakingRef.current;
+
+      // 2. Throttle idle orbs to ~30fps to cut GPU/CPU load by 70%
+      if (!speaking && now - lastRenderTime < 32) {
+        raf = requestAnimationFrame(render);
+        return;
+      }
+      lastRenderTime = now;
+
+      // 3. Update shared coordinator
+      updateGlobalEnergy(now);
+
+      // 4. Dynamically sync color without restarting WebGL
+      if (colorRef.current !== activeColor) {
+        activeColor = colorRef.current;
+        gl.uniform3f(uColor, ...hexToRgb(activeColor));
+      }
+
+      // 5. Shared synchronized energy
+      const currentEnergy = speaking
+        ? globalOrbSync.speakingEnergy
+        : globalOrbSync.idleEnergy;
+
+      // 6. Exact shared time phase across ALL orbs
+      const globalTime = reduce ? 0 : (now - GLOBAL_START_TIME) / 1000;
+      gl.uniform1f(uTime, globalTime);
+      gl.uniform1f(uEnergy, currentEnergy);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+      // 7. Optimized Container scale & glow: ONLY update DOM when speaking or upon reset
+      if (containerRef.current) {
+        if (speaking) {
+          wasSpeaking = true;
+          const scale = 1 + currentEnergy * 0.09;
+          const glowRadius = Math.round(10 + currentEnergy * 24);
+          containerRef.current.style.transform = `scale(${scale.toFixed(3)}) translateZ(0)`;
+          containerRef.current.style.filter = `drop-shadow(0 0 ${glowRadius}px ${activeColor}80)`;
+        } else if (wasSpeaking) {
+          wasSpeaking = false;
+          containerRef.current.style.transform = "none";
+          containerRef.current.style.filter = `drop-shadow(0 0 10px ${activeColor}40)`;
+        }
+      }
+
+      if (!reduce) raf = requestAnimationFrame(render);
+    };
+
+    // Initial resting glow
+    if (containerRef.current) {
+      containerRef.current.style.filter = `drop-shadow(0 0 10px ${activeColor}40)`;
+    }
+
+    raf = requestAnimationFrame(render);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      gl.deleteProgram(program);
+      gl.deleteShader(vert);
+      gl.deleteShader(frag);
+      gl.deleteBuffer(buffer);
+      const loseExt = gl.getExtension("WEBGL_lose_context");
+      if (loseExt) loseExt.loseContext();
+    };
+  }, [size]);
+
+  return (
+    <div
+      ref={containerRef}
+      data-slot="fluid-orb"
+      className={`relative overflow-visible rounded-full flex-shrink-0 transition-transform duration-75 ${className}`}
+      style={{
+        width: size,
+        height: size,
+        ...style,
+      }}
+      {...props}
+    >
+      <canvas ref={canvasRef} className="h-full w-full rounded-full" />
+    </div>
+  );
+};
 
 export const VOICES_CATALOG: VoiceOption[] = [
   // 5 Best Studio Female Neural Voices (Kokoro 24kHz)
@@ -31,6 +376,7 @@ export const VOICES_CATALOG: VoiceOption[] = [
     desc: "Smooth, articulate & studio-clean American female (Recommended)",
     previewText: "Hello! I am Nicole, your clear and articulate studio voice.",
     avatarGradient: "from-rose-500 to-pink-600",
+    color: "#f43f5e",
   },
   {
     id: "sarah",
@@ -41,6 +387,7 @@ export const VOICES_CATALOG: VoiceOption[] = [
     desc: "Soft, natural & warm American female conversationalist",
     previewText: "Hello! I am Sarah, soft, warm and conversational.",
     avatarGradient: "from-fuchsia-500 to-rose-600",
+    color: "#ec4899",
   },
   {
     id: "heart",
@@ -51,6 +398,7 @@ export const VOICES_CATALOG: VoiceOption[] = [
     desc: "Warm, expressive and friendly conversational tone",
     previewText: "Hi there! I am Heart, warm, expressive and natural.",
     avatarGradient: "from-violet-500 to-purple-600",
+    color: "#8b5cf6",
   },
   {
     id: "sky",
@@ -61,6 +409,7 @@ export const VOICES_CATALOG: VoiceOption[] = [
     desc: "Bright, friendly & clear American female delivery",
     previewText: "Hey! I am Sky, bright, friendly and clear.",
     avatarGradient: "from-sky-400 to-blue-500",
+    color: "#0ea5e9",
   },
   {
     id: "bella",
@@ -71,6 +420,7 @@ export const VOICES_CATALOG: VoiceOption[] = [
     desc: "Crisp, energetic and articulate female delivery",
     previewText: "Hi there! I am Bella, crisp, energetic and ready to help.",
     avatarGradient: "from-amber-400 to-rose-500",
+    color: "#f59e0b",
   },
 
   // 5 Best Studio Male Neural Voices (Kokoro 24kHz)
@@ -83,6 +433,7 @@ export const VOICES_CATALOG: VoiceOption[] = [
     desc: "Deep, calm and grounded American baritone resonance",
     previewText: "Hello, I am Adam. Deep, calm and ready to assist you.",
     avatarGradient: "from-blue-600 to-indigo-700",
+    color: "#3b82f6",
   },
   {
     id: "michael",
@@ -93,6 +444,7 @@ export const VOICES_CATALOG: VoiceOption[] = [
     desc: "Professional, crisp and articulate executive tone",
     previewText: "Greetings! I am Michael. Professional, clear and articulate.",
     avatarGradient: "from-cyan-600 to-blue-700",
+    color: "#06b6d4",
   },
   {
     id: "echo",
@@ -103,6 +455,7 @@ export const VOICES_CATALOG: VoiceOption[] = [
     desc: "Warm, relatable and conversational American companion",
     previewText: "Hey there! I am Echo, warm and easy to talk to.",
     avatarGradient: "from-emerald-500 to-teal-700",
+    color: "#10b981",
   },
   {
     id: "liam",
@@ -113,6 +466,7 @@ export const VOICES_CATALOG: VoiceOption[] = [
     desc: "Young, natural, and modern American male delivery",
     previewText: "Hey! I am Liam, young, natural and fast.",
     avatarGradient: "from-teal-500 to-cyan-600",
+    color: "#14b8a6",
   },
   {
     id: "george",
@@ -123,6 +477,7 @@ export const VOICES_CATALOG: VoiceOption[] = [
     desc: "Distinguished British English gentleman",
     previewText: "Good day! I am George, speaking distinguished British English.",
     avatarGradient: "from-amber-600 to-orange-700",
+    color: "#ea580c",
   },
 ];
 
@@ -150,7 +505,21 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
   const [voiceFilterLocal, setVoiceFilterLocal] = useState<"all" | "female" | "male">(voiceFilter);
   const [playingVoiceIdLocal, setPlayingVoiceIdLocal] = useState<string | null>(playingVoiceId);
   const previewTimerRef = useRef<any>(null);
+  const savedTimerRef = useRef<any>(null);
   const [savedBanner, setSavedBanner] = useState(false);
+
+  useEffect(() => {
+    return () => {
+      if (previewTimerRef.current) {
+        clearTimeout(previewTimerRef.current);
+        previewTimerRef.current = null;
+      }
+      if (savedTimerRef.current) {
+        clearTimeout(savedTimerRef.current);
+        savedTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     setVoiceFilterLocal(voiceFilter);
@@ -177,8 +546,9 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
         body: JSON.stringify({ text: `${name} voice selected.` }),
       });
     } catch (e) {}
+    if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
     setSavedBanner(true);
-    setTimeout(() => setSavedBanner(false), 2000);
+    savedTimerRef.current = setTimeout(() => setSavedBanner(false), 2000);
   };
 
   const handleTogglePlayPreview = async (e: React.MouseEvent, voice: VoiceOption) => {
@@ -252,7 +622,9 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
     <div className="space-y-4">
       {/* Active Voice Spotlight Banner */}
       {(() => {
-        const activeVoice = VOICES_CATALOG.find((v) => v.id === selectedVoice) || VOICES_CATALOG[0];
+        const currentVoiceId = playingVoiceIdLocal || selectedVoice;
+        const activeVoice = VOICES_CATALOG.find((v) => v.id === currentVoiceId) || VOICES_CATALOG[0];
+        const isSpeakingActive = Boolean(playingVoiceIdLocal);
         return (
           <div
             className={`p-4 rounded-2xl border relative overflow-hidden transition-all ${
@@ -262,14 +634,12 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
           >
             <div className="flex items-center justify-between">
               <div className="flex items-center space-x-3.5">
-                <div
-                  className={`w-12 h-12 rounded-2xl bg-gradient-to-br ${activeVoice.avatarGradient} flex items-center justify-center text-white shadow-md flex-shrink-0`}
-                >
-                  {activeVoice.gender === "Robot" ? (
-                    <Bot className="w-6 h-6" />
-                  ) : (
-                    <User className="w-6 h-6" />
-                  )}
+                <div className="relative flex items-center justify-center p-1 flex-shrink-0">
+                  <FluidOrb
+                    size={52}
+                    color={activeVoice.color || theme.primary}
+                    isSpeaking={isSpeakingActive}
+                  />
                 </div>
                 <div>
                   <div className="flex items-center space-x-2">
@@ -291,7 +661,7 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
                         borderColor: `${theme.primary}30`,
                       }}
                     >
-                      Active Voice
+                      {playingVoiceIdLocal ? "Previewing" : "Active Voice"}
                     </span>
                   </div>
                   <p className="text-xs opacity-60 mt-0.5">{activeVoice.desc}</p>
@@ -385,14 +755,12 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
               <div>
                 <div className="flex items-start justify-between mb-2.5">
                   <div className="flex items-center space-x-2.5">
-                    <div
-                      className={`w-9 h-9 rounded-xl bg-gradient-to-br ${voice.avatarGradient} flex items-center justify-center text-white shadow-sm flex-shrink-0`}
-                    >
-                      {voice.gender === "Robot" ? (
-                        <Bot className="w-4 h-4" />
-                      ) : (
-                        <User className="w-4 h-4" />
-                      )}
+                    <div className="relative flex items-center justify-center p-0.5 flex-shrink-0">
+                      <FluidOrb
+                        size={36}
+                        color={voice.color || theme.primary}
+                        isSpeaking={isPlaying}
+                      />
                     </div>
                     <div>
                       <div className="text-xs font-semibold tracking-tight flex items-center space-x-1.5">

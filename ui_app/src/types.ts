@@ -1,5 +1,14 @@
 export type VisualizerMode = "ribbon" | "orb";
 
+export type ThinkingOrbStyle =
+  | "globe"
+  | "orbits"
+  | "web"
+  | "morph"
+  | "ring"
+  | "rubik";
+
+
 export type AssistantState =
   | "idle" // "What can I help you with ?"
   | "listening" // Active microphone listening with voice waves

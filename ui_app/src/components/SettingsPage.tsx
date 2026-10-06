@@ -7,16 +7,14 @@ import {
   CheckCircle2,
   AlertCircle,
   Sparkles,
-  Moon,
   Sun,
+  Moon,
   ArrowLeft,
   RotateCcw,
-  Trash2,
   Activity,
   Check,
   Sliders,
   Type,
-  LayoutTemplate,
   Sidebar,
   Minimize2,
   Maximize2,
@@ -26,7 +24,6 @@ import {
   RefreshCw,
   FileText,
   Layers,
-  Loader2,
   Brain,
   Volume2,
 } from "lucide-react";
@@ -35,12 +32,14 @@ import {
   ColorTheme,
   PluginMode,
   VisualizerMode,
+  ThinkingOrbStyle,
 } from "../types";
 import { KineticHeading, TextAnimationStyle } from "./KineticText";
 import { COLOR_THEMES, GREETING_PRESETS } from "../data/presets";
 import { testBackendConnection, fetchRagStatus, triggerRagReindex, RagStatusData } from "../services/assistantApi";
 import { VoiceSettingsTab } from "./VoiceSettingsTab";
-import { VOICES_CATALOG, VoiceOption } from "./VoiceSettingsTab";
+import { THINKING_ORB_PRESETS } from "./CanvasVisualizer";
+import { DeleteButton } from "./HistoryPanel";
 
 interface SettingsPageProps {
   isOpen: boolean;
@@ -51,6 +50,8 @@ interface SettingsPageProps {
   onChangeColorTheme: (theme: ColorTheme) => void;
   visualizerMode: VisualizerMode;
   onChangeVisualizerMode: (mode: VisualizerMode) => void;
+  thinkingOrbStyle?: ThinkingOrbStyle;
+  onChangeThinkingOrbStyle?: (style: ThinkingOrbStyle) => void;
   textAnimationStyle: TextAnimationStyle;
   onChangeTextAnimationStyle: (style: TextAnimationStyle) => void;
   greetingText: string;
@@ -70,6 +71,7 @@ interface SettingsPageProps {
   onResetAssistant: () => void;
 }
 
+
 type TabType = "appearance" | "voice" | "backend" | "data";
 
 export const SettingsPage: React.FC<SettingsPageProps> = ({
@@ -81,6 +83,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   onChangeColorTheme,
   visualizerMode,
   onChangeVisualizerMode,
+  thinkingOrbStyle = "globe",
+  onChangeThinkingOrbStyle,
   textAnimationStyle,
   onChangeTextAnimationStyle,
   greetingText,
@@ -145,6 +149,16 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   } | null>(null);
 
   const [savedBanner, setSavedBanner] = useState(false);
+  const savedTimerRef = useRef<any>(null);
+
+  useEffect(() => {
+    return () => {
+      if (savedTimerRef.current) {
+        clearTimeout(savedTimerRef.current);
+        savedTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // RAG / Knowledge Base states
   const [ragStatus, setRagStatus] = useState<RagStatusData | null>(null);
@@ -271,8 +285,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
       thinkingEnabled,
     };
     onSaveBackendConfig(updated);
+    if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
     setSavedBanner(true);
-    setTimeout(() => setSavedBanner(false), 2000);
+    savedTimerRef.current = setTimeout(() => setSavedBanner(false), 2000);
   };
 
   const handleTestBackend = async () => {
@@ -296,6 +311,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const handleResetToDefaults = () => {
     onChangeColorTheme("violet");
     onChangeVisualizerMode("ribbon");
+    onChangeThinkingOrbStyle?.("globe");
     onChangeTextAnimationStyle("silk_blur");
     onChangePluginMode("fullscreen");
     setTranscriptionEngine("amigo-speech");
@@ -305,8 +321,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     setActionWebhookUrl("");
     setApiKey("");
     onResetAssistant();
+    if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
     setSavedBanner(true);
-    setTimeout(() => setSavedBanner(false), 2000);
+    savedTimerRef.current = setTimeout(() => setSavedBanner(false), 2000);
   };
 
   const tabs = [
@@ -320,15 +337,16 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     <AnimatePresence>
       {isOpen && (
         <motion.div
-          initial={{ opacity: 0, scale: 0.96, y: 16 }}
+          initial={{ opacity: 0, scale: 0.985, y: 8 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
-          exit={{ opacity: 0, scale: 0.96, y: 16 }}
-          transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
-          className={`fixed inset-0 z-[100] h-[var(--visual-viewport-height,100dvh)] flex flex-col backdrop-blur-2xl shadow-2xl overflow-hidden ${
+          exit={{ opacity: 0, scale: 0.985, y: 8 }}
+          transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+          className={`fixed inset-0 z-[100] h-[var(--visual-viewport-height,100dvh)] flex flex-col backdrop-blur-md shadow-2xl overflow-hidden ${
             isDark ? "text-white" : "text-slate-900"
           }`}
           style={{
-            transform: "translateZ(0)",
+            willChange: "transform, opacity",
+            transform: "translate3d(0, 0, 0)",
             background: isDark
               ? `radial-gradient(ellipse 120% 70% at 50% 0%, ${theme.primary}12 0%, rgba(11, 10, 23, 0.98) 70%)`
               : `radial-gradient(ellipse 120% 70% at 50% 0%, ${theme.primary}08 0%, rgba(248, 249, 252, 0.98) 70%)`,
@@ -553,14 +571,14 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                   </div>
                 </div>
 
-                {/* Thinking Orb Visual States */}
+                {/* Thinking Orb Animation Selector */}
                 <div
                   className={`p-4 rounded-2xl border ${
                     isDark ? "bg-white/[0.03]" : "bg-white"
                   }`}
                   style={{ borderColor: isDark ? `${theme.primary}18` : `${theme.primary}12` }}
                 >
-                  <div className="flex items-start gap-3">
+                  <div className="flex items-start gap-3 mb-3">
                     <div
                       className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl border"
                       style={{ color: theme.accent, borderColor: `${theme.accent}55`, backgroundColor: `${theme.accent}12` }}
@@ -568,25 +586,64 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                       <Orbit className="h-4 w-4" />
                     </div>
                     <div>
-                      <div className="text-xs font-semibold uppercase tracking-wider opacity-60">Thinking Orb States</div>
+                      <div className="text-xs font-semibold uppercase tracking-wider opacity-60">Thinking Orb Animation</div>
                       <p className="mt-1 text-[11px] leading-relaxed opacity-60">
-                        Amigo uses a distinct orb motion for ready, listening, thinking, working, choices, and completed states.
+                        Choose the 3D particle motion Amigo displays while processing commands and reasoning.
                       </p>
-                      <div className="mt-3 flex flex-wrap gap-1.5">
-                        {["Breathing", "Listening", "Solving", "Working", "Connecting", "Weaving"].map((label) => (
-                          <span
-                            key={label}
-                            className={`rounded-full border px-2 py-1 text-[10px] ${
-                              isDark ? "border-white/10 bg-white/[0.03]" : "border-black/10 bg-black/[0.02]"
-                            }`}
-                          >
-                            {label}
-                          </span>
-                        ))}
-                      </div>
                     </div>
                   </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
+                    {THINKING_ORB_PRESETS.map((preset) => {
+                      const isSelected = thinkingOrbStyle === preset.id;
+                      return (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          onClick={() => onChangeThinkingOrbStyle?.(preset.id)}
+                          className={`p-2.5 rounded-xl border flex flex-col items-start text-left transition-all relative overflow-hidden ${
+                            isSelected
+                              ? "shadow-sm font-medium"
+                              : isDark
+                              ? "border-white/10 bg-white/[0.02] hover:bg-white/5"
+                              : "border-black/10 bg-white hover:bg-slate-50"
+                          }`}
+                          style={
+                            isSelected
+                              ? {
+                                  borderColor: theme.primary,
+                                  boxShadow: `0 0 0 1.5px ${theme.primary}40`,
+                                  backgroundColor: `${theme.primary}12`,
+                                }
+                              : {}
+                          }
+                        >
+                          <div className="flex items-center justify-between w-full">
+                            <span className="text-xs font-semibold text-slate-900 dark:text-white flex items-center gap-1.5">
+                              <span
+                                className="w-2 h-2 rounded-full inline-block"
+                                style={{ backgroundColor: isSelected ? theme.primary : "rgba(150,150,150,0.5)" }}
+                              />
+                              {preset.name}
+                            </span>
+                            {isSelected && (
+                              <span
+                                className="text-[10px] px-1.5 py-0.5 rounded-full font-medium"
+                                style={{ backgroundColor: `${theme.primary}25`, color: theme.primary }}
+                              >
+                                Active
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-[10px] opacity-60 mt-1 line-clamp-1">
+                            {preset.desc}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
+
 
                 {/* Greeting Headline & Prompt Options */}
                 <div
@@ -1255,14 +1312,15 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                       {historyCount > 0 ? `${historyCount} past interactions stored` : "No stored interactions"}
                     </div>
                   </div>
-                  <button
-                    onClick={onClearHistory}
-                    disabled={historyCount === 0}
-                    className="px-3 py-1.5 rounded-xl text-xs font-semibold border border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500/20 disabled:opacity-30 transition-colors flex items-center space-x-1.5"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>Clear History</span>
-                  </button>
+                  <div className="flex items-center space-x-2">
+                    <DeleteButton
+                      size="sm"
+                      onConfirm={onClearHistory}
+                      disabled={historyCount === 0}
+                      title="Clear History"
+                    />
+                    <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Clear</span>
+                  </div>
                 </div>
 
                 <div className="h-px bg-white/5" />

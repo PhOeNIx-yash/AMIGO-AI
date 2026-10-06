@@ -1,15 +1,183 @@
-import React from "react";
-import { motion, AnimatePresence } from "motion/react";
-// Import optimized motion configs
-import { fluidSpring, popIn, scaleFade } from "../utils/motionConfig";
-import { CheckCircle2, Loader2, AlertCircle, WifiOff, Sun, Sliders, Keyboard } from "lucide-react";
+import React, { useRef, useEffect, useState, useCallback, useId, type RefObject } from "react";
+import { motion, AnimatePresence, useReducedMotion } from "motion/react";
+import {
+  CheckCircle2,
+  Loader2,
+  AlertCircle,
+  WifiOff,
+  User,
+  Sparkles,
+  X,
+  Globe,
+  Music,
+  Terminal,
+  Volume2,
+  Sun,
+  Camera,
+  Calendar as CalendarIcon,
+  Folder,
+  Cpu,
+  Mail,
+  Calculator,
+  FileText,
+  Layers,
+  Activity,
+  Sliders,
+  Play,
+} from "lucide-react";
 import { ColorTheme } from "../types";
 import { COLOR_THEMES } from "../data/presets";
+
+export interface AnimatedBeamProps {
+  containerRef: RefObject<HTMLElement | null>;
+  fromRef: RefObject<HTMLElement | null>;
+  toRef: RefObject<HTMLElement | null>;
+  curvature?: number;
+  reverse?: boolean;
+  duration?: number;
+  delay?: number;
+  pathColor?: string;
+  gradientStart?: string;
+  gradientStop?: string;
+  strokeWidth?: number;
+  className?: string;
+}
+
+export function AnimatedBeam({
+  containerRef,
+  fromRef,
+  toRef,
+  curvature = 0,
+  reverse = false,
+  duration = 2.4,
+  delay = 0,
+  pathColor = "rgba(255, 255, 255, 0.12)",
+  gradientStart = "#8b5cf6",
+  gradientStop = "#ec4899",
+  strokeWidth = 2,
+  className = "",
+}: AnimatedBeamProps) {
+  const gradientId = useId();
+  const [path, setPath] = useState("");
+  const [size, setSize] = useState({ width: 0, height: 0 });
+  const prefersReducedMotion = useReducedMotion();
+
+  const measure = useCallback(() => {
+    const container = containerRef.current;
+    const from = fromRef.current;
+    const to = toRef.current;
+    if (!container || !from || !to) return;
+
+    const containerRect = container.getBoundingClientRect();
+    const fromRect = from.getBoundingClientRect();
+    const toRect = to.getBoundingClientRect();
+
+    setSize({ width: containerRect.width, height: containerRect.height });
+
+    const startX = fromRect.left - containerRect.left + fromRect.width / 2;
+    const startY = fromRect.top - containerRect.top + fromRect.height / 2;
+    const endX = toRect.left - containerRect.left + toRect.width / 2;
+    const endY = toRect.top - containerRect.top + toRect.height / 2;
+
+    const controlX = (startX + endX) / 2;
+    const controlY = (startY + endY) / 2 - curvature;
+
+    setPath(`M ${startX},${startY} Q ${controlX},${controlY} ${endX},${endY}`);
+  }, [containerRef, fromRef, toRef, curvature]);
+
+  useEffect(() => {
+    measure();
+    const t1 = setTimeout(measure, 50);
+    const t2 = setTimeout(measure, 160);
+    const t3 = setTimeout(measure, 360);
+
+    const container = containerRef.current;
+    let observer: ResizeObserver | null = null;
+    if (container) {
+      observer = new ResizeObserver(measure);
+      observer.observe(container);
+      if (fromRef.current) observer.observe(fromRef.current);
+      if (toRef.current) observer.observe(toRef.current);
+    }
+
+    window.addEventListener("resize", measure);
+
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+      if (observer) observer.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [measure, containerRef, fromRef, toRef]);
+
+  if (!path) return null;
+
+  return (
+    <svg
+      fill="none"
+      width={size.width}
+      height={size.height}
+      viewBox={`0 0 ${size.width} ${size.height}`}
+      aria-hidden="true"
+      className={`pointer-events-none absolute top-0 left-0 overflow-visible ${className}`}
+    >
+      <path
+        d={path}
+        stroke={pathColor}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+        strokeOpacity={0.35}
+      />
+      <path
+        d={path}
+        stroke={`url(#${gradientId})`}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+      />
+      <defs>
+        <motion.linearGradient
+          id={gradientId}
+          gradientUnits="userSpaceOnUse"
+          initial={{ x1: "0%", x2: "0%", y1: "0%", y2: "0%" }}
+          animate={
+            prefersReducedMotion
+              ? { x1: "0%", x2: "100%", y1: "0%", y2: "0%" }
+              : {
+                  x1: reverse ? ["100%", "-10%"] : ["-10%", "100%"],
+                  x2: reverse ? ["110%", "0%"] : ["0%", "110%"],
+                  y1: ["0%", "0%"],
+                  y2: ["0%", "0%"],
+                }
+          }
+          transition={{
+            duration,
+            delay,
+            repeat: prefersReducedMotion ? 0 : Infinity,
+            repeatDelay: 0.35,
+            ease: "easeInOut",
+          }}
+        >
+          <stop stopColor={gradientStart} stopOpacity="0" />
+          <stop stopColor={gradientStart} />
+          <stop offset="35%" stopColor={gradientStop} />
+          <stop offset="100%" stopColor={gradientStop} stopOpacity="0" />
+        </motion.linearGradient>
+      </defs>
+    </svg>
+  );
+}
+
 
 export const NON_ACTION_INTENTS = new Set([
   "chat",
   "error",
   "clarification",
+  "greeting",
+  "chitchat",
+  "conversation",
+  "none",
+  "unknown",
 ]);
 
 // Polite conversational prefixes to strip when evaluating user prompts
@@ -17,16 +185,12 @@ const POLITE_PREFIXES = /^(?:hey\s+amigo|amigo|please|could\s+you(?:\s+please)?|
 
 // Generalized Action Intent Detection
 export function isActionIntent(text: string, intent?: string): boolean {
-  // If backend intent is explicitly known, honor it directly
-  if (intent !== undefined && intent !== null && intent !== "") {
-    return !NON_ACTION_INTENTS.has(intent.toLowerCase());
+  if (intent !== undefined && intent !== null && intent.trim() !== "") {
+    return !NON_ACTION_INTENTS.has(intent.toLowerCase().trim());
   }
 
-  // During initial prompt state (before server response), check for genuine action triggers
   if (!text || !text.trim()) return false;
   let clean = text.toLowerCase().replace(/[_]/g, " ").trim();
-
-  // Strip conversational wrappers
   clean = clean.replace(POLITE_PREFIXES, "").trim();
 
   const actionTriggers = [
@@ -36,22 +200,24 @@ export function isActionIntent(text: string, intent?: string): boolean {
     /\b(?:weather|forecast|temperature)\b/i,
     /\b(?:time|date|clock)\b/i,
     /\b(?:timer|stopwatch|countdown|alarm|remind|reminder|schedule|calendar)\b/i,
-    /\b(?:screenshot|snip|capture|screen\s+vision)\b/i,
+    /\b(?:screenshot|snip|capture|screen\s+vision|take\s+picture)\b/i,
     /\b(?:lock|sleep|restart|reboot|shutdown|recycle\s+bin)\b/i,
     /\b(?:search|google|youtube|browse|look\s+up|find\s+file|open\s+folder|open\s+file)\b/i,
-    /\b(?:email|inbox|mail)\b/i,
-    /\b(?:calculate|calc|compute)\b/i,
-    /\b(?:system\s+status|cpu|ram|battery|hardware)\b/i,
+    /\b(?:email|inbox|mail|send\s+mail|send\s+email|send\s+message)\b/i,
+    /\b(?:calculate|calc|compute|solve|convert)\b/i,
+    /\b(?:system\s+status|cpu|ram|battery|hardware|disk\s+space)\b/i,
     /\b(?:type|press|scroll)\b/i,
     /\b(?:minimize|maximize|snap\s+left|snap\s+right|show\s+desktop)\b/i,
+    /\b(?:create|delete|make|write|generate|execute)\b/i,
   ];
 
   return actionTriggers.some((p) => p.test(clean));
 }
 
-// Vector Brand & System Icons
+
+// Brand Icons
 const YouTubeIcon = () => (
-  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
+  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none">
     <path
       d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814z"
       fill="#FF0000"
@@ -61,7 +227,7 @@ const YouTubeIcon = () => (
 );
 
 const GoogleIcon = () => (
-  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24">
+  <svg className="w-4 h-4" viewBox="0 0 24 24">
     <path
       d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
       fill="#4285F4"
@@ -82,7 +248,7 @@ const GoogleIcon = () => (
 );
 
 const SpotifyIcon = () => (
-  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24">
+  <svg className="w-4 h-4" viewBox="0 0 24 24">
     <circle cx="12" cy="12" r="12" fill="#1DB954" />
     <path
       d="M17.5 16.3c-.2.3-.5.4-.8.2-2.3-1.4-5.2-1.7-8.6-.9-.3.1-.7-.1-.8-.4-.1-.3.1-.7.4-.8 3.8-.9 7-.5 9.6 1.1.3.2.4.5.2.8zm1.2-2.6c-.2.4-.7.5-1.1.3-2.6-1.6-6.6-2.1-9.7-1.1-.4.1-.9-.1-1-.5-.1-.4.1-.9.5-1 3.6-1.1 8-.5 11 1.3.4.2.5.7.3 1zm.1-2.7c-3.1-1.9-8.3-2-11.3-1.1-.5.1-1-.2-1.1-.7-.1-.5.2-1 .7-1.1 3.5-1.1 9.2-.9 12.8 1.2.4.3.6.9.3 1.3-.3.5-.9.6-1.4.4z"
@@ -91,590 +257,201 @@ const SpotifyIcon = () => (
   </svg>
 );
 
-const DiscordIcon = () => (
-  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="#5865F2">
-    <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994.021-.041.001-.09-.041-.106a13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128c.126-.093.252-.19.372-.287a.075.075 0 0 1 .077-.01c3.931 1.795 8.18 1.795 12.061 0a.075.075 0 0 1 .078.009c.12.098.246.195.373.288a.077.077 0 0 1-.006.127c-.598.35-1.22.645-1.873.891a.076.076 0 0 0-.04.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.028zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z" />
-  </svg>
-);
-
-const WindowsIcon = () => (
-  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24">
-    <path d="M0 0h11.377v11.372H0V0zm12.623 0H24v11.372H12.623V0zM0 12.623h11.377V24H0V12.623zm12.623 0H24V24H12.623V12.623z" fill="#0078D4" />
-  </svg>
-);
-
-const ChromeIcon = () => (
-  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24">
-    <circle cx="12" cy="12" r="11" fill="#4285F4" />
-    <path d="M12 2a10 10 0 0 1 8.66 5H12v5h9.8A10 10 0 0 1 12 22a10 10 0 0 1-8.66-15h8.66V2z" fill="#EA4335" />
-    <circle cx="12" cy="12" r="5" fill="#FBBC05" />
-    <circle cx="12" cy="12" r="3" fill="#34A853" />
-    <circle cx="12" cy="12" r="2" fill="#FFFFFF" />
-  </svg>
-);
-
-const EdgeIcon = () => (
-  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-    <circle cx="12" cy="12" r="10" fill="#0078D7" />
-    <path d="M12 6a6 6 0 0 1 6 6c0 3.3-2.7 6-6 6a6 6 0 0 1-6-6c0-3.3 2.7-6 6-6z" fill="#00BCF2" />
-  </svg>
-);
-
-const VSCodeIcon = () => (
-  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-    <path d="M17.5 2L6.8 10.8 2 7.2v9.6l4.8-3.6L17.5 22 22 20V4l-4.5-2z" fill="#007ACC" />
-    <path d="M17.5 22L6.8 13.2 2 16.8v-9.6l4.8 3.6L17.5 2 22 4v16l-4.5 2z" fill="#007ACC" fillOpacity="0.8" />
-  </svg>
-);
-
-const TerminalIcon = () => (
-  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-    <rect x="2" y="3" width="20" height="18" rx="3" fill="#1E1E1E" stroke="#4B5563" strokeWidth="1.2" />
-    <path d="M6 8l4 4-4 4M12 16h6" stroke="#10B981" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-);
-
-const MailIcon = () => (
-  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-    <rect x="2" y="4" width="20" height="16" rx="3" fill="#0078D4" />
-    <path d="M2 6l10 7 10-7" stroke="#FFFFFF" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-);
-
-const NotepadIcon = () => (
-  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-    <rect x="3" y="2" width="18" height="20" rx="3" fill="#0078D4" />
-    <path d="M7 7h10M7 11h10M7 15h6" stroke="#FFFFFF" strokeWidth="1.8" strokeLinecap="round" />
-  </svg>
-);
-
-const CalculatorIcon = () => (
-  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-    <rect x="3" y="2" width="18" height="20" rx="3" fill="#107C41" />
-    <rect x="6" y="5" width="12" height="4" rx="1" fill="#FFFFFF" fillOpacity="0.3" />
-    <circle cx="7.5" cy="12.5" r="1.2" fill="#FFFFFF" />
-    <circle cx="12" cy="12.5" r="1.2" fill="#FFFFFF" />
-    <circle cx="16.5" cy="12.5" r="1.2" fill="#FFFFFF" />
-    <circle cx="7.5" cy="16.5" r="1.2" fill="#FFFFFF" />
-    <circle cx="12" cy="16.5" r="1.2" fill="#FFFFFF" />
-    <rect x="15.3" y="15.3" width="2.4" height="2.4" rx="0.5" fill="#FFFFFF" />
-  </svg>
-);
-
-const CalendarIcon = () => (
-  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-    <rect x="3" y="4" width="18" height="18" rx="3" fill="#F7630C" />
-    <path d="M3 9h18" stroke="#FFFFFF" strokeWidth="1.8" />
-    <rect x="7" y="2" width="2" height="4" rx="1" fill="#FFFFFF" />
-    <rect x="15" y="2" width="2" height="4" rx="1" fill="#FFFFFF" />
-    <circle cx="8" cy="14" r="1" fill="#FFFFFF" />
-    <circle cx="12" cy="14" r="1" fill="#FFFFFF" />
-    <circle cx="16" cy="14" r="1" fill="#FFFFFF" />
-  </svg>
-);
-
-const VolumeIcon = () => (
-  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-    <rect x="2" y="2" width="20" height="20" rx="4" fill="#8E44AD" />
-    <path d="M7 9v6h3l4 4V5l-4 4H7z" fill="#FFFFFF" />
-    <path d="M17 9c.7 1 .7 3 0 4" stroke="#FFFFFF" strokeWidth="1.6" strokeLinecap="round" />
-  </svg>
-);
-
-const CameraIcon = () => (
-  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-    <rect x="2" y="2" width="20" height="20" rx="4" fill="#00B4D8" />
-    <path d="M6 8h2l1-2h6l1 2h2a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2z" fill="#FFFFFF" />
-    <circle cx="12" cy="13" r="3" fill="#0077B6" />
-  </svg>
-);
-
-const WeatherIcon = () => (
-  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-    <rect x="2" y="2" width="20" height="20" rx="4" fill="#0284C7" />
-    <circle cx="9" cy="9" r="3" fill="#FBBF24" />
-    <path d="M7 16a3 3 0 0 1 5.83-1 2.5 2.5 0 0 1 4.17 2H7z" fill="#FFFFFF" />
-    <path d="M10 18v2M14 18v2" stroke="#38BDF8" strokeWidth="1.4" strokeLinecap="round" />
-  </svg>
-);
-
-const FolderIcon = () => (
-  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-    <path d="M2 6a2 2 0 0 1 2-2h4.586a1 1 0 0 1 .707.293L11.707 6.7a1 1 0 0 0 .707.293H20a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6z" fill="#FBBF24" />
-    <path d="M2 9h20v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9z" fill="#F59E0B" />
-  </svg>
-);
-
-const CpuIcon = () => (
-  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-    <rect x="4" y="4" width="16" height="16" rx="3" fill="#6366F1" />
-    <rect x="8" y="8" width="8" height="8" rx="1" fill="#FFFFFF" fillOpacity="0.3" />
-    <path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3" stroke="#FFFFFF" strokeWidth="1.5" strokeLinecap="round" />
-  </svg>
-);
-
-const AmigoSparkleLogo = () => (
-  <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none">
-    <path
-      d="M12 0C12 6.627 17.373 12 24 12C17.373 12 12 17.373 12 24C12 17.373 6.627 12 0 12C6.627 12 12 6.627 12 0Z"
-      fill="#FFFFFF"
-    />
-  </svg>
-);
-
-export const AppIcon: React.FC<{ name: string }> = ({ name }) => {
-  const n = (name || "").toLowerCase();
-  if (n.includes("chrome")) return <ChromeIcon />;
-  if (n.includes("edge")) return <EdgeIcon />;
-  if (n.includes("spotify") || n.includes("music") || n.includes("song")) return <SpotifyIcon />;
-  if (n.includes("youtube") || n.includes("video")) return <YouTubeIcon />;
-  if (n.includes("google") || n.includes("search")) return <GoogleIcon />;
-  if (n.includes("discord")) return <DiscordIcon />;
-  if (n.includes("code") || n.includes("vscode") || n.includes("visual studio")) return <VSCodeIcon />;
-  if (n.includes("terminal") || n.includes("powershell") || n.includes("cmd") || n.includes("bash")) return <TerminalIcon />;
-  if (n.includes("notepad") || n.includes("text") || n.includes("note") || n.includes("editor")) return <NotepadIcon />;
-  if (n.includes("calc")) return <CalculatorIcon />;
-  if (n.includes("calendar") || n.includes("schedule")) return <CalendarIcon />;
-  if (n.includes("mail") || n.includes("outlook") || n.includes("email")) return <MailIcon />;
-  if (n.includes("folder") || n.includes("explorer") || n.includes("file") || n.includes("directory")) return <FolderIcon />;
-  if (n.includes("camera") || n.includes("photo") || n.includes("vision") || n.includes("screen")) return <CameraIcon />;
-  if (n.includes("weather") || n.includes("forecast")) return <WeatherIcon />;
-  if (n.includes("volume") || n.includes("audio") || n.includes("sound") || n.includes("mute")) return <VolumeIcon />;
-  if (n.includes("cpu") || n.includes("task manager") || n.includes("performance") || n.includes("telemetry") || n.includes("ram")) return <CpuIcon />;
-  return <WindowsIcon />;
-};
-
-interface ActionEntityInfo {
+interface ActionVisualInfo {
   name: string;
   actionVerb: string;
   completedText: string;
   icon: React.ReactNode;
 }
 
-function cleanAppName(raw: string): string {
-  return raw
-    .replace(/\b(?:please|now|for me|app|application|program)\b/gi, "")
-    .trim()
-    .split(/\s+/)
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-    .join(" ");
+function extractDynamicParam(params?: Record<string, any>, prompt?: string): string {
+  if (params && typeof params === "object") {
+    const candidateKeys = [
+      "query", "q", "song", "video", "app_name", "application", "app",
+      "city", "location", "target", "task", "action", "command",
+      "recipient", "to", "subject", "file", "filename", "path",
+      "text", "message", "title", "content", "url"
+    ];
+    for (const key of candidateKeys) {
+      if (typeof params[key] === "string" && params[key].trim()) {
+        return params[key].trim();
+      }
+    }
+    for (const [key, val] of Object.entries(params)) {
+      if (typeof val === "string" && val.trim() && val.length > 0 && val.length < 100 && !key.startsWith("_")) {
+        return val.trim();
+      }
+    }
+  }
+  return "";
 }
 
-// Generalized & Accurate Entity / Intent Resolver
-export function resolveActionInfo(
-  intent?: string,
-  params?: Record<string, any>,
-  prompt?: string
-): ActionEntityInfo {
-  const cleanIntent = (intent || "").trim().toLowerCase();
-  const cleanPrompt = (prompt || "").trim();
+function formatIntentName(raw: string): string {
+  if (!raw) return "Agentic Tool";
+  return raw
+    .replace(/[_\-.]+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function getDynamicToolIcon(intentStr: string, name: string): React.ReactNode {
+  const s = (intentStr + " " + name).toLowerCase();
+  if (s.includes("youtube")) return <YouTubeIcon />;
+  if (s.includes("spotify")) return <SpotifyIcon />;
+  if (s.includes("google") || s.includes("search") || s.includes("browse") || s.includes("web")) return <GoogleIcon />;
+  if (s.includes("screen") || s.includes("vision") || s.includes("camera") || s.includes("photo") || s.includes("snip")) {
+    return <Camera className="w-4 h-4 text-cyan-400" />;
+  }
+  if (s.includes("weather") || s.includes("forecast") || s.includes("temp")) {
+    return <Sun className="w-4 h-4 text-amber-400" />;
+  }
+  if (s.includes("volume") || s.includes("sound") || s.includes("mute") || s.includes("audio")) {
+    return <Volume2 className="w-4 h-4 text-sky-400" />;
+  }
+  if (s.includes("brightness") || s.includes("display")) {
+    return <Sun className="w-4 h-4 text-amber-400" />;
+  }
+  if (s.includes("music") || s.includes("track") || s.includes("playlist")) {
+    return <Music className="w-4 h-4 text-emerald-400" />;
+  }
+  if (s.includes("timer") || s.includes("calendar") || s.includes("clock") || s.includes("alarm") || s.includes("schedule")) {
+    return <CalendarIcon className="w-4 h-4 text-amber-400" />;
+  }
+  if (s.includes("mail") || s.includes("email") || s.includes("inbox") || s.includes("send")) {
+    return <Mail className="w-4 h-4 text-blue-400" />;
+  }
+  if (s.includes("calc") || s.includes("math") || s.includes("compute")) {
+    return <Calculator className="w-4 h-4 text-emerald-400" />;
+  }
+  if (s.includes("file") || s.includes("folder") || s.includes("doc") || s.includes("note")) {
+    return <Folder className="w-4 h-4 text-indigo-400" />;
+  }
+  if (s.includes("cpu") || s.includes("system") || s.includes("hardware") || s.includes("ram") || s.includes("battery")) {
+    return <Cpu className="w-4 h-4 text-purple-400" />;
+  }
+  if (s.includes("terminal") || s.includes("shell") || s.includes("cmd") || s.includes("bash") || s.includes("run") || s.includes("git")) {
+    return <Terminal className="w-4 h-4 text-rose-400" />;
+  }
+  if (s.includes("setting") || s.includes("config") || s.includes("pref")) {
+    return <Sliders className="w-4 h-4 text-violet-400" />;
+  }
+  return <Layers className="w-4 h-4 text-violet-400" />;
+}
+
+function resolveActionInfo(intent?: string, params?: Record<string, any>, prompt?: string): ActionVisualInfo {
+  const cleanIntent = (intent || "").toLowerCase().trim();
   const p = params || {};
+  const pr = (prompt || "").toLowerCase().trim();
+  const paramVal = extractDynamicParam(p, prompt);
 
-  // 1. App Launch & App Termination
-  if (cleanIntent === "open_app" || cleanIntent === "close_app" || cleanIntent === "launch_app") {
-    const isClose = cleanIntent.startsWith("close") || /^(?:close|kill|terminate|exit|quit)\b/i.test(cleanPrompt);
-    let appName = (p.app_name || p.app || p.target || "").trim();
-    if (!appName) {
-      const match = cleanPrompt.match(/\b(?:open|launch|start|run|close|kill|terminate|exit|quit)\s+([a-zA-Z0-9_\-\.\s]+)/i);
-      if (match && match[1]) appName = match[1];
-    }
-    const formatted = appName ? cleanAppName(appName) : "Application";
-    return {
-      name: formatted,
-      actionVerb: isClose ? `Closing ${formatted}...` : `Launching ${formatted}...`,
-      completedText: isClose ? `${formatted} Closed` : `${formatted} Ready`,
-      icon: <AppIcon name={formatted} />,
-    };
-  }
-
-  // 2. Window Management
-  if (cleanIntent === "window_management") {
-    const action = String(p.action || "").toLowerCase();
-    let label = "Window Manager";
-    let verb = "Managing Window Layout...";
-    let completed = "Window Arranged";
-    if (action.includes("min")) {
-      verb = "Minimizing Active Window...";
-      completed = "Window Minimized";
-    } else if (action.includes("max")) {
-      verb = "Maximizing Window...";
-      completed = "Window Maximized";
-    } else if (action.includes("left")) {
-      verb = "Snapping Window Left...";
-      completed = "Window Snapped Left";
-    } else if (action.includes("right")) {
-      verb = "Snapping Window Right...";
-      completed = "Window Snapped Right";
-    } else if (action.includes("desktop")) {
-      verb = "Showing Windows Desktop...";
-      completed = "Desktop Revealed";
-    }
-    return {
-      name: label,
-      actionVerb: verb,
-      completedText: completed,
-      icon: <WindowsIcon />,
-    };
-  }
-
-  // 3. YouTube Search & Playback
-  if (cleanIntent === "play_youtube" || cleanIntent === "search_youtube") {
-    const query = (p.query || p.song || "").trim();
+  // 1. YouTube
+  if (cleanIntent.includes("youtube") || pr.includes("youtube")) {
+    const q = paramVal || "YouTube Video";
     return {
       name: "YouTube",
-      actionVerb: query ? `Searching "${query}" on YouTube...` : "Connecting to YouTube...",
-      completedText: query ? `Playing "${query}"` : "YouTube Playing",
+      actionVerb: `Streaming "${q}"...`,
+      completedText: `Playing on YouTube`,
       icon: <YouTubeIcon />,
     };
   }
 
-  // 4. Media Controls
-  if (
-    cleanIntent === "play_media" ||
-    cleanIntent === "pause_media" ||
-    cleanIntent === "next_track" ||
-    cleanIntent === "prev_track" ||
-    cleanIntent === "current_media" ||
-    cleanIntent === "get_current_media" ||
-    cleanIntent === "media_control"
-  ) {
-    let verb = "Controlling Media Playback...";
-    let completed = "Media Action Executed";
-    if (cleanIntent === "pause_media" || cleanPrompt.toLowerCase().includes("pause")) {
-      verb = "Pausing Media Playback...";
-      completed = "Playback Paused";
-    } else if (cleanIntent === "play_media" || cleanPrompt.toLowerCase().includes("resume")) {
-      verb = "Resuming Playback...";
-      completed = "Playback Resumed";
-    } else if (cleanIntent === "next_track" || cleanPrompt.toLowerCase().includes("next")) {
-      verb = "Skipping to Next Track...";
-      completed = "Next Track";
-    } else if (cleanIntent === "prev_track" || cleanPrompt.toLowerCase().includes("prev")) {
-      verb = "Playing Previous Track...";
-      completed = "Previous Track";
-    } else if (cleanIntent.includes("current")) {
-      verb = "Querying Live Media...";
-      completed = "Now Playing Synchronized";
-    }
+  // 2. Spotify / Music
+  if (cleanIntent.includes("spotify") || pr.includes("spotify")) {
     return {
-      name: "Media Player",
-      actionVerb: verb,
-      completedText: completed,
+      name: "Spotify",
+      actionVerb: paramVal ? `Playing "${paramVal}"...` : "Controlling Audio Playback...",
+      completedText: "Playback Updated",
       icon: <SpotifyIcon />,
     };
   }
 
-  // 5. Volume & Audio Control
-  if (
-    cleanIntent === "set_volume" ||
-    cleanIntent === "volume_up" ||
-    cleanIntent === "volume_down" ||
-    cleanIntent === "mute" ||
-    cleanIntent === "unmute"
-  ) {
-    if (cleanIntent === "mute" || cleanPrompt.toLowerCase().includes("mute")) {
-      return {
-        name: "Audio Controller",
-        actionVerb: "Muting System Audio...",
-        completedText: "Audio Muted",
-        icon: <VolumeIcon />,
-      };
-    }
-    if (cleanIntent === "unmute") {
-      return {
-        name: "Audio Controller",
-        actionVerb: "Unmuting System Audio...",
-        completedText: "Audio Unmuted",
-        icon: <VolumeIcon />,
-      };
-    }
-    const level = p.level !== undefined ? p.level : p.volume;
-    const levelStr = level !== undefined ? `${level}%` : "";
+  // 3. Web Search / Google
+  if (cleanIntent.includes("search") || cleanIntent.includes("google") || cleanIntent === "web_search" || pr.includes("google")) {
+    const q = paramVal || prompt || "Web Knowledge";
     return {
-      name: "Audio Controller",
-      actionVerb: levelStr ? `Setting Volume to ${levelStr}...` : "Adjusting System Volume...",
-      completedText: levelStr ? `Volume Set to ${levelStr}` : "Volume Adjusted",
-      icon: <VolumeIcon />,
-    };
-  }
-
-  // 6. Display Brightness
-  if (cleanIntent === "set_brightness") {
-    const level = p.level !== undefined ? p.level : p.brightness;
-    const levelStr = level !== undefined ? `${level}%` : "";
-    return {
-      name: "Display Brightness",
-      actionVerb: levelStr ? `Setting Brightness to ${levelStr}...` : "Adjusting Display Brightness...",
-      completedText: levelStr ? `Brightness Set to ${levelStr}` : "Brightness Adjusted",
-      icon: <Sun className="w-3.5 h-3.5 text-amber-400" />,
-    };
-  }
-
-  // 7. Weather
-  if (cleanIntent === "get_weather") {
-    const loc = (p.location || p.city || "").trim();
-    const name = loc ? `${cleanAppName(loc)} Weather` : "Weather Radar";
-    return {
-      name,
-      actionVerb: loc ? `Fetching Weather for ${cleanAppName(loc)}...` : "Checking Meteorological Radar...",
-      completedText: loc ? `${cleanAppName(loc)} Weather Ready` : "Weather Data Synchronized",
-      icon: <WeatherIcon />,
-    };
-  }
-
-  // 8. Time & Date
-  if (cleanIntent === "get_time" || cleanIntent === "get_date" || cleanIntent === "time_date") {
-    const loc = (p.location || "").trim();
-    return {
-      name: loc ? `${cleanAppName(loc)} Clock` : "World Clock",
-      actionVerb: loc ? `Querying Time in ${cleanAppName(loc)}...` : "Reading System Clock...",
-      completedText: "Time Synchronized",
-      icon: <CalendarIcon />,
-    };
-  }
-
-  // 9. Timer & Stopwatch
-  if (cleanIntent === "set_timer" || cleanIntent === "timer") {
-    const sec = p.duration_seconds || p.duration || 0;
-    const label = sec > 0 ? (sec >= 60 ? `${Math.ceil(sec / 60)}m Timer` : `${sec}s Timer`) : "Countdown Timer";
-    return {
-      name: label,
-      actionVerb: `Starting ${label}...`,
-      completedText: `${label} Active`,
-      icon: (
-        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-          <circle cx="12" cy="12" r="9" stroke="#F59E0B" strokeWidth="2" />
-          <path d="M12 7v5l3 3" stroke="#FFFFFF" strokeWidth="2" strokeLinecap="round" />
-        </svg>
-      ),
-    };
-  }
-
-  if (cleanIntent === "stopwatch") {
-    return {
-      name: "Live Stopwatch",
-      actionVerb: "Initializing Live Stopwatch...",
-      completedText: "Stopwatch Active",
-      icon: (
-        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-          <circle cx="12" cy="12" r="9" stroke="#06B6D4" strokeWidth="2" />
-          <path d="M12 7v5l3 3" stroke="#FFFFFF" strokeWidth="2" strokeLinecap="round" />
-        </svg>
-      ),
-    };
-  }
-
-  // 10. Scheduler & Calendar
-  if (cleanIntent === "set_reminder" || cleanIntent === "list_reminders" || cleanIntent === "cancel_reminder") {
-    return {
-      name: "Scheduler",
-      actionVerb: "Scheduling Event Hook...",
-      completedText: "Reminder Configured",
-      icon: <CalendarIcon />,
-    };
-  }
-
-  if (cleanIntent === "get_calendar" || cleanIntent === "search_calendar") {
-    return {
-      name: "Outlook Calendar",
-      actionVerb: "Reading Calendar Agenda...",
-      completedText: "Calendar Synced",
-      icon: <CalendarIcon />,
-    };
-  }
-
-  // 11. Email
-  if (
-    cleanIntent === "read_emails" ||
-    cleanIntent === "unread_emails" ||
-    cleanIntent === "search_emails" ||
-    cleanIntent === "draft_email"
-  ) {
-    const isUnread = cleanIntent.includes("unread");
-    return {
-      name: "Outlook Mail",
-      actionVerb: isUnread ? "Checking Unread Emails..." : "Scanning Outlook Inbox...",
-      completedText: "Inbox Synchronized",
-      icon: <MailIcon />,
-    };
-  }
-
-  // 12. Screen Vision & Screenshots
-  if (
-    cleanIntent === "take_screenshot" ||
-    cleanIntent === "screen_vision" ||
-    cleanIntent === "read_screen" ||
-    cleanIntent === "ask_about_screen"
-  ) {
-    return {
-      name: "Screen Vision",
-      actionVerb: "Capturing & Analyzing Display...",
-      completedText: "Screen Analyzed",
-      icon: <CameraIcon />,
-    };
-  }
-
-  // 13. File System
-  if (
-    cleanIntent === "find_file" ||
-    cleanIntent === "open_file" ||
-    cleanIntent === "reveal_file" ||
-    cleanIntent === "open_folder" ||
-    cleanIntent === "copy_file_path"
-  ) {
-    const target = (p.filename || p.path || p.folder || "").trim();
-    const clean = target ? target.replace(/^.*[\\/]/, "") : "Filesystem";
-    return {
-      name: clean !== "Filesystem" ? clean : "File Explorer",
-      actionVerb: clean !== "Filesystem" ? `Locating ${clean}...` : "Indexing File System...",
-      completedText: clean !== "Filesystem" ? `${clean} Located` : "File Action Completed",
-      icon: <FolderIcon />,
-    };
-  }
-
-  // 14. Document AI / RAG
-  if (
-    cleanIntent === "document_qa" ||
-    cleanIntent === "ask_document" ||
-    cleanIntent === "summarize_document" ||
-    cleanIntent === "find_document"
-  ) {
-    const target = (p.filename || p.document || "").trim();
-    const clean = target ? target.replace(/^.*[\\/]/, "") : "Knowledge Base";
-    return {
-      name: clean,
-      actionVerb: `Querying ${clean}...`,
-      completedText: "Document Intelligence Ready",
-      icon: <AmigoSparkleLogo />,
-    };
-  }
-
-  // 15. Web Search
-  if (cleanIntent === "web_search" || cleanIntent === "open_website" || cleanIntent === "show_images") {
-    const q = (p.query || p.url || "").trim();
-    return {
-      name: "Web Intelligence",
-      actionVerb: q ? `Searching "${q}"...` : "Navigating Web Engine...",
-      completedText: "Search Completed",
+      name: "Google Search",
+      actionVerb: `Searching "${q}"...`,
+      completedText: `Search Results Retrieved`,
       icon: <GoogleIcon />,
     };
   }
 
-  // 16. Calculator
-  if (cleanIntent === "calculate") {
+  // 4. Screen Vision
+  if (cleanIntent.includes("screen") || cleanIntent.includes("vision") || pr.includes("screenshot")) {
     return {
-      name: "Calculator",
-      actionVerb: "Calculating with Math Engine...",
-      completedText: "Calculation Solved",
-      icon: <CalculatorIcon />,
+      name: "Screen Vision",
+      actionVerb: "Analyzing Screen Context...",
+      completedText: "Screen Analyzed",
+      icon: <Camera className="w-4 h-4 text-cyan-400" />,
     };
   }
 
-  // 17. Telemetry & Hardware
-  if (cleanIntent === "system_status" || cleanIntent === "hardware_metrics") {
-    return {
-      name: "Hardware Telemetry",
-      actionVerb: "Querying Hardware Stats...",
-      completedText: "System Metrics Loaded",
-      icon: <CpuIcon />,
-    };
-  }
-
-  // 18. Power & OS Automation
-  if (
-    cleanIntent === "lock_pc" ||
-    cleanIntent === "sleep_pc" ||
-    cleanIntent === "restart_pc" ||
-    cleanIntent === "cancel_shutdown" ||
-    cleanIntent === "empty_recycle_bin"
-  ) {
-    let verb = "Executing Power Action...";
-    if (cleanIntent === "lock_pc") verb = "Locking Windows Workstation...";
-    if (cleanIntent === "sleep_pc") verb = "Entering Sleep Mode...";
-    if (cleanIntent === "restart_pc") verb = "Initiating System Restart...";
-    if (cleanIntent === "empty_recycle_bin") verb = "Purging Recycle Bin...";
-    return {
-      name: "Windows System",
-      actionVerb: verb,
-      completedText: "Action Executed",
-      icon: <WindowsIcon />,
-    };
-  }
-
-  if (
-    cleanIntent === "type_text" ||
-    cleanIntent === "press_key" ||
-    cleanIntent === "click_screen" ||
-    cleanIntent === "scroll_down" ||
-    cleanIntent === "scroll_up" ||
-    cleanIntent === "new_tab" ||
-    cleanIntent === "close_tab"
-  ) {
-    return {
-      name: "OS Automation",
-      actionVerb: "Automating User Input...",
-      completedText: "Input Action Executed",
-      icon: <Keyboard className="w-3.5 h-3.5 text-indigo-400" />,
-    };
-  }
-
-  // 19. Prompt-based Fallback Resolution (Before server responds with intent)
-  const lowerPrompt = cleanPrompt.toLowerCase();
-
-  // App launch / close detection
-  const launchMatch = cleanPrompt.match(/\b(?:open|launch|start|run|close|switch to)\s+([a-zA-Z0-9_\-\.\s]+)/i);
-  if (launchMatch && launchMatch[1]) {
-    const rawTarget = launchMatch[1].replace(/\b(please|now|for me|app|application)\b/gi, "").trim();
-    if (rawTarget.length > 0 && rawTarget.length < 30) {
-      const formattedName = cleanAppName(rawTarget);
-      const isClose = /^(?:close|kill|terminate|exit)\b/i.test(cleanPrompt);
-      return {
-        name: formattedName,
-        actionVerb: isClose ? `Closing ${formattedName}...` : `Launching ${formattedName}...`,
-        completedText: isClose ? `${formattedName} Closed` : `${formattedName} Ready`,
-        icon: <AppIcon name={formattedName} />,
-      };
-    }
-  }
-
-  if (lowerPrompt.includes("weather")) {
+  // 5. Weather
+  if (cleanIntent.includes("weather") || pr.includes("weather")) {
+    const loc = paramVal || "Local Area";
     return {
       name: "Weather Radar",
-      actionVerb: "Fetching Meteorological Data...",
-      completedText: "Weather Data Synchronized",
-      icon: <WeatherIcon />,
+      actionVerb: `Querying Weather for ${loc}...`,
+      completedText: `Weather Data Synchronized`,
+      icon: <Sun className="w-4 h-4 text-amber-400" />,
     };
   }
 
-  if (lowerPrompt.includes("volume") || lowerPrompt.includes("mute")) {
+  // 6. Volume
+  if (cleanIntent.includes("volume") || pr.includes("volume") || cleanIntent.includes("audio")) {
     return {
-      name: "Audio Controller",
-      actionVerb: "Adjusting System Audio...",
-      completedText: "Audio Adjusted",
-      icon: <VolumeIcon />,
+      name: "System Audio",
+      actionVerb: "Adjusting System Volume...",
+      completedText: "Volume Adjusted",
+      icon: <Volume2 className="w-4 h-4 text-sky-400" />,
     };
   }
 
-  if (lowerPrompt.includes("timer") || lowerPrompt.includes("stopwatch")) {
+  // 7. Brightness
+  if (cleanIntent.includes("brightness") || pr.includes("brightness")) {
     return {
-      name: "Countdown Timer",
-      actionVerb: "Initializing Live Timer...",
-      completedText: "Timer Active",
-      icon: (
-        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-          <circle cx="12" cy="12" r="9" stroke="#F59E0B" strokeWidth="2" />
-          <path d="M12 7v5l3 3" stroke="#FFFFFF" strokeWidth="2" strokeLinecap="round" />
-        </svg>
-      ),
+      name: "Display",
+      actionVerb: "Adjusting Display Brightness...",
+      completedText: "Brightness Updated",
+      icon: <Sun className="w-4 h-4 text-amber-400" />,
     };
   }
 
-  // Universal Fallback
+  // 8. Timer & Calendar
+  if (cleanIntent.includes("timer") || cleanIntent.includes("alarm") || cleanIntent.includes("calendar") || pr.includes("timer")) {
+    const label = cleanIntent.includes("timer") ? "Timer" : cleanIntent.includes("alarm") ? "Alarm" : "Calendar";
+    return {
+      name: `${label} Engine`,
+      actionVerb: `Scheduling ${label}...`,
+      completedText: `${label} Active`,
+      icon: <CalendarIcon className="w-4 h-4 text-amber-400" />,
+    };
+  }
+
+  // 9. App Launcher
+  if (cleanIntent.includes("open") || cleanIntent.includes("launch") || pr.startsWith("open ") || pr.startsWith("launch ")) {
+    const appName = paramVal || (p.app_name || p.application) || "Application";
+    return {
+      name: appName,
+      actionVerb: `Launching ${appName}...`,
+      completedText: `${appName} Running`,
+      icon: <Folder className="w-4 h-4 text-indigo-400" />,
+    };
+  }
+
+  // 10. Dynamic Fallback for ANY arbitrary intent / tool
+  const dynamicName = formatIntentName(intent || (paramVal ? "Action Tool" : "Agentic Tool"));
+  const dynamicIcon = getDynamicToolIcon(cleanIntent, dynamicName);
+  const actionVerb = paramVal
+    ? `Executing ${dynamicName} ("${paramVal}")...`
+    : `Executing ${dynamicName}...`;
+  const completedText = `${dynamicName} Completed`;
+
   return {
-    name: "System Action",
-    actionVerb: "Executing Requested Action...",
-    completedText: "Action Completed",
-    icon: <AmigoSparkleLogo />,
+    name: dynamicName,
+    actionVerb,
+    completedText,
+    icon: dynamicIcon,
   };
 }
 
@@ -691,6 +468,10 @@ export interface IntentBridgeHUDProps {
   onDismiss?: () => void;
 }
 
+/**
+ * High-tech Intent Bridge Powered by AnimatedBeam.
+ * Visualizes the dynamic bridge from User -> Amigo AI Core Logo -> Resolved Action/Service.
+ */
 export const IntentBridgeHUD: React.FC<IntentBridgeHUDProps> = ({
   prompt,
   isDark,
@@ -705,210 +486,154 @@ export const IntentBridgeHUD: React.FC<IntentBridgeHUDProps> = ({
   const theme = COLOR_THEMES[colorTheme] || COLOR_THEMES.violet;
   const actionInfo = resolveActionInfo(intent, params, prompt);
 
+  const containerRef = useRef<HTMLDivElement>(null);
+  const userNodeRef = useRef<HTMLDivElement>(null);
+  const amigoNodeRef = useRef<HTMLDivElement>(null);
+  const targetNodeRef = useRef<HTMLDivElement>(null);
+
   const isOffline = status === "offline" || statusText?.toLowerCase().includes("offline");
   const isFailed = status === "failed" || statusText?.toLowerCase().includes("failed");
   const isSuccess = isCompleted && !isOffline && !isFailed;
 
-  // Auto-dismiss completed HUD pill smoothly after 6 seconds
-  React.useEffect(() => {
+  // Auto-dismiss completed HUD bridge smoothly after 7 seconds
+  useEffect(() => {
     if (isCompleted && onDismiss) {
       const timer = setTimeout(() => {
         onDismiss();
-      }, 6000);
+      }, 7000);
       return () => clearTimeout(timer);
     }
   }, [isCompleted, onDismiss]);
 
+  const beamGradientStart = theme.primary;
+  const beamGradientStop = isSuccess
+    ? "#10b981"
+    : isFailed
+    ? "#f59e0b"
+    : (theme.accent || "#ec4899");
+
   return (
     <motion.div
-      layout
-      variants={popIn}
-      initial="hidden"
-      animate="show"
-      exit="exit"
-      onClick={onDismiss}
-      className={`flex w-full max-w-full items-center justify-center mx-auto my-3 gpu-accelerated ${onDismiss ? "cursor-pointer" : ""}`}
-      title={onDismiss ? "Click to dismiss" : undefined}
+      initial={{ opacity: 0, y: 8, scale: 0.98 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: -6, scale: 0.98 }}
+      transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+      className="relative w-full max-w-xs sm:max-w-sm mx-auto my-1 pointer-events-auto bg-transparent border-0 shadow-none"
     >
-      {/* Unified Gemini Action Pill with Fluid Smooth Geometry */}
-      <motion.div
-        layout
-        animate={{
-          borderColor: isOffline
-            ? "rgba(244, 63, 94, 0.45)"
-            : isFailed
-            ? "rgba(239, 68, 68, 0.45)"
-            : isSuccess
-            ? "rgba(16, 185, 129, 0.55)"
-            : `${theme.primary}55`,
-          boxShadow: isOffline
-            ? "0 4px 20px rgba(244, 63, 94, 0.22)"
-            : isFailed
-            ? "0 4px 20px rgba(239, 68, 68, 0.22)"
-            : isSuccess
-            ? "0 4px 24px rgba(16, 185, 129, 0.30), 0 0 10px rgba(16, 185, 129, 0.16)"
-            : `0 4px 20px ${theme.glow}30, 0 1px 4px rgba(0,0,0,0.12)`,
-        }}
-        transition={{ duration: 0.35, ease: "easeOut" }}
-        className={`relative flex min-w-0 max-w-[calc(100vw-2rem)] items-center justify-center gap-x-2.5 px-4 py-2 rounded-full border backdrop-blur-2xl transition-colors select-none ${
-          isDark
-            ? "bg-slate-950/85 text-slate-100 shadow-indigo-950/40"
-            : "bg-white/92 text-slate-900 shadow-indigo-200/40"
-        }`}
+      <div
+        ref={containerRef}
+        className="relative w-full py-1 bg-transparent border-0 shadow-none overflow-visible"
       >
-        {/* 1. Amigo Logo Node with Organic Pulse */}
-        <motion.div
-          animate={{ scale: isCompleted ? [1, 1.04, 1] : [1, 1.08, 1] }}
-          transition={{ repeat: Infinity, duration: 2.2, ease: "easeInOut" }}
-          className="w-5 h-5 rounded-full flex items-center justify-center text-white shadow-sm flex-shrink-0"
-          style={{ background: isCompleted ? "linear-gradient(135deg, #10B981, #059669)" : theme.gradient }}
-        >
-          <AmigoSparkleLogo />
-        </motion.div>
-
-        {/* 2. Fluid Energy Conduit Beam */}
-        <div className="flex items-center space-x-1 flex-shrink-0">
-          <motion.div
-            animate={{
-              width: isCompleted ? 26 : 22,
-              backgroundColor: isCompleted ? "#10B981" : `${theme.primary}35`,
-            }}
-            transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
-            className="h-[2px] rounded-full overflow-hidden relative"
-          >
-            <AnimatePresence>
-              {!isCompleted && (
-                <motion.div
-                  key="energy-pulse"
-                  initial={{ x: "-100%" }}
-                  animate={{ x: "200%" }}
-                  exit={{ opacity: 0 }}
-                  transition={{ repeat: Infinity, duration: 0.85, ease: "linear" }}
-                  className="w-1/2 h-full rounded-full"
-                  style={{
-                    background: `linear-gradient(90deg, transparent, ${theme.accent || "#fff"}, transparent)`,
-                  }}
-                />
-              )}
-            </AnimatePresence>
-          </motion.div>
-        </div>
-
-        {/* 3. Real Vector Brand App Logo Node */}
-        <div className="relative flex items-center justify-center flex-shrink-0 w-4 h-4">
-          <AnimatePresence mode="wait">
-            {isOffline ? (
-              <motion.div
-                key="offline-icon"
-                initial={{ scale: 0.5, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                exit={{ scale: 0.5, opacity: 0 }}
-                className="w-4 h-4 rounded-full bg-rose-500 flex items-center justify-center shadow-md shadow-rose-500/30"
-              >
-                <WifiOff className="w-2.5 h-2.5 text-white" />
-              </motion.div>
-            ) : isFailed ? (
-              <motion.div
-                key="failed-icon"
-                initial={{ scale: 0.5, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                exit={{ scale: 0.5, opacity: 0 }}
-                className="w-4 h-4 rounded-full bg-amber-500 flex items-center justify-center shadow-md shadow-amber-500/30"
-              >
-                <AlertCircle className="w-2.5 h-2.5 text-white" />
-              </motion.div>
-            ) : isSuccess ? (
-              <motion.div
-                key="completed-check"
-                initial={{ scale: 0.5, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                exit={{ scale: 0.5, opacity: 0 }}
-                transition={{ duration: 0.25 }}
-                className="w-4 h-4 rounded-full bg-emerald-500 flex items-center justify-center shadow-md shadow-emerald-500/30"
-              >
-                <CheckCircle2 className="w-3 h-3 text-white" />
-              </motion.div>
-            ) : (
-              <motion.div
-                key="action-icon"
-                initial={{ scale: 0.7, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                exit={{ scale: 0.7, opacity: 0 }}
-                transition={{ duration: 0.2 }}
-                className="flex items-center justify-center"
-              >
-                {actionInfo.icon}
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-
-        {/* 4. Action Status Text */}
-        <div className="flex min-w-0 max-w-[min(48vw,22rem)] items-center space-x-1.5 pl-1 pr-0.5 text-[11.5px] font-medium tracking-tight overflow-hidden">
-          <AnimatePresence mode="wait">
-            <motion.span
-              key={statusText || (isOffline ? "offline" : isFailed ? "failed" : isSuccess ? actionInfo.completedText : actionInfo.actionVerb)}
-              initial={{ opacity: 0, y: 2 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -2 }}
-              transition={{ duration: 0.2, ease: "easeOut" }}
-              className={`min-w-0 truncate select-none ${
-                isOffline
-                  ? "text-rose-400 font-semibold"
-                  : isFailed
-                  ? "text-amber-400 font-semibold"
-                  : isSuccess
-                  ? "text-emerald-400 font-semibold"
-                  : "opacity-90"
+        {/* 3 Connected Interactive Nodes via AnimatedBeam */}
+        <div className="relative py-1 flex items-center justify-between px-4 sm:px-8">
+          {/* Node 1: User / Voice Prompt Node */}
+          <div className="flex flex-col items-center text-center z-10">
+            <div
+              ref={userNodeRef}
+              className={`relative w-9 h-9 rounded-xl border flex items-center justify-center shadow-md transition-transform hover:scale-105 ${
+                isDark
+                  ? "bg-slate-900/60 border-white/10 text-slate-200"
+                  : "bg-white/60 border-slate-200 text-slate-800"
               }`}
             >
-              {statusText || (isOffline ? "Offline" : isFailed ? "Action Failed" : isSuccess ? actionInfo.completedText : actionInfo.actionVerb)}
-            </motion.span>
-          </AnimatePresence>
+              <User className="w-4 h-4 opacity-90" />
+            </div>
+            <span className="text-[9px] font-medium opacity-60 mt-1 max-w-[70px] truncate">
+              {prompt || "User"}
+            </span>
+          </div>
+
+          {/* Node 2: Amigo AI Core Logo Node (Center) */}
+          <div className="flex flex-col items-center text-center z-10">
+            <div
+              ref={amigoNodeRef}
+              className="relative w-10 h-10 rounded-xl flex items-center justify-center shadow-lg transition-transform hover:scale-105"
+              style={{
+                background: theme.gradient,
+                boxShadow: `0 0 20px -2px ${theme.glow}`,
+              }}
+            >
+              {/* Pulsing Aura Ring */}
+              <span
+                className="absolute inset-0 rounded-xl border animate-pulse opacity-60 pointer-events-none"
+                style={{ borderColor: theme.accent || "#fff" }}
+              />
+              <Sparkles className="w-4.5 h-4.5 text-white drop-shadow" />
+            </div>
+            <span className="text-[10px] font-semibold mt-1 text-slate-900 dark:text-white">
+              Amigo Core
+            </span>
+          </div>
+
+          {/* Node 3: Target Action / Service Node */}
+          <div className="flex flex-col items-center text-center z-10">
+            <div
+              ref={targetNodeRef}
+              className={`relative w-9 h-9 rounded-xl border flex items-center justify-center shadow-md transition-transform hover:scale-105 ${
+                isDark
+                  ? "bg-slate-900/60 border-white/10 text-slate-200"
+                  : "bg-white/60 border-slate-200 text-slate-800"
+              }`}
+              style={
+                isSuccess
+                  ? { borderColor: "#10b981", boxShadow: "0 0 12px -3px #10b98160" }
+                  : {}
+              }
+            >
+              {actionInfo.icon}
+            </div>
+            <span className="text-[9px] font-medium opacity-60 mt-1 max-w-[70px] truncate">
+              {actionInfo.name}
+            </span>
+          </div>
+
+          {/* Beam 1: User Node -> Amigo Core Logo */}
+          <AnimatedBeam
+            containerRef={containerRef}
+            fromRef={userNodeRef}
+            toRef={amigoNodeRef}
+            curvature={0}
+            duration={2.2}
+            pathColor={isDark ? "rgba(255, 255, 255, 0.12)" : "rgba(0, 0, 0, 0.1)"}
+            gradientStart={theme.secondary || "#38bdf8"}
+            gradientStop={theme.primary}
+            strokeWidth={2}
+          />
+
+          {/* Beam 2: Amigo Core Logo -> Target Action Node */}
+          <AnimatedBeam
+            containerRef={containerRef}
+            fromRef={amigoNodeRef}
+            toRef={targetNodeRef}
+            curvature={0}
+            duration={2.2}
+            delay={0.25}
+            pathColor={isDark ? "rgba(255, 255, 255, 0.12)" : "rgba(0, 0, 0, 0.1)"}
+            gradientStart={beamGradientStart}
+            gradientStop={beamGradientStop}
+            strokeWidth={2}
+          />
         </div>
 
-        {/* 5. Stage Badge Indicator */}
-        <div className="flex items-center space-x-1.5 pl-1 flex-shrink-0">
-          <span
-            className={`text-[10px] px-2 py-0.5 rounded-full font-mono border flex items-center space-x-1 ${
-              isOffline
-                ? "bg-rose-500/15 text-rose-400 border-rose-500/30 font-semibold"
-                : isFailed
-                ? "bg-amber-500/15 text-amber-400 border-amber-500/30 font-semibold"
-                : isSuccess
-                ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30 font-semibold"
-                : "bg-indigo-500/15 text-indigo-300 border-indigo-500/30"
-            }`}
-          >
-            {isOffline ? (
-              <>
-                <WifiOff className="w-2.5 h-2.5 text-rose-400" />
-                <span>Offline</span>
-              </>
-            ) : isFailed ? (
-              <>
-                <AlertCircle className="w-2.5 h-2.5 text-amber-400" />
-                <span>Failed</span>
-              </>
-            ) : isSuccess ? (
-              <>
-                <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400" />
-                <span>Completed</span>
-              </>
-            ) : statusText === "Executing Action..." ? (
-              <>
-                <Loader2 className="w-2.5 h-2.5 animate-spin text-indigo-400" />
-                <span>Executing</span>
-              </>
-            ) : (
-              <>
-                <Loader2 className="w-2.5 h-2.5 animate-spin text-indigo-400" />
-                <span>Processing</span>
-              </>
-            )}
+        {/* Seamless Status Label */}
+        <div className="flex items-center justify-center gap-1.5 mt-1 text-[10px] font-medium">
+          {isSuccess ? (
+            <CheckCircle2 className="w-3 h-3 text-emerald-400 flex-shrink-0" />
+          ) : isFailed ? (
+            <AlertCircle className="w-3 h-3 text-amber-400 flex-shrink-0" />
+          ) : (
+            <span
+              className="w-1 h-1 rounded-full animate-ping flex-shrink-0"
+              style={{ backgroundColor: theme.primary }}
+            />
+          )}
+          <span className="opacity-75">
+            {statusText || (isSuccess ? actionInfo.completedText : actionInfo.actionVerb)}
           </span>
         </div>
-      </motion.div>
+      </div>
     </motion.div>
   );
 };
+
+export default IntentBridgeHUD;

@@ -1,5 +1,14 @@
-import React, { useState, useRef, useEffect } from "react";
-import { motion, AnimatePresence } from "motion/react";
+import React, { useState, useRef, useEffect, type ComponentProps, type ReactNode } from "react";
+import {
+  motion,
+  AnimatePresence,
+  animate,
+  useMotionTemplate,
+  useMotionValue,
+  useReducedMotion,
+  useTransform,
+  type Transition,
+} from "motion/react";
 import {
   History as HistoryIcon,
   Play,
@@ -20,6 +29,320 @@ import {
 import { HistoryEntry, ColorTheme } from "../types";
 import { COLOR_THEMES } from "../data/presets";
 import { sfx } from "../utils/audio";
+
+function cn(...classes: (string | undefined | null | false)[]) {
+  return classes.filter(Boolean).join(" ");
+}
+
+const HINGE = "3px 6px";
+const LID_OPEN = -35;
+const WALL_TOP = 6;
+const WALL_TOP_OPEN = 13.5;
+const WALL_BASE = 20;
+
+const HOLD = { deleted: 1400, kept: 600 };
+
+const EASE = [0.32, 0.72, 0, 1] as const;
+const EASE_LID = [0.34, 1.1, 0.64, 1] as const;
+
+const WIDTH = { duration: 0.62, ease: EASE } as const;
+const LID = { duration: 0.6, ease: EASE_LID } as const;
+const WALL = { duration: 0.56, ease: EASE } as const;
+const IN = { duration: 0.44, ease: EASE, delay: 0.14 } as const;
+const OUT = { duration: 0.3, ease: EASE } as const;
+const TAP = { duration: 0.2, ease: EASE } as const;
+const SWAP = { duration: 0.22, ease: EASE } as const;
+const SETTLE = { duration: 0.45, ease: EASE } as const;
+const PRESS = {
+  type: "spring",
+  stiffness: 520,
+  damping: 18,
+  mass: 0.5,
+} as const;
+const INSTANT = { duration: 0 } as const;
+
+const SURFACE = "bg-slate-200/80 dark:bg-white/10 hover:bg-slate-300/80 dark:hover:bg-white/15";
+const RECESS = "bg-slate-300 dark:bg-black/70 backdrop-blur-md";
+const GLYPH = "text-slate-600 dark:text-slate-300";
+const FOCUS = "outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50";
+const ACCENT = "#f43f5e";
+
+const LIFT =
+  "shadow-[0_0.5px_1px_rgba(0,0,0,0.05),0_1px_3px_rgba(0,0,0,0.08),inset_0_0.5px_0_rgba(255,255,255,0.9)] dark:shadow-[0_0.5px_1px_rgba(0,0,0,0.35),0_1.5px_4px_rgba(0,0,0,0.25),inset_0_0.5px_0_rgba(255,255,255,0.07)]";
+
+const ICON = {
+  viewBox: "0 0 24 24",
+  fill: "none",
+  strokeLinecap: "round",
+  strokeLinejoin: "round",
+  "aria-hidden": true,
+} as const;
+
+const panelMotion = {
+  hidden: { opacity: 0, x: -6, transition: OUT },
+  shown: { opacity: 1, x: 0, transition: { ...IN, staggerChildren: 0.07 } },
+};
+
+const circleMotion = {
+  hidden: { opacity: 0, scale: 0.9, transition: OUT },
+  shown: { opacity: 1, scale: 1, transition: IN },
+};
+
+function Circle({
+  label,
+  onClick,
+  size = "default",
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  size?: "sm" | "default";
+  children: ReactNode;
+}) {
+  const reduced = useReducedMotion() ?? false;
+  const isSm = size === "sm";
+
+  return (
+    <motion.div className="flex" variants={reduced ? undefined : circleMotion}>
+      <motion.button
+        type="button"
+        aria-label={label}
+        onClick={onClick}
+        whileHover={reduced ? undefined : { scale: 1.05 }}
+        whileTap={reduced ? undefined : { scale: 0.85 }}
+        transition={PRESS}
+        className={cn(
+          "grid place-items-center rounded-full transition-colors duration-200 hover:bg-white dark:hover:bg-white/20",
+          isSm ? "h-6 w-6" : "h-7 w-7",
+          FOCUS,
+          SURFACE,
+          LIFT
+        )}
+      >
+        <svg
+          {...ICON}
+          width={isSm ? "12" : "14"}
+          height={isSm ? "12" : "14"}
+          stroke="currentColor"
+          strokeWidth="3"
+        >
+          {children}
+        </svg>
+      </motion.button>
+    </motion.div>
+  );
+}
+
+type DeleteStatus = "idle" | "deleted" | "kept";
+
+export type DeleteButtonProps = Omit<
+  ComponentProps<"div">,
+  "onAnimationStart" | "onDrag" | "onDragStart" | "onDragEnd"
+> & {
+  size?: "sm" | "default";
+  onConfirm?: () => void;
+  onCancel?: () => void;
+  disabled?: boolean;
+};
+
+export function DeleteButton({
+  className,
+  size = "default",
+  onConfirm,
+  onCancel,
+  disabled = false,
+  ...props
+}: DeleteButtonProps) {
+  const reduced = useReducedMotion() ?? false;
+  const [open, setOpen] = useState(false);
+  const [status, setStatus] = useState<DeleteStatus>("idle");
+  const trigger = useRef<HTMLButtonElement>(null);
+  const confirmTimerRef = useRef<any>(null);
+  const timing = (transition: Transition) => (reduced ? INSTANT : transition);
+
+  useEffect(() => {
+    return () => {
+      if (confirmTimerRef.current) {
+        clearTimeout(confirmTimerRef.current);
+        confirmTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const isSm = size === "sm";
+  const TILE = isSm ? 34 : 48;
+  const PANEL = isSm ? 66 : 84;
+  const iconSize = isSm ? 15 : 20;
+
+  const top = useMotionValue(WALL_TOP);
+  const wall = useTransform(top, (y) => WALL_BASE - y);
+  const bin = useMotionTemplate`M19 ${top}v${wall}a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V${top}`;
+  const settle = useMotionValue(1);
+
+  useEffect(() => {
+    const walls = animate(
+      top,
+      open ? WALL_TOP_OPEN : WALL_TOP,
+      reduced ? INSTANT : WALL,
+    );
+    return () => walls.stop();
+  }, [open, reduced, top]);
+
+  useEffect(() => {
+    if (status === "idle") return;
+    const nudge =
+      status === "kept" && !reduced
+        ? animate(settle, [1, 0.86, 1], SETTLE)
+        : null;
+    const done = setTimeout(() => setStatus("idle"), HOLD[status]);
+    return () => {
+      nudge?.stop();
+      clearTimeout(done);
+    };
+  }, [status, reduced, settle]);
+
+  const resolve = (next: Exclude<DeleteStatus, "idle">) => {
+    setOpen(false);
+    setStatus(next);
+    trigger.current?.focus();
+    if (next === "deleted") {
+      // Allow the end checkmark and bin animation to complete before clearing data
+      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+      confirmTimerRef.current = setTimeout(() => {
+        onConfirm?.();
+      }, 700);
+    } else {
+      onCancel?.();
+    }
+  };
+
+  return (
+    <motion.div
+      data-slot="delete-button"
+      data-state={open ? "open" : "closed"}
+      data-status={status}
+      className={cn(
+        "relative rounded-xl border border-transparent overflow-hidden transition-colors",
+        isSm ? "h-[34px]" : "h-12",
+        SURFACE,
+        GLYPH,
+        disabled && "opacity-40 pointer-events-none",
+        className
+      )}
+      animate={{ width: open ? TILE + PANEL : TILE }}
+      transition={timing(WIDTH)}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && open) resolve("kept");
+      }}
+      {...props}
+    >
+      <motion.button
+        ref={trigger}
+        type="button"
+        disabled={disabled}
+        aria-label="Delete"
+        aria-expanded={open}
+        onClick={() => {
+          if (disabled) return;
+          if (open) return resolve("kept");
+          setStatus("idle");
+          setOpen(true);
+        }}
+        whileTap={reduced || disabled ? undefined : { scale: 0.94 }}
+        transition={TAP}
+        className={cn(
+          "relative z-10 grid place-items-center rounded-xl",
+          isSm ? "h-[34px] w-[34px]" : "h-12 w-12",
+          FOCUS,
+        )}
+      >
+        <AnimatePresence mode="wait" initial={false}>
+          {status === "deleted" ? (
+            <motion.svg
+              key="done"
+              {...ICON}
+              width={iconSize}
+              height={iconSize}
+              stroke={ACCENT}
+              strokeWidth="2.5"
+              initial={{ opacity: 0, scale: 0.6 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.6 }}
+              transition={timing(SWAP)}
+            >
+              <motion.path
+                d="M4 12.5 9.5 18 20 7"
+                initial={reduced ? undefined : { pathLength: 0 }}
+                animate={reduced ? undefined : { pathLength: 1 }}
+                transition={SETTLE}
+              />
+            </motion.svg>
+          ) : (
+            <motion.svg
+              key="bin"
+              {...ICON}
+              width={iconSize}
+              height={iconSize}
+              stroke="currentColor"
+              strokeWidth="2"
+              className="overflow-visible"
+              style={{ scale: settle }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={timing(SWAP)}
+            >
+              <motion.path d={bin} />
+              <motion.g
+                style={{ transformBox: "view-box", transformOrigin: HINGE }}
+                animate={{ rotate: open ? LID_OPEN : 0 }}
+                transition={timing(LID)}
+              >
+                <path d="M3 6h18" />
+                <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+              </motion.g>
+            </motion.svg>
+          )}
+        </AnimatePresence>
+      </motion.button>
+
+      <span role="status" aria-live="polite" className="sr-only">
+        {status === "deleted" ? "Deleted" : status === "kept" ? "Kept" : ""}
+      </span>
+
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            key="panel"
+            style={{ width: PANEL }}
+            className={cn(
+              "absolute inset-y-0 right-0 flex items-center justify-center gap-1.5 rounded-xl border border-white/10",
+              RECESS,
+            )}
+            variants={reduced ? undefined : panelMotion}
+            initial="hidden"
+            animate="shown"
+            exit="hidden"
+          >
+            <span
+              aria-hidden
+              className={cn(
+                "absolute -left-1.25 top-1/2 z-20 h-2.5 w-1.5 -translate-y-1/2 [clip-path:polygon(100%_0,0_50%,100%_100%)]",
+                RECESS,
+              )}
+            />
+            <Circle label="Confirm delete" size={size} onClick={() => resolve("deleted")}>
+              <path d="M4 12.5 9.5 18 20 7" stroke={ACCENT} />
+            </Circle>
+            <Circle label="Cancel" size={size} onClick={() => resolve("kept")}>
+              <path d="M6 6 18 18M18 6 6 18" />
+            </Circle>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+}
 
 interface HistoryPanelProps {
   isOpen: boolean;
@@ -139,28 +462,29 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
     }
   };
 
-  if (!isOpen) return null;
-
   return (
     <AnimatePresence>
-      <motion.aside
-        id="voice-history-sidebar"
-        initial={{ x: "-100%", opacity: 0 }}
-        animate={{ x: 0, opacity: 1 }}
-        exit={{ x: "-100%", opacity: 0 }}
-        transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
-        className={`absolute top-0 left-0 bottom-0 z-40 w-80 sm:w-96 flex flex-col border-r shadow-2xl backdrop-blur-2xl transition-colors duration-300 ${
-          isDark
-            ? "border-white/10 text-white"
-            : "border-black/10 text-slate-900"
-        }`}
-        style={{
-          background: isDark
-            ? `radial-gradient(ellipse 120% 70% at 0% 0%, ${theme.primary}12 0%, rgba(12, 12, 24, 0.96) 65%)`
-            : `radial-gradient(ellipse 120% 70% at 0% 0%, ${theme.primary}08 0%, rgba(255, 255, 255, 0.97) 65%)`,
-          borderColor: isDark ? `${theme.primary}22` : `${theme.primary}15`,
-        }}
-      >
+      {isOpen && (
+        <motion.aside
+          id="voice-history-sidebar"
+          initial={{ x: "-100%", opacity: 0 }}
+          animate={{ x: 0, opacity: 1 }}
+          exit={{ x: "-100%", opacity: 0 }}
+          transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+          className={`absolute top-0 left-0 bottom-0 z-40 w-80 sm:w-96 flex flex-col border-r shadow-2xl backdrop-blur-md transition-colors duration-200 ${
+            isDark
+              ? "border-white/10 text-white"
+              : "border-black/10 text-slate-900"
+          }`}
+          style={{
+            willChange: "transform, opacity",
+            transform: "translate3d(0, 0, 0)",
+            background: isDark
+              ? `radial-gradient(ellipse 120% 70% at 0% 0%, ${theme.primary}12 0%, rgba(12, 12, 24, 0.96) 65%)`
+              : `radial-gradient(ellipse 120% 70% at 0% 0%, ${theme.primary}08 0%, rgba(255, 255, 255, 0.97) 65%)`,
+            borderColor: isDark ? `${theme.primary}22` : `${theme.primary}15`,
+          }}
+        >
         {/* Header */}
         <div
           className="flex items-center justify-between px-4 py-3.5 border-b"
@@ -183,17 +507,13 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center space-x-1">
-            {history.length > 0 && (
-              <button
-                id="clear-all-history-btn"
-                onClick={onClearHistory}
-                className="p-1.5 rounded-lg opacity-60 hover:opacity-100 hover:bg-rose-500/10 hover:text-rose-400 transition-colors text-xs flex items-center space-x-1"
-                title="Clear All History"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
-            )}
+          <div className="flex items-center space-x-1.5">
+            <DeleteButton
+              size="sm"
+              onConfirm={onClearHistory}
+              disabled={history.length === 0}
+              title="Clear All History"
+            />
             <button
               onClick={onClose}
               className="p-1.5 rounded-lg opacity-60 hover:opacity-100 hover:bg-white/10 transition-colors"
@@ -519,6 +839,7 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
           History auto-syncs with Amigo Memory
         </div>
       </motion.aside>
+      )}
     </AnimatePresence>
   );
 };

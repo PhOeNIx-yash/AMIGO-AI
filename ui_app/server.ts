@@ -30,11 +30,15 @@ async function startServer() {
         reader.cancel().catch(() => {});
       });
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        res.write(chunk);
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value, { stream: true });
+          res.write(chunk);
+        }
+      } finally {
+        try { res.end(); } catch {}
       }
     } catch (e: any) {
       // If backend is restarting or offline, send a graceful fallback event

@@ -10,36 +10,61 @@ import {
   OrbFrame,
 } from "thinking-orbs/engine";
 import { fibDir, scaleCounts, scaleRadii, OrbState } from "thinking-orbs";
-import { AssistantState, ColorTheme, VisualizerMode } from "../types";
+import { AssistantState, ColorTheme, VisualizerMode, ThinkingOrbStyle } from "../types";
 import { COLOR_THEMES } from "../data/presets";
 import { audioBus } from "../utils/audioBus";
 
-interface CanvasVisualizerProps {
+export interface CanvasVisualizerProps {
   mode?: VisualizerMode;
   state: AssistantState;
   colorTheme: ColorTheme;
   isDark: boolean;
   compact?: boolean;
   isPaused?: boolean;
+  thinkingOrbStyle?: ThinkingOrbStyle;
 }
+
+export const THINKING_ORB_PRESETS: {
+  id: ThinkingOrbStyle;
+  name: string;
+  orbState: OrbState;
+  desc: string;
+}[] = [
+  { id: "globe", name: "Radar Globe", orbState: "searching", desc: "3D scanning coordinate sphere with radar sweep" },
+  { id: "orbits", name: "Cosmic Orbits", orbState: "working", desc: "3D planetary and atomic multi-axis particle orbits" },
+  { id: "web", name: "Neural Web", orbState: "connecting", desc: "3D synaptic constellation neural network" },
+  { id: "morph", name: "Morphing Core", orbState: "shaping", desc: "3D fluid topological shape-shifting geometry" },
+  { id: "ring", name: "Harmonic Rings", orbState: "breathing", desc: "3D quantum concentric breathing rings" },
+  { id: "rubik", name: "Puzzle Matrix", orbState: "solving", desc: "3D segmented rotating geometric bands" },
+];
+
+export const STYLE_TO_ORB_STATE: Record<ThinkingOrbStyle, OrbState> = {
+  globe: "searching",
+  orbits: "working",
+  web: "connecting",
+  morph: "shaping",
+  ring: "breathing",
+  rubik: "solving",
+};
 
 // 3D Spherical & harmonic state mapping:
 // idle: 'weaving' (3D braided strands + 150 ghost sphere particles)
 // listening: custom harmonic voice wave sphere with real-time audio reactivity
-// processing: 'solving' (3D rotating puzzle bands)
+// processing: dynamic thinking orb style (default 'searching' - 3D radar globe)
 // working: 'working' (3D particle orbits around sphere)
 // completed: 'composing' (3D flowing harmonic ribbon)
 // generated_content: 'composing' (showing generated content for review)
 const ORB_STATES: Record<AssistantState, OrbState> = {
   idle: "weaving",
   listening: "listening",
-  processing: "solving",
+  processing: "searching",
   action_card: "shaping",
   contact_picker: "connecting",
   working: "working",
   completed: "composing",
   generated_content: "composing",
 };
+
 
 const ORB_LABELS: Record<AssistantState, string> = {
   idle: "Amigo is ready",
@@ -275,9 +300,14 @@ export const CanvasVisualizer: React.FC<CanvasVisualizerProps> = React.memo(({
   isDark,
   compact = false,
   isPaused = false,
+  thinkingOrbStyle = "globe",
 }) => {
   const theme = COLOR_THEMES[colorTheme] || COLOR_THEMES.violet;
-  const orbState = ORB_STATES[state] || "weaving";
+  const baseOrbState = ORB_STATES[state] || "weaving";
+  const orbState: OrbState =
+    state === "processing"
+      ? (STYLE_TO_ORB_STATE[thinkingOrbStyle] || "searching")
+      : baseOrbState;
   const orbColor = isDark ? theme.accent : theme.primary;
   const haloRef = useRef<HTMLDivElement>(null);
   const coreRef = useRef<HTMLDivElement>(null);

@@ -782,9 +782,15 @@ def events():
                 {"type": "state_change", "state": current_state}
             ) + "\n\n"
             while True:
-                msg = q.get()
-                yield msg
+                try:
+                    msg = q.get(timeout=15.0)
+                    yield msg
+                except queue.Empty:
+                    # Keep-alive heartbeat so WSGI detects disconnected clients
+                    yield ": ping\n\n"
         except GeneratorExit:
+            pass
+        finally:
             broadcaster.unsubscribe(q)
 
     return Response(stream(), mimetype="text/event-stream")

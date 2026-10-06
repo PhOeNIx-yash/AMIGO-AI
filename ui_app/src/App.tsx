@@ -4,6 +4,7 @@ import {
   AssistantState,
   VisualizerMode,
   ColorTheme,
+  ThinkingOrbStyle,
   AssistantResponse,
   ContactItem,
   PluginMode,
@@ -25,6 +26,7 @@ import { KineticHeading, KineticStateBadge, TextAnimationStyle, normalizeAnimati
 import { IntentBridgeHUD, isActionIntent } from "./components/IntentBridgeHUD";
 import { COLOR_THEMES, GREETING_PRESETS } from "./data/presets";
 import { speakText, sfx } from "./utils/audio";
+import { processVoiceCommand, executeBackendAction } from "./services/assistantApi";
 import { Sparkles, ChevronUp, Shuffle, Copy, Check, Volume2, X } from "lucide-react";
 
 function renderFormattedContent(text: string) {
@@ -88,6 +90,15 @@ export default function App() {
     }
     return "orb";
   });
+
+  const [thinkingOrbStyle, setThinkingOrbStyle] = useState<ThinkingOrbStyle>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("windows11_voice_assistant_thinking_orb_style");
+      if (saved) return saved as ThinkingOrbStyle;
+    }
+    return "globe";
+  });
+
 
   const [textAnimationStyle, setTextAnimationStyle] = useState<TextAnimationStyle>(() => {
     if (typeof window !== "undefined") {
@@ -159,6 +170,11 @@ export default function App() {
   }, [visualizerMode]);
 
   useEffect(() => {
+    try { localStorage.setItem("windows11_voice_assistant_thinking_orb_style", thinkingOrbStyle); } catch (e) {}
+  }, [thinkingOrbStyle]);
+
+
+  useEffect(() => {
     try { localStorage.setItem("windows11_voice_assistant_anim_style", textAnimationStyle); } catch (e) {}
   }, [textAnimationStyle]);
 
@@ -182,14 +198,17 @@ export default function App() {
   useEffect(() => {
     if (typeof window === "undefined") return;
 
+    let rafId = 0;
     const handleViewportChange = () => {
-      const vv = window.visualViewport;
-      const height = vv ? vv.height : window.innerHeight;
-      document.documentElement.style.setProperty("--visual-viewport-height", `${height}px`);
-      // Keep document scroll at origin to prevent iOS rubber-banding and white canvas gap
-      if (window.scrollY !== 0) {
-        window.scrollTo(0, 0);
-      }
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        const vv = window.visualViewport;
+        const height = vv ? vv.height : window.innerHeight;
+        document.documentElement.style.setProperty("--visual-viewport-height", `${height}px`);
+        if (window.scrollY !== 0) {
+          window.scrollTo(0, 0);
+        }
+      });
     };
 
     handleViewportChange();
@@ -202,6 +221,7 @@ export default function App() {
     window.addEventListener("orientationchange", handleViewportChange);
 
     return () => {
+      cancelAnimationFrame(rafId);
       if (window.visualViewport) {
         window.visualViewport.removeEventListener("resize", handleViewportChange);
         window.visualViewport.removeEventListener("scroll", handleViewportChange);
@@ -966,7 +986,8 @@ export default function App() {
             }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95 }}
-            transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+            transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
+            style={{ willChange: "transform, opacity", transform: "translate3d(0, 0, 0)" }}
             className={`flex flex-col transition-colors duration-500 ${
               isDark ? `${activeThemeObj.bgDark} text-white` : `${activeThemeObj.bgLight} text-slate-900`
             } ${getPluginContainerClasses()}`}
@@ -1024,6 +1045,8 @@ export default function App() {
                 onChangeColorTheme={setColorTheme}
                 visualizerMode={visualizerMode}
                 onChangeVisualizerMode={setVisualizerMode}
+                thinkingOrbStyle={thinkingOrbStyle}
+                onChangeThinkingOrbStyle={setThinkingOrbStyle}
                 textAnimationStyle={textAnimationStyle}
                 onChangeTextAnimationStyle={setTextAnimationStyle}
                 greetingText={greetingText}
@@ -1078,7 +1101,8 @@ export default function App() {
                       colorTheme={colorTheme}
                       isDark={isDark}
                       compact={isCompact}
-                      isPaused={showSettings || showBackendModal}
+                      isPaused={showSettings || showBackendModal || showHistory}
+                      thinkingOrbStyle={thinkingOrbStyle}
                     />
 
                     {/* Central Display & Animated State Cards with 60fps Hardware-Accelerated Smooth Scrolling */}
@@ -1138,88 +1162,9 @@ export default function App() {
                         </div>
                       ) : (() => {
                         const isGreeting = GREETING_PRESETS.some((g) => g.text.toLowerCase() === (displayText || "").toLowerCase()) || !displayText;
-                        const isResponseContent = !isGreeting && (state === "completed" || (state === "idle" && Boolean(activePrompt))) && Boolean(displayText && (displayText.length > 50 || displayText.includes("\n") || displayText.split(/\s+/).length > 12));
-
-                        if (isResponseContent) {
-                          const theme = COLOR_THEMES[colorTheme] || COLOR_THEMES.violet;
-                          return (
-                            <motion.div
-                              initial={{ opacity: 0, y: 12, scale: 0.98 }}
-                              animate={{ opacity: 1, y: 0, scale: 1 }}
-                              exit={{ opacity: 0, y: -8, scale: 0.98 }}
-                              transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
-                              className="w-full max-w-2xl sm:max-w-3xl mx-auto rounded-2xl border backdrop-blur-2xl shadow-2xl p-5 sm:p-6 text-left select-text pointer-events-auto flex flex-col max-h-[52vh] transition-all"
-                              style={{
-                                background: isDark ? "rgba(18, 18, 26, 0.82)" : "rgba(255, 255, 255, 0.92)",
-                                borderColor: isDark ? `${theme.primary}40` : `${theme.primary}25`,
-                                boxShadow: `0 16px 48px -12px ${theme.primary}30`,
-                              }}
-                            >
-                              {/* Header: Prompt Badge + Action Toolbar */}
-                              <div className="flex items-center justify-between gap-3 pb-3 mb-3 border-b border-white/10 dark:border-white/10 shrink-0">
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <div
-                                    className="w-6 h-6 rounded-lg flex items-center justify-center text-white shrink-0 shadow-sm"
-                                    style={{ background: theme.gradient }}
-                                  >
-                                    <Sparkles className="w-3.5 h-3.5" />
-                                  </div>
-                                  <p className="text-xs sm:text-sm font-semibold truncate text-slate-800 dark:text-slate-100">
-                                    {activePrompt ? `"${activePrompt}"` : "Amigo Assistant Response"}
-                                  </p>
-                                </div>
-
-                                <div className="flex items-center gap-1.5 shrink-0">
-                                  <button
-                                    type="button"
-                                    onClick={() => handleCopyResponse(displayText)}
-                                    className="px-2.5 py-1 rounded-lg text-xs font-medium transition-all flex items-center gap-1 bg-white/10 hover:bg-white/20 active:scale-95 text-slate-700 dark:text-slate-200 border border-white/10"
-                                    title="Copy response to clipboard"
-                                  >
-                                    {copiedResponse ? (
-                                      <>
-                                        <Check className="w-3.5 h-3.5 text-emerald-400" />
-                                        <span className="text-[11px] text-emerald-400 font-semibold">Copied</span>
-                                      </>
-                                    ) : (
-                                      <>
-                                        <Copy className="w-3.5 h-3.5" />
-                                        <span className="text-[11px]">Copy</span>
-                                      </>
-                                    )}
-                                  </button>
-
-                                  <button
-                                    type="button"
-                                    onClick={() => speakText(displayText)}
-                                    className="px-2.5 py-1 rounded-lg text-xs font-medium transition-all flex items-center gap-1 bg-white/10 hover:bg-white/20 active:scale-95 text-slate-700 dark:text-slate-200 border border-white/10"
-                                    title="Read response aloud via Kokoro Neural TTS"
-                                  >
-                                    <Volume2 className="w-3.5 h-3.5" />
-                                    <span className="text-[11px] hidden sm:inline">Listen</span>
-                                  </button>
-
-                                  <button
-                                    type="button"
-                                    onClick={handleDismissResponse}
-                                    className="p-1 rounded-lg text-xs font-medium transition-all hover:bg-white/20 active:scale-95 text-slate-400 hover:text-slate-100"
-                                    title="Close and return to home screen"
-                                  >
-                                    <X className="w-4 h-4" />
-                                  </button>
-                                </div>
-                              </div>
-
-                              {/* Formatted Scrollable Text Body with Paragraphs */}
-                              <div className="overflow-y-auto pr-2 space-y-3 text-sm sm:text-[15px] leading-relaxed text-slate-800 dark:text-slate-200 font-normal no-scrollbar select-text">
-                                {renderFormattedContent(displayText)}
-                              </div>
-                            </motion.div>
-                          );
-                        }
 
                         return (
-                          <div className="text-center">
+                          <div className="text-center w-full max-w-2xl mx-auto px-2">
                             <div
                               className={`group relative inline-flex flex-col items-center select-none max-h-[46vh] overflow-y-auto no-scrollbar px-2 ${
                                 state === "idle" ? "cursor-pointer" : ""
@@ -1258,6 +1203,36 @@ export default function App() {
                                 </span>
                               )}
                             </div>
+
+                            {/* Clean, seamless action toolbar without any background box */}
+                            {displayText && !isGreeting && state === "completed" && (
+                              <div className="flex items-center justify-center gap-2 mt-2 opacity-60 hover:opacity-100 transition-opacity">
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopyResponse(displayText)}
+                                  className="p-1 rounded text-slate-400 hover:text-slate-100 transition-colors"
+                                  title="Copy text"
+                                >
+                                  {copiedResponse ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => speakText(displayText)}
+                                  className="p-1 rounded text-slate-400 hover:text-slate-100 transition-colors"
+                                  title="Listen"
+                                >
+                                  <Volume2 className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={handleDismissResponse}
+                                  className="p-1 rounded text-slate-400 hover:text-slate-100 transition-colors"
+                                  title="Dismiss"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            )}
                           </div>
                         );
                       })()}
