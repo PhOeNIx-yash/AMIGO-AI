@@ -246,11 +246,13 @@ class RAGIndexer:
                         indexed += 1
                         self._file_hashes[filepath] = self._file_hash(filepath)
                         self._stats["files_indexed"] = indexed
+                        self._save_hashes()
                     else:
                         logger.warning("[Indexer] No text indexed for %s (scanned/empty/unreadable?)", filepath)
                         self._file_hashes[filepath] = self._file_hash(filepath)  # don't retry until changed
                         skipped += 1
                         self._stats["files_skipped"] = skipped
+                        self._save_hashes()
                 except Exception as e:
                     errors += 1
                     logger.debug("[Indexer] Error indexing %s: %s", filepath, e)
@@ -260,6 +262,8 @@ class RAGIndexer:
                         progress_cb(i + 1, total, indexed, skipped, fname)
                     except Exception:
                         pass
+
+                time.sleep(0.05)  # Yield CPU to keep laptop cool and UI responsive
 
             self._save_hashes()
             if indexed > 0 and self._rag and hasattr(self._rag, "_schedule_bm25_rebuild"):

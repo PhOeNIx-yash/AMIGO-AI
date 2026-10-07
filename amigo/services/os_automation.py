@@ -302,6 +302,16 @@ def prev_track():
 def play_pause_media():
     """Toggles play/pause media playback globally."""
     try:
+        import sys
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                VK_MEDIA_PLAY_PAUSE = 0xB3
+                KEYEVENTF_KEYUP = 0x0002
+                ctypes.windll.user32.keybd_event(VK_MEDIA_PLAY_PAUSE, 0, 0, 0)
+                ctypes.windll.user32.keybd_event(VK_MEDIA_PLAY_PAUSE, 0, KEYEVENTF_KEYUP, 0)
+            except Exception as we:
+                print(f"[OS Automation] Windows keybd_event fallback: {we}")
         pyautogui.press("playpause")
         print("[OS Automation] Toggled play/pause media")
         return True

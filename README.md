@@ -1,6 +1,6 @@
 # Amigo Voice Assistant 🎙️✨
 
-A private, intelligent, and agentic personal voice assistant powered locally by the **MiniCPM 5 2B** GGUF model, **Sherpa-ONNX** real-time neural speech recognition, and **Supertonic 3** 44.1kHz studio neural speech synthesis.
+A private, intelligent, and agentic personal voice assistant powered locally by the **MiniCPM 5 2B Claude-Fable 5.1 Thinking Agentic** GGUF model, **Sherpa-ONNX** real-time neural speech recognition, and **Supertonic 3** 44.1kHz studio neural speech synthesis.
 
 Amigo provides desktop automation, browser & window control, document intelligence (invoices, PDFs, spreadsheets), live interactive action widgets (countdown timers, stopwatches, weather telemetry), deep web browsing, app management, and an adaptive RAG-powered vector memory system — completely offline, with **zero API keys and zero cloud dependencies**.
 
@@ -8,8 +8,9 @@ Amigo provides desktop automation, browser & window control, document intelligen
 
 ## 🚀 What's New (v2.0)
 
-### 🧠 **LLM-Based Agentic Architecture** (NEW)
-- **Full natural language understanding** via MiniCPM 5 2B with structured tool calling
+### 🧠 **LLM-Based Agentic Reasoning Architecture** (NEW)
+- **Full natural language understanding & thinking reasoning** via MiniCPM 5 2B Claude-Fable 5.1 with structured tool calling
+- **Internal reasoning scratchpad** with `<think>...</think>` support and intelligent tool decision-making
 - **Multi-step compound command chains** — "Open Notepad and type Hello World" executes atomically
 - **Context-aware follow-ups** — "Play it again", "Close that", "Search for that" resolve from conversation history
 - **User self-correction learning** — "No, I meant X" teaches Amigo your preferences permanently

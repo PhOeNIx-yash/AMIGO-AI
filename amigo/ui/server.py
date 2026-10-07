@@ -194,14 +194,14 @@ def get_active_model_info():
     try:
         info = get_llm_model_info()
         vision_ok = is_vision_ready()
-        name = info.get("name", "MiniCPM 5 2B")
+        name = info.get("name", "MiniCPM 5 2B Claude-Fable 5.1 Thinking Agentic")
         return {
-            "key": info.get("key", "minicpm5-2b"),
+            "key": info.get("key", "minicpm5-2b-claude"),
             "name": name,
             "type": "local_gguf",
             "context_length": 8192,
             "tts_engine": get_tts_engine_name(),
-            "system1_router": "LLM Agent (MiniCPM 5 2B)",
+            "system1_router": f"LLM Agent ({name})",
             "vision_ready": vision_ok,
             "vision_mode": f"Native Multimodal ({name})" if vision_ok else "OCR Fallback (Windows Media OCR)",
             "hotkey": "Alt+V",
@@ -209,12 +209,12 @@ def get_active_model_info():
     except Exception:
         vision_ok = is_vision_ready()
         return {
-            "key": "minicpm5-2b",
-            "name": "MiniCPM 5 2B",
+            "key": "minicpm5-2b-claude",
+            "name": "MiniCPM 5 2B Claude-Fable 5.1 Thinking Agentic",
             "type": "local_gguf",
             "context_length": 8192,
             "tts_engine": get_tts_engine_name(),
-            "system1_router": "LLM Agent (MiniCPM 5 2B)",
+            "system1_router": "LLM Agent (MiniCPM 5 2B Claude-Fable 5.1 Thinking Agentic)",
             "vision_ready": vision_ok,
             "vision_mode": "OCR Fallback (Windows Media OCR)",
             "hotkey": "Alt+V",
@@ -224,7 +224,7 @@ def get_active_model_info():
 
 def get_available_models():
     try:
-        active_key = get_active_model_info().get("key", "minicpm5-2b")
+        active_key = get_active_model_info().get("key", "minicpm5-2b-claude")
         models_dict = get_llm_available_models()
         return [
             {
@@ -237,7 +237,7 @@ def get_available_models():
         ]
     except Exception:
         return [
-            {"key": "minicpm5-2b", "name": "MiniCPM 5 2B", "status": "active", "type": "local"},
+            {"key": "minicpm5-2b-claude", "name": "MiniCPM 5 2B Claude-Fable 5.1 Thinking Agentic", "status": "active", "type": "local"},
         ]
 
 
@@ -933,8 +933,8 @@ def handle_settings():
     return jsonify({
         "ui_settings": memory.get("ui_settings", {}),
         "user_profile": memory.get("user_profile", {}),
-        "model": info.get("key", "minicpm5-2b"),
-        "model_name": info.get("name", "MiniCPM 5 2B"),
+        "model": info.get("key", "minicpm5-2b-claude"),
+        "model_name": info.get("name", "MiniCPM 5 2B Claude-Fable 5.1 Thinking Agentic"),
         "thinking_enabled": is_thinking_enabled(),
         "available_models": get_available_models(),
     })
@@ -1381,11 +1381,11 @@ def api_proactive_trigger():
     """Trigger a proactive notification manually for testing/feedback."""
     try:
         data = request.get_json(silent=True) or {}
-        msg = data.get("message") or "This is a proactive alert from Amigo."
+        msg = data.get("message")
         level = data.get("level") or "info"
         proactive = get_proactive_intelligence()
-        proactive.trigger_notification(msg, level)
-        return jsonify({"success": True, "message": msg, "level": level})
+        sent_msg = proactive.trigger_notification(msg, level)
+        return jsonify({"success": True, "message": sent_msg, "level": level})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1425,6 +1425,16 @@ def _start_background_initializations():
     """Start all background initializations in parallel."""
     # Start RAG engine (async internally, non-blocking)
     rag_engine.init_rag(background=True)
+
+    # Warm up RAG user facts & reranker in background thread so user queries have zero cold-start delay
+    def _warmup_rag():
+        try:
+            rag_engine.get_user_profile_prompt("warmup", semantic_search=True)
+            logger.info("[RAG Warmup] Semantic facts and reranker warmed up.")
+        except Exception as e:
+            logger.debug(f"[RAG Warmup] Note: {e}")
+
+    threading.Thread(target=_warmup_rag, daemon=True, name="RAGWarmup").start()
     
     # Start background file indexer
     start_background_indexer(rag_engine, interval_minutes=30)

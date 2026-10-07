@@ -1,7 +1,7 @@
 """
 Enhanced RAG Engine for Amigo Voice Assistant.
 Improvements over v1:
-- Fast local embedding model (all-MiniLM-L6-v2)
+- High-performance multimodal embedding model (google/embeddinggemma-2, 768-d)
 - Semantic chunking with recursive splitting
 - Hybrid search (semantic + BM25 keyword)
 - Cross-encoder reranking
@@ -132,8 +132,8 @@ QUESTION_WORDS = {"what", "when", "who", "where", "why", "how", "which", "whose"
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 CHUNK_SIZE = 512
 CHUNK_OVERLAP = 128
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"  # 384 dim, CPU-friendly, fast
-RERANKER_MODEL = "BAAI/bge-reranker-base"  # Cross-encoder for reranking (consider offloading to Ollama/vLLM for GPU acceleration)
+EMBEDDING_MODEL = os.getenv("AMIGO_EMBEDDING_MODEL", "google/embeddinggemma-2")  # EmbeddingGemma 2 (768-d, 8k context)
+RERANKER_MODEL = "BAAI/bge-reranker-base"  # Cross-encoder for reranking
 
 MEDIA_STATE_TTL = 1800
 APP_STATE_TTL = 1800
@@ -202,53 +202,63 @@ def _init_chroma() -> None:
         try:
             import chromadb
             from chromadb.utils import embedding_functions
-
-            # Fast offline-first initialization - use local env vars, not process-wide
-            cache_root = os.path.expanduser(os.path.join("~", ".cache", "huggingface", "hub"))
-            model_dir_name = f"models--{EMBEDDING_MODEL.replace('/', '--')}"
-            alt_dir_name = f"models--sentence-transformers--{EMBEDDING_MODEL.replace('/', '--')}"
-            model_cache_exists = os.path.exists(os.path.join(cache_root, model_dir_name)) or os.path.exists(os.path.join(cache_root, alt_dir_name)) if os.path.exists(cache_root) else False
-
             client = chromadb.PersistentClient(path=CHROMA_DIR)
 
-            # Use better embedding model with proper environment handling
-            # We need to set env vars BEFORE creating the embedding function since it reads os.environ
-            def _make_embedding_fn(use_offline: bool):
-                # Save original env
-                old_hf_offline = os.environ.get("HF_HUB_OFFLINE")
-                old_transformers_offline = os.environ.get("TRANSFORMERS_OFFLINE")
-                try:
-                    if use_offline or model_cache_exists:
-                        os.environ["HF_HUB_OFFLINE"] = "1"
-                        os.environ["TRANSFORMERS_OFFLINE"] = "1"
-                    elif old_hf_offline is not None:
-                        os.environ.pop("HF_HUB_OFFLINE", None)
-                    if old_transformers_offline is not None:
-                        os.environ.pop("TRANSFORMERS_OFFLINE", None)
-                    
-                    return embedding_functions.SentenceTransformerEmbeddingFunction(
-                        model_name=EMBEDDING_MODEL,
-                    )
-                finally:
-                    # Restore original env
-                    if old_hf_offline is not None:
-                        os.environ["HF_HUB_OFFLINE"] = old_hf_offline
-                    else:
-                        os.environ.pop("HF_HUB_OFFLINE", None)
-                    if old_transformers_offline is not None:
-                        os.environ["TRANSFORMERS_OFFLINE"] = old_transformers_offline
-                    else:
-                        os.environ.pop("TRANSFORMERS_OFFLINE", None)
+            class EmbeddingGemmaEmbeddingFunction(chromadb.EmbeddingFunction):
+                """Unified ChromaDB embedding function powered by EmbeddingGemma 2 (768-d, local bfloat16)."""
+                def __init__(self, target_model: str = EMBEDDING_MODEL):
+                    import torch
+                    from sentence_transformers import SentenceTransformer
 
-            try:
-                _embedding_fn = _make_embedding_fn(use_offline=False)
-            except Exception:
-                # Try with offline mode
-                try:
-                    _embedding_fn = _make_embedding_fn(use_offline=True)
-                except Exception:
-                    # Try without any offline settings
-                    _embedding_fn = _make_embedding_fn(use_offline=False)
+                    models_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models")
+                    candidates = [
+                        os.path.join(models_dir, "embeddinggemma-2"),
+                        os.path.join(models_dir, "google--embeddinggemma-2"),
+                        target_model,
+                    ]
+                    chosen = target_model
+                    for c in candidates:
+                        if os.path.isdir(c) and os.path.isfile(os.path.join(c, "config.json")):
+                            chosen = os.path.abspath(c)
+                            break
+
+                    self.active_name = chosen
+                    device = "cuda" if torch.cuda.is_available() else "cpu"
+                    dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+                    if device == "cpu":
+                        # Cap threads to prevent pinning all CPU cores and keeping system cool
+                        max_threads = max(2, min(4, (os.cpu_count() or 4) // 2))
+                        torch.set_num_threads(max_threads)
+                    self._model = SentenceTransformer(
+                        chosen,
+                        model_kwargs={"torch_dtype": dtype},
+                        device=device,
+                    )
+                    logger.info("[RAG v2] Initialized EmbeddingGemma 2 embedding model: %s (device=%s, dtype=%s)", chosen, device, dtype)
+
+                def __call__(self, input: list[str]) -> list[list[float]]:
+                    if isinstance(input, str):
+                        input = [input]
+                    embeddings = self._model.encode(
+                        list(input),
+                        prompt_name="Document",
+                        normalize_embeddings=True,
+                        batch_size=32,
+                    )
+                    return embeddings.tolist()
+
+                def embed_query(self, input: list[str] | str) -> list[list[float]]:
+                    if isinstance(input, str):
+                        input = [input]
+                    embeddings = self._model.encode(
+                        list(input),
+                        prompt_name="SearchQuery",
+                        normalize_embeddings=True,
+                        batch_size=32,
+                    )
+                    return embeddings.tolist()
+
+            _embedding_fn = EmbeddingGemmaEmbeddingFunction(EMBEDDING_MODEL)
 
             # Check if collections need to be recreated due to embedding dimension change
             _recreate_collections_if_needed(client, _embedding_fn)
@@ -302,7 +312,7 @@ def _recreate_collections_if_needed(client, embedding_fn) -> None:
     global _pending_facts_restore
     try:
         test_embedding = embedding_fn(["test"])
-        expected_dim = len(test_embedding[0]) if test_embedding else 384
+        expected_dim = len(test_embedding[0]) if test_embedding else 768
         collections_recreated = False
         
         for name in ALL_COLLECTIONS:
@@ -1669,7 +1679,10 @@ def _hybrid_search(
     query_embeddings = {}
     try:
         if _embedding_fn is not None and expanded_queries:
-            embeddings = _embedding_fn(expanded_queries)
+            if hasattr(_embedding_fn, "embed_query"):
+                embeddings = _embedding_fn.embed_query(expanded_queries)
+            else:
+                embeddings = _embedding_fn(expanded_queries)
             for eq, emb in zip(expanded_queries, embeddings):
                 query_embeddings[eq] = emb
     except Exception:
@@ -1778,7 +1791,10 @@ def search(
         query_embedding = None
         try:
             if _embedding_fn is not None:
-                query_embedding = _embedding_fn([query])[0]
+                if hasattr(_embedding_fn, "embed_query"):
+                    query_embedding = _embedding_fn.embed_query([query])[0]
+                else:
+                    query_embedding = _embedding_fn([query])[0]
         except Exception:
             pass
         results = _semantic_search(query, target_collections, top_k, metadata_filter=metadata_filter, query_embedding=query_embedding)
@@ -1895,7 +1911,13 @@ def search_files_by_context(query: str, top_k: int = 10) -> list[dict]:
 #  Enhanced RAG Context Builder
 # ═══════════════════════════════════════════════════════════════
 
-def build_rag_context(query: str, top_k: int = 5, conversation_history: list | None = None, for_voice: bool = True) -> str:
+def build_rag_context(
+    query: str,
+    top_k: int = 5,
+    conversation_history: list | None = None,
+    for_voice: bool = True,
+    search_results: list | None = None,
+) -> str:
     """
     Build enhanced RAG context for LLM prompt injection.
     Uses hybrid search with query expansion and reranking.
@@ -1905,9 +1927,10 @@ def build_rag_context(query: str, top_k: int = 5, conversation_history: list | N
     if not query or not query.strip():
         return ""
 
-    # Search with expanded queries and reranking, passing conversation_history for query expansion
-    # Include EMAILS and CALENDAR collections for comprehensive knowledge retrieval
-    results = search(query, target_collections=[DOCUMENTS, USER_FACTS], top_k=top_k)
+    if search_results is not None:
+        results = search_results
+    else:
+        results = search(query, target_collections=[DOCUMENTS, USER_FACTS], top_k=top_k)
     
     if not results:
         return ""
@@ -1925,14 +1948,22 @@ def build_rag_context(query: str, top_k: int = 5, conversation_history: list | N
     total_chars = 0
     max_chars = MAX_VOICE_CONTEXT_CHARS if for_voice else 8000
 
-    # Prioritize documents whose filename matches words in the query
-    q_lower = query.lower()
+    # Prioritize documents whose filename has token overlap with the query
+    q_words = set(re.findall(r'[a-zA-Z0-9]+', query.lower()))
+
     def _doc_priority(res):
         meta = res.get("metadata", {})
         fname = (meta.get("filename") or "").lower()
         base_name = os.path.splitext(fname)[0] if fname else ""
-        if fname and (fname in q_lower or (len(base_name) >= 3 and base_name in q_lower)):
+        base_words = set(re.findall(r'[a-zA-Z0-9]+', base_name))
+
+        if base_name and base_name in query.lower():
             return 10.0 + res.get("score", 0)
+
+        overlap = q_words & base_words
+        if overlap:
+            return float(len(overlap)) * 2.0 + res.get("score", 0)
+
         return res.get("score", 0)
 
     relevant.sort(key=_doc_priority, reverse=True)
@@ -1946,32 +1977,20 @@ def build_rag_context(query: str, top_k: int = 5, conversation_history: list | N
             if not top_doc and fpath and os.path.exists(fpath):
                 top_doc = {"path": fpath, "name": fname}
 
-            file_text = ""
-            if fpath and os.path.exists(fpath) and fpath not in seen_files:
-                seen_files.add(fpath)
-                try:
-                    if os.path.getsize(fpath) < 2 * 1024 * 1024:
-                        extracted = extract_text(fpath)
-                        if extracted and len(extracted.strip()) <= 8000:
-                            file_text = extracted.strip()[:max_chars - total_chars]
-                except Exception:
-                    pass
-
-            if file_text:
-                parts.append(f"[From document '{fname}']:\n{file_text}")
-                total_chars += len(file_text)
-            else:
-                text = r.get("text", "")[:900]
+            chunk_text = (r.get("text") or "").strip()
+            if chunk_text:
+                chunk_snippet = chunk_text[:900]
+                if total_chars + len(chunk_snippet) > max_chars:
+                    break
+                parts.append(f"[From document '{fname}']:\n{chunk_snippet}")
+                total_chars += len(chunk_snippet)
+        elif src == USER_FACTS:
+            text = (r.get("text") or "").strip()[:900]
+            if text:
                 if total_chars + len(text) > max_chars:
                     break
-                parts.append(f"[From '{fname}']: {text}")
+                parts.append(f"[Known fact]: {text}")
                 total_chars += len(text)
-        elif src == USER_FACTS:
-            text = r.get("text", "")[:900]
-            if total_chars + len(text) > max_chars:
-                break
-            parts.append(f"[Known fact]: {text}")
-            total_chars += len(text)
 
     if top_doc:
         try:
@@ -2252,8 +2271,8 @@ def extract_user_profile_updates(user_query: str, remember: str = "") -> None:
         save_profile(profile)
 
 
-def get_user_profile_prompt(query: str = "") -> str:
-    """Format user profile for LLM prompt injection with semantic fact retrieval.
+def get_user_profile_prompt(query: str = "", semantic_search: bool = True) -> str:
+    """Format user profile for LLM prompt injection with optional semantic fact retrieval.
     Only adds 'NEVER say you don't have access' when facts were actually retrieved."""
     profile = load_profile()
     parts: list[str] = []
@@ -2271,7 +2290,7 @@ def get_user_profile_prompt(query: str = "") -> str:
 
     facts_retrieved = False
     # Only inject specific remembered facts when semantically relevant or asking about user/data
-    if query and query.strip():
+    if semantic_search and query and query.strip():
         q_clean = query.strip().lower()
         words = q_clean.split()
         if len(words) >= 2:

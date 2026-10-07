@@ -646,42 +646,58 @@ def _is_system_audio_playing() -> bool:
     return False
 
 
+_live_media_cache: tuple[str, str, str] | None = None
+_live_media_cache_time: float = 0.0
+
+
 def _get_live_media_title_from_windows() -> tuple[str, str, str] | None:
-    """Queries real-time live media from Windows GSMTC, falling back to window enumeration."""
+    """Queries real-time live media from Windows GSMTC with 3s TTL cache to avoid expensive window enumeration."""
+    global _live_media_cache, _live_media_cache_time
+    now = time.time()
+    if (now - _live_media_cache_time) < 3.0:
+        return _live_media_cache
+
+    res = None
     # 1. Native Windows GSMTC session (works for Chrome, Edge, Spotify even in background tabs!)
     try:
         sys_media = os_automation.get_system_media_info()
         if sys_media and sys_media.get("title"):
             status = sys_media.get("status", "playing")
             if status.lower() not in ("closed", "stopped"):
-                return sys_media["title"], sys_media.get("artist", ""), status
+                res = (sys_media["title"], sys_media.get("artist", ""), status)
     except Exception:
         pass
 
     # 2. Fallback to visible window title enumeration
-    try:
-        import win32gui
-        titles = []
+    if not res:
+        try:
+            import win32gui
+            titles = []
 
-        def _enum(hwnd, _):
-            if win32gui.IsWindowVisible(hwnd):
-                txt = win32gui.GetWindowText(hwnd).strip()
-                if txt and (" - YouTube" in txt or "Spotify" in txt):
-                    titles.append(txt)
+            def _enum(hwnd, _):
+                if win32gui.IsWindowVisible(hwnd):
+                    txt = win32gui.GetWindowText(hwnd).strip()
+                    if txt and (" - YouTube" in txt or "Spotify" in txt):
+                        titles.append(txt)
 
-        win32gui.EnumWindows(_enum, None)
-        for t in titles:
-            if " - YouTube" in t:
-                clean = t.split(" - YouTube")[0].strip()
-                if clean:
-                    return clean, "", "playing"
-            if "Spotify" in t and " - " in t:
-                clean = t.replace("Spotify Premium", "").replace("Spotify Free", "").strip(" -")
-                if clean and clean.lower() != "spotify":
-                    return clean, "", "playing"
-    except Exception:
-        pass
-    return None
+            win32gui.EnumWindows(_enum, None)
+            for t in titles:
+                if " - YouTube" in t:
+                    clean = t.split(" - YouTube")[0].strip()
+                    if clean:
+                        res = (clean, "", "playing")
+                        break
+                if "Spotify" in t and " - " in t:
+                    clean = t.replace("Spotify Premium", "").replace("Spotify Free", "").strip(" -")
+                    if clean and clean.lower() != "spotify":
+                        res = (clean, "", "playing")
+                        break
+        except Exception:
+            pass
+
+    _live_media_cache = res
+    _live_media_cache_time = now
+    return res
 
 
 def _tool_stop(params, query, spoken):
@@ -720,64 +736,38 @@ def _tool_pause_media(params, query, spoken):
     state = get_active_state(clean_expired=True)
     media = state.get("current_media") if isinstance(state, dict) else None
     has_tracked_media = isinstance(media, dict)
-    is_playing = has_tracked_media and media.get("status") in ("playing", None)
 
-    if not is_playing:
-        is_playing = _is_system_audio_playing()
-
-    if is_playing or live_media:
-        try:
-            os_automation.play_pause_media()
-        except Exception:
-            pass
-        if _media_update_cb:
-            _media_update_cb({"status": "paused"})
-        if has_tracked_media and isinstance(media, dict):
-            update_active_state("current_media", {**media, "status": "paused"})
-        return "Media paused.", None
-
-    return "No media is currently playing.", None
+    try:
+        os_automation.play_pause_media()
+    except Exception:
+        pass
+    if _media_update_cb:
+        _media_update_cb({"status": "paused"})
+    if has_tracked_media and isinstance(media, dict):
+        update_active_state("current_media", {**media, "status": "paused"})
+    return "Media paused.", None
 
 
 def _tool_play_media(params, query, spoken):
     live_media = _get_live_media_title_from_windows()
-    is_system_playing = _is_system_audio_playing()
-
     if live_media:
         _, _, status = live_media
         if status.lower() == "playing":
             return "Media is already playing.", None
-        elif status.lower() == "paused":
-            try:
-                os_automation.play_pause_media()
-            except Exception:
-                pass
-            if _media_update_cb:
-                _media_update_cb({"status": "playing"})
-            return "Media resumed.", None
 
     state = get_active_state(clean_expired=False)
     media = state.get("current_media") if isinstance(state, dict) else None
     has_tracked_media = isinstance(media, dict)
 
-    # Only send play key if media is actually paused
-    is_paused = has_tracked_media and media.get("status") == "paused"
-
-    if is_paused:
-        try:
-            os_automation.play_pause_media()
-        except Exception:
-            pass
-        if _media_update_cb:
-            _media_update_cb({"status": "playing"})
-        if has_tracked_media and isinstance(media, dict):
-            update_active_state("current_media", {**media, "status": "playing"})
-        return "Media resumed.", None
-
-    if is_system_playing:
-        return "Media is already playing.", None
-
-    return "No media is currently paused to resume.", None
+    try:
+        os_automation.play_pause_media()
+    except Exception:
+        pass
+    if _media_update_cb:
+        _media_update_cb({"status": "playing"})
+    if has_tracked_media and isinstance(media, dict):
+        update_active_state("current_media", {**media, "status": "playing"})
+    return "Media resumed.", None
 
 
 def _mark_media_stale():
@@ -914,7 +904,14 @@ def _tool_chat(params, query, spoken, conversation_history=None):
     """Conversational reply with full context and conversation history."""
     params = params if isinstance(params, dict) else {}
     direct = (spoken or params.get("response") or "").strip()
-    if direct:
+
+    # Reject degenerate single-word/robotic answers like "Great.", "Good.", "Stopped.", "Paused."
+    words = direct.split()
+    is_degenerate = len(words) <= 2 and direct.rstrip(".!?, ").lower() in {
+        "great", "good", "fine", "okay", "ok", "cool", "nice", "yes", "no",
+        "sure", "stopped", "paused", "done", "alright", "hello", "hi", "thanks"
+    }
+    if direct and not is_degenerate:
         return direct, None
 
     call = getattr(_call_ctx, "value", None) or {}
@@ -922,10 +919,10 @@ def _tool_chat(params, query, spoken, conversation_history=None):
 
     doc_context = ""
     try:
-        # Only inject document context if there is a genuine high-confidence semantic match
-        results = rag_engine.search(query, target_collections=[rag_engine.DOCUMENTS, rag_engine.USER_FACTS], top_k=3)
-        if results and any(r.get("rerank_score", 0) >= 0.65 or r.get("score", 0) >= 0.68 for r in results):
-            doc_context = rag_engine.build_rag_context(query, top_k=3, conversation_history=conv_history)
+        # Inject document context if there is a relevant semantic or keyword match
+        results = rag_engine.search(query, target_collections=[rag_engine.DOCUMENTS, rag_engine.USER_FACTS], top_k=4)
+        if results and any(r.get("rerank_score", 0) >= 0.45 or r.get("score", 0) >= 0.38 for r in results):
+            doc_context = rag_engine.build_rag_context(query, top_k=4, conversation_history=conv_history, search_results=results)
     except Exception as e:
         logger.debug(f"[Chat RAG context]: {e}")
 
@@ -1684,7 +1681,8 @@ def _tool(name: str, description: str, props: dict | None = None, required: list
 
 
 TOOL_DEFINITIONS = [
-    _tool("chat", "Conversational response: talk with the user, answer questions, provide explanations, opinions, greetings, advice, jokes, writing help, or general conversation."),
+    _tool("chat", "Conversational response: talk with the user, answer questions, provide explanations, opinions, greetings, advice, jokes, writing help, or general conversation.",
+          {"response": _p("string", "Your direct, natural conversational response or answer to the user (1-3 sentences)")}, ["response"]),
     _tool("web_search", "Search the web for news, real-time facts, current events, definitions, people, or external knowledge.",
           {"query": _p("string", "Search query resolved from context"),
            "show_in_browser": _p("boolean", "True if user asked to open search results in a browser")}, ["query"]),
@@ -1795,9 +1793,9 @@ def _tools_block() -> str:
                         part += f" - {spec['description']}"
                     parts.append(part)
                 signature = "; ".join(parts)
+                rows.append(f"- {tool['name']}: {tool['description']} [{signature}]")
             else:
-                signature = "no params"
-            rows.append(f"- {tool['name']}: {tool['description']} [{signature}]")
+                rows.append(f"- {tool['name']}: {tool['description']}")
         _TOOLS_BLOCK_CACHE = "\n".join(rows)
     return _TOOLS_BLOCK_CACHE
 
@@ -1841,47 +1839,53 @@ def _format_recent_activity(conversation_history: list | None, current_query: st
     return "\n".join(lines) if lines else "No recent conversation."
 
 
-_ROUTER_SYSTEM_PROMPT = """You are the intent router for Amigo, an intelligent Windows desktop voice assistant.
+_ROUTER_SYSTEM_PROMPT = """You are Amigo, an intelligent, helpful, and natural Windows desktop voice assistant.
 Your task is to understand the user's intent from their latest message, using the conversation context and PC state, and select the appropriate tool action(s).
 
 TOOLS AVAILABLE:
 <<TOOLS>>
 
 ROUTING GUIDELINES:
-1. INTENT MATCHING:
-   - Select tools that directly match the user's explicit or implicit intent based on tool descriptions.
-   - Use 'chat' for conversation, greetings, general knowledge, explanations, discussions, advice, questions about previous replies, or when no tool is needed.
-   - Use specific tools when the user requests an action on the PC (opening/closing apps, media control, setting reminders/timers, file management) or needs external/current information (web search, live weather, reading screen).
-   - If the user asks for multiple things in one turn (e.g. "open notepad and search for python"), return multiple tool actions in the "actions" array in execution order.
+1. INTENT MATCHING & CHAT RESPONSE:
+   - For conversation, questions, greetings, jokes, explanations, opinions, empathy, or general talk: select 'chat' and write a warm, engaging, and conversational answer directly in params.response (1-3 natural sentences).
+   - CRITICAL: Never write cold, robotic, or 1-word responses like "Great.", "Good.", "Okay.", "Stopped.", or "Fine."! Embody Amigo's friendly, helpful, and natural personality.
+   - For PC actions (open/close apps, volume, brightness, media, timers, screenshots, web search): select the specific tool with necessary parameters.
+   - For multiple requests in one turn (e.g. "open notepad and set volume to 50"): return multiple tool actions in execution order.
 
 2. CONTEXT & FOLLOW-UP RESOLUTION:
-   - When the user asks a follow-up question or uses anaphoric references (pronouns like "it", "that", "this", "them", "again", "the previous one", or elliptical continuations like "and tomorrow?", "how about the second one?"), resolve the target entity from RECENT ACTIVITY and ACTIVE STATE.
-   - Always supply complete, self-contained parameter values (e.g., the actual song title, search query, application name, or file path) rather than pronouns.
-   - If the user is having an ongoing conversation or asking follow-up questions about prior topics (e.g. "why?", "tell me more", "who was that?"), route to 'chat' so the conversational model can answer in full context.
+   - Resolve pronouns ("it", "that", "again") from RECENT ACTIVITY and ACTIVE STATE into explicit parameter values.
+   - For ongoing discussions about prior topics ("why?", "tell me more"): use 'chat' with your answer in params.response.
 
-3. MEDIA PLAYBACK vs RESUME:
-   - Use 'resume_media' ONLY when the user asks to resume or unpause existing playback without naming a song or artist (e.g. "resume", "unpause", "continue playing").
-   - Use 'play_youtube' whenever the user asks to play a song, artist, video, or playlist (e.g. "play believer", "play anything from justin bieber", "play jazz"). Extract the clean song, artist, or music query into the 'query' parameter.
+3. MEDIA PLAYBACK CONTROLS:
+   - Use 'pause_media' whenever the user asks to pause music, pause video, or pause playback ("pause", "pause music", "pause song", "hold playback").
+   - Use 'resume_media' whenever the user asks to resume or unpause playback ("resume", "unpause", "continue music").
+   - Use 'current_media' whenever the user asks what song or video is currently playing ("which music is playing", "what is playing", "current song").
+   - Use 'next_track' to skip to the next track, and 'prev_track' for the previous track.
+   - Use 'play_youtube' whenever the user asks to play a song, artist, video, or playlist.
 
-4. CORRECTIONS & CONFIRMATIONS:
-   - If the user corrects or refines an earlier request, route based on the corrected intent.
-   - If an action was awaiting confirmation: use 'confirm_action' if the user agrees (e.g., 'yes', 'sure', 'go ahead'), or 'cancel_action' if they decline ('no', 'cancel', 'never mind').
+4. CONFIRMATIONS:
+   - If awaiting confirmation: use 'confirm_action' for agreement, or 'cancel_action' to decline.
 
-5. LIVE MARKET DATA & WEATHER:
-   - For live stock prices, share prices, market quotes, or cryptocurrency rates, use 'stock_quote' with the company name, ticker symbol, or crypto name.
-   - For weather inquiries or forecasts, use 'get_weather'.
-
-6. LOCAL DOCUMENTS & PERSONAL RECORDS:
-   - For questions about the user's tickets, bookings, flights, trains, PNR numbers, invoices, receipts, resumes, or any details from their local files and documents, use 'document_qa'.
-   - For finding or searching files by topic or meaning, use 'find_document'.
+5. SPECIALIZED TOOLS:
+   - Stock/crypto prices: 'stock_quote'
+   - Weather: 'get_weather'
+   - Local user tickets, bookings, flights, PNR, invoices: 'document_qa'
+   - Finding local files: 'find_document'
 
 EXAMPLES:
+- "what is the capital of france" -> {"actions": [{"tool": "chat", "params": {"response": "The capital of France is Paris."}}]}
+- "hello how are you" -> {"actions": [{"tool": "chat", "params": {"response": "Hello! I'm doing great, how can I help you today?"}}]}
+- "i love this song" -> {"actions": [{"tool": "chat", "params": {"response": "It really is an amazing track! Glad you're enjoying it."}}]}
+- "no i am yash you are amigo" -> {"actions": [{"tool": "chat", "params": {"response": "Got it, Yash! Nice to meet you. I'm Amigo, your desktop assistant."}}]}
+- "tell me a joke" -> {"actions": [{"tool": "chat", "params": {"response": "Why do programmers prefer dark mode? Because light attracts bugs!"}}]}
+- "pause music" -> {"actions": [{"tool": "pause_media", "params": {}}]}
+- "pause" -> {"actions": [{"tool": "pause_media", "params": {}}]}
+- "resume" -> {"actions": [{"tool": "resume_media", "params": {}}]}
+- "which music is playing" -> {"actions": [{"tool": "current_media", "params": {}}]}
 - "tell me apple stock price" -> {"actions": [{"tool": "stock_quote", "params": {"symbol": "Apple"}}]}
-- "how much is bitcoin" -> {"actions": [{"tool": "stock_quote", "params": {"symbol": "Bitcoin"}}]}
 - "weather in new york" -> {"actions": [{"tool": "get_weather", "params": {"city": "New York"}}]}
-- "play anything from justin bieber" -> {"actions": [{"tool": "play_youtube", "params": {"query": "justin bieber"}}]}
-- "what is my pnr number" -> {"actions": [{"tool": "document_qa", "params": {"query": "what is my pnr number"}}]}
-- "what does my ticket say" -> {"actions": [{"tool": "document_qa", "params": {"query": "what does my ticket say"}}]}
+- "play believer" -> {"actions": [{"tool": "play_youtube", "params": {"query": "believer"}}]}
+- "open notepad" -> {"actions": [{"tool": "open_app", "params": {"name": "Notepad"}}]}
 - "find my resume" -> {"actions": [{"tool": "find_document", "params": {"query": "resume"}}]}
 
 OUTPUT FORMAT:
@@ -1936,7 +1940,7 @@ def build_agent_system_prompt(query: str = "", conversation_history: list | None
     if active_context.strip():
         parts.append(active_context.strip())
     try:
-        profile = rag_engine.get_user_profile_prompt(query)
+        profile = rag_engine.get_user_profile_prompt(query, semantic_search=False)
         if profile:
             parts.append(profile)
     except Exception:
@@ -1986,10 +1990,12 @@ def _call_from_obj(obj) -> list[dict]:
     name = obj.get("tool") or obj.get("name")
     if not isinstance(name, str) or not name.strip():
         return []
-    speak = obj.get("speak")
+    params = _coerce_params(obj["params"] if "params" in obj else obj.get("arguments"))
+    tool_name = name.strip()
+    speak = obj.get("speak") or (params.get("response") if tool_name == "chat" else "")
     return [{
-        "tool": name.strip(),
-        "params": _coerce_params(obj["params"] if "params" in obj else obj.get("arguments")),
+        "tool": tool_name,
+        "params": params,
         "speak": speak if isinstance(speak, str) else "",
     }]
 
@@ -2045,6 +2051,21 @@ def _chat_action(text: str = "") -> dict:
 
 _EXACT_EXIT = frozenset({"goodbye", "close amigo", "exit amigo", "quit amigo"})
 _EXACT_STOP = frozenset({"stop", "shut up", "be quiet", "stop talking", "stop speaking", "quiet", "silence"})
+_EXACT_PAUSE = frozenset({
+    "pause", "pause music", "pause the music", "pause song", "pause the song",
+    "pause video", "pause the video", "pause playback", "stop music", "stop song"
+})
+_EXACT_RESUME = frozenset({
+    "resume", "resume music", "resume song", "resume the music", "resume playback",
+    "unpause", "unpause music", "unpause song", "continue music", "continue playback"
+})
+_EXACT_NEXT = frozenset({"next track", "next song", "skip song", "skip track", "next video"})
+_EXACT_PREV = frozenset({"previous track", "prev track", "previous song", "prev song", "back track"})
+_EXACT_CURRENT_MEDIA = frozenset({
+    "what is playing", "what's playing", "which music is playing", "what music is playing",
+    "what song is playing", "which song is playing", "current song", "current track",
+    "current music", "what am i listening to"
+})
 _RE_WAKE_WORD = re.compile(r"^(?:(?:hey|hi|hello|ok|okay)\s+)?amigo\b[\s,.:;!-]*", re.IGNORECASE)
 _RE_POLITE = re.compile(r"^please\s+|\s+please$", re.IGNORECASE)
 
@@ -2059,7 +2080,7 @@ def clean_spoken_query(query: str) -> str:
 
 
 def parse_user_intent_fast(query: str) -> dict[str, Any] | None:
-    """Tier 0: immediate stop / exit shortcuts."""
+    """Tier 0: immediate stop, exit, and media shortcuts without LLM overhead."""
     if not query or not query.strip():
         return {"tool": "chat", "params": {}, "speak": ""}
     text = clean_spoken_query(query)
@@ -2067,6 +2088,16 @@ def parse_user_intent_fast(query: str) -> dict[str, Any] | None:
         return {"tool": "exit", "params": {}, "speak": "Goodbye!"}
     if text in _EXACT_STOP:
         return {"tool": "stop", "params": {}, "speak": "Stopped."}
+    if text in _EXACT_PAUSE:
+        return {"tool": "pause_media", "params": {}, "speak": ""}
+    if text in _EXACT_RESUME:
+        return {"tool": "resume_media", "params": {}, "speak": ""}
+    if text in _EXACT_NEXT:
+        return {"tool": "next_track", "params": {}, "speak": ""}
+    if text in _EXACT_PREV:
+        return {"tool": "prev_track", "params": {}, "speak": ""}
+    if text in _EXACT_CURRENT_MEDIA:
+        return {"tool": "current_media", "params": {}, "speak": ""}
     # Fast path for confirmation: if user says "yes" and there's a pending confirmation, execute it
     pending = get_pending_confirmation()
     if pending and text in ("yes", "yeah", "yep", "sure", "ok", "okay", "go ahead", "do it", "confirm"):
@@ -2087,7 +2118,7 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
             messages,
             system_prompt="",
             max_tokens=384,
-            temperature=0.0,
+            temperature=0.3,
             thinking=False,
             sanitize=False,
             response_format={"type": "json_object"},
@@ -2102,6 +2133,13 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
     tool_calls = _parse_tool_calls(response)
     final_response = _extract_final_response(response, tool_calls)
     if tool_calls:
+        if not final_response:
+            for call in tool_calls:
+                if call.get("tool") == "chat":
+                    resp = (call.get("speak") or call.get("params", {}).get("response") or "").strip()
+                    if resp:
+                        final_response = resp
+                        break
         return tool_calls, final_response
 
     if response.lstrip().startswith("{"):

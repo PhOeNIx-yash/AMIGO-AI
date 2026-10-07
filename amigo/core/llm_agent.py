@@ -395,9 +395,9 @@ def extract_user_profile_updates(user_query: str, remember: str = "") -> None:
     rag_engine.extract_user_profile_updates(user_query, remember=remember)
 
 
-def get_user_profile_prompt(query: str = "") -> str:
+def get_user_profile_prompt(query: str = "", semantic_search: bool = True) -> str:
     """Format user profile for prompt context."""
-    return rag_engine.get_user_profile_prompt(query=query)
+    return rag_engine.get_user_profile_prompt(query=query, semantic_search=semantic_search)
 
 
 def get_active_context_prompt() -> str:
@@ -439,23 +439,22 @@ _PHYSICAL_CORES = None
 _LLM_CONFIG = None
 _CONFIG_LOCK = threading.Lock()
 
-# Model Configuration (MiniCPM 5 2B)
+# Model Configuration (MiniCPM 5 2B Claude-Fable 5.1 Thinking Agentic)
 MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "models"))
 
-MODEL_NAME = "MiniCPM 5 2B"
-MODEL_FILENAME = "MiniCPM5-2B-Q4_K_M.gguf"
+MODEL_NAME = "MiniCPM 5 2B Claude-Fable 5.1 Thinking Agentic"
+MODEL_FILENAME = "MiniCPM5-2B-Claude-Fable5-1-Thinking-Agentic-Q4_K_M.gguf"
 MODEL_PATH = os.path.join(MODEL_DIR, MODEL_FILENAME)
 MODEL_TARGETS = [
-    ("openbmb/MiniCPM5-2B-GGUF", "MiniCPM5-2B-Q4_K_M.gguf"),
-    ("bartowski/MiniCPM5-2B-GGUF", "MiniCPM5-2B-Q4_K_M.gguf"),
-    ("Abiray/MiniCPM5-2B-GGUF", "MiniCPM5-2B-Q4_K_M.gguf"),
+    ("GnLOLot/MiniCPM5-2B-Claude-Fable5-1-Thinking-Agentic-GGUF", "MiniCPM5-2B-Claude-Fable5-1-Thinking-Agentic-Q4_K_M.gguf"),
+    ("mradermacher/MiniCPM5-2B-Claude-Fable5-1-Thinking-Agentic-GGUF", "MiniCPM5-2B-Claude-Fable5-1-Thinking-Agentic.Q4_K_M.gguf"),
 ]
 
 STOP_TOKENS = ["<|endoftext|>", "\nUser:", "\nHuman:", "\nAssistant:"]  # newline-anchored so normal answers are not cut
 
 AVAILABLE_MODELS = {
-    "minicpm5-2b": {
-        "key": "minicpm5-2b",
+    "minicpm5-2b-claude": {
+        "key": "minicpm5-2b-claude",
         "name": MODEL_NAME,
         "filename": MODEL_FILENAME,
         "path": MODEL_PATH,
@@ -466,7 +465,7 @@ AVAILABLE_MODELS = {
     },
 }
 
-_active_model_key = "minicpm5-2b"
+_active_model_key = "minicpm5-2b-claude"
 
 _local_llm_instance = None
 _llm_lock = threading.Lock()
@@ -511,9 +510,11 @@ def _get_llm_config() -> dict:
             return _LLM_CONFIG
         
         cores = _get_physical_cores()
+        total_cpus = multiprocessing.cpu_count()
         _LLM_CONFIG = {
-            "n_ctx": int(os.getenv("AMIGO_LLM_N_CTX", "8192")),
+            "n_ctx": int(os.getenv("AMIGO_LLM_N_CTX", "4096")),
             "n_threads": int(os.getenv("AMIGO_LLM_N_THREADS", str(min(8, max(1, cores))))),
+            "n_threads_batch": int(os.getenv("AMIGO_LLM_N_THREADS_BATCH", str(min(12, max(1, total_cpus))))),
             "n_batch": int(os.getenv("AMIGO_LLM_N_BATCH", "1024")),
             "n_ubatch": int(os.getenv("AMIGO_LLM_N_UBATCH", "512")),
             "n_gpu_layers": int(os.getenv("AMIGO_LLM_N_GPU_LAYERS", "-1")),
@@ -531,14 +532,73 @@ def _get_llm_config() -> dict:
 
 
 def _download_hf_file(targets: list[tuple[str, str]], target_path: str, min_size: int, label: str) -> str:
-    """Robust model and projector downloader with chunked streaming fallback."""
+    """Robust model and projector downloader with chunked streaming and resume support."""
     os.makedirs(os.path.dirname(target_path), exist_ok=True)
     if os.path.exists(target_path) and os.path.getsize(target_path) >= min_size:
         return target_path
 
     logger.info(f"Downloading {label}...")
+    print(f"\n[Amigo AI] Downloading {label}...")
     for repo, fname in targets:
-        # Method 1: huggingface_hub
+        # Method 1: Direct chunked streaming with resume (fastest & most reliable on Windows)
+        try:
+            import requests
+            session = requests.Session()
+            session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+            url = f"https://huggingface.co/{repo}/resolve/main/{fname}"
+            tmp_path = target_path + ".tmp"
+
+            existing_bytes = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
+            headers = {}
+            if existing_bytes > 0:
+                headers["Range"] = f"bytes={existing_bytes}-"
+
+            with session.get(url, headers=headers, stream=True, timeout=30, allow_redirects=True) as r:
+                if r.status_code == 416:  # range not satisfiable, restart
+                    existing_bytes = 0
+                    r = session.get(url, stream=True, timeout=30, allow_redirects=True)
+                r.raise_for_status()
+
+                if r.status_code == 206:
+                    total_size = existing_bytes + int(r.headers.get("content-length", 0))
+                    mode = "ab"
+                else:
+                    total_size = int(r.headers.get("content-length", 0))
+                    existing_bytes = 0
+                    mode = "wb"
+
+                downloaded_bytes = existing_bytes
+                last_log_time = time.time()
+                with open(tmp_path, mode) as f:
+                    for chunk in r.iter_content(chunk_size=4 * 1024 * 1024):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded_bytes += len(chunk)
+                            now = time.time()
+                            if now - last_log_time >= 2.0:
+                                last_log_time = now
+                                if total_size > 0:
+                                    pct = (downloaded_bytes / total_size) * 100
+                                    mb_done = downloaded_bytes / (1024 * 1024)
+                                    mb_total = total_size / (1024 * 1024)
+                                    print(f"\r -> {label}: {mb_done:.1f} MB / {mb_total:.1f} MB ({pct:.1f}%)", end="", flush=True)
+                                else:
+                                    mb_done = downloaded_bytes / (1024 * 1024)
+                                    print(f"\r -> {label}: {mb_done:.1f} MB downloaded", end="", flush=True)
+                print()
+                if os.path.exists(tmp_path) and os.path.getsize(tmp_path) >= min_size:
+                    if os.path.exists(target_path):
+                        try:
+                            os.remove(target_path)
+                        except Exception:
+                            pass
+                    os.replace(tmp_path, target_path)
+                    logger.info(f"Successfully downloaded {label}.")
+                    return target_path
+        except Exception as e:
+            logger.warning(f"Direct stream download for {repo}/{fname} failed: {e}")
+
+        # Method 2: Fallback to huggingface_hub
         try:
             from huggingface_hub import hf_hub_download
             downloaded = hf_hub_download(repo_id=repo, filename=fname, local_dir=MODEL_DIR)
@@ -552,39 +612,14 @@ def _download_hf_file(targets: list[tuple[str, str]], target_path: str, min_size
                 logger.info(f"Downloaded {label} to {downloaded}")
                 return downloaded
         except Exception as e:
-            logger.debug(f"huggingface_hub download for {repo}/{fname} failed: {e}")
-
-        # Method 2: Direct chunked streaming (bypasses HTTP/2 handshake resets)
-        try:
-            import requests
-            url = f"https://huggingface.co/{repo}/resolve/main/{fname}"
-            logger.info(f"Streaming {label} from {url}...")
-            tmp_path = target_path + ".tmp"
-            with requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, stream=True, timeout=30) as r:
-                r.raise_for_status()
-                with open(tmp_path, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=2 * 1024 * 1024):
-                        if chunk:
-                            f.write(chunk)
-            if os.path.exists(tmp_path) and os.path.getsize(tmp_path) >= min_size:
-                if os.path.exists(target_path):
-                    try:
-                        os.remove(target_path)
-                    except Exception:
-                        pass
-                os.replace(tmp_path, target_path)
-                logger.info(f"Successfully downloaded {label} via direct stream.")
-                return target_path
-        except Exception as e:
-            logger.warning(f"Direct stream download for {repo}/{fname} failed: {e}")
-            time.sleep(1)
+            logger.debug(f"huggingface_hub fallback for {repo}/{fname} failed: {e}")
 
     return target_path
 
 
 def get_model_path() -> str:
     """Ensure active model weights exist locally; download if needed."""
-    active_info = AVAILABLE_MODELS.get(_active_model_key, AVAILABLE_MODELS["minicpm5-2b"])
+    active_info = AVAILABLE_MODELS.get(_active_model_key, next(iter(AVAILABLE_MODELS.values())))
     target_path = active_info["path"]
     target_name = active_info["name"]
     target_list = active_info.get("targets", MODEL_TARGETS)
@@ -648,6 +683,7 @@ def init_local_llm(force_reload: bool = False):
                 "n_gpu_layers": config["n_gpu_layers"],
                 "main_gpu": 0,
                 "n_threads": config["n_threads"],
+                "n_threads_batch": config.get("n_threads_batch", config["n_threads"]),
                 "n_batch": config["n_batch"],
                 "n_ubatch": config["n_ubatch"],
                 "flash_attn": config.get("flash_attn", True),
@@ -1201,7 +1237,7 @@ def get_available_models() -> dict:
     return AVAILABLE_MODELS
 
 
-def set_active_model(model_key: str = "minicpm5-2b") -> bool:
+def set_active_model(model_key: str = "minicpm5-2b-claude") -> bool:
     """Switch the active model and reload it. Returns True only if the new model actually loaded."""
     global _active_model_key, _local_llm_instance
     if model_key not in AVAILABLE_MODELS:
@@ -1216,7 +1252,7 @@ def set_active_model(model_key: str = "minicpm5-2b") -> bool:
 
 def get_active_model_info() -> dict:
     """Return metadata for the currently active model."""
-    m_info = AVAILABLE_MODELS.get(_active_model_key, AVAILABLE_MODELS["minicpm5-2b"])
+    m_info = AVAILABLE_MODELS.get(_active_model_key, next(iter(AVAILABLE_MODELS.values())))
     m_path = m_info["path"]
     return {
         "key": _active_model_key,

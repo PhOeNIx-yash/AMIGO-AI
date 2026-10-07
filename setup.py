@@ -96,11 +96,11 @@ def main():
         print(f"    Sherpa-ONNX model check note: {e}")
 
 
-    # Local LLM GGUF Model Check (MiniCPM 5 2B — System 2)
+    # Local LLM GGUF Model Check (MiniCPM 5 2B Claude-Fable 5.1 Thinking Agentic — System 2)
     try:
         from amigo.core import local_llm
         model_info = local_llm.get_active_model_info()
-        print(f" -> Checking MiniCPM 5 2B (System 2): {model_info['name']} (~{model_info.get('size_gb', 1.45)}GB)...")
+        print(f" -> Checking Agent LLM (System 2): {model_info['name']} (~{model_info.get('size_gb', 1.56)}GB)...")
         model_path = local_llm.get_model_path()
         if os.path.exists(model_path):
             print(f"    {model_info['name']} is ready at {model_path}.")
@@ -116,7 +116,7 @@ def main():
     print("           AMIGO SETUP COMPLETED SUCCESSFULLY!")
     print("=" * 60)
     print("\nActive Engine Stack:")
-    print("  Agent Engine  — MiniCPM 5 2B  : conversational reasoning & action execution")
+    print("  Agent Engine  — MiniCPM 5 2B Claude-Fable 5.1 : reasoning & agentic execution")
     print("  Speech Engine — Supertonic-3  : 44.1kHz studio on-device neural speech synthesis")
     print("  Voice Input   — Sherpa-ONNX   : streaming neural speech recognition")
     print("\nHow to launch Amigo:")

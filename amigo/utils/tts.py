@@ -86,11 +86,14 @@ if not os.path.exists(_PROFILE_PATH):
 
 ACTIVE_VOICE = "nova"
 SUPERTONIC_VOICE = "F1"
-SUPERTONIC_SPEED = 1.05
+SUPERTONIC_SPEED = 1.00
+SUPERTONIC_STEPS = 12
+SUPERTONIC_SILENCE_DURATION = 0.20
 SUPERTONIC_LANG = "en"
 _tts_lock = threading.Lock()
 _active_stream = None
 _active_stream_lock = threading.Lock()
+_style_cache = {}
 
 
 def sync_voice_from_profile() -> str:
@@ -204,6 +207,51 @@ def _get_supertonic():
     return _supertonic_instance
 
 
+def _get_expressive_voice_style(engine, voice_id: str):
+    """
+    Retrieves and conditions an expressively contoured voice style vector:
+    - Injects subtle prosodic warmth and dynamic pitch inflection into each voice profile.
+    - Caches the resulting Style vectors in memory for instant 0ms reuse.
+    """
+    global _style_cache
+    vid = voice_id.upper().strip()
+    if vid in _style_cache:
+        return _style_cache[vid]
+
+    try:
+        from supertonic import Style
+        base_style = engine.get_voice_style(vid)
+        # Prosodic dynamic enhancement:
+        # Female voices (F1, F2, F4, F5) blend with F3 (Serena's rich conversational prosody)
+        # Male voices (M1, M2, M4, M5) blend with M3 (Leo's warm expressive companion tone)
+        if vid in ("F1", "F2", "F4", "F5"):
+            if vid == "F3":
+                styled = base_style
+            else:
+                f3_style = engine.get_voice_style("F3")
+                ratio = 0.18 if vid == "F1" else 0.14
+                blend_ttl = (1.0 - ratio) * base_style.ttl + ratio * f3_style.ttl
+                blend_dp = (1.0 - ratio) * base_style.dp + ratio * f3_style.dp
+                styled = Style(blend_ttl, blend_dp)
+        elif vid in ("M1", "M2", "M4", "M5"):
+            if vid == "M3":
+                styled = base_style
+            else:
+                m3_style = engine.get_voice_style("M3")
+                ratio = 0.18 if vid == "M1" else 0.14
+                blend_ttl = (1.0 - ratio) * base_style.ttl + ratio * m3_style.ttl
+                blend_dp = (1.0 - ratio) * base_style.dp + ratio * m3_style.dp
+                styled = Style(blend_ttl, blend_dp)
+        else:
+            styled = base_style
+
+        _style_cache[vid] = styled
+        return styled
+    except Exception as e:
+        logger.debug(f"[TTS Style note] {e}")
+        return engine.get_voice_style(vid)
+
+
 # Pre-compiled regex patterns for zero overhead text sanitization & splitting
 _RE_URL = re.compile(r'https?://\S+|www\.\S+')
 _RE_SPECIAL_CHARS = re.compile(r'[*#_`~>\[\]()]')
@@ -218,9 +266,16 @@ def _warmup_tts():
         try:
             if _USE_SUPERTONIC:
                 engine = _get_supertonic()
-                style = engine.get_voice_style("F1")
+                style = _get_expressive_voice_style(engine, "F1")
                 with _tts_lock:
-                    engine.synthesize("Amigo ready.", voice_style=style, speed=1.05, lang="en")
+                    engine.synthesize(
+                        "Amigo ready.",
+                        voice_style=style,
+                        total_steps=SUPERTONIC_STEPS,
+                        speed=SUPERTONIC_SPEED,
+                        silence_duration=SUPERTONIC_SILENCE_DURATION,
+                        lang="en",
+                    )
                 logger.info("[TTS] Supertonic-3 inference warmed up.")
         except Exception as e:
             logger.debug(f"[TTS Warmup] {e}")
@@ -244,13 +299,12 @@ def _speech_is_current(generation: int) -> bool:
 
 def normalize_text_for_tts(text: str) -> str:
     """
-    Normalizes raw text into clean, phonetically speakable words:
-    - Strips markdown formatting, links, and code symbols
-    - Expands currency ($50 -> 50 dollars) and percentages (45% -> 45 percent)
-    - Expands dates (e.g. September 6, 2026 -> September sixth, twenty twenty-six)
-    - Expands ordinals (1st -> first, 2nd -> second, 6th -> sixth)
-    - Expands 4-digit years (2026 -> twenty twenty-six, 1999 -> nineteen ninety-nine)
-    - Expands standalone numbers using num2words so phonemizer never encounters raw digits
+    Normalizes raw text into clean, phonetically expressive speech:
+    - Strips markdown formatting, links, and code symbols while preserving semantic emphasis
+    - Converts list markers into articulate conversational transitions (First, Second, etc.)
+    - Promotes affirmative openers (Sure, Great, Done, etc.) to energetic, enthusiastic delivery
+    - Natural breath pauses at colons, semicolons, em-dashes, and parentheticals
+    - Expands currency, percentages, dates, ordinals, and numbers into natural spoken words
     - Expands acronyms (VCT -> V. C. T., CPU -> C. P. U., AI -> A. I.)
     """
     if not text:
@@ -258,17 +312,53 @@ def normalize_text_for_tts(text: str) -> str:
     t = text
     # 1. Remove URLs
     t = _RE_URL.sub('', t)
-    # 2. Markdown formatting removal
+
+    # 2. Markdown headers (# Header -> Header.)
+    t = re.sub(r'^(?:#{1,6}\s+)(.+)$', r'\1.', t, flags=re.MULTILINE)
+
+    # 3. Markdown bullet points (* item / - item / • item -> , item)
+    t = re.sub(r'(?:^|\n)\s*[-*•]\s+', r', ', t)
+
+    # 4. Numbered lists (1. item \n 2. item -> First, item. Second, item.)
+    ord_map = {1: 'First', 2: 'Second', 3: 'Third', 4: 'Fourth', 5: 'Fifth'}
+    def _list_repl(m):
+        num = int(m.group(1))
+        return f"{ord_map.get(num, f'Number {num}')}, "
+    t = re.sub(r'(?:^|\n)\s*(\d+)\.\s+', _list_repl, t)
+
+    # 5. Energetic, enthusiastic affirmation openers
+    affirmations = r'\b(Sure|Certainly|Great|Awesome|Done|Got it|Alright|Of course|Perfect|Understood|Absolutely|Welcome back|Good morning|Good afternoon|Good evening)\b([,.]|\s+)'
+    def _aff_repl(m):
+        word = m.group(1).capitalize()
+        return f"{word}! "
+    t = re.sub(rf'^{affirmations}', _aff_repl, t, flags=re.IGNORECASE)
+    t = re.sub(rf'(?<=[.!?]\s){affirmations}', _aff_repl, t, flags=re.IGNORECASE)
+
+    # 6. Colons at the end of clauses -> natural comma pause
+    t = re.sub(r':(?=\s|$)', r', ', t)
+
+    # 7. Parentheses: (extra info) -> , extra info,
+    t = re.sub(r'\(([^)]+)\)', r', \1, ', t)
+
+    # 8. Em-dashes and long dashes -> conversational comma pause
+    t = re.sub(r'\s*[-–—]{1,2}\s*', r', ', t)
+
+    # 9. Semicolons -> comma pause
+    t = re.sub(r';\s*', r', ', t)
+
+    # 10. Strip remaining markdown formatting characters
     t = _RE_SPECIAL_CHARS.sub(' ', t)
-    # 3. Hyphenated scores and ranges (e.g. 3-1 -> 3 to 1, 2024-2025 -> 2024 to 2025)
+
+    # 11. Hyphenated scores and ranges (e.g. 3-1 -> 3 to 1, 2024-2025 -> 2024 to 2025)
     t = re.sub(r'(\d+)\s*[-–—]\s*(\d+)', r'\1 to \2', t)
-    t = re.sub(r'[-–—/|]', ' ', t)
-    # 4. Currency and percentages
+    t = re.sub(r'[/|]', ' ', t)
+
+    # 12. Currency and percentages
     t = re.sub(r'\$(\d+(?:\.\d{2})?)', r'\1 dollars', t)
     t = re.sub(r'(\d+)%', r'\1 percent', t)
 
     if num2words is not None:
-        # 4. Dates: e.g. September 6, 2026
+        # Dates: e.g. September 6, 2026
         def _date_repl(m):
             month = m.group(1)
             day = int(m.group(2))
@@ -287,7 +377,7 @@ def normalize_text_for_tts(text: str) -> str:
             flags=re.I,
         )
 
-        # 5. Ordinals (1st, 2nd, 3rd, 4th, 21st)
+        # Ordinals (1st, 2nd, 3rd, 4th, 21st)
         def _ord_repl(m):
             try:
                 return num2words.num2words(int(m.group(1)), to='ordinal')
@@ -296,7 +386,7 @@ def normalize_text_for_tts(text: str) -> str:
 
         t = re.sub(r'\b(\d+)(?:st|nd|rd|th)\b', _ord_repl, t, flags=re.I)
 
-        # 6. Four-digit years (e.g. 1900-2099)
+        # Four-digit years (e.g. 1900-2099)
         def _year_repl(m):
             try:
                 return num2words.num2words(int(m.group(1)), to='year')
@@ -305,7 +395,7 @@ def normalize_text_for_tts(text: str) -> str:
 
         t = re.sub(r'\b(19\d\d|20\d\d)\b', _year_repl, t)
 
-        # 7. Other standalone numbers (cardinals)
+        # Other standalone numbers (cardinals)
         def _num_repl(m):
             try:
                 return num2words.num2words(int(m.group(1)))
@@ -314,7 +404,7 @@ def normalize_text_for_tts(text: str) -> str:
 
         t = re.sub(r'\b(\d+)\b', _num_repl, t)
 
-    # 8. Acronyms (e.g. VCT, CPU, AI, GPU, API, STT, TTS)
+    # 13. Acronyms (e.g. VCT, CPU, AI, GPU, API, STT, TTS)
     common_words = {
         'A', 'I', 'IN', 'ON', 'AT', 'TO', 'BY', 'FOR', 'AND', 'THE', 'IS', 'IT', 'US', 'OK',
         'AM', 'PM', 'HE', 'SHE', 'WE', 'MY', 'ME', 'SO', 'NO', 'GO', 'DO', 'IF', 'OR', 'AS'
@@ -328,8 +418,14 @@ def normalize_text_for_tts(text: str) -> str:
 
     t = re.sub(r'\b[A-Z]{2,5}\b', _acronym_repl, t)
 
-    # 9. Clean consecutive dots and whitespace
+    # 14. Clean consecutive punctuation and whitespace
     t = _RE_CONSECUTIVE_DOTS.sub(', ', t)
+    t = re.sub(r'!{2,}', '!', t)
+    t = re.sub(r'\?{2,}', '?', t)
+    t = re.sub(r'[,]{2,}', ',', t)
+    t = re.sub(r'\s+,', ',', t)
+    t = re.sub(r'\s+!', '!', t)
+    t = re.sub(r'\s+\?', '?', t)
     return _RE_WHITESPACE.sub(' ', t).strip()
 
 
@@ -358,11 +454,13 @@ def _compact_tts_text(text: str, max_chars: int = 1500) -> str:
 
 def _process_audio_clarity(samples, sr=44100) -> tuple[np.ndarray, int]:
     """
-    Studio audio mastering pipeline:
-    - Preserves native 44.1kHz Supertonic sample rate or resamples non-standard rates.
-    - Preserves natural phoneme decay while trimming silence.
-    - Soft anti-click fade ramps.
-    - Peak gain normalization to 0.92 (-0.7 dBFS).
+    Studio audio mastering & anti-artifact pipeline:
+    - DC offset removal & 45Hz subsonic filtering to eliminate low-end thump and drift.
+    - Broadcast studio presence EQ (+0.8 dB @ 260Hz warmth, +1.2 dB @ 4.8kHz clarity & air).
+    - Intelligent RMS voice-activity tail detection preserving natural phoneme release while discarding model padding.
+    - Smooth raised-cosine (half-Hann) fade-in (5ms) and fade-out (35ms) to guarantee clean 0.0 termination.
+    - Hardware-safe trailing silence cushion (50ms).
+    - Studio peak gain normalization to -0.8 dBFS (0.91).
     """
     if samples is None or len(samples) == 0:
         return samples, int(sr)
@@ -381,38 +479,77 @@ def _process_audio_clarity(samples, sr=44100) -> tuple[np.ndarray, int]:
         except Exception:
             pass
 
-    # 2. Gentle trailing silence trim
-    mask = np.abs(samples) > 0.0002
-    if np.any(mask):
-        last_idx = int(np.max(np.where(mask)[0]))
-        pad_samples = int(0.10 * sr)
-        end_idx = min(len(samples), last_idx + pad_samples)
-        samples = samples[:end_idx]
+    # 2. DC-bias removal & 45Hz subsonic high-pass cleanup
+    samples = samples - np.mean(samples)
+    try:
+        import scipy.signal
+        sos = scipy.signal.butter(2, 45, btype="high", fs=sr, output="sos")
+        samples = scipy.signal.sosfilt(sos, samples).astype(np.float32)
+    except Exception:
+        pass
 
-    # 3. Fade-in (5ms)
+    # 3. Broadcast studio presence EQ (+0.8 dB @ 260Hz warmth, +1.2 dB @ 4.8kHz clarity & air)
+    try:
+        import scipy.signal
+        def _peaking_sos(fc, gain_db, q, fs):
+            A = 10.0 ** (gain_db / 40.0)
+            w0 = 2.0 * np.pi * fc / fs
+            alpha = np.sin(w0) / (2.0 * q)
+            b0 = 1.0 + alpha * A
+            b1 = -2.0 * np.cos(w0)
+            b2 = 1.0 - alpha * A
+            a0 = 1.0 + alpha / A
+            a1 = -2.0 * np.cos(w0)
+            a2 = 1.0 - alpha / A
+            return np.array([[b0 / a0, b1 / a0, b2 / a0, 1.0, a1 / a0, a2 / a0]], dtype=np.float32)
+
+        sos_warm = _peaking_sos(260.0, 0.8, 0.85, target_sr)
+        sos_pres = _peaking_sos(4800.0, 1.2, 0.9, target_sr)
+        samples = scipy.signal.sosfilt(sos_warm, samples).astype(np.float32)
+        samples = scipy.signal.sosfilt(sos_pres, samples).astype(np.float32)
+    except Exception:
+        pass
+
+    # 4. Intelligent voice activity tail detection (removes neural diffusion padding noise)
+    frame_len = max(64, int(0.01 * sr))  # 10ms frames
+    n_frames = len(samples) // frame_len
+    if n_frames > 2:
+        framed = samples[:n_frames * frame_len].reshape(n_frames, frame_len)
+        rms = np.sqrt(np.mean(framed ** 2, axis=1))
+        speech_indices = np.where(rms > 0.0018)[0]
+        if len(speech_indices) > 0:
+            last_speech_frame = speech_indices[-1]
+            # Keep 75ms natural acoustic release after speech
+            pad_samples = int(0.075 * sr)
+            end_sample = min(len(samples), (last_speech_frame + 1) * frame_len + pad_samples)
+            samples = samples[:end_sample]
+
+    # 5. Ultra-smooth Half-Hann Fade-In (5ms)
     fade_in_len = min(int(0.005 * sr), len(samples))
     if fade_in_len > 0:
-        samples[:fade_in_len] *= np.linspace(0.0, 1.0, fade_in_len, dtype=np.float32)
+        ramp_in = 0.5 * (1.0 - np.cos(np.linspace(0.0, np.pi, fade_in_len, dtype=np.float32)))
+        samples[:fade_in_len] *= ramp_in
 
-    # 4. Fade-out (25ms)
-    fade_out_len = min(int(0.025 * sr), len(samples))
+    # 6. Ultra-smooth Half-Hann Fade-Out (35ms) down to absolute 0.0 (prevents clicks)
+    fade_out_len = min(int(0.035 * sr), len(samples))
     if fade_out_len > 0:
-        samples[-fade_out_len:] *= np.linspace(1.0, 0.0, fade_out_len, dtype=np.float32)
+        ramp_out = 0.5 * (1.0 + np.cos(np.linspace(0.0, np.pi, fade_out_len, dtype=np.float32)))
+        samples[-fade_out_len:] *= ramp_out
 
-    # 5. Buffer cushion
-    cushion = np.zeros(int(0.03 * sr), dtype=np.float32)
+    # 7. Trailing silence buffer (50ms) to ensure audio driver plays pure zeros at finish
+    cushion = np.zeros(int(0.05 * sr), dtype=np.float32)
     samples = np.concatenate([samples, cushion])
 
-    # 6. Peak amplitude normalization to 0.92
+    # 8. Studio peak amplitude normalization (-0.8 dBFS)
     peak = float(np.max(np.abs(samples)))
     if peak > 1e-4:
-        samples = samples * (0.92 / peak)
+        samples = samples * (0.91 / peak)
 
     return samples, int(sr)
 
 
 def _synthesize_and_play_supertonic(engine, text, generation):
-    """Natural, studio 44.1kHz Supertonic-3 neural speech synthesis with low-latency streaming."""
+    """Natural, studio 44.1kHz Supertonic-3 neural speech synthesis with artifact-free streaming."""
     global _active_stream
     sync_voice_from_profile()
     clean_text = _compact_tts_text(text)
@@ -449,7 +586,7 @@ def _synthesize_and_play_supertonic(engine, text, generation):
             voice_id = voice_info["id"] if voice_info else SUPERTONIC_VOICE
             if voice_id not in ("F1", "F2", "F3", "F4", "F5", "M1", "M2", "M3", "M4", "M5"):
                 voice_id = "F1"
-            style = engine.get_voice_style(voice_id)
+            style = _get_expressive_voice_style(engine, voice_id)
 
             for chunk in chunks:
                 if not chunk or not _speech_is_current(generation):
@@ -459,7 +596,9 @@ def _synthesize_and_play_supertonic(engine, text, generation):
                     wav, dur = engine.synthesize(
                         spoken_chunk,
                         voice_style=style,
+                        total_steps=SUPERTONIC_STEPS,
                         speed=SUPERTONIC_SPEED,
+                        silence_duration=SUPERTONIC_SILENCE_DURATION,
                         lang="en",
                     )
                 if wav is not None and wav.size > 0:
@@ -509,6 +648,13 @@ def _synthesize_and_play_supertonic(engine, text, generation):
                 _active_stream = None
         if stream is not None:
             try:
+                # If speech completed normally, drain hardware ring buffer with silence before stopping
+                if _speech_is_current(generation):
+                    drain_pad = np.zeros(int(0.08 * (stream_sr or 44100)), dtype=np.float32)
+                    stream.write(drain_pad)
+                    lat = getattr(stream, "latency", None)
+                    wait_dur = max(0.12, (float(lat) if isinstance(lat, (int, float)) else 0.15) + 0.03)
+                    time.sleep(wait_dur)
                 stream.stop()
                 stream.close()
             except Exception:
