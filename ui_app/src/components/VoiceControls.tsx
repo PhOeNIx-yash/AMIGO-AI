@@ -699,395 +699,345 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
         )}
       </AnimatePresence>
 
-      {/* ═══════════════════════════════════════════════════════════════
-          Halo Search — Animated gradient border search input
-          Inspired by @cult-ui/halo-search with rotating conic gradient
-          ═══════════════════════════════════════════════════════════════ */}
+      {/* Search / Voice input fluid capsule */}
       <div
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
-        className="halo-search-wrapper relative w-full group"
+        className={`voice-input-shell w-full flex items-center p-1.5 sm:p-2 rounded-2xl sm:rounded-full backdrop-blur-2xl border transition-all duration-300 ${
+          isDraggingOver
+            ? "shadow-2xl scale-[1.015] border-dashed"
+            : isListening
+            ? "shadow-2xl scale-[1.01]"
+            : isFocused
+            ? "shadow-xl scale-[1.005]"
+            : "shadow-lg hover:shadow-xl"
+        } ${
+          isDark
+            ? "text-slate-100"
+            : "text-slate-900"
+        }`}
+        style={{
+          backgroundColor: isDraggingOver
+            ? isDark
+              ? `${theme.primary}30`
+              : `${theme.primary}15`
+            : isDark
+            ? colorTheme === "noir"
+              ? "rgba(18, 18, 22, 0.75)"
+              : `${theme.primary}12`
+            : "rgba(255, 255, 255, 0.95)",
+          boxShadow: isDraggingOver
+            ? `0 0 25px ${theme.glow}, 0 6px 20px rgba(0,0,0,0.3)`
+            : isListening
+            ? `0 0 18px ${theme.glow}, 0 6px 20px rgba(0,0,0,0.3)`
+            : isFocused
+            ? isDark
+              ? `0 4px 18px rgba(0,0,0,0.35), 0 0 8px ${theme.glow}`
+              : `0 4px 14px rgba(0,0,0,0.05), 0 0 6px ${theme.glow}30`
+            : isDark
+            ? colorTheme === "noir"
+              ? `0 4px 16px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.06)`
+              : `0 4px 16px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.08)`
+            : `0 3px 12px rgba(0,0,0,0.03), inset 0 1px 0 rgba(255,255,255,0.9)`,
+          borderColor: isDraggingOver || isListening || isFocused
+            ? (theme.accent || theme.primary)
+            : isDark
+            ? colorTheme === "noir"
+              ? "rgba(255, 255, 255, 0.12)"
+              : `${theme.primary}35`
+            : "rgba(0, 0, 0, 0.10)",
+          "--voice-glow": theme.glow,
+          "--voice-accent": theme.accent || theme.primary,
+        } as React.CSSProperties}
       >
-        {/* Animated rotating gradient border layer */}
-        <div
-          className={`halo-search-border absolute -inset-[1.5px] rounded-[20px] sm:rounded-full pointer-events-none transition-opacity duration-500 ${
-            isFocused || isListening || isDraggingOver
-              ? "opacity-100"
-              : "opacity-40 group-hover:opacity-70"
-          }`}
-          style={{
-            background: `conic-gradient(from var(--halo-angle, 0deg), ${theme.accent || theme.primary}, ${theme.glow}, ${theme.primary}, transparent 40%, transparent 60%, ${theme.accent || theme.primary})`,
-            animation: "haloRotate 4s linear infinite",
-            filter: isListening ? `drop-shadow(0 0 12px ${theme.glow})` : undefined,
-          }}
-        />
-
-        {/* Loading shimmer overlay */}
-        <AnimatePresence>
-          {(disabled || isTranscribing) && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="absolute -inset-[1.5px] rounded-[20px] sm:rounded-full pointer-events-none overflow-hidden z-[1]"
-            >
-              <div
-                className="absolute inset-0"
-                style={{
-                  background: `linear-gradient(90deg, transparent 0%, ${theme.accent || theme.primary}40 50%, transparent 100%)`,
-                  backgroundSize: "200% 100%",
-                  animation: "haloShimmer 1.5s ease-in-out infinite",
-                }}
-              />
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Inner frosted glass container */}
-        <div
-          className={`halo-search-inner relative z-[2] flex items-center p-1.5 sm:p-2 rounded-[19px] sm:rounded-full backdrop-blur-2xl transition-all duration-300 ${
-            isDark
-              ? "text-slate-100"
-              : "text-slate-900"
-          }`}
-          style={{
-            backgroundColor: isDraggingOver
-              ? isDark
-                ? `${theme.primary}25`
-                : `${theme.primary}12`
-              : isDark
-              ? colorTheme === "noir"
-                ? "rgba(12, 12, 16, 0.88)"
-                : "rgba(10, 10, 20, 0.82)"
-              : "rgba(255, 255, 255, 0.92)",
-            boxShadow: isDraggingOver
-              ? `0 0 25px ${theme.glow}, 0 8px 32px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.08)`
-              : isListening
-              ? `0 0 20px ${theme.glow}, 0 8px 32px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.08)`
-              : isFocused
-              ? isDark
-                ? `0 4px 20px rgba(0,0,0,0.4), 0 0 10px ${theme.glow}50, inset 0 1px 0 rgba(255,255,255,0.06)`
-                : `0 4px 16px rgba(0,0,0,0.06), 0 0 8px ${theme.glow}25, inset 0 1px 0 rgba(255,255,255,0.8)`
-              : isDark
-              ? `0 4px 16px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.05)`
-              : `0 3px 12px rgba(0,0,0,0.04), inset 0 1px 0 rgba(255,255,255,0.9)`,
-            "--voice-glow": theme.glow,
-            "--voice-accent": theme.accent || theme.primary,
-          } as React.CSSProperties}
+        {/* Form and Text / Live transcript container */}
+        <form
+          onSubmit={handleSubmitText}
+          autoComplete="off"
+          className="flex-1 flex items-center min-w-0"
         >
-          {/* Form and Text / Live transcript container */}
-          <form
-            onSubmit={handleSubmitText}
-            autoComplete="off"
-            className="flex-1 flex items-center min-w-0"
-          >
-            {/* GPU-composited Spring-animated Attachment Menu */}
-            <div className="relative z-30 flex items-center pl-1 sm:pl-1.5 flex-shrink-0" ref={menuRef}>
-              {/* Popout buttons */}
-              <AnimatePresence>
-                {isMenuOpen && (
-                  <>
-                    {/* Top Circle: Image / Photo */}
-                    <motion.div
-                      key="attach-img"
-                      initial={{ opacity: 0, scale: 0.3, x: 0, y: 0 }}
-                      animate={{ opacity: 1, scale: 1, x: 0, y: -54 }}
-                      exit={{ opacity: 0, scale: 0.3, x: 0, y: 0 }}
-                      transition={{ type: "spring", stiffness: 500, damping: 28, mass: 0.8 }}
-                      className="absolute top-0 left-0 w-9 h-9 pointer-events-auto"
+          {/* GPU-composited Spring-animated Attachment Menu */}
+          <div className="relative z-30 flex items-center pl-1 sm:pl-1.5 flex-shrink-0" ref={menuRef}>
+            {/* Popout buttons */}
+            <AnimatePresence>
+              {isMenuOpen && (
+                <>
+                  {/* Top Circle: Image / Photo */}
+                  <motion.div
+                    key="attach-img"
+                    initial={{ opacity: 0, scale: 0.3, x: 0, y: 0 }}
+                    animate={{ opacity: 1, scale: 1, x: 0, y: -54 }}
+                    exit={{ opacity: 0, scale: 0.3, x: 0, y: 0 }}
+                    transition={{ type: "spring", stiffness: 500, damping: 28, mass: 0.8 }}
+                    className="absolute top-0 left-0 w-9 h-9 pointer-events-auto"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        sfx.playClick?.();
+                        fileInputImgRef.current?.click();
+                        setIsMenuOpen(false);
+                      }}
+                      className={`w-9 h-9 rounded-full flex items-center justify-center transition-transform duration-150 hover:scale-110 active:scale-95 focus:outline-none cursor-pointer border shadow-lg backdrop-blur-md ${
+                        isDark
+                          ? "border-sky-500/40 bg-slate-900/90 text-sky-400 hover:bg-sky-500/20 hover:text-sky-300 hover:border-sky-400 hover:shadow-[0_0_14px_rgba(56,189,248,0.4)]"
+                          : "border-sky-500/30 bg-white/95 text-sky-600 hover:bg-sky-500/15 hover:text-sky-700 shadow-sky-500/10"
+                      }`}
+                      title="Attach Image or Photo (PNG, JPG, WEBP, SVG)"
+                      aria-label="Attach Image"
                     >
-                      <button
-                        type="button"
-                        onClick={() => {
-                          sfx.playClick?.();
-                          fileInputImgRef.current?.click();
-                          setIsMenuOpen(false);
-                        }}
-                        className={`w-9 h-9 rounded-full flex items-center justify-center transition-transform duration-150 hover:scale-110 active:scale-95 focus:outline-none cursor-pointer border shadow-lg backdrop-blur-md ${
-                          isDark
-                            ? "border-sky-500/40 bg-slate-900/90 text-sky-400 hover:bg-sky-500/20 hover:text-sky-300 hover:border-sky-400 hover:shadow-[0_0_14px_rgba(56,189,248,0.4)]"
-                            : "border-sky-500/30 bg-white/95 text-sky-600 hover:bg-sky-500/15 hover:text-sky-700 shadow-sky-500/10"
-                        }`}
-                        title="Attach Image or Photo (PNG, JPG, WEBP, SVG)"
-                        aria-label="Attach Image"
-                      >
-                        <ImageIcon className="w-4.5 h-4.5" strokeWidth={1.8} />
-                      </button>
-                    </motion.div>
+                      <ImageIcon className="w-4.5 h-4.5" strokeWidth={1.8} />
+                    </button>
+                  </motion.div>
 
-                    {/* Left Circle: Document / PDF */}
-                    <motion.div
-                      key="attach-doc"
-                      initial={{ opacity: 0, scale: 0.3, x: 0, y: 0 }}
-                      animate={{ opacity: 1, scale: 1, x: -34, y: -28 }}
-                      exit={{ opacity: 0, scale: 0.3, x: 0, y: 0 }}
-                      transition={{ type: "spring", stiffness: 500, damping: 28, mass: 0.8, delay: 0.02 }}
-                      className="absolute top-0 left-0 w-9 h-9 pointer-events-auto"
+                  {/* Left Circle: Document / PDF */}
+                  <motion.div
+                    key="attach-doc"
+                    initial={{ opacity: 0, scale: 0.3, x: 0, y: 0 }}
+                    animate={{ opacity: 1, scale: 1, x: -34, y: -28 }}
+                    exit={{ opacity: 0, scale: 0.3, x: 0, y: 0 }}
+                    transition={{ type: "spring", stiffness: 500, damping: 28, mass: 0.8, delay: 0.02 }}
+                    className="absolute top-0 left-0 w-9 h-9 pointer-events-auto"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        sfx.playClick?.();
+                        fileInputDocRef.current?.click();
+                        setIsMenuOpen(false);
+                      }}
+                      className={`w-9 h-9 rounded-full flex items-center justify-center transition-transform duration-150 hover:scale-110 active:scale-95 focus:outline-none cursor-pointer border shadow-lg backdrop-blur-md ${
+                        isDark
+                          ? "border-rose-500/40 bg-slate-900/90 text-rose-400 hover:bg-rose-500/20 hover:text-rose-300 hover:border-rose-400 hover:shadow-[0_0_14px_rgba(244,63,94,0.4)]"
+                          : "border-rose-500/30 bg-white/95 text-rose-600 hover:bg-rose-500/15 hover:text-rose-700 shadow-rose-500/10"
+                      }`}
+                      title="Attach Document or PDF (PDF, DOCX, TXT, Code)"
+                      aria-label="Attach Document"
                     >
-                      <button
-                        type="button"
-                        onClick={() => {
-                          sfx.playClick?.();
-                          fileInputDocRef.current?.click();
-                          setIsMenuOpen(false);
-                        }}
-                        className={`w-9 h-9 rounded-full flex items-center justify-center transition-transform duration-150 hover:scale-110 active:scale-95 focus:outline-none cursor-pointer border shadow-lg backdrop-blur-md ${
-                          isDark
-                            ? "border-rose-500/40 bg-slate-900/90 text-rose-400 hover:bg-rose-500/20 hover:text-rose-300 hover:border-rose-400 hover:shadow-[0_0_14px_rgba(244,63,94,0.4)]"
-                            : "border-rose-500/30 bg-white/95 text-rose-600 hover:bg-rose-500/15 hover:text-rose-700 shadow-rose-500/10"
-                        }`}
-                        title="Attach Document or PDF (PDF, DOCX, TXT, Code)"
-                        aria-label="Attach Document"
-                      >
-                        <FileIcon className="w-4.5 h-4.5" strokeWidth={1.8} />
-                      </button>
-                    </motion.div>
+                      <FileIcon className="w-4.5 h-4.5" strokeWidth={1.8} />
+                    </button>
+                  </motion.div>
 
-                    {/* Right Circle: Browse All Files */}
-                    <motion.div
-                      key="attach-all"
-                      initial={{ opacity: 0, scale: 0.3, x: 0, y: 0 }}
-                      animate={{ opacity: 1, scale: 1, x: 34, y: -28 }}
-                      exit={{ opacity: 0, scale: 0.3, x: 0, y: 0 }}
-                      transition={{ type: "spring", stiffness: 500, damping: 28, mass: 0.8, delay: 0.04 }}
-                      className="absolute top-0 left-0 w-9 h-9 pointer-events-auto"
+                  {/* Right Circle: Browse All Files */}
+                  <motion.div
+                    key="attach-all"
+                    initial={{ opacity: 0, scale: 0.3, x: 0, y: 0 }}
+                    animate={{ opacity: 1, scale: 1, x: 34, y: -28 }}
+                    exit={{ opacity: 0, scale: 0.3, x: 0, y: 0 }}
+                    transition={{ type: "spring", stiffness: 500, damping: 28, mass: 0.8, delay: 0.04 }}
+                    className="absolute top-0 left-0 w-9 h-9 pointer-events-auto"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        sfx.playClick?.();
+                        fileInputAllRef.current?.click();
+                        setIsMenuOpen(false);
+                      }}
+                      className={`w-9 h-9 rounded-full flex items-center justify-center transition-transform duration-150 hover:scale-110 active:scale-95 focus:outline-none cursor-pointer border shadow-lg backdrop-blur-md ${
+                        isDark
+                          ? "border-violet-500/40 bg-slate-900/90 text-violet-400 hover:bg-violet-500/20 hover:text-violet-300 hover:border-violet-400 hover:shadow-[0_0_14px_rgba(167,139,250,0.4)]"
+                          : "border-violet-500/30 bg-white/95 text-violet-600 hover:bg-violet-500/15 hover:text-violet-700 shadow-violet-500/10"
+                      }`}
+                      title="Browse All Files (Any local file)"
+                      aria-label="Browse All Files"
                     >
-                      <button
-                        type="button"
-                        onClick={() => {
-                          sfx.playClick?.();
-                          fileInputAllRef.current?.click();
-                          setIsMenuOpen(false);
-                        }}
-                        className={`w-9 h-9 rounded-full flex items-center justify-center transition-transform duration-150 hover:scale-110 active:scale-95 focus:outline-none cursor-pointer border shadow-lg backdrop-blur-md ${
-                          isDark
-                            ? "border-violet-500/40 bg-slate-900/90 text-violet-400 hover:bg-violet-500/20 hover:text-violet-300 hover:border-violet-400 hover:shadow-[0_0_14px_rgba(167,139,250,0.4)]"
-                            : "border-violet-500/30 bg-white/95 text-violet-600 hover:bg-violet-500/15 hover:text-violet-700 shadow-violet-500/10"
-                        }`}
-                        title="Browse All Files (Any local file)"
-                        aria-label="Browse All Files"
-                      >
-                        <Folder className="w-4.5 h-4.5" strokeWidth={1.8} />
-                      </button>
-                    </motion.div>
-                  </>
-                )}
-              </AnimatePresence>
-
-              {/* Trigger Button (+ morphs to X with theme gradient) */}
-              <button
-                id="attach-file-button"
-                type="button"
-                onClick={() => {
-                  sfx.playClick?.();
-                  setIsMenuOpen(!isMenuOpen);
-                }}
-                disabled={disabled || isListening || isTranscribing}
-                className={`relative z-10 w-9 h-9 rounded-full flex items-center justify-center transition-all duration-200 active:scale-95 focus:outline-none cursor-pointer border ${
-                  isMenuOpen
-                    ? "border-transparent text-white shadow-lg"
-                    : isDark
-                    ? "border-white/15 text-slate-200 hover:text-white hover:bg-white/10"
-                    : "border-black/10 text-slate-700 hover:text-black hover:bg-black/5"
-                }`}
-                style={
-                  isMenuOpen
-                    ? {
-                        background: theme.gradient,
-                        boxShadow: `0 0 16px ${theme.glow}`,
-                      }
-                    : undefined
-                }
-                title={isMenuOpen ? "Close attachment menu" : "Attach image, document, or files"}
-                aria-label={isMenuOpen ? "Close attachment menu" : "Attach files"}
-              >
-                <Plus
-                  className="w-4.5 h-4.5 transition-transform duration-200 ease-out"
-                  style={{
-                    transform: isMenuOpen ? "rotate(45deg)" : "rotate(0deg)",
-                  }}
-                  strokeWidth={2}
-                />
-              </button>
-            </div>
-
-            <div className="relative flex-1 min-w-0">
-              {isListening ? (
-                <div className="flex items-center justify-between py-2 px-3 sm:px-4 min-h-[44px]">
-                  <div className="flex-1 min-w-0 pr-3">
-                    {liveTranscript ? (
-                      <p className="min-w-0 break-words text-sm font-medium leading-relaxed text-slate-100">
-                        {liveTranscript}
-                      </p>
-                    ) : (
-                      <div className="flex items-center space-x-2.5">
-                        <Radio className="w-4 h-4 animate-pulse flex-shrink-0" style={{ color: theme.accent }} />
-                        <span
-                          className="text-xs sm:text-sm font-medium tracking-wide animate-pulse truncate"
-                          style={{ color: theme.accent }}
-                        >
-                          Listening to your voice...
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                  <span
-                    className="amigo-listening-dot h-2.5 w-2.5 flex-shrink-0 rounded-full"
-                    style={{ backgroundColor: theme.accent, boxShadow: `0 0 14px ${theme.accent}` }}
-                    aria-hidden="true"
-                  />
-                </div>
-              ) : (
-                <div className="relative w-full flex items-center">
-                  <input
-                    id="voice-text-input"
-                    name="amigo_search_query_prompt"
-                    type="text"
-                    enterKeyHint="send"
-                    autoComplete="off"
-                    autoCorrect="off"
-                    autoCapitalize="off"
-                    spellCheck={false}
-                    data-lpignore="true"
-                    data-form-type="other"
-                    value={isTranscribing ? "Transcribing speech..." : inputText}
-                    onChange={(e) => setInputText(e.target.value)}
-                    onFocus={() => {
-                      setIsFocused(true);
-                      setTimeout(() => window.scrollTo(0, 0), 50);
-                    }}
-                    onBlur={() => setIsFocused(false)}
-                    onPaste={handlePasteEvent}
-                    disabled={disabled || isListening || isTranscribing}
-                    placeholder={attachment ? `Ask about ${attachment.filename}...` : "Ask anything or use voice commands..."}
-                    className={`w-full py-2.5 sm:py-3 pl-2.5 sm:pl-3.5 pr-3 text-xs sm:text-sm font-normal bg-transparent focus:outline-none transition-all text-input-glowing-cursor ${
-                      isDark
-                        ? "text-slate-100 placeholder:text-slate-400"
-                        : "text-slate-900 placeholder:text-slate-400"
-                    }`}
-                    style={{
-                      caretColor: theme.accent || theme.primary,
-                      "--theme-caret-color": theme.accent || theme.primary,
-                      "--theme-caret-glow-color": theme.accent || theme.primary,
-                    } as React.CSSProperties}
-                  />
-                  {/* Halo clear button */}
-                  <AnimatePresence>
-                    {inputText && !isTranscribing && (
-                      <motion.button
-                        type="button"
-                        initial={{ opacity: 0, scale: 0.5 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        exit={{ opacity: 0, scale: 0.5 }}
-                        transition={{ duration: 0.15 }}
-                        onClick={() => {
-                          setInputText("");
-                          sfx.playClick?.();
-                        }}
-                        className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center transition-colors mr-1 ${
-                          isDark
-                            ? "bg-white/10 hover:bg-white/20 text-slate-300 hover:text-white"
-                            : "bg-black/8 hover:bg-black/15 text-slate-500 hover:text-black"
-                        }`}
-                        title="Clear input"
-                      >
-                        <X className="w-3 h-3" />
-                      </motion.button>
-                    )}
-                  </AnimatePresence>
-                </div>
+                      <Folder className="w-4.5 h-4.5" strokeWidth={1.8} />
+                    </button>
+                  </motion.div>
+                </>
               )}
-            </div>
+            </AnimatePresence>
 
-            {/* Action Group: Microphone + Submit Button */}
-            <div className="flex items-center space-x-1.5 sm:space-x-2 pr-1 flex-shrink-0">
-              {/* Fluid Microphone Button with Concentric Rings */}
-              <div className="relative flex items-center justify-center">
-                {isListening && (
-                  <>
-                    <motion.span
-                      initial={{ scale: 0.85, opacity: 0.8 }}
-                      animate={{ scale: 1.6, opacity: 0 }}
-                      transition={{ repeat: Infinity, duration: 1.6, ease: "easeOut" }}
-                      className="absolute inset-0 rounded-full bg-rose-500/50 pointer-events-none"
-                    />
-                    <motion.span
-                      initial={{ scale: 0.85, opacity: 0.9 }}
-                      animate={{ scale: 1.35, opacity: 0 }}
-                      transition={{ repeat: Infinity, duration: 1.6, ease: "easeOut", delay: 0.4 }}
-                      className="absolute inset-0 rounded-full bg-red-400/60 pointer-events-none"
-                    />
-                  </>
-                )}
+            {/* Trigger Button (+ morphs to X with theme gradient) */}
+            <button
+              id="attach-file-button"
+              type="button"
+              onClick={() => {
+                sfx.playClick?.();
+                setIsMenuOpen(!isMenuOpen);
+              }}
+              disabled={disabled || isListening || isTranscribing}
+              className={`relative z-10 w-9 h-9 rounded-full flex items-center justify-center transition-all duration-200 active:scale-95 focus:outline-none cursor-pointer border ${
+                isMenuOpen
+                  ? "border-transparent text-white shadow-lg"
+                  : isDark
+                  ? "border-white/15 text-slate-200 hover:text-white hover:bg-white/10"
+                  : "border-black/10 text-slate-700 hover:text-black hover:bg-black/5"
+              }`}
+              style={
+                isMenuOpen
+                  ? {
+                      background: theme.gradient,
+                      boxShadow: `0 0 16px ${theme.glow}`,
+                    }
+                  : undefined
+              }
+              title={isMenuOpen ? "Close attachment menu" : "Attach image, document, or files"}
+              aria-label={isMenuOpen ? "Close attachment menu" : "Attach files"}
+            >
+              <Plus
+                className="w-4.5 h-4.5 transition-transform duration-200 ease-out"
+                style={{
+                  transform: isMenuOpen ? "rotate(45deg)" : "rotate(0deg)",
+                }}
+                strokeWidth={2}
+              />
+            </button>
+          </div>
 
-                <button
-                  id="voice-toggle-button"
-                  type="button"
-                  onClick={handleToggleListening}
-                  disabled={disabled || isTranscribing}
-                  className={`relative w-9 h-9 sm:w-10 sm:h-10 rounded-full transition-all duration-300 flex items-center justify-center active:scale-95 hover:-translate-y-0.5 z-10 overflow-hidden border ${
-                    isListening
-                      ? "text-white shadow-lg border-transparent"
-                      : isDark
-                      ? "hover:brightness-125"
-                      : "hover:brightness-95"
-                  }`}
-                  style={
-                    isListening
-                      ? {
-                          background: "linear-gradient(135deg, #f43f5e 0%, #e11d48 50%, #be123c 100%)",
-                          boxShadow: "0 0 25px rgba(244, 63, 94, 0.75), inset 0 1px 1px rgba(255, 255, 255, 0.4)",
-                        }
-                      : {
-                          backgroundColor: isDark ? `${theme.primary}25` : `${theme.primary}15`,
-                          borderColor: `${theme.primary}50`,
-                          color: theme.accent || theme.primary,
-                        }
-                  }
-                  title={isListening ? "Stop listening" : "Click to speak voice command"}
-                >
-                  {isListening ? (
-                    <Square className="w-3.5 h-3.5 fill-white text-white animate-pulse relative z-10" />
-                  ) : isTranscribing ? (
-                    <Loader2 className="w-4 h-4 animate-spin relative z-10 text-indigo-400" />
+          <div className="relative flex-1 min-w-0">
+            {isListening ? (
+              <div className="flex items-center justify-between py-2 px-3 sm:px-4 min-h-[44px]">
+                <div className="flex-1 min-w-0 pr-3">
+                  {liveTranscript ? (
+                    <p className="min-w-0 break-words text-sm font-medium leading-relaxed text-slate-100">
+                      {liveTranscript}
+                    </p>
                   ) : (
-                    <Mic className="w-4 h-4 relative z-10 transition-transform group-hover:scale-105" />
+                    <div className="flex items-center space-x-2.5">
+                      <Radio className="w-4 h-4 animate-pulse flex-shrink-0" style={{ color: theme.accent }} />
+                      <span
+                        className="text-xs sm:text-sm font-medium tracking-wide animate-pulse truncate"
+                        style={{ color: theme.accent }}
+                      >
+                        Listening to your voice...
+                      </span>
+                    </div>
                   )}
-                </button>
+                </div>
+                <span
+                  className="amigo-listening-dot h-2.5 w-2.5 flex-shrink-0 rounded-full"
+                  style={{ backgroundColor: theme.accent, boxShadow: `0 0 14px ${theme.accent}` }}
+                  aria-hidden="true"
+                />
               </div>
+            ) : (
+              <div className="relative w-full flex items-center">
+                <input
+                  id="voice-text-input"
+                  name="amigo_search_query_prompt"
+                  type="text"
+                  enterKeyHint="send"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  data-lpignore="true"
+                  data-form-type="other"
+                  value={isTranscribing ? "Transcribing speech..." : inputText}
+                  onChange={(e) => setInputText(e.target.value)}
+                  onFocus={() => {
+                    setIsFocused(true);
+                    setTimeout(() => window.scrollTo(0, 0), 50);
+                  }}
+                  onBlur={() => setIsFocused(false)}
+                  onPaste={handlePasteEvent}
+                  disabled={disabled || isListening || isTranscribing}
+                  placeholder={attachment ? `Ask about ${attachment.filename}...` : "Ask anything or use voice commands..."}
+                  className={`w-full py-2.5 sm:py-3 pl-2.5 sm:pl-3.5 pr-3 text-xs sm:text-sm font-normal bg-transparent focus:outline-none transition-all text-input-glowing-cursor ${
+                    isDark
+                      ? "text-slate-100 placeholder:text-slate-400"
+                      : "text-slate-900 placeholder:text-slate-400"
+                  }`}
+                  style={{
+                    caretColor: theme.accent || theme.primary,
+                    "--theme-caret-color": theme.accent || theme.primary,
+                    "--theme-caret-glow-color": theme.accent || theme.primary,
+                  } as React.CSSProperties}
+                />
+              </div>
+            )}
+          </div>
 
-              {/* Submit button */}
+          {/* Action Group: Microphone + Submit Button */}
+          <div className="flex items-center space-x-1.5 sm:space-x-2 pr-1 flex-shrink-0">
+            {/* Fluid Microphone Button with Concentric Rings */}
+            <div className="relative flex items-center justify-center">
+              {isListening && (
+                <>
+                  <motion.span
+                    initial={{ scale: 0.85, opacity: 0.8 }}
+                    animate={{ scale: 1.6, opacity: 0 }}
+                    transition={{ repeat: Infinity, duration: 1.6, ease: "easeOut" }}
+                    className="absolute inset-0 rounded-full bg-rose-500/50 pointer-events-none"
+                  />
+                  <motion.span
+                    initial={{ scale: 0.85, opacity: 0.9 }}
+                    animate={{ scale: 1.35, opacity: 0 }}
+                    transition={{ repeat: Infinity, duration: 1.6, ease: "easeOut", delay: 0.4 }}
+                    className="absolute inset-0 rounded-full bg-red-400/60 pointer-events-none"
+                  />
+                </>
+              )}
+
               <button
-                id="send-command-button"
-                type="submit"
-                disabled={disabled || (!inputText.trim() && !attachment) || isListening || isTranscribing}
-                className={`w-9 h-9 sm:w-10 sm:h-10 rounded-full transition-all duration-200 active:scale-95 hover:-translate-y-0.5 flex items-center justify-center flex-shrink-0 ${
-                  inputText.trim() || attachment
-                    ? "text-white shadow-md cursor-pointer hover:brightness-110"
+                id="voice-toggle-button"
+                type="button"
+                onClick={handleToggleListening}
+                disabled={disabled || isTranscribing}
+                className={`relative w-9 h-9 sm:w-10 sm:h-10 rounded-full transition-all duration-300 flex items-center justify-center active:scale-95 hover:-translate-y-0.5 z-10 overflow-hidden border ${
+                  isListening
+                    ? "text-white shadow-lg border-transparent"
                     : isDark
-                    ? "cursor-not-allowed border"
-                    : "cursor-not-allowed border"
+                    ? "hover:brightness-125"
+                    : "hover:brightness-95"
                 }`}
                 style={
-                  inputText.trim() || attachment
+                  isListening
                     ? {
-                        background: theme.gradient,
-                        boxShadow: `0 4px 14px ${theme.glow}, inset 0 1px 1px rgba(255,255,255,0.35)`,
+                        background: "linear-gradient(135deg, #f43f5e 0%, #e11d48 50%, #be123c 100%)",
+                        boxShadow: "0 0 25px rgba(244, 63, 94, 0.75), inset 0 1px 1px rgba(255, 255, 255, 0.4)",
                       }
                     : {
-                        backgroundColor: isDark ? `${theme.primary}12` : `${theme.primary}0a`,
-                        borderColor: `${theme.primary}25`,
-                        color: `${theme.primary}60`,
+                        backgroundColor: isDark ? `${theme.primary}25` : `${theme.primary}15`,
+                        borderColor: `${theme.primary}50`,
+                        color: theme.accent || theme.primary,
                       }
                 }
-                title={attachment ? "Send message with attachment (Enter)" : "Send message (Enter)"}
+                title={isListening ? "Stop listening" : "Click to speak voice command"}
               >
-                <Send className="w-4 h-4" />
+                {isListening ? (
+                  <Square className="w-3.5 h-3.5 fill-white text-white animate-pulse relative z-10" />
+                ) : isTranscribing ? (
+                  <Loader2 className="w-4 h-4 animate-spin relative z-10 text-indigo-400" />
+                ) : (
+                  <Mic className="w-4 h-4 relative z-10 transition-transform group-hover:scale-105" />
+                )}
               </button>
             </div>
-          </form>
-        </div>
+
+            {/* Submit button */}
+            <button
+              id="send-command-button"
+              type="submit"
+              disabled={disabled || (!inputText.trim() && !attachment) || isListening || isTranscribing}
+              className={`w-9 h-9 sm:w-10 sm:h-10 rounded-full transition-all duration-200 active:scale-95 hover:-translate-y-0.5 flex items-center justify-center flex-shrink-0 ${
+                inputText.trim() || attachment
+                  ? "text-white shadow-md cursor-pointer hover:brightness-110"
+                  : isDark
+                  ? "cursor-not-allowed border"
+                  : "cursor-not-allowed border"
+              }`}
+              style={
+                inputText.trim() || attachment
+                  ? {
+                      background: theme.gradient,
+                      boxShadow: `0 4px 14px ${theme.glow}, inset 0 1px 1px rgba(255,255,255,0.35)`,
+                    }
+                  : {
+                      backgroundColor: isDark ? `${theme.primary}12` : `${theme.primary}0a`,
+                      borderColor: `${theme.primary}25`,
+                      color: `${theme.primary}60`,
+                    }
+              }
+              title={attachment ? "Send message with attachment (Enter)" : "Send message (Enter)"}
+            >
+              <Send className="w-4 h-4" />
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );

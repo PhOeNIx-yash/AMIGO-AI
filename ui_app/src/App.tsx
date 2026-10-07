@@ -71,7 +71,7 @@ function createBeam(width: number, height: number, isDarkMode: boolean): Beam {
   };
 }
 
-const BeamsBackground = React.memo(function BeamsBackground({
+function BeamsBackground({
   className,
   intensity = "strong",
   children,
@@ -110,17 +110,16 @@ const BeamsBackground = React.memo(function BeamsBackground({
     updateDarkMode();
 
     const updateCanvasSize = () => {
-      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+      const dpr = window.devicePixelRatio || 1;
       canvas.width = window.innerWidth * dpr;
       canvas.height = window.innerHeight * dpr;
       canvas.style.width = `${window.innerWidth}px`;
       canvas.style.height = `${window.innerHeight}px`;
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.scale(dpr, dpr);
 
       const totalBeams = MINIMUM_BEAMS * 1.5;
       beamsRef.current = Array.from({ length: totalBeams }, () =>
-        createBeam(window.innerWidth, window.innerHeight, isDarkModeRef.current)
+        createBeam(canvas.width, canvas.height, isDarkModeRef.current)
       );
     };
 
@@ -131,12 +130,12 @@ const BeamsBackground = React.memo(function BeamsBackground({
       if (!canvas) return beam;
 
       const column = index % 3;
-      const spacing = window.innerWidth / 3;
+      const spacing = canvas.width / 3;
 
       const hueBase = isDarkModeRef.current ? 190 : 210;
       const hueRange = isDarkModeRef.current ? 70 : 50;
 
-      beam.y = window.innerHeight + 100;
+      beam.y = canvas.height + 100;
       beam.x =
         column * spacing + spacing / 2 + (Math.random() - 0.5) * spacing * 0.5;
       beam.width = 100 + Math.random() * 100;
@@ -195,50 +194,32 @@ const BeamsBackground = React.memo(function BeamsBackground({
       ctx.restore();
     }
 
-    let isPaused = false;
     function animate() {
-      if (isPaused || !(canvas && ctx)) return;
+      if (!(canvas && ctx)) return;
 
-      ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.filter = "blur(35px)";
 
       const totalBeams = beamsRef.current.length;
-      for (let i = 0; i < totalBeams; i++) {
-        const beam = beamsRef.current[i];
+      beamsRef.current.forEach((beam, index) => {
         beam.y -= beam.speed;
         beam.pulse += beam.pulseSpeed;
 
         // Reset beam when it goes off screen
         if (beam.y + beam.length < -100) {
-          resetBeam(beam, i, totalBeams);
+          resetBeam(beam, index, totalBeams);
         }
 
         drawBeam(ctx, beam);
-      }
+      });
 
       animationFrameRef.current = requestAnimationFrame(animate);
     }
 
     animate();
 
-    const handleVisibility = () => {
-      if (document.hidden) {
-        isPaused = true;
-        if (animationFrameRef.current) {
-          cancelAnimationFrame(animationFrameRef.current);
-          animationFrameRef.current = 0;
-        }
-      } else {
-        isPaused = false;
-        if (!animationFrameRef.current) {
-          animationFrameRef.current = requestAnimationFrame(animate);
-        }
-      }
-    };
-    document.addEventListener("visibilitychange", handleVisibility);
-
     return () => {
       window.removeEventListener("resize", updateCanvasSize);
-      document.removeEventListener("visibilitychange", handleVisibility);
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
       }
@@ -254,23 +235,18 @@ const BeamsBackground = React.memo(function BeamsBackground({
       )}
     >
       <canvas
-        className="absolute inset-0 pointer-events-none"
+        className="absolute inset-0"
         ref={canvasRef}
-        style={{
-          filter: "blur(20px)",
-          willChange: "transform",
-          transform: "translateZ(0)",
-        }}
+        style={{ filter: "blur(15px)" }}
       />
 
       <motion.div
         animate={{
           opacity: [0.05, 0.15, 0.05],
         }}
-        className="absolute inset-0 bg-neutral-900/5 dark:bg-neutral-950/5 pointer-events-none"
+        className="absolute inset-0 bg-neutral-900/5 dark:bg-neutral-950/5"
         style={{
           backdropFilter: "blur(50px)",
-          willChange: "opacity",
         }}
         transition={{
           duration: 10,
@@ -282,78 +258,7 @@ const BeamsBackground = React.memo(function BeamsBackground({
       {children}
     </div>
   );
-});
-
-// ═══════════════════════════════════════════════════════════════════════
-// KokonutUI AI Text Loading (@kokonutui/ai-text-loading)
-// ═══════════════════════════════════════════════════════════════════════
-
-interface AITextLoadingProps {
-  texts?: string[];
-  className?: string;
-  interval?: number;
 }
-
-const AITextLoading = React.memo(function AITextLoading({
-  texts = [
-    "Thinking...",
-    "Processing...",
-    "Analyzing...",
-    "Computing...",
-    "Almost...",
-  ],
-  className,
-  interval = 1500,
-}: AITextLoadingProps) {
-  const [currentTextIndex, setCurrentTextIndex] = useState(0);
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setCurrentTextIndex((prevIndex) => (prevIndex + 1) % texts.length);
-    }, interval);
-
-    return () => clearInterval(timer);
-  }, [interval, texts.length]);
-
-  return (
-    <div className="flex items-center justify-center p-2 sm:p-4">
-      <motion.div
-        animate={{ opacity: 1 }}
-        className="relative w-full px-2 py-1"
-        initial={{ opacity: 0 }}
-        transition={{ duration: 0.4 }}
-      >
-        <AnimatePresence mode="wait">
-          <motion.div
-            animate={{
-              opacity: 1,
-              y: 0,
-              backgroundPosition: ["200% center", "-200% center"],
-            }}
-            className={cn(
-              "flex min-w-max justify-center whitespace-nowrap bg-[length:200%_100%] bg-gradient-to-r from-neutral-950 via-neutral-400 to-neutral-950 bg-clip-text font-bold text-2xl sm:text-3xl md:text-4xl text-transparent dark:from-white dark:via-neutral-500 dark:to-white drop-shadow-[0_2px_18px_rgba(255,255,255,0.2)]",
-              className
-            )}
-            exit={{ opacity: 0, y: -20 }}
-            initial={{ opacity: 0, y: 20 }}
-            key={currentTextIndex}
-            transition={{
-              opacity: { duration: 0.3 },
-              y: { duration: 0.3 },
-              backgroundPosition: {
-                duration: 2.5,
-                ease: "linear",
-                repeat: Number.POSITIVE_INFINITY,
-              },
-            }}
-          >
-            {texts[currentTextIndex]}
-          </motion.div>
-        </AnimatePresence>
-      </motion.div>
-    </div>
-  );
-});
 
 function renderFormattedContent(text: string) {
   if (!text) return null;
@@ -1457,28 +1362,6 @@ export default function App() {
                             Your voice will transcribe seamlessly in real time
                           </p>
                         </div>
-                      ) : state === "processing" || state === "working" ? (
-                        <div className="flex flex-col items-center justify-center w-full max-w-2xl mx-auto px-2">
-                          <AITextLoading
-                            texts={[
-                              "Thinking...",
-                              "Processing...",
-                              "Analyzing...",
-                              "Computing...",
-                              "Almost...",
-                            ]}
-                            className="text-2xl sm:text-3xl md:text-4xl"
-                          />
-                          {activePrompt && (
-                            <motion.p
-                              initial={{ opacity: 0, y: 4 }}
-                              animate={{ opacity: 0.75, y: 0 }}
-                              className="text-xs sm:text-sm text-slate-300/80 font-normal tracking-normal max-w-lg truncate mt-1 text-center"
-                            >
-                              "{activePrompt}"
-                            </motion.p>
-                          )}
-                        </div>
                       ) : (() => {
                         const isGreeting = GREETING_PRESETS.some((g) => g.text.toLowerCase() === (displayText || "").toLowerCase()) || !displayText;
 
@@ -1492,7 +1375,11 @@ export default function App() {
                               title={state === "idle" ? "Click to cycle greeting phrase" : undefined}
                             >
                               <KineticHeading
-                                text={displayText || greetingText}
+                                text={
+                                  state === "processing" || state === "working"
+                                    ? (activePrompt || "Thinking...")
+                                    : (displayText || greetingText)
+                                }
                                 isDark={isDark}
                                 colorTheme={colorTheme}
                                 animationStyle={textAnimationStyle}

@@ -275,31 +275,3 @@ input:-webkit-autofill:active {
     stroke-dasharray: none;
   }
 }
-
-/* ═══════════════════════════════════════════════════════════════
-   Cult-UI Halo Search Keyframes & Houdini Custom Properties
-   ═══════════════════════════════════════════════════════════════ */
-@property --halo-angle {
-  syntax: '<angle>';
-  initial-value: 0deg;
-  inherits: false;
-}
-
-@keyframes haloRotate {
-  0% {
-    --halo-angle: 0deg;
-  }
-  100% {
-    --halo-angle: 360deg;
-  }
-}
-
-@keyframes haloShimmer {
-  0%, 100% {
-    background-position: 200% 0;
-  }
-  50% {
-    background-position: -200% 0;
-  }
-}
-
