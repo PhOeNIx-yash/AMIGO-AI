@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { sfx } from "../utils/audio";
 import { audioBus } from "../utils/audioBus";
+import { saveAssistantSettings } from "../services/assistantApi";
 
 export interface VoiceOption {
   id: string;
@@ -219,9 +220,44 @@ export const FluidOrb: React.FC<FluidOrbProps> = ({
     };
   }, []);
 
+  // For small 36px card orbs, use GPU-composited CSS mesh to avoid exceeding mobile WebGL context limits (iOS Safari limit: 8-16)
+  if (size <= 40) {
+    return (
+      <div
+        ref={containerRef}
+        data-slot="fluid-orb"
+        className={`relative overflow-hidden rounded-full flex-shrink-0 transition-transform duration-200 ${className}`}
+        style={{
+          width: size,
+          height: size,
+          background: `radial-gradient(circle at 35% 30%, #ffffff 0%, ${color} 48%, #080814 100%)`,
+          boxShadow: isSpeaking
+            ? `0 0 16px ${color}, inset 0 0 6px rgba(255,255,255,0.7)`
+            : `0 0 8px ${color}50`,
+          transform: isSpeaking ? "scale(1.08) translateZ(0)" : "scale(1) translateZ(0)",
+          ...style,
+        }}
+        {...props}
+      >
+        <div
+          className={`absolute inset-0 rounded-full ${isSpeaking ? "animate-pulse" : ""}`}
+          style={{
+            background: `radial-gradient(circle at 65% 65%, ${color}99 0%, transparent 65%)`,
+            opacity: isSpeaking ? 0.9 : 0.4,
+          }}
+        />
+      </div>
+    );
+  }
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+
+    const handleContextLost = (e: Event) => {
+      e.preventDefault();
+    };
+    canvas.addEventListener("webglcontextlost", handleContextLost);
 
     const gl = canvas.getContext("webgl", {
       antialias: false,
@@ -263,8 +299,8 @@ export const FluidOrb: React.FC<FluidOrbProps> = ({
     let activeColor = colorRef.current;
     gl.uniform3f(uColor, ...hexToRgb(activeColor));
 
-    // Efficient DPR: 1.0 for small 36px card orbs, max 1.5 for larger spotlight orb
-    const dpr = size <= 40 ? 1 : Math.min(window.devicePixelRatio || 1, 1.5);
+    // Crisp Retina DPR (up to 2.0)
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const px = Math.round(size * dpr);
     canvas.width = px;
     canvas.height = px;
@@ -339,6 +375,7 @@ export const FluidOrb: React.FC<FluidOrbProps> = ({
 
     return () => {
       cancelAnimationFrame(raf);
+      canvas.removeEventListener("webglcontextlost", handleContextLost);
       gl.deleteProgram(program);
       gl.deleteShader(vert);
       gl.deleteShader(frag);
@@ -518,6 +555,13 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
         clearTimeout(savedTimerRef.current);
         savedTimerRef.current = null;
       }
+      try {
+        fetch("/api/action/execute", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ payload: { tool: "stop_speaking" } }),
+        }).catch(() => {});
+      } catch {}
     };
   }, []);
 
@@ -528,36 +572,38 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
 
   const handleSelectVoice = async (voiceId: string) => {
     setSelectedVoice(voiceId);
-    localStorage.setItem("amigo_selected_voice", voiceId);
     try {
-      await fetch("/api/settings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          user_profile: { preferences: { voice: voiceId } },
-          voice: voiceId,
-        }),
+      localStorage.setItem("amigo_selected_voice", voiceId);
+    } catch (_) {}
+    try {
+      await saveAssistantSettings({
+        user_profile: { preferences: { voice: voiceId } },
+        voice: voiceId,
       });
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+      setSavedBanner(true);
+      savedTimerRef.current = setTimeout(() => setSavedBanner(false), 2000);
+
       const vObj = VOICES_CATALOG.find((v) => v.id === voiceId);
       const name = vObj ? vObj.name : voiceId;
       await fetch("/api/speak", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: `${name} voice selected.` }),
+        body: JSON.stringify({ text: `${name} voice selected.`, voice: voiceId }),
       });
-    } catch (e) {}
-    if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
-    setSavedBanner(true);
-    savedTimerRef.current = setTimeout(() => setSavedBanner(false), 2000);
+    } catch (e) {
+      console.warn("Failed to set voice:", e);
+    }
   };
 
   const handleTogglePlayPreview = async (e: React.MouseEvent, voice: VoiceOption) => {
     e.stopPropagation();
+    if (previewTimerRef.current) {
+      clearTimeout(previewTimerRef.current);
+      previewTimerRef.current = null;
+    }
+
     if (playingVoiceIdLocal === voice.id) {
-      if (previewTimerRef.current) {
-        clearTimeout(previewTimerRef.current);
-        previewTimerRef.current = null;
-      }
       setPlayingVoiceIdLocal(null);
       setPlayingVoiceId(null);
       try {
@@ -570,30 +616,30 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
       return;
     }
 
-    if (previewTimerRef.current) {
-      clearTimeout(previewTimerRef.current);
-    }
+    // Stop any existing speaking audio before starting a new preview so audio does not overlap
+    try {
+      await fetch("/api/action/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ payload: { tool: "stop_speaking" } }),
+      });
+    } catch {}
 
     setPlayingVoiceIdLocal(voice.id);
     setPlayingVoiceId(voice.id);
 
     try {
-      // 1. Immediately switch backend active voice to this preview voice
-      await fetch("/api/settings", {
+      // Synthesize & play preview without mutating the user's saved voice settings
+      const res = await fetch("/api/speak", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          user_profile: { preferences: { voice: voice.id } },
-          voice: voice.id,
-        }),
+        body: JSON.stringify({ text: voice.previewText, voice: voice.id }),
       });
-
-      // 2. Synthesize & play preview through Amigo's real offline neural TTS engine
-      await fetch("/api/speak", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: voice.previewText }),
-      });
+      if (!res.ok) {
+        setPlayingVoiceIdLocal(null);
+        setPlayingVoiceId(null);
+        return;
+      }
 
       // Reset animation once utterance finishes
       const durationMs = Math.max(3000, voice.previewText.length * 80);
@@ -693,8 +739,10 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
 
       {/* Engine / Category Filter Segmented Tabs */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pt-1">
-        <div className="text-xs font-semibold uppercase tracking-wider opacity-60">Studio Neural Voices (24kHz)</div>
+        <div className="text-xs font-semibold uppercase tracking-wider opacity-60">Studio Neural Voices (44.1kHz)</div>
         <div
+          role="radiogroup"
+          aria-label="Filter voices by gender"
           className={`inline-flex p-1 rounded-xl border self-start sm:self-auto ${
             isDark ? "bg-black/30" : "bg-slate-100"
           }`}
@@ -702,15 +750,20 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
         >
           {(
             [
-              { id: "all", label: "All (10)" },
-              { id: "female", label: "Female (5)" },
-              { id: "male", label: "Male (5)" },
+              { id: "all", label: `All (${VOICES_CATALOG.length})` },
+              { id: "female", label: `Female (${VOICES_CATALOG.filter((v) => v.gender === "Female").length})` },
+              { id: "male", label: `Male (${VOICES_CATALOG.filter((v) => v.gender === "Male").length})` },
             ] as const
           ).map((f) => (
             <button
               key={f.id}
               type="button"
-              onClick={() => setVoiceFilterLocal(f.id)}
+              role="radio"
+              aria-checked={voiceFilterLocal === f.id}
+              onClick={() => {
+                setVoiceFilter(f.id);
+                setVoiceFilterLocal(f.id);
+              }}
               className={`px-3 py-1 rounded-lg text-[11px] font-medium transition-all ${
                 voiceFilterLocal === f.id
                   ? isDark
@@ -726,7 +779,7 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
       </div>
 
       {/* Voice Selection Cards Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+      <div role="radiogroup" aria-label="Select Assistant Voice" className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
         {filteredVoices.map((voice) => {
           const isSelected = selectedVoice === voice.id;
           const isPlaying = playingVoiceIdLocal === voice.id;
@@ -734,6 +787,15 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
           return (
             <div
               key={voice.id}
+              role="radio"
+              aria-checked={isSelected}
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  handleSelectVoice(voice.id);
+                }
+              }}
               onClick={() => handleSelectVoice(voice.id)}
               className={`group relative p-3.5 rounded-2xl border text-left transition-all cursor-pointer select-none flex flex-col justify-between ${
                 isSelected

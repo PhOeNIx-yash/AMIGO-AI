@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from "react";
 import { motion } from "motion/react";
-// Import optimized motion configs
-import { fluidSpring, scaleFade } from "../utils/motionConfig";
-import { Copy, Edit, RotateCcw, Download, Send, X, Check, Loader2 } from "lucide-react";
+import { scaleFade } from "../utils/motionConfig";
+import { Copy, Edit, RotateCcw, Download, Send, X, Check, Loader2, AlertCircle } from "lucide-react";
+import { COLOR_THEMES } from "../data/presets";
 
 interface GeneratedContentPanelProps {
   content: string;
@@ -19,7 +19,7 @@ interface GeneratedContentPanelProps {
 
 export function GeneratedContentPanel({
   content,
-  contentType,
+  contentType = "document",
   topic,
   onInsert,
   onCopy,
@@ -29,13 +29,21 @@ export function GeneratedContentPanel({
   isDark,
   colorTheme,
 }: GeneratedContentPanelProps) {
-  const [editedContent, setEditedContent] = useState(content);
+  const [editedContent, setEditedContent] = useState(content || "");
   const [isEditing, setIsEditing] = useState(false);
   const [copied, setCopied] = useState(false);
   const [inserting, setInserting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const theme = COLOR_THEMES[colorTheme as keyof typeof COLOR_THEMES] || COLOR_THEMES.beams || COLOR_THEMES.violet;
+
+  // Synchronize editedContent whenever new content is passed from parent (e.g. after regeneration)
+  useEffect(() => {
+    setEditedContent(content || "");
+  }, [content]);
 
   // Auto-focus textarea when editing starts
   useEffect(() => {
@@ -44,21 +52,55 @@ export function GeneratedContentPanel({
     }
   }, [isEditing]);
 
+  // Escape key handler for dialog dismissal
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (isEditing) {
+          setIsEditing(false);
+        } else {
+          onClose();
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isEditing, onClose]);
+
   const handleCopy = async () => {
+    setActionError(null);
     try {
-      await navigator.clipboard.writeText(editedContent);
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(editedContent);
+      } else {
+        // Fallback for non-secure contexts
+        const textarea = document.createElement("textarea");
+        textarea.value = editedContent;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
       setCopied(true);
       onCopy(editedContent);
       setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error("Failed to copy:", err);
+    } catch (err: any) {
+      console.warn("Failed to copy:", err);
+      setActionError("Could not copy to clipboard");
     }
   };
 
   const handleInsert = async () => {
     setInserting(true);
+    setActionError(null);
     try {
       await onInsert(editedContent);
+    } catch (err: any) {
+      console.warn("Failed to insert:", err);
+      setActionError("Failed to insert text into active app");
     } finally {
       setInserting(false);
     }
@@ -66,8 +108,12 @@ export function GeneratedContentPanel({
 
   const handleSave = async () => {
     setSaving(true);
+    setActionError(null);
     try {
       await onSave(editedContent);
+    } catch (err: any) {
+      console.warn("Failed to save:", err);
+      setActionError("Failed to save content");
     } finally {
       setSaving(false);
     }
@@ -75,19 +121,22 @@ export function GeneratedContentPanel({
 
   const handleRegenerate = async () => {
     setRegenerating(true);
+    setActionError(null);
     try {
       await onRegenerate();
+    } catch (err: any) {
+      console.warn("Failed to regenerate:", err);
+      setActionError("Failed to regenerate content");
     } finally {
       setRegenerating(false);
     }
   };
 
-  const handleClose = () => {
-    onClose();
-  };
+  const safeType = (contentType || "document").toLowerCase();
+  const isCode = safeType === "code";
 
   const getContentTypeIcon = () => {
-    switch (contentType.toLowerCase()) {
+    switch (safeType) {
       case "email":
         return "📧";
       case "letter":
@@ -106,7 +155,7 @@ export function GeneratedContentPanel({
   };
 
   const getContentTypeLabel = () => {
-    return contentType.charAt(0).toUpperCase() + contentType.slice(1);
+    return safeType.charAt(0).toUpperCase() + safeType.slice(1);
   };
 
   return (
@@ -115,30 +164,54 @@ export function GeneratedContentPanel({
       initial="hidden"
       animate="show"
       exit="exit"
-      className="relative w-full max-w-3xl mx-auto bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl overflow-hidden shadow-2xl z-50 gpu-accelerated"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="generated-content-title"
+      className={`relative w-full max-w-3xl mx-auto rounded-2xl overflow-hidden shadow-2xl z-50 gpu-accelerated border flex flex-col max-h-[90vh] sm:max-h-[85vh] ${
+        isDark
+          ? "bg-slate-900/95 text-white border-white/15"
+          : "bg-white/98 text-slate-900 border-slate-200"
+      }`}
       style={{
-        boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.5)",
+        boxShadow: isDark
+          ? "0 25px 50px -12px rgba(0, 0, 0, 0.7), 0 0 30px rgba(0, 0, 0, 0.5)"
+          : "0 20px 40px -10px rgba(0, 0, 0, 0.15)",
       }}
     >
       {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-white/10">
-        <div className="flex items-center space-x-3">
+      <div
+        className={`flex items-center justify-between p-4 border-b ${
+          isDark ? "border-white/10" : "border-slate-200"
+        }`}
+      >
+        <div className="flex items-center space-x-3 min-w-0">
           <div
-            className="w-10 h-10 rounded-xl flex items-center justify-center text-2xl"
-            style={{ background: "linear-gradient(135deg, #8b5cf6, #ec4899)" }}
+            className="w-10 h-10 rounded-xl flex items-center justify-center text-2xl flex-shrink-0 shadow-md"
+            style={{ background: theme.gradient || "linear-gradient(135deg, #8b5cf6, #ec4899)" }}
           >
             {getContentTypeIcon()}
           </div>
-          <div>
-            <h3 className="font-semibold text-white text-lg">{getContentTypeLabel()}</h3>
-            <p className="text-xs text-white/60 truncate max-w-xs">{topic}</p>
+          <div className="min-w-0 flex-1">
+            <h3
+              id="generated-content-title"
+              className="font-semibold text-base sm:text-lg truncate"
+            >
+              {getContentTypeLabel()}
+            </h3>
+            <p className={`text-xs truncate ${isDark ? "text-slate-400" : "text-slate-500"}`}>
+              {topic || "Generated Content"}
+            </p>
           </div>
         </div>
         <motion.button
           whileHover={{ scale: 1.1 }}
           whileTap={{ scale: 0.9 }}
-          onClick={handleClose}
-          className="p-2 rounded-lg text-white/50 hover:text-white hover:bg-white/10 transition-colors"
+          onClick={onClose}
+          className={`p-2 rounded-xl transition-colors ${
+            isDark
+              ? "text-slate-400 hover:text-white hover:bg-white/10"
+              : "text-slate-500 hover:text-slate-900 hover:bg-slate-100"
+          }`}
           aria-label="Close panel"
         >
           <X className="w-5 h-5" />
@@ -146,39 +219,68 @@ export function GeneratedContentPanel({
       </div>
 
       {/* Content Area */}
-      <div className="p-4 max-h-[60vh] overflow-hidden">
+      <div className="p-4 flex-1 overflow-y-auto">
+        {actionError && (
+          <div className="mb-3 px-3 py-2 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-400 text-xs flex items-center space-x-2">
+            <AlertCircle className="w-4 h-4 flex-shrink-0" />
+            <span>{actionError}</span>
+          </div>
+        )}
+
         {isEditing ? (
           <textarea
             ref={textareaRef}
             value={editedContent}
             onChange={(e) => setEditedContent(e.target.value)}
-            className="w-full h-[50vh] min-h-[300px] bg-white/5 border border-white/10 rounded-xl p-4 text-white placeholder-white/40 font-mono text-sm leading-relaxed resize-none focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500/50"
+            className={`w-full h-full min-h-[220px] max-h-[50vh] rounded-xl p-4 text-sm leading-relaxed resize-none focus:outline-none border transition-colors ${
+              isCode ? "font-mono" : "font-sans"
+            } ${
+              isDark
+                ? "bg-black/30 border-white/15 text-white placeholder-white/40 focus:border-indigo-400"
+                : "bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400 focus:border-indigo-500"
+            }`}
             placeholder="Edit your content here..."
             spellCheck={true}
           />
         ) : (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="w-full h-[50vh] min-h-[300px] max-h-[50vh] overflow-y-auto bg-white/5 border border-white/10 rounded-xl p-4 text-white/90 font-mono text-sm leading-relaxed whitespace-pre-wrap break-words"
+          <div
+            className={`w-full min-h-[220px] max-h-[50vh] overflow-y-auto rounded-xl p-4 text-sm leading-relaxed whitespace-pre-wrap break-words border ${
+              isCode ? "font-mono" : "font-sans"
+            } ${
+              isDark
+                ? "bg-black/20 border-white/10 text-slate-100"
+                : "bg-slate-50 border-slate-200 text-slate-800"
+            }`}
           >
             {editedContent}
-          </motion.div>
+          </div>
         )}
       </div>
 
       {/* Action Buttons */}
-      <div className="flex flex-wrap items-center justify-between gap-3 p-4 border-t border-white/10 bg-white/5">
+      <div
+        className={`flex flex-wrap items-center justify-between gap-2.5 p-3 sm:p-4 border-t ${
+          isDark ? "border-white/10 bg-black/20" : "border-slate-200 bg-slate-50"
+        }`}
+      >
         {/* Left side - Edit/Regenerate */}
         <div className="flex items-center space-x-2">
           <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={() => setIsEditing(!isEditing)}
+            whileHover={{ scale: 1.03 }}
+            whileTap={{ scale: 0.97 }}
+            onClick={() => {
+              if (isEditing) {
+                // Done editing: persist changes
+                onSave?.(editedContent);
+              }
+              setIsEditing(!isEditing);
+            }}
             disabled={regenerating || inserting}
-            className="flex items-center space-x-2 px-4 py-2 rounded-xl text-sm font-medium text-white/90 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center space-x-1.5 px-3 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold text-white transition-opacity disabled:opacity-50"
             style={{
-              background: isEditing ? "linear-gradient(135deg, #22c55e, #16a34a)" : "linear-gradient(135deg, #8b5cf6, #7c3aed)",
+              background: isEditing
+                ? "linear-gradient(135deg, #10b981, #059669)"
+                : "linear-gradient(135deg, #6366f1, #4f46e5)",
             }}
           >
             {isEditing ? (
@@ -195,11 +297,11 @@ export function GeneratedContentPanel({
           </motion.button>
 
           <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
+            whileHover={{ scale: 1.03 }}
+            whileTap={{ scale: 0.97 }}
             onClick={handleRegenerate}
             disabled={regenerating || inserting || isEditing}
-            className="flex items-center space-x-2 px-4 py-2 rounded-xl text-sm font-medium text-white/90 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center space-x-1.5 px-3 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold text-white transition-opacity disabled:opacity-50"
             style={{ background: "linear-gradient(135deg, #f59e0b, #d97706)" }}
           >
             {regenerating ? (
@@ -219,12 +321,16 @@ export function GeneratedContentPanel({
         {/* Right side - Copy/Insert/Save */}
         <div className="flex items-center space-x-2">
           <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
+            whileHover={{ scale: 1.03 }}
+            whileTap={{ scale: 0.97 }}
             onClick={handleCopy}
             disabled={inserting || regenerating}
-            className="flex items-center space-x-2 px-4 py-2 rounded-xl text-sm font-medium text-white/90 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            style={{ background: copied ? "linear-gradient(135deg, #22c55e, #16a34a)" : "linear-gradient(135deg, #6366f1, #4f46e5)" }}
+            className="flex items-center space-x-1.5 px-3 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold text-white transition-opacity disabled:opacity-50"
+            style={{
+              background: copied
+                ? "linear-gradient(135deg, #10b981, #059669)"
+                : "linear-gradient(135deg, #0284c7, #0369a1)",
+            }}
           >
             {copied ? (
               <>
@@ -240,11 +346,11 @@ export function GeneratedContentPanel({
           </motion.button>
 
           <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
+            whileHover={{ scale: 1.03 }}
+            whileTap={{ scale: 0.97 }}
             onClick={handleInsert}
             disabled={inserting || regenerating || isEditing}
-            className="flex items-center space-x-2 px-4 py-2 rounded-xl text-sm font-medium text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center space-x-1.5 px-3 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold text-white transition-opacity disabled:opacity-50"
             style={{ background: "linear-gradient(135deg, #ec4899, #db2777)" }}
           >
             {inserting ? (
@@ -261,12 +367,12 @@ export function GeneratedContentPanel({
           </motion.button>
 
           <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
+            whileHover={{ scale: 1.03 }}
+            whileTap={{ scale: 0.97 }}
             onClick={handleSave}
             disabled={saving || inserting || regenerating}
-            className="flex items-center space-x-2 px-4 py-2 rounded-xl text-sm font-medium text-white/90 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            style={{ background: "linear-gradient(135deg, #06b6d4, #0891b2)" }}
+            className="flex items-center space-x-1.5 px-3 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold text-white transition-opacity disabled:opacity-50"
+            style={{ background: "linear-gradient(135deg, #0d9488, #0f766e)" }}
           >
             {saving ? (
               <>
@@ -281,13 +387,6 @@ export function GeneratedContentPanel({
             )}
           </motion.button>
         </div>
-      </div>
-
-      {/* Hint text */}
-      <div className="px-4 pb-4 text-center">
-        <p className="text-xs text-white/40">
-          Review and edit the content above. Click <strong>Insert</strong> to paste into the active window (Ctrl+V), or <strong>Copy</strong> to copy to clipboard.
-        </p>
       </div>
     </motion.div>
   );

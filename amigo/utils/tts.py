@@ -548,10 +548,11 @@ def _process_audio_clarity(samples, sr=44100) -> tuple[np.ndarray, int]:
     return samples, int(sr)
 
 
-def _synthesize_and_play_supertonic(engine, text, generation):
+def _synthesize_and_play_supertonic(engine, text, generation, voice_override=None):
     """Natural, studio 44.1kHz Supertonic-3 neural speech synthesis with artifact-free streaming."""
     global _active_stream
-    sync_voice_from_profile()
+    if not voice_override:
+        sync_voice_from_profile()
     clean_text = _compact_tts_text(text)
     if not clean_text:
         return
@@ -582,7 +583,8 @@ def _synthesize_and_play_supertonic(engine, text, generation):
 
     def producer():
         try:
-            voice_info = CURATED_VOICES.get(ACTIVE_VOICE)
+            target_voice = voice_override.lower().strip() if voice_override else ACTIVE_VOICE
+            voice_info = CURATED_VOICES.get(target_voice)
             voice_id = voice_info["id"] if voice_info else SUPERTONIC_VOICE
             if voice_id not in ("F1", "F2", "F3", "F4", "F5", "M1", "M2", "M3", "M4", "M5"):
                 voice_id = "F1"
@@ -664,11 +666,13 @@ def _synthesize_and_play_supertonic(engine, text, generation):
 def _speech_worker():
     while True:
         item = _speech_queue.get()
+        voice_override = None
         if isinstance(item, tuple):
             text = item[0] if len(item) > 0 else ""
             generation = item[1] if len(item) > 1 else 0
             request_id = item[2] if len(item) > 2 else None
             broadcast_chat = item[3] if len(item) > 3 else False
+            voice_override = item[4] if len(item) > 4 else None
         else:
             text, generation, request_id, broadcast_chat = item, 0, None, False
         if not text:
@@ -686,7 +690,7 @@ def _speech_worker():
             try:
                 if _USE_SUPERTONIC:
                     engine = _get_supertonic()
-                    _synthesize_and_play_supertonic(engine, text, generation)
+                    _synthesize_and_play_supertonic(engine, text, generation, voice_override=voice_override)
                 else:
                     logger.warning("[TTS] Supertonic-3 neural TTS engine not available.")
             except Exception as e:
@@ -705,13 +709,13 @@ def _speech_worker():
 threading.Thread(target=_speech_worker, daemon=True).start()
 
 
-def speak(text: str, block: bool = False, request_id: str | None = None, broadcast_chat: bool = False) -> None:
+def speak(text: str, block: bool = False, request_id: str | None = None, broadcast_chat: bool = False, voice: str | None = None) -> None:
     """Speak text asynchronously, update assistant state, and animate UI with 0ms delay."""
     if not text:
         return
     with _speech_generation_lock:
         generation = _speech_generation
-    item = (text, generation, request_id, broadcast_chat)
+    item = (text, generation, request_id, broadcast_chat, voice)
     if block:
         _speech_queue.put(item)
         _speech_queue.join()
@@ -877,8 +881,36 @@ def transcribe_samples(samples: np.ndarray, sample_rate: int = 16000) -> str:
             except Exception:
                 pass
 
-        # Normalize audio levels if needed
-        peak = float(np.max(np.abs(samples))) if len(samples) > 0 else 0
+        # General signal-based Voice Activity Detection (VAD):
+        # Evaluates 20ms acoustic frames (320 samples @ 16kHz) to verify genuine vocal energy.
+        # Ambient room hiss, fan noise, and transient clicks are rejected without any word lists.
+        frame_size = 320  # 20ms at 16kHz
+        num_frames = len(samples) // frame_size
+        if num_frames == 0:
+            return ""
+
+        frames = samples[:num_frames * frame_size].reshape(num_frames, frame_size)
+        frame_rms = np.sqrt(np.mean(frames ** 2, axis=1))
+
+        # Dynamic ambient noise floor estimation from lower quartile
+        sorted_rms = np.sort(frame_rms)
+        noise_floor = float(np.mean(sorted_rms[:max(1, int(num_frames * 0.25))]))
+        speech_thresh = max(0.020, noise_floor * 2.2)
+
+        # Count active voice frames exceeding adaptive speech threshold
+        active_speech_frames = int(np.sum(frame_rms > speech_thresh))
+        peak = float(np.max(np.abs(samples)))
+        snr = peak / (noise_floor + 1e-5)
+
+        # Genuine speech requires at least ~360ms (18 frames) of vocal energy above background noise
+        # and a distinct signal-to-noise ratio (SNR) above ambient room hiss
+        if active_speech_frames < 18 or peak < 0.065 or snr < 3.2:
+            logger.debug(
+                "[STT] Audio rejected: below speech energy/SNR threshold (active_frames=%d/%d, noise_floor=%.4f, peak=%.4f, snr=%.2f)",
+                active_speech_frames, num_frames, noise_floor, peak, snr,
+            )
+            return ""
+
         if peak > 1.0:
             samples = samples / peak
 

@@ -17,10 +17,10 @@ import {
   Calculator,
   Layers,
   Sliders,
+  Search,
 } from "lucide-react";
 import { ColorTheme } from "../types";
 import { COLOR_THEMES } from "../data/presets";
-
 
 export const NON_ACTION_INTENTS = new Set([
   "chat",
@@ -36,6 +36,22 @@ export const NON_ACTION_INTENTS = new Set([
 // Polite conversational prefixes to strip when evaluating user prompts
 const POLITE_PREFIXES = /^(?:hey\s+amigo|amigo|please|could\s+you(?:\s+please)?|can\s+you(?:\s+please)?|would\s+you(?:\s+mind)?|kindly|i\s+want\s+to|i\s+need\s+to|help\s+me(?:\s+to)?|tell\s+me|what\s+is|what's|how\s+is|how's|check)\s+/i;
 
+// Precompiled action triggers at module level (not re-allocated per render/call)
+const ACTION_TRIGGERS = [
+  /\b(?:open|launch)\s+([a-z0-9_.-]+)/i,
+  /\b(?:play|stream|listen\s+to)\s+/i,
+  /\b(?:pause|resume|skip|mute|unmute)\b/i,
+  /\b(?:set|start)\s+(?:a\s+)?(?:timer|alarm|stopwatch|countdown)\b/i,
+  /\b(?:turn\s+up|turn\s+down|adjust)\s+(?:volume|brightness)\b/i,
+  /\b(?:take\s+a\s+)?(?:screenshot|snip|screen\s+capture)\b/i,
+  /\b(?:weather\s+in|forecast\s+for|check\s+weather)\b/i,
+  /\b(?:search\s+for|google\s+for|browse\s+for|look\s+up)\b/i,
+  /\b(?:send\s+(?:an?\s+)?(?:email|mail|message))\b/i,
+  /\b(?:find\s+file|open\s+folder|open\s+file)\b/i,
+  /\b(?:lock|sleep|restart|reboot|shutdown)\s+(?:pc|computer|system|screen)\b/i,
+  /\b(?:calculate|compute|solve)\s+[0-9]/i,
+];
+
 // Generalized Action Intent Detection
 export function isActionIntent(text: string, intent?: string): boolean {
   if (intent !== undefined && intent !== null && intent.trim() !== "") {
@@ -46,27 +62,8 @@ export function isActionIntent(text: string, intent?: string): boolean {
   let clean = text.toLowerCase().replace(/[_]/g, " ").trim();
   clean = clean.replace(POLITE_PREFIXES, "").trim();
 
-  const actionTriggers = [
-    /\b(?:open|launch|start|run|close|kill|terminate|exit|quit)\b/i,
-    /\b(?:play|pause|resume|skip|next|prev|previous|stop|mute|unmute)\b/i,
-    /\b(?:volume|brightness|sound|screen|display)\b/i,
-    /\b(?:weather|forecast|temperature)\b/i,
-    /\b(?:time|date|clock)\b/i,
-    /\b(?:timer|stopwatch|countdown|alarm|remind|reminder|schedule|calendar)\b/i,
-    /\b(?:screenshot|snip|capture|screen\s+vision|take\s+picture)\b/i,
-    /\b(?:lock|sleep|restart|reboot|shutdown|recycle\s+bin)\b/i,
-    /\b(?:search|google|youtube|browse|look\s+up|find\s+file|open\s+folder|open\s+file)\b/i,
-    /\b(?:email|inbox|mail|send\s+mail|send\s+email|send\s+message)\b/i,
-    /\b(?:calculate|calc|compute|solve|convert)\b/i,
-    /\b(?:system\s+status|cpu|ram|battery|hardware|disk\s+space)\b/i,
-    /\b(?:type|press|scroll)\b/i,
-    /\b(?:minimize|maximize|snap\s+left|snap\s+right|show\s+desktop)\b/i,
-    /\b(?:create|delete|make|write|generate|execute)\b/i,
-  ];
-
-  return actionTriggers.some((p) => p.test(clean));
+  return ACTION_TRIGGERS.some((p) => p.test(clean));
 }
-
 
 // Brand Icons
 const YouTubeIcon = () => (
@@ -117,32 +114,46 @@ interface ActionVisualInfo {
   icon: React.ReactNode;
 }
 
+const SENSITIVE_KEY_PATTERN = /(?:key|token|auth|secret|pass|cred|bearer|hash|salt|jwt|session|cookie|private)/i;
+
 function extractDynamicParam(params?: Record<string, any>, prompt?: string): string {
   if (params && typeof params === "object") {
     const candidateKeys = [
       "query", "q", "song", "video", "app_name", "application", "app",
       "city", "location", "target", "task", "action", "command",
       "recipient", "to", "subject", "file", "filename", "path",
-      "text", "message", "title", "content", "url"
+      "title", "url", "text", "message"
     ];
     for (const key of candidateKeys) {
-      if (typeof params[key] === "string" && params[key].trim()) {
-        return params[key].trim();
+      if (SENSITIVE_KEY_PATTERN.test(key)) continue;
+      const val = params[key];
+      if (typeof val === "string" && val.trim()) {
+        const trimmed = val.trim();
+        if (trimmed.length > 36) {
+          return trimmed.slice(0, 34) + "...";
+        }
+        return trimmed;
       }
     }
     for (const [key, val] of Object.entries(params)) {
-      if (typeof val === "string" && val.trim() && val.length > 0 && val.length < 100 && !key.startsWith("_")) {
-        return val.trim();
+      if (SENSITIVE_KEY_PATTERN.test(key) || key.startsWith("_")) continue;
+      if (typeof val === "string" && val.trim()) {
+        const trimmed = val.trim();
+        if (trimmed.length > 36) {
+          return trimmed.slice(0, 34) + "...";
+        }
+        return trimmed;
       }
     }
   }
 
-  // Fallback: extract meaningful target directly from the user's prompt
+  // Fallback: extract target directly from prompt
   if (prompt && prompt.trim()) {
     const clean = prompt.trim().replace(/[.!?]+$/, "");
-    const match = clean.match(/^(?:open|launch|start|run|play|search|find|show|check|query)\s+(.+)$/i);
+    const match = clean.match(/^(?:open|launch|start|run|play|search\s+for|find)\s+(.+)$/i);
     if (match && match[1]) {
-      return match[1].trim();
+      const target = match[1].trim();
+      return target.length > 36 ? target.slice(0, 34) + "..." : target;
     }
   }
 
@@ -157,48 +168,25 @@ function formatIntentName(raw: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+// Word-boundary exact matching for icons so substrings like "program" don't match "ram"
 function getDynamicToolIcon(intentStr: string, name: string): React.ReactNode {
   const s = (intentStr + " " + name).toLowerCase();
-  if (s.includes("antigravity")) return <Cpu className="w-4 h-4 text-cyan-400" />;
-  if (s.includes("youtube")) return <YouTubeIcon />;
-  if (s.includes("spotify")) return <SpotifyIcon />;
-  if (s.includes("google") || s.includes("search") || s.includes("browse") || s.includes("web")) return <GoogleIcon />;
-  if (s.includes("screen") || s.includes("vision") || s.includes("camera") || s.includes("photo") || s.includes("snip")) {
-    return <Camera className="w-4 h-4 text-cyan-400" />;
-  }
-  if (s.includes("weather") || s.includes("forecast") || s.includes("temp")) {
-    return <Sun className="w-4 h-4 text-amber-400" />;
-  }
-  if (s.includes("volume") || s.includes("sound") || s.includes("mute") || s.includes("audio")) {
-    return <Volume2 className="w-4 h-4 text-sky-400" />;
-  }
-  if (s.includes("brightness") || s.includes("display")) {
-    return <Sun className="w-4 h-4 text-amber-400" />;
-  }
-  if (s.includes("music") || s.includes("track") || s.includes("playlist")) {
-    return <Music className="w-4 h-4 text-emerald-400" />;
-  }
-  if (s.includes("timer") || s.includes("calendar") || s.includes("clock") || s.includes("alarm") || s.includes("schedule")) {
-    return <CalendarIcon className="w-4 h-4 text-amber-400" />;
-  }
-  if (s.includes("mail") || s.includes("email") || s.includes("inbox") || s.includes("send")) {
-    return <Mail className="w-4 h-4 text-blue-400" />;
-  }
-  if (s.includes("calc") || s.includes("math") || s.includes("compute")) {
-    return <Calculator className="w-4 h-4 text-emerald-400" />;
-  }
-  if (s.includes("file") || s.includes("folder") || s.includes("doc") || s.includes("note")) {
-    return <Folder className="w-4 h-4 text-indigo-400" />;
-  }
-  if (s.includes("cpu") || s.includes("system") || s.includes("hardware") || s.includes("ram") || s.includes("battery")) {
-    return <Cpu className="w-4 h-4 text-purple-400" />;
-  }
-  if (s.includes("terminal") || s.includes("shell") || s.includes("cmd") || s.includes("bash") || s.includes("run") || s.includes("git")) {
-    return <Terminal className="w-4 h-4 text-rose-400" />;
-  }
-  if (s.includes("setting") || s.includes("config") || s.includes("pref")) {
-    return <Sliders className="w-4 h-4 text-violet-400" />;
-  }
+  if (/\bantigravity\b/.test(s)) return <Cpu className="w-4 h-4 text-cyan-400" />;
+  if (/\byoutube\b/.test(s)) return <YouTubeIcon />;
+  if (/\bspotify\b/.test(s)) return <SpotifyIcon />;
+  if (/\b(google|web_search|browse)\b/.test(s)) return <GoogleIcon />;
+  if (/\b(screen|vision|camera|photo|snip)\b/.test(s)) return <Camera className="w-4 h-4 text-cyan-400" />;
+  if (/\b(weather|forecast)\b/.test(s) || /\btemp\b/.test(s)) return <Sun className="w-4 h-4 text-amber-400" />;
+  if (/\b(volume|sound|mute|audio)\b/.test(s)) return <Volume2 className="w-4 h-4 text-sky-400" />;
+  if (/\b(brightness|display)\b/.test(s)) return <Sun className="w-4 h-4 text-amber-400" />;
+  if (/\b(music|track|playlist)\b/.test(s)) return <Music className="w-4 h-4 text-emerald-400" />;
+  if (/\b(timer|stopwatch|clock|alarm|calendar|schedule)\b/.test(s)) return <CalendarIcon className="w-4 h-4 text-amber-400" />;
+  if (/\b(mail|email|inbox)\b/.test(s)) return <Mail className="w-4 h-4 text-blue-400" />;
+  if (/\b(calc|math|compute)\b/.test(s)) return <Calculator className="w-4 h-4 text-emerald-400" />;
+  if (/\b(file|folder|directory|doc|notes)\b/.test(s)) return <Folder className="w-4 h-4 text-indigo-400" />;
+  if (/\b(cpu|hardware|battery)\b/.test(s) || /\bram\b/.test(s)) return <Cpu className="w-4 h-4 text-purple-400" />;
+  if (/\b(terminal|shell|cmd|bash)\b/.test(s) || /\b(run|git)\b/.test(s)) return <Terminal className="w-4 h-4 text-rose-400" />;
+  if (/\b(settings|config|preferences)\b/.test(s)) return <Sliders className="w-4 h-4 text-violet-400" />;
   return <Layers className="w-4 h-4 text-violet-400" />;
 }
 
@@ -208,8 +196,19 @@ function resolveActionInfo(intent?: string, params?: Record<string, any>, prompt
   const pr = (prompt || "").toLowerCase().trim();
   const paramVal = extractDynamicParam(p, prompt);
 
-  // 1. YouTube
-  if (cleanIntent.includes("youtube") || pr.includes("youtube")) {
+  // File Search / Finder (check before generic search)
+  if (cleanIntent.includes("file") || cleanIntent.includes("folder") || (pr.includes("file") && cleanIntent === "find_files")) {
+    const q = paramVal || "Documents";
+    return {
+      name: "File Search",
+      actionVerb: `Searching files for "${q}"...`,
+      completedText: `File Match Located`,
+      icon: <Folder className="w-4 h-4 text-indigo-400" />,
+    };
+  }
+
+  // YouTube — only stream if intent is YouTube or prompt specifically asks to play/watch
+  if (cleanIntent.includes("youtube") || (pr.includes("youtube") && /\b(play|watch|stream|listen)\b/.test(pr))) {
     const q = paramVal || "YouTube Video";
     return {
       name: "YouTube",
@@ -219,8 +218,8 @@ function resolveActionInfo(intent?: string, params?: Record<string, any>, prompt
     };
   }
 
-  // 2. Spotify / Music
-  if (cleanIntent.includes("spotify") || pr.includes("spotify")) {
+  // Spotify / Music
+  if (cleanIntent.includes("spotify") || (cleanIntent.includes("music") && !cleanIntent.includes("search"))) {
     return {
       name: "Spotify",
       actionVerb: paramVal ? `Playing "${paramVal}"...` : "Controlling Audio Playback...",
@@ -229,8 +228,8 @@ function resolveActionInfo(intent?: string, params?: Record<string, any>, prompt
     };
   }
 
-  // 3. Web Search / Google
-  if (cleanIntent.includes("search") || cleanIntent.includes("google") || cleanIntent === "web_search" || pr.includes("google")) {
+  // Web Search / Google (strict intent check so "summarize" doesn't trigger search)
+  if (cleanIntent === "google_search" || cleanIntent === "web_search" || cleanIntent === "search") {
     const q = paramVal || prompt || "Web Knowledge";
     return {
       name: "Google Search",
@@ -240,7 +239,7 @@ function resolveActionInfo(intent?: string, params?: Record<string, any>, prompt
     };
   }
 
-  // 4. Screen Vision
+  // Screen Vision
   if (cleanIntent.includes("screen") || cleanIntent.includes("vision") || pr.includes("screenshot")) {
     return {
       name: "Screen Vision",
@@ -250,8 +249,8 @@ function resolveActionInfo(intent?: string, params?: Record<string, any>, prompt
     };
   }
 
-  // 5. Weather
-  if (cleanIntent.includes("weather") || pr.includes("weather")) {
+  // Weather
+  if (cleanIntent.includes("weather") || (pr.includes("weather") && !cleanIntent)) {
     const loc = paramVal || "Local Area";
     return {
       name: "Weather Radar",
@@ -261,8 +260,8 @@ function resolveActionInfo(intent?: string, params?: Record<string, any>, prompt
     };
   }
 
-  // 6. Volume
-  if (cleanIntent.includes("volume") || pr.includes("volume") || cleanIntent.includes("audio")) {
+  // Volume
+  if (cleanIntent.includes("volume") || cleanIntent.includes("sound")) {
     return {
       name: "System Audio",
       actionVerb: "Adjusting System Volume...",
@@ -271,8 +270,8 @@ function resolveActionInfo(intent?: string, params?: Record<string, any>, prompt
     };
   }
 
-  // 7. Brightness
-  if (cleanIntent.includes("brightness") || pr.includes("brightness")) {
+  // Brightness
+  if (cleanIntent.includes("brightness") || cleanIntent.includes("display")) {
     return {
       name: "Display",
       actionVerb: "Adjusting Display Brightness...",
@@ -281,18 +280,18 @@ function resolveActionInfo(intent?: string, params?: Record<string, any>, prompt
     };
   }
 
-  // 8. Timer & Calendar
-  if (cleanIntent.includes("timer") || cleanIntent.includes("alarm") || cleanIntent.includes("calendar") || pr.includes("timer")) {
-    const label = cleanIntent.includes("timer") ? "Timer" : cleanIntent.includes("alarm") ? "Alarm" : "Calendar";
+  // Timer & Stopwatch & Alarm
+  if (cleanIntent.includes("timer") || cleanIntent.includes("alarm") || cleanIntent.includes("stopwatch")) {
+    const label = cleanIntent.includes("stopwatch") ? "Stopwatch" : cleanIntent.includes("alarm") ? "Alarm" : "Timer";
     return {
       name: `${label} Engine`,
-      actionVerb: `Scheduling ${label}...`,
+      actionVerb: `Configuring ${label}...`,
       completedText: `${label} Active`,
       icon: <CalendarIcon className="w-4 h-4 text-amber-400" />,
     };
   }
 
-  // 9. App Launcher
+  // App Launcher
   if (cleanIntent.includes("open") || cleanIntent.includes("launch") || pr.startsWith("open ") || pr.startsWith("launch ")) {
     let appName = paramVal || (p.app_name || p.application);
     if (!appName || appName === "Application") {
@@ -310,68 +309,76 @@ function resolveActionInfo(intent?: string, params?: Record<string, any>, prompt
     };
   }
 
-  // 10. Dynamic Fallback for ANY arbitrary intent / tool
-  const dynamicName = formatIntentName(intent || (paramVal ? "Action Tool" : "Agentic Tool"));
-  const dynamicIcon = getDynamicToolIcon(cleanIntent, dynamicName);
-  const actionVerb = paramVal
-    ? `Executing ${dynamicName} ("${paramVal}")...`
-    : `Executing ${dynamicName}...`;
-  const completedText = `${dynamicName} Completed`;
-
+  // Generic fallback
+  const fallbackName = formatIntentName(cleanIntent || "Agentic Action");
   return {
-    name: dynamicName,
-    actionVerb,
-    completedText,
-    icon: dynamicIcon,
+    name: fallbackName,
+    actionVerb: paramVal ? `Executing ${fallbackName} (${paramVal})...` : `Executing ${fallbackName}...`,
+    completedText: `${fallbackName} Completed`,
+    icon: getDynamicToolIcon(cleanIntent, fallbackName),
   };
 }
 
 export interface IntentBridgeHUDProps {
-  prompt: string;
+  intent?: string;
+  params?: Record<string, any>;
+  prompt?: string;
   isDark: boolean;
   colorTheme?: ColorTheme;
   statusText?: string;
   isCompleted?: boolean;
   status?: string;
-  intent?: string;
-  params?: Record<string, any>;
   historyCount?: number;
   onDismiss?: () => void;
 }
 
-/**
- * High-tech 2-Node Dynamic Action Capsule Powered by AnimatedBeam.
- * Visualizes the direct, focused connection: Amigo Core ──laser beam──> Target Action.
- * Zero background boxes, seamless, compact, zero overlap with central orb.
- */
 export const IntentBridgeHUD: React.FC<IntentBridgeHUDProps> = ({
+  intent,
+  params,
   prompt,
   isDark,
   colorTheme = "violet",
   statusText,
   isCompleted = false,
-  status,
-  intent,
-  params,
   onDismiss,
 }) => {
   const theme = COLOR_THEMES[colorTheme] || COLOR_THEMES.violet;
-  const actionInfo = resolveActionInfo(intent, params, prompt);
   const laserGradId = useId();
 
-  const isOffline = status === "offline" || statusText?.toLowerCase().includes("offline");
-  const isFailed = status === "failed" || statusText?.toLowerCase().includes("failed");
-  const isSuccess = isCompleted && !isOffline && !isFailed;
+  const isSuccess =
+    isCompleted &&
+    (statusText?.toLowerCase().includes("completed") ||
+      statusText?.toLowerCase().includes("success") ||
+      statusText?.toLowerCase().includes("ready") ||
+      statusText?.toLowerCase().includes("retrieved") ||
+      statusText?.toLowerCase().includes("done") ||
+      statusText?.toLowerCase().includes("finished"));
 
-  // Auto-dismiss completed HUD bridge smoothly after 7 seconds
+  const isFailed =
+    statusText?.toLowerCase().includes("fail") ||
+    statusText?.toLowerCase().includes("error");
+
+  const isOffline =
+    isCompleted &&
+    (statusText?.toLowerCase().includes("offline") ||
+      statusText?.toLowerCase().includes("no internet"));
+
+  const actionInfo = resolveActionInfo(intent, params, prompt);
+
+  const onDismissRef = useRef(onDismiss);
   useEffect(() => {
-    if (isCompleted && onDismiss) {
+    onDismissRef.current = onDismiss;
+  }, [onDismiss]);
+
+  // Auto-dismiss completed HUD bridge smoothly after 7 seconds without resetting timer on parent renders
+  useEffect(() => {
+    if (isCompleted) {
       const timer = setTimeout(() => {
-        onDismiss();
+        onDismissRef.current?.();
       }, 7000);
       return () => clearTimeout(timer);
     }
-  }, [isCompleted, onDismiss]);
+  }, [isCompleted]);
 
   const beamGradientStart = theme.primary;
   const beamGradientStop = isSuccess
@@ -389,7 +396,7 @@ export const IntentBridgeHUD: React.FC<IntentBridgeHUDProps> = ({
       className="relative w-auto max-w-[240px] sm:max-w-[260px] mx-auto pointer-events-auto select-none bg-transparent border-0 shadow-none"
     >
       <div className="relative w-full py-1 bg-transparent border-0 shadow-none overflow-visible flex flex-col items-center group">
-        {/* 2 Connected Interactive Nodes via GPU-accelerated Laser Stream */}
+        {/* 2 Connected Interactive Nodes via Laser Stream */}
         <div className="relative flex items-center justify-between w-full px-2 py-1">
           {/* Node 1: Amigo AI Core Logo Node */}
           <div className="flex flex-col items-center text-center z-10">
@@ -400,19 +407,18 @@ export const IntentBridgeHUD: React.FC<IntentBridgeHUDProps> = ({
                 boxShadow: `0 0 16px -2px ${theme.glow}`,
               }}
             >
-              {/* Pulsing Aura Ring */}
               <span
                 className="absolute inset-0 rounded-xl border animate-pulse opacity-60 pointer-events-none"
                 style={{ borderColor: theme.accent || "#fff" }}
               />
               <Sparkles className="w-4 h-4 text-white drop-shadow" />
             </div>
-            <span className="text-[10px] font-semibold mt-1 text-slate-800 dark:text-white">
+            <span className={`text-[10px] font-semibold mt-1 ${isDark ? "text-white" : "text-slate-800"}`}>
               Amigo Core
             </span>
           </div>
 
-          {/* GPU Hardware-Accelerated 120 FPS Laser Beam Stream */}
+          {/* Laser Beam Stream */}
           <div className="relative flex-1 flex items-center justify-center mx-2 h-6 select-none pointer-events-none">
             <svg className="w-full h-4 overflow-visible" fill="none">
               <defs>
@@ -422,7 +428,6 @@ export const IntentBridgeHUD: React.FC<IntentBridgeHUDProps> = ({
                   <stop offset="100%" stopColor={beamGradientStop} stopOpacity="0.4" />
                 </linearGradient>
               </defs>
-              {/* Background guide track */}
               <line
                 x1="2"
                 y1="8"
@@ -432,16 +437,25 @@ export const IntentBridgeHUD: React.FC<IntentBridgeHUDProps> = ({
                 strokeWidth="1.5"
                 strokeLinecap="round"
               />
-              {/* High-speed GPU compositor laser flow */}
               <line
                 x1="2"
                 y1="8"
                 x2="100%"
                 y2="8"
-                stroke={isSuccess ? "#10b981" : `url(#${laserGradId})`}
-                strokeWidth={isSuccess ? "2" : "2.5"}
+                stroke={
+                  isSuccess
+                    ? "#10b981"
+                    : isOffline
+                    ? isDark
+                      ? "#64748b"
+                      : "#94a3b8"
+                    : isFailed
+                    ? "#f59e0b"
+                    : `url(#${laserGradId})`
+                }
+                strokeWidth={isSuccess ? "2" : isOffline ? "1.5" : "2.5"}
                 strokeLinecap="round"
-                className={isSuccess ? "" : "laser-beam-stream"}
+                className={isCompleted || isOffline ? "" : "laser-beam-stream"}
                 style={isSuccess ? { filter: "drop-shadow(0 0 6px #10b981)" } : undefined}
               />
             </svg>
@@ -458,6 +472,8 @@ export const IntentBridgeHUD: React.FC<IntentBridgeHUDProps> = ({
               style={
                 isSuccess
                   ? { borderColor: "#10b981", boxShadow: "0 0 14px -2px #10b98160" }
+                  : isOffline
+                  ? { borderColor: isDark ? "rgba(255,255,255,0.25)" : "rgba(0,0,0,0.25)" }
                   : isFailed
                   ? { borderColor: "#f59e0b", boxShadow: "0 0 14px -2px #f59e0b60" }
                   : {}
@@ -471,27 +487,43 @@ export const IntentBridgeHUD: React.FC<IntentBridgeHUDProps> = ({
           </div>
         </div>
 
-        {/* Seamless Status Label */}
-        <div className="flex items-center justify-center gap-1.5 mt-1 text-[10px] font-medium">
+        {/* Seamless Status Label with Accessible Live Region */}
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex items-center justify-center gap-1.5 mt-1 text-[10px] font-medium max-w-[240px] px-2"
+        >
           {isSuccess ? (
             <CheckCircle2 className="w-3 h-3 text-emerald-400 flex-shrink-0" />
+          ) : isOffline ? (
+            <span className="w-1.5 h-1.5 rounded-full bg-slate-400 flex-shrink-0" />
           ) : isFailed ? (
             <AlertCircle className="w-3 h-3 text-amber-400 flex-shrink-0" />
+          ) : isCompleted ? (
+            <CheckCircle2 className="w-3 h-3 text-emerald-400 flex-shrink-0" />
           ) : (
             <span
               className="w-1.5 h-1.5 rounded-full animate-ping flex-shrink-0"
               style={{ backgroundColor: theme.primary }}
             />
           )}
-          <span className="opacity-75 text-slate-700 dark:text-slate-300">
-            {statusText || (isSuccess ? actionInfo.completedText : actionInfo.actionVerb)}
+          <span className={`opacity-80 truncate ${isDark ? "text-slate-300" : "text-slate-700"}`}>
+            {statusText ||
+              (isSuccess
+                ? actionInfo.completedText
+                : isOffline
+                ? `${actionInfo.name} (Offline)`
+                : isCompleted
+                ? actionInfo.completedText
+                : actionInfo.actionVerb)}
           </span>
           {onDismiss && (
             <button
               type="button"
               onClick={onDismiss}
-              className="opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity ml-1 p-0.5 rounded text-slate-400 hover:text-slate-200"
+              className="opacity-60 hover:opacity-100 focus:opacity-100 transition-opacity ml-1 p-0.5 rounded-full text-slate-400 hover:text-slate-200 focus:outline-none flex-shrink-0"
               title="Dismiss"
+              aria-label="Dismiss action notice"
             >
               <X className="w-2.5 h-2.5" />
             </button>

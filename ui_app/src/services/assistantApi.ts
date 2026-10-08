@@ -43,6 +43,36 @@ export async function transcribeAudio(
   return data.transcription || data.text || data.transcript || "";
 }
 
+function isSecureOrLocalEndpoint(url: string): boolean {
+  if (url.startsWith("/")) return true;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === "https:") return true;
+    if (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "::1") return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function applyCustomHeaders(headers: Record<string, string>, rawJson?: string) {
+  if (!rawJson || typeof rawJson !== "string") return;
+  try {
+    const parsed = JSON.parse(rawJson);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      for (const [key, value] of Object.entries(parsed)) {
+        if (
+          typeof key === "string" &&
+          key.trim() &&
+          (typeof value === "string" || typeof value === "number" || typeof value === "boolean")
+        ) {
+          headers[key.trim()] = String(value);
+        }
+      }
+    }
+  } catch (_) {}
+}
+
 /**
  * Test connectivity with user's backend endpoint
  */
@@ -59,16 +89,11 @@ export async function testBackendConnection(config: BackendConfig): Promise<{
     "Content-Type": "application/json",
   };
 
-  if (config.apiKey) {
+  if (config.apiKey && isSecureOrLocalEndpoint(endpoint)) {
     headers["Authorization"] = `Bearer ${config.apiKey}`;
   }
 
-  if (config.customHeaders) {
-    try {
-      const parsed = JSON.parse(config.customHeaders);
-      Object.assign(headers, parsed);
-    } catch (e) {}
-  }
+  applyCustomHeaders(headers, config.customHeaders);
 
   try {
     const response = await fetch(endpoint, {
@@ -131,16 +156,11 @@ export async function executeBackendAction(
     "Content-Type": "application/json",
   };
 
-  if (backendConfig.apiKey) {
+  if (backendConfig.apiKey && isSecureOrLocalEndpoint(endpoint)) {
     headers["Authorization"] = `Bearer ${backendConfig.apiKey}`;
   }
 
-  if (backendConfig.customHeaders) {
-    try {
-      const parsed = JSON.parse(backendConfig.customHeaders);
-      Object.assign(headers, parsed);
-    } catch (e) {}
-  }
+  applyCustomHeaders(headers, backendConfig.customHeaders);
 
   try {
     const res = await fetch(endpoint, {
@@ -175,16 +195,11 @@ export async function processVoiceCommand(
     "Content-Type": "application/json",
   };
 
-  if (backendConfig?.apiKey) {
+  if (backendConfig?.apiKey && isSecureOrLocalEndpoint(endpoint)) {
     headers["Authorization"] = `Bearer ${backendConfig.apiKey}`;
   }
 
-  if (backendConfig?.customHeaders) {
-    try {
-      const parsed = JSON.parse(backendConfig.customHeaders);
-      Object.assign(headers, parsed);
-    } catch (e) {}
-  }
+  applyCustomHeaders(headers, backendConfig?.customHeaders);
 
   try {
     const response = await fetch(endpoint, {
@@ -572,26 +587,114 @@ export interface RagStatusData {
   indexer?: IndexerProgressData;
 }
 
-export async function fetchRagStatus(): Promise<RagStatusData> {
+export interface ApiFetchOptions extends RequestInit {
+  timeoutMs?: number;
+}
+
+/**
+ * Universal robust API fetch wrapper with timeout, abort handling, and standardized error parsing
+ */
+export async function apiFetch<T = any>(
+  endpoint: string,
+  options: ApiFetchOptions = {}
+): Promise<T> {
+  const { timeoutMs = 20000, signal, ...fetchOpts } = options;
+  const controller = new AbortController();
+
+  let timeoutId: any = null;
+  if (timeoutMs > 0) {
+    timeoutId = setTimeout(() => {
+      controller.abort(new Error(`Request timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  }
+
+  if (signal) {
+    signal.addEventListener("abort", () => {
+      controller.abort(signal.reason);
+      if (timeoutId) clearTimeout(timeoutId);
+    });
+  }
+
   try {
-    const res = await fetch("/api/rag/status");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
+    const res = await fetch(endpoint, {
+      ...fetchOpts,
+      signal: controller.signal,
+    });
+    if (timeoutId) clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      const message =
+        errBody.error ||
+        errBody.message ||
+        `Request to ${endpoint} failed with HTTP ${res.status}`;
+      const error: any = new Error(message);
+      error.status = res.status;
+      error.data = errBody;
+      throw error;
+    }
+
+    const contentType = res.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      return (await res.json()) as T;
+    }
+    return (await res.text()) as unknown as T;
+  } catch (err: any) {
+    if (timeoutId) clearTimeout(timeoutId);
+    throw err;
+  }
+}
+
+export async function fetchRagStatus(signal?: AbortSignal): Promise<RagStatusData> {
+  try {
+    return await apiFetch<RagStatusData>("/api/rag/status", {
+      signal,
+      timeoutMs: 8000,
+    });
   } catch (e) {
     return { total: 0, documents: 0, conversations: 0, is_indexing: false };
   }
 }
 
 export async function triggerRagReindex(force: boolean = true): Promise<{ status: string; message: string }> {
-  const res = await fetch("/api/rag/reindex", {
+  return await apiFetch<{ status: string; message: string }>("/api/rag/reindex", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ force }),
+    timeoutMs: 15000,
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.message || `Failed to start re-indexing (HTTP ${res.status})`);
-  }
-  return await res.json();
+}
+
+export async function fetchAssistantSettings(signal?: AbortSignal): Promise<any> {
+  return await apiFetch("/api/settings", { signal, timeoutMs: 10000 });
+}
+
+export async function saveAssistantSettings(settings: any): Promise<any> {
+  return await apiFetch("/api/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+    timeoutMs: 12000,
+  });
+}
+
+export async function fetchAssistantHistory(signal?: AbortSignal): Promise<any> {
+  return await apiFetch("/api/history", { signal, timeoutMs: 10000 });
+}
+
+export async function clearAssistantHistory(): Promise<any> {
+  return await apiFetch("/api/clear-memory", {
+    method: "POST",
+    timeoutMs: 10000,
+  });
+}
+
+export async function executeAssistantAction(payload: Record<string, any>): Promise<any> {
+  return await apiFetch("/api/action/execute", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    timeoutMs: 15000,
+  });
 }
 

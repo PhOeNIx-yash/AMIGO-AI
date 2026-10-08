@@ -3,13 +3,8 @@ import {
   MODE_FRAMES,
   paintFrame,
   resolvePreset,
-  makeProj,
-  radiusScale,
-  finalizeFrame,
-  Dot,
-  OrbFrame,
 } from "thinking-orbs/engine";
-import { fibDir, scaleCounts, scaleRadii, OrbState } from "thinking-orbs";
+import { scaleCounts, scaleRadii, OrbState } from "thinking-orbs";
 import { AssistantState, ColorTheme, VisualizerMode, ThinkingOrbStyle } from "../types";
 import { COLOR_THEMES } from "../data/presets";
 import { audioBus } from "../utils/audioBus";
@@ -47,16 +42,10 @@ export const STYLE_TO_ORB_STATE: Record<ThinkingOrbStyle, OrbState> = {
   rubik: "solving",
 };
 
-// 3D Spherical & harmonic state mapping:
-// idle: 'weaving' (3D braided strands + 150 ghost sphere particles)
-// listening: custom harmonic voice wave sphere with real-time audio reactivity
-// processing: dynamic thinking orb style (default 'searching' - 3D radar globe)
-// working: 'working' (3D particle orbits around sphere)
-// completed: 'composing' (3D flowing harmonic ribbon)
-// generated_content: 'composing' (showing generated content for review)
+// 3D Spherical state mapping
 const ORB_STATES: Record<AssistantState, OrbState> = {
   idle: "weaving",
-  listening: "listening",
+  listening: "weaving",
   processing: "searching",
   action_card: "shaping",
   contact_picker: "connecting",
@@ -64,7 +53,6 @@ const ORB_STATES: Record<AssistantState, OrbState> = {
   completed: "composing",
   generated_content: "composing",
 };
-
 
 const ORB_LABELS: Record<AssistantState, string> = {
   idle: "Amigo is ready",
@@ -92,80 +80,29 @@ function parseOrbTint(color: string) {
   };
 }
 
-/**
- * 3D Harmonic Voice Listening Frame Renderer
- * Designed for rock-solid 60 FPS, silky-smooth voice amplitude reactivity,
- * zero z-fighting/flicker, and seamless continuity with the idle Fibonacci particle sphere.
- */
-function frameListening(
-  size: number,
-  t: number,
-  audioLevel: number,
-  rBase: number = 1.15,
-  rDepth: number = 1.65
-): OrbFrame {
-  const cx = size / 2;
-  const cy = size / 2;
-  const R = (size / 2) * 0.76;
-  const camTilt = 0.32;
-  const pt = makeProj(t * 0.35, camTilt, cx, cy, 1);
-  const rs = radiusScale(size, 0.6);
-  const dots: Dot[] = [];
+const ORB_COLORS_DARK: Record<AssistantState, string> = {
+  listening: "#00f0ff",
+  processing: "#60a5fa",
+  working: "#818cf8",
+  completed: "#2dd4bf",
+  generated_content: "#2dd4bf",
+  action_card: "#38bdf8",
+  contact_picker: "#38bdf8",
+  idle: "#38bdf8",
+};
 
-  // 1. 3D Fibonacci Ghost Hull: 84 sparkling particles forming the sphere's translucent body
-  const ghostN = 84;
-  const audioPulse = 1 + audioLevel * 0.10;
-  for (let i = 0; i < ghostN; i++) {
-    const d = fibDir(i, ghostN);
-    const rG = R * audioPulse * (1 + 0.025 * Math.sin(t * 1.5 + i * 0.7));
-    const [px, py, z] = pt(d[0] * rG, d[1] * rG, d[2] * rG);
-    const depth = (z / R + 1) / 2;
-    dots.push({
-      x: px,
-      y: py,
-      z,
-      r: (0.75 + 0.35 * audioLevel) * rs,
-      white: 0.76 + 0.18 * audioLevel,
-      a: 0.15 + 0.32 * depth + 0.12 * audioLevel,
-    });
-  }
+const ORB_COLORS_LIGHT: Record<AssistantState, string> = {
+  listening: "#0891b2",
+  processing: "#2563eb",
+  working: "#4338ca",
+  completed: "#0d9488",
+  generated_content: "#0d9488",
+  action_card: "#0284c7",
+  contact_picker: "#0284c7",
+  idle: "#0284c7",
+};
 
-  // 2. Harmonic Fluid Voice Strands: 3 continuous flowing wave ribbons wrapped around the sphere
-  const strands = 3;
-  const strandPoints = 42;
-  const waveAmp = 0.04 + audioLevel * 0.16;
-  for (let s = 0; s < strands; s++) {
-    const phase = (s / strands) * Math.PI * 2;
-    for (let i = 0; i < strandPoints; i++) {
-      const u = (i / strandPoints) * 2 - 1; // -1 to 1 latitude
-      const lat = u * (Math.PI * 0.44);
-      const cosLat = Math.cos(lat);
-      const sinLat = Math.sin(lat);
-      const lon = u * Math.PI * 3.0 + t * 0.5 + phase;
 
-      // Smooth organic harmonic wave equation
-      const wave = 1 + waveAmp * Math.sin(u * 4.2 - t * 2.2 + phase * 2);
-      const rr = R * wave * audioPulse;
-      const x = cosLat * Math.cos(lon) * rr;
-      const y = sinLat * rr;
-      const z0 = cosLat * Math.sin(lon) * rr;
-
-      const [px, py, z] = pt(x, y, z0);
-      const depth = (z / R + 1) / 2;
-      const endFade = 1 - Math.abs(u) * 0.45;
-      dots.push({
-        x: px,
-        y: py,
-        z,
-        r: ((rBase + rDepth * depth) * (1 + 0.3 * audioLevel)) * rs,
-        white: Math.max(0, 0.58 - 0.48 * depth + 0.28 * audioLevel),
-        a: endFade * (0.42 + 0.58 * depth),
-      });
-    }
-  }
-
-  return finalizeFrame(dots, [], 0.3);
-}
 
 interface HighResolutionOrbProps {
   state: AssistantState;
@@ -175,7 +112,6 @@ interface HighResolutionOrbProps {
   speed: number;
   paused: boolean;
   ariaLabel: string;
-  haloRef: React.RefObject<HTMLDivElement | null>;
   coreRef: React.RefObject<HTMLDivElement | null>;
 }
 
@@ -187,7 +123,6 @@ const HighResolutionOrb: React.FC<HighResolutionOrbProps> = ({
   speed,
   paused,
   ariaLabel,
-  haloRef,
   coreRef,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -196,12 +131,43 @@ const HighResolutionOrb: React.FC<HighResolutionOrbProps> = ({
   const simTimeRef = useRef(0);
   const lastTimeRef = useRef(0);
 
+  // Dynamic references allow continuous rendering loop without tearing down canvas context on prop changes
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const orbStateRef = useRef(orbState);
+  orbStateRef.current = orbState;
+  const colorRef = useRef(color);
+  colorRef.current = color;
+  const isDarkRef = useRef(isDark);
+  isDarkRef.current = isDark;
+  const speedRef = useRef(speed);
+  speedRef.current = speed;
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
+
+  // Reduced motion preference handling
+  const prefersReducedMotion = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
   // Subscribe to live audio levels with smooth decay
   useEffect(() => {
     return audioBus.subscribe((level) => {
       audioTargetRef.current = Math.min(Math.max(level, 0), 1);
     });
   }, []);
+
+  const loopRef = useRef<((now: number) => void) | null>(null);
+  const isLoopActiveRef = useRef(false);
+  const runningRef = useRef(true);
+  const animationFrameRef = useRef(0);
+
+  useEffect(() => {
+    pausedRef.current = paused;
+    if (!paused && canvasRef.current && runningRef.current && !isLoopActiveRef.current && loopRef.current) {
+      lastTimeRef.current = performance.now();
+      isLoopActiveRef.current = true;
+      animationFrameRef.current = requestAnimationFrame(loopRef.current);
+    }
+  }, [paused]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -213,74 +179,83 @@ const HighResolutionOrb: React.FC<HighResolutionOrbProps> = ({
     const context = canvas.getContext("2d");
     if (!context) return;
 
-    const { mode, speed: baseSpeed, opts } = resolvePreset(orbState, 64);
-    // Moderate, high-performance scaling to maintain rock-solid 60fps with rich 3D density
-    const scaledOpts = scaleCounts(scaleRadii(opts, 1.15), 1.25);
-    const frameRenderer = MODE_FRAMES[mode];
-    const tint = parseOrbTint(color);
-    let animationFrame = 0;
-    let running = true;
-
+    runningRef.current = true;
     lastTimeRef.current = performance.now();
 
     const loop = (now: number) => {
-      if (!running) return;
+      if (!runningRef.current) {
+        isLoopActiveRef.current = false;
+        return;
+      }
+
+      if (pausedRef.current) {
+        // Suspend loop when paused to completely stop CPU/GPU load
+        isLoopActiveRef.current = false;
+        return;
+      }
+
+      isLoopActiveRef.current = true;
 
       // Delta time in seconds, capped at 40ms to prevent jumps on tab resume
       const dt = Math.min(Math.max((now - lastTimeRef.current) / 1000, 0), 0.04);
       lastTimeRef.current = now;
 
-      // Asymmetric DSP envelope follower: fast attack (24ms), graceful natural decay (60ms)
-      const targetAudio = state === "listening" ? audioTargetRef.current : 0;
-      const attack = 0.24;
-      const decay = 0.06;
-      const k = targetAudio > audioSmoothRef.current ? attack : decay;
-      audioSmoothRef.current += (targetAudio - audioSmoothRef.current) * k;
+      // Physical DSP envelope follower in seconds (consistent across 60Hz, 120Hz, 144Hz displays)
+      const targetAudio = stateRef.current === "listening" ? audioTargetRef.current : 0;
+      const timeConst = targetAudio > audioSmoothRef.current ? 0.024 : 0.060; // 24ms attack, 60ms decay
+      const alpha = 1 - Math.exp(-dt / timeConst);
+      audioSmoothRef.current += (targetAudio - audioSmoothRef.current) * alpha;
       const smoothAudio = audioSmoothRef.current;
 
-      // STABLE CLOCK: Uniform time progression ensures silky-smooth 60fps with ZERO stutter or tearing
-      // Base speed is steady and calm across all states (normalized listening speed)
-      const effSpeed = state === "listening" ? 1.62 : baseSpeed;
-      simTimeRef.current += dt * effSpeed * speed;
+      const currentOrbState = orbStateRef.current;
+      const { mode, speed: baseSpeed, opts } = resolvePreset(currentOrbState, 64);
+      const scaledOpts = scaleCounts(scaleRadii(opts, 1.15), 1.25);
+      const frameRenderer = MODE_FRAMES[mode];
+      const tint = parseOrbTint(colorRef.current);
+      const motionMultiplier = prefersReducedMotion ? 0.2 : 1.0;
 
-      // Direct zero-overhead hardware-accelerated halo & core breathing (direct GPU transforms, zero CSSOM recalculation)
-      if (haloRef.current) {
-        const haloScale = 1.0 + smoothAudio * 0.22;
-        const haloOpacity = isDark
-          ? 0.30 + smoothAudio * 0.25
-          : 0.22 + smoothAudio * 0.18;
-        haloRef.current.style.transform = `scale(${haloScale.toFixed(3)}) translateZ(0)`;
-        haloRef.current.style.opacity = haloOpacity.toFixed(3);
-      }
+      const effSpeed = (stateRef.current === "listening" ? 1.62 : baseSpeed) * motionMultiplier;
+      simTimeRef.current += dt * effSpeed * speedRef.current;
+
+      // Direct zero-overhead hardware-accelerated core breathing
       if (coreRef.current) {
         const coreScale = 1.0 + smoothAudio * 0.06;
         coreRef.current.style.transform = `scale(${coreScale.toFixed(3)}) translateZ(0)`;
       }
 
-      // Render frame
+      // Render frame without wiping canvas.width
       context.setTransform(dpr, 0, 0, dpr, 0, 0);
       context.clearRect(0, 0, ORB_RENDER_SIZE, ORB_RENDER_SIZE);
 
-      const frame = state === "listening"
-        ? frameListening(ORB_RENDER_SIZE, simTimeRef.current, smoothAudio)
-        : frameRenderer(ORB_RENDER_SIZE, simTimeRef.current, scaledOpts);
+      const frame = frameRenderer(ORB_RENDER_SIZE, simTimeRef.current, scaledOpts);
 
-      paintFrame(context, frame, isDark, tint);
+      paintFrame(context, frame, isDarkRef.current, tint);
 
-      if (!paused) {
-        animationFrame = requestAnimationFrame(loop);
-      }
+      animationFrameRef.current = requestAnimationFrame(loop);
     };
 
-    if (!paused) {
-      animationFrame = requestAnimationFrame(loop);
+    loopRef.current = loop;
+
+    // Draw initial frame immediately so canvas is never blank if paused at mount
+    const { mode, opts } = resolvePreset(orbStateRef.current, 64);
+    const scaledOpts = scaleCounts(scaleRadii(opts, 1.15), 1.25);
+    const frameRenderer = MODE_FRAMES[mode];
+    const initialFrame = frameRenderer(ORB_RENDER_SIZE, 0, scaledOpts);
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    paintFrame(context, initialFrame, isDarkRef.current, parseOrbTint(colorRef.current));
+
+    if (!pausedRef.current) {
+      isLoopActiveRef.current = true;
+      animationFrameRef.current = requestAnimationFrame(loop);
     }
 
     return () => {
-      running = false;
-      cancelAnimationFrame(animationFrame);
+      runningRef.current = false;
+      isLoopActiveRef.current = false;
+      cancelAnimationFrame(animationFrameRef.current);
+      loopRef.current = null;
     };
-  }, [color, coreRef, haloRef, isDark, orbState, paused, speed, state]);
+  }, []);
 
   return (
     <canvas
@@ -302,30 +277,21 @@ export const CanvasVisualizer: React.FC<CanvasVisualizerProps> = React.memo(({
   isPaused = false,
   thinkingOrbStyle = "globe",
 }) => {
-  const theme = COLOR_THEMES[colorTheme] || COLOR_THEMES.violet;
   const baseOrbState = ORB_STATES[state] || "weaving";
   const orbState: OrbState =
     state === "processing"
       ? (STYLE_TO_ORB_STATE[thinkingOrbStyle] || "searching")
       : baseOrbState;
-  const orbColor = isDark ? theme.accent : theme.primary;
-  const haloRef = useRef<HTMLDivElement>(null);
+
+  const orbColor = isDark ? (ORB_COLORS_DARK[state] || "#38bdf8") : (ORB_COLORS_LIGHT[state] || "#0284c7");
   const coreRef = useRef<HTMLDivElement>(null);
 
   return (
     <div
-      className={`amigo-orb-stage absolute inset-0 z-0 pointer-events-none overflow-hidden transition-all duration-500 ${
-        compact ? "compact opacity-85" : "opacity-100"
+      className={`amigo-orb-stage relative flex items-center justify-center z-0 pointer-events-none transition-all duration-500 ${
+        compact ? "compact opacity-0 scale-75" : "opacity-100 scale-100"
       }`}
-      aria-hidden="true"
     >
-      <div
-        ref={haloRef}
-        className="amigo-orb-halo"
-        style={{
-          background: `radial-gradient(circle, ${theme.glow} 0%, rgba(0,0,0,0) 70%)`,
-        }}
-      />
       <div ref={coreRef} className="amigo-orb-core">
         <HighResolutionOrb
           state={state}
@@ -335,7 +301,6 @@ export const CanvasVisualizer: React.FC<CanvasVisualizerProps> = React.memo(({
           paused={isPaused}
           isDark={isDark}
           ariaLabel={ORB_LABELS[state] || ORB_LABELS.idle}
-          haloRef={haloRef}
           coreRef={coreRef}
         />
       </div>

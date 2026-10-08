@@ -19,7 +19,7 @@ export type AssistantState =
   | "completed" // Final result card / dispatch summary
   | "generated_content"; // Showing generated content panel for review
 
-export type ColorTheme = "violet" | "cobalt" | "emerald" | "sunset" | "cyan" | "weather" | "noir";
+export type ColorTheme = "beams" | "violet" | "cobalt" | "emerald" | "sunset" | "cyan" | "weather" | "noir";
 
 export type PluginMode = "floating" | "docked_right" | "docked_bottom" | "fullscreen";
 
@@ -43,6 +43,7 @@ export interface ContactItem {
   avatarColor: string;
   avatarImg?: string;
   role?: string;
+  online?: boolean;
 }
 
 export interface AssistantResponse {
@@ -86,7 +87,7 @@ export interface BackendConfig {
   customHeaders?: string;
   protocol: "rest" | "websocket";
   autoSpeech: boolean;
-  transcriptionEngine: "amigo-speech" | "web-speech" | "custom";
+  transcriptionEngine: "amigo-speech" | "web-speech" | "whisper" | "custom";
   transcriptionUrl?: string;
   thinkingEnabled?: boolean;
 }

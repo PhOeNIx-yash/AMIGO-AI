@@ -25,6 +25,10 @@ import {
   Sparkles,
   X,
   Pin,
+  Sun,
+  Folder,
+  Cpu,
+  Music,
 } from "lucide-react";
 import { HistoryEntry, ColorTheme } from "../types";
 import { COLOR_THEMES } from "../data/presets";
@@ -206,11 +210,7 @@ export function DeleteButton({
     setStatus(next);
     trigger.current?.focus();
     if (next === "deleted") {
-      // Allow the end checkmark and bin animation to complete before clearing data
-      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
-      confirmTimerRef.current = setTimeout(() => {
-        onConfirm?.();
-      }, 700);
+      onConfirm?.();
     } else {
       onCancel?.();
     }
@@ -369,9 +369,29 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
   const [searchQuery, setSearchQuery] = useState("");
   const [intentFilter, setIntentFilter] = useState("all");
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());
+  const [pinnedIds, setPinnedIds] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem("amigo_pinned_history_ids");
+      return saved ? new Set(JSON.parse(saved)) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
   const dropdownRef = useRef<HTMLDivElement>(null);
   const theme = COLOR_THEMES[colorTheme] || COLOR_THEMES.violet;
+
+  const togglePin = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setPinnedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      try {
+        localStorage.setItem("amigo_pinned_history_ids", JSON.stringify(Array.from(next)));
+      } catch {}
+      return next;
+    });
+  };
 
   // Close dropdown on click outside
   useEffect(() => {
@@ -393,14 +413,23 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
     setExpandedId((prev) => (prev === id ? null : id));
   };
 
-  const intentOptions = Array.from(new Set(history.map((item) => item.response.intent).filter(Boolean)));
-  const filteredHistory = history.filter((item) => {
-    const matchesSearch =
-      item.prompt.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      item.response.displayTitle?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      item.response.intent?.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesSearch && (intentFilter === "all" || item.response.intent === intentFilter);
-  }).sort((a, b) => Number(pinnedIds.has(b.id)) - Number(pinnedIds.has(a.id)));
+  const intentOptions = React.useMemo(() => {
+    return Array.from(new Set(history.map((item) => item.response.intent).filter(Boolean))) as string[];
+  }, [history]);
+
+  const filteredHistory = React.useMemo(() => {
+    const q = searchQuery.toLowerCase().trim();
+    return history
+      .filter((item) => {
+        const matchesSearch =
+          !q ||
+          item.prompt.toLowerCase().includes(q) ||
+          item.response.displayTitle?.toLowerCase().includes(q) ||
+          item.response.intent?.toLowerCase().includes(q);
+        return matchesSearch && (intentFilter === "all" || item.response.intent === intentFilter);
+      })
+      .sort((a, b) => Number(pinnedIds.has(b.id)) - Number(pinnedIds.has(a.id)));
+  }, [history, searchQuery, intentFilter, pinnedIds]);
 
   const formatTime = (timestamp: number | string | undefined) => {
     if (!timestamp) return "Just now";
@@ -446,20 +475,19 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
     return rawPrompt;
   };
 
-  const getIntentIcon = (intent: string) => {
-    switch (intent) {
-      case "translate_email":
-      case "send_message":
-        return <MessageSquare className="w-3.5 h-3.5 text-blue-400" />;
-      case "book_restaurant":
-        return <Utensils className="w-3.5 h-3.5 text-emerald-400" />;
-      case "map":
-        return <MapPin className="w-3.5 h-3.5 text-rose-400" />;
-      case "schedule":
-        return <Calendar className="w-3.5 h-3.5 text-amber-400" />;
-      default:
-        return <Sparkles className="w-3.5 h-3.5" style={{ color: theme.accent || theme.primary }} />;
-    }
+  const getIntentIcon = (intent?: string) => {
+    const clean = (intent || "").toLowerCase();
+    if (clean.includes("weather")) return <Sun className="w-3.5 h-3.5 text-amber-400" />;
+    if (clean.includes("timer") || clean.includes("stopwatch") || clean.includes("clock")) return <Clock className="w-3.5 h-3.5 text-amber-400" />;
+    if (clean.includes("file") || clean.includes("folder")) return <Folder className="w-3.5 h-3.5 text-indigo-400" />;
+    if (clean.includes("youtube") || clean.includes("music") || clean.includes("media")) return <Music className="w-3.5 h-3.5 text-rose-400" />;
+    if (clean.includes("search") || clean.includes("google") || clean.includes("web")) return <Search className="w-3.5 h-3.5 text-sky-400" />;
+    if (clean.includes("email") || clean.includes("mail") || clean.includes("message")) return <MessageSquare className="w-3.5 h-3.5 text-blue-400" />;
+    if (clean.includes("restaurant") || clean.includes("food")) return <Utensils className="w-3.5 h-3.5 text-emerald-400" />;
+    if (clean.includes("map") || clean.includes("location")) return <MapPin className="w-3.5 h-3.5 text-rose-400" />;
+    if (clean.includes("calendar") || clean.includes("schedule")) return <Calendar className="w-3.5 h-3.5 text-purple-400" />;
+    if (clean.includes("system") || clean.includes("device") || clean.includes("stats") || clean.includes("hardware")) return <Cpu className="w-3.5 h-3.5 text-amber-400" />;
+    return <Sparkles className="w-3.5 h-3.5" style={{ color: theme.accent || theme.primary }} />;
   };
 
   return (
@@ -467,21 +495,21 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
       {isOpen && (
         <motion.aside
           id="voice-history-sidebar"
-          initial={{ x: "-100%", opacity: 0 }}
-          animate={{ x: 0, opacity: 1 }}
-          exit={{ x: "-100%", opacity: 0 }}
-          transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-          className={`absolute top-0 left-0 bottom-0 z-40 w-80 sm:w-96 flex flex-col border-r shadow-2xl backdrop-blur-md transition-colors duration-200 ${
+          initial={{ x: "-100%" }}
+          animate={{ x: 0 }}
+          exit={{ x: "-100%" }}
+          transition={{ duration: 0.2, ease: "easeOut" }}
+          className={`absolute top-0 left-0 bottom-0 z-40 w-80 sm:w-96 flex flex-col border-r shadow-2xl transition-colors duration-200 ${
             isDark
               ? "border-white/10 text-white"
               : "border-black/10 text-slate-900"
           }`}
           style={{
-            willChange: "transform, opacity",
+            willChange: "transform",
             transform: "translate3d(0, 0, 0)",
             background: isDark
-              ? `radial-gradient(ellipse 120% 70% at 0% 0%, ${theme.primary}12 0%, rgba(12, 12, 24, 0.96) 65%)`
-              : `radial-gradient(ellipse 120% 70% at 0% 0%, ${theme.primary}08 0%, rgba(255, 255, 255, 0.97) 65%)`,
+              ? `radial-gradient(ellipse 120% 70% at 0% 0%, ${theme.primary}15 0%, #0c0c18 65%)`
+              : `radial-gradient(ellipse 120% 70% at 0% 0%, ${theme.primary}08 0%, #ffffff 65%)`,
             borderColor: isDark ? `${theme.primary}22` : `${theme.primary}15`,
           }}
         >
@@ -697,7 +725,6 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
               return (
                 <motion.div
                   key={item.id}
-                  layout
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
                   className={`group relative rounded-xl p-3 border transition-all duration-200 cursor-pointer ${
@@ -718,45 +745,45 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
                     boxShadow: isExpanded ? `0 4px 20px -2px ${theme.primary}20` : undefined,
                   }}
                   onClick={() => {
-                    sfx.playClick();
-                    onSelectHistoryEntry(item);
+                    toggleExpand(item.id);
                   }}
                 >
-                  {/* Top Row: Intent & Time */}
+                  {/* Top Row: Intent, Time & Pin */}
                   <div className="flex items-center justify-between text-[11px] mb-1.5">
-                    <div className="flex items-center space-x-1.5">
+                    <div className="flex items-center space-x-1.5 min-w-0 pr-1">
                       {getIntentIcon(item.response.intent)}
-                      <span className="capitalize opacity-75 font-mono">
-                        {item.response.intent?.replace("_", " ") || "Command"}
+                      <span className="capitalize opacity-75 font-mono truncate">
+                        {item.response.intent?.replace(/_/g, " ") || "Command"}
                       </span>
                     </div>
-                    <div className="flex items-center gap-1.5">
-                      {item.response.metadata?.status && <span className={`text-[10px] ${item.response.metadata.status === "completed" ? "text-emerald-400" : "text-rose-400"}`}>{item.response.metadata.status}</span>}
-                      {typeof item.response.metadata?.duration_ms === "number" && <span className="text-[10px] opacity-50">{Math.round(item.response.metadata.duration_ms)}ms</span>}
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      {item.response.metadata?.status && (
+                        <span className={`text-[10px] ${item.response.metadata.status === "completed" ? "text-emerald-400" : "text-rose-400"}`}>
+                          {item.response.metadata.status}
+                        </span>
+                      )}
+                      {typeof item.response.metadata?.duration_ms === "number" && (
+                        <span className="text-[10px] opacity-50">{Math.round(item.response.metadata.duration_ms)}ms</span>
+                      )}
                       <span className="opacity-50 text-[10px]">{formatTime(item.timestamp)}</span>
+                      <button
+                        type="button"
+                        aria-label={pinnedIds.has(item.id) ? "Unpin result" : "Pin result"}
+                        onClick={(e) => togglePin(item.id, e)}
+                        className={`rounded-md p-0.5 transition-colors ${
+                          pinnedIds.has(item.id) ? "text-amber-400" : "opacity-30 hover:opacity-80"
+                        }`}
+                        title={pinnedIds.has(item.id) ? "Unpin result" : "Pin result"}
+                      >
+                        <Pin className="h-3 w-3" />
+                      </button>
                     </div>
                   </div>
 
-                  {/* Prompt Text */}
-                  <p className="text-xs font-semibold leading-snug">
+                  {/* Prompt Text with Line Clamp */}
+                  <p className={`text-xs font-semibold leading-snug ${isExpanded ? "" : "line-clamp-2"}`}>
                     "{formatPromptDisplay(item.prompt)}"
                   </p>
-                  <button
-                    type="button"
-                    aria-label={pinnedIds.has(item.id) ? "Unpin result" : "Pin result"}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setPinnedIds((current) => {
-                        const next = new Set(current);
-                        if (next.has(item.id)) next.delete(item.id); else next.add(item.id);
-                        return next;
-                      });
-                    }}
-                    className={`absolute right-2 top-8 rounded-md p-1 transition-colors ${pinnedIds.has(item.id) ? "text-amber-400" : "opacity-30 hover:opacity-80"}`}
-                    title={pinnedIds.has(item.id) ? "Unpin result" : "Pin result"}
-                  >
-                    <Pin className="h-3 w-3" />
-                  </button>
 
                   {/* Brief snippet when collapsed */}
                   {!isExpanded && detailsText && (

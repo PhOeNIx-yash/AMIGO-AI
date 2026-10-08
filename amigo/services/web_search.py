@@ -67,7 +67,7 @@ DEFAULT_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-SEARCH_REGION = os.getenv("AMIGO_SEARCH_REGION", "wt-wt")
+SEARCH_REGION = os.getenv("AMIGO_SEARCH_REGION", "us-en")
 SEARXNG_URL = os.getenv("AMIGO_SEARXNG_URL", "").rstrip("/")
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
 YT_REGION = os.getenv("AMIGO_YT_REGION", "")  # e.g. "US", "IN"; empty = let YouTube decide
@@ -78,7 +78,7 @@ PER_ENGINE_FAST = 5
 SNIPPET_CHARS = 320
 
 # (tier-1 seconds, tier-2 seconds). Tier 2 (fallback engines) only runs if tier 1 gave nothing usable.
-_BUDGETS = {"fast": (2.5, 1.5), "full": (4.0, 2.5)}
+_BUDGETS = {"fast": (3.5, 2.0), "full": (4.5, 2.5)}
 MERGE_GRACE_S = 0.35          # how long to wait for a 2nd list after the 1st primary answers
 MERGE_GRACE_FAST_S = 0.15
 HTTP_TIMEOUT = (1.5, 3.0)     # (connect, read)
@@ -328,17 +328,25 @@ _SEARCH_PHRASE = re.compile(
 )
 _SEARCH_BARE_VERB = re.compile(r"^(?:" + _LEAD_IN + r")+(?:search|google|find)\s+", re.I)
 _SEARCH_TRAIL = re.compile(r"\s+(?:on\s+google|on\s+the\s+(?:web|internet))$", re.I)
+_QUESTION_LEAD_IN = re.compile(
+    r"^(?:(?:(?:can|could|would)\s+(?:you|u)\s+)?(?:tell|inform)\s+(?:me|us)\s+)?"
+    r"(?:who|what|where|when|which)\s+(?:is|are|was|were|do|does|did)\s+(?:the\s+)?",
+    re.I,
+)
 
 
 def clean_search_query(raw_query: str) -> str:
-    """Strip spoken command wrappers ('hey amigo, search for ...'). Conservative by design."""
+    """Strip spoken command wrappers and conversational question prefixes for search engines."""
     if not raw_query:
         return ""
     q = raw_query.strip()
     q = _SEARCH_PHRASE.sub("", q)
     q = _SEARCH_BARE_VERB.sub("", q)
     q = _SEARCH_TRAIL.sub("", q).strip()
-    return q if len(q) >= 2 else raw_query.strip()
+    cleaned_q = _QUESTION_LEAD_IN.sub("", q).strip()
+    if len(cleaned_q) >= 2:
+        q = cleaned_q
+    return q.strip() if len(q) >= 2 else raw_query.strip()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -360,11 +368,13 @@ def _load_ddgs():
 
 
 def _p_ddgs_text(query: str, limit: int, freshness: str) -> list[SearchResult]:
-    kw = {"region": SEARCH_REGION, "max_results": limit}
+    clean_q = clean_search_query(query) or query
+    reg = SEARCH_REGION if (SEARCH_REGION and SEARCH_REGION != "wt-wt") else "us-en"
+    kw = {"region": reg, "max_results": limit}
     if freshness == "news":
         kw["timelimit"] = "m"
     with _load_ddgs()(timeout=4) as client:
-        rows = list(client.text(query, **kw) or [])
+        rows = list(client.text(clean_q, **kw) or [])
     out = []
     for r in rows:
         url = (r.get("href") or r.get("url") or "").strip()
@@ -374,8 +384,10 @@ def _p_ddgs_text(query: str, limit: int, freshness: str) -> list[SearchResult]:
 
 
 def _p_ddgs_news(query: str, limit: int, freshness: str) -> list[SearchResult]:
+    clean_q = clean_search_query(query) or query
+    reg = SEARCH_REGION if (SEARCH_REGION and SEARCH_REGION != "wt-wt") else "us-en"
     with _load_ddgs()(timeout=4) as client:
-        rows = list(client.news(query, region=SEARCH_REGION, max_results=limit) or [])
+        rows = list(client.news(clean_q, region=reg, max_results=limit) or [])
     out = []
     for r in rows:
         url = (r.get("url") or r.get("href") or "").strip()
@@ -386,19 +398,20 @@ def _p_ddgs_news(query: str, limit: int, freshness: str) -> list[SearchResult]:
 
 def _p_wikipedia(query: str, limit: int, freshness: str) -> list[SearchResult]:
     """Official MediaWiki API: one request returns the lead paragraph of the best matching pages."""
+    clean_q = clean_search_query(query) or query
     resp = _SESSION.get(
         "https://en.wikipedia.org/w/api.php",
         params={
-            "action": "query", "format": "json", "generator": "search", "gsrsearch": query,
+            "action": "query", "format": "json", "generator": "search", "gsrsearch": clean_q,
             "gsrlimit": 2, "prop": "extracts", "exintro": 1, "explaintext": 1,
             "exsentences": 4, "exlimit": 2, "redirects": 1,
         },
-        headers={"User-Agent": "Amigo/1.0 (local voice assistant)"},
+        headers={"User-Agent": "AmigoVoiceAssistant/1.0 (https://github.com/amigo; desktop-assistant) requests/2.31.0"},
         timeout=HTTP_TIMEOUT,
     )
     resp.raise_for_status()
     pages = (resp.json().get("query") or {}).get("pages") or {}
-    q_tokens = _tokens(query)
+    q_tokens = _tokens(clean_q)
     out = []
     for p in sorted(pages.values(), key=lambda x: x.get("index", 99)):
         title, extract = p.get("title", ""), (p.get("extract") or "").strip()
@@ -480,7 +493,8 @@ def _parse_bing_html(page: str, limit: int) -> list[SearchResult]:
 
 
 def _p_bing(query: str, limit: int, freshness: str) -> list[SearchResult]:
-    resp = _SESSION.get("https://www.bing.com/search", params={"q": query, "setlang": "en"}, timeout=HTTP_TIMEOUT)
+    clean_q = clean_search_query(query) or query
+    resp = _SESSION.get("https://www.bing.com/search", params={"q": clean_q, "setlang": "en"}, timeout=HTTP_TIMEOUT)
     resp.raise_for_status()
     return _parse_bing_html(resp.text, limit)
 

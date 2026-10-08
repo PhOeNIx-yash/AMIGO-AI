@@ -83,6 +83,7 @@ def get_weather_data(city=""):
                 "success": True,
                 "city": resolved_city,
                 "temp_c": temp_c,
+                "temperature": temp_c,
                 "temp_f": temp_f,
                 "feels_like_c": feels_like_c,
                 "humidity": humidity,

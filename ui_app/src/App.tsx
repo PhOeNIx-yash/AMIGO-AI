@@ -26,7 +26,14 @@ import { KineticHeading, KineticStateBadge, TextAnimationStyle, normalizeAnimati
 import { IntentBridgeHUD, isActionIntent } from "./components/IntentBridgeHUD";
 import { COLOR_THEMES, GREETING_PRESETS } from "./data/presets";
 import { speakText, sfx } from "./utils/audio";
-import { processVoiceCommand, executeBackendAction } from "./services/assistantApi";
+import {
+  processVoiceCommand,
+  executeBackendAction,
+  fetchAssistantSettings,
+  saveAssistantSettings,
+  fetchAssistantHistory,
+  clearAssistantHistory,
+} from "./services/assistantApi";
 import { Sparkles, ChevronUp, Shuffle, Copy, Check, Volume2, X } from "lucide-react";
 
 function cn(...classes: (string | undefined | null | false)[]) {
@@ -37,6 +44,7 @@ interface AnimatedGradientBackgroundProps {
   className?: string;
   children?: React.ReactNode;
   intensity?: "subtle" | "medium" | "strong";
+  isDark?: boolean;
 }
 
 interface Beam {
@@ -74,13 +82,14 @@ function createBeam(width: number, height: number, isDarkMode: boolean): Beam {
 function BeamsBackground({
   className,
   intensity = "strong",
+  isDark,
   children,
 }: AnimatedGradientBackgroundProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const beamsRef = useRef<Beam[]>([]);
   const animationFrameRef = useRef<number>(0);
   const MINIMUM_BEAMS = 20;
-  const isDarkModeRef = useRef<boolean>(false);
+  const isDarkModeRef = useRef<boolean>(typeof isDark === "boolean" ? isDark : false);
 
   const opacityMap = {
     subtle: 0.7,
@@ -98,7 +107,9 @@ function BeamsBackground({
     // Check for dark mode
     const updateDarkMode = () => {
       isDarkModeRef.current =
-        document.documentElement.classList.contains("dark");
+        typeof isDark === "boolean"
+          ? isDark
+          : document.documentElement.classList.contains("dark");
     };
 
     const observer = new MutationObserver(updateDarkMode);
@@ -225,7 +236,7 @@ function BeamsBackground({
       }
       observer.disconnect();
     };
-  }, [intensity]);
+  }, [intensity, isDark]);
 
   return (
     <div
@@ -240,19 +251,8 @@ function BeamsBackground({
         style={{ filter: "blur(15px)" }}
       />
 
-      <motion.div
-        animate={{
-          opacity: [0.05, 0.15, 0.05],
-        }}
-        className="absolute inset-0 bg-neutral-900/5 dark:bg-neutral-950/5"
-        style={{
-          backdropFilter: "blur(50px)",
-        }}
-        transition={{
-          duration: 10,
-          ease: "easeInOut",
-          repeat: Number.POSITIVE_INFINITY,
-        }}
+      <div
+        className="pointer-events-none absolute inset-0 bg-neutral-900/10 dark:bg-neutral-950/20"
       />
 
       {children}
@@ -309,9 +309,9 @@ export default function App() {
   const [colorTheme, setColorTheme] = useState<ColorTheme>(() => {
     if (typeof window !== "undefined") {
       const saved = localStorage.getItem("windows11_voice_assistant_color_theme");
-      if (saved && (COLOR_THEMES as any)[saved]) return saved as ColorTheme;
+      if (saved && (COLOR_THEMES as any)[saved] && saved !== "violet") return saved as ColorTheme;
     }
-    return "violet";
+    return "beams";
   });
 
   const [visualizerMode, setVisualizerMode] = useState<VisualizerMode>(() => {
@@ -383,8 +383,18 @@ export default function App() {
   });
   const [greetingIndex, setGreetingIndex] = useState<number>(0);
 
-  // Persistent localStorage synchronization
+  // Persistent localStorage & HTML root class synchronization for dark/light mode
   useEffect(() => {
+    if (typeof document !== "undefined") {
+      const root = document.documentElement;
+      if (isDark) {
+        root.classList.add("dark");
+        root.style.colorScheme = "dark";
+      } else {
+        root.classList.remove("dark");
+        root.style.colorScheme = "light";
+      }
+    }
     try { localStorage.setItem("windows11_voice_assistant_dark", String(isDark)); } catch (e) {}
   }, [isDark]);
 
@@ -497,24 +507,20 @@ export default function App() {
     setBackendConfig(config);
     try {
       localStorage.setItem("assistant_backend_config", JSON.stringify(config));
-      await fetch("/api/settings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          isDark,
-          theme: isDark ? "dark" : "light",
-          soundEnabled,
-          colorTheme,
-          visualizerMode,
-          textAnimationStyle,
-          pluginMode,
-          greetingText,
-          autoCycleGreetings,
-          autoCycleInterval,
-          backendConfig: config,
-          autoSpeech: config.autoSpeech,
-          thinkingEnabled: config.thinkingEnabled,
-        }),
+      await saveAssistantSettings({
+        isDark,
+        theme: isDark ? "dark" : "light",
+        soundEnabled,
+        colorTheme,
+        visualizerMode,
+        textAnimationStyle,
+        pluginMode,
+        greetingText,
+        autoCycleGreetings,
+        autoCycleInterval,
+        backendConfig: config,
+        autoSpeech: config.autoSpeech,
+        thinkingEnabled: config.thinkingEnabled,
       });
     } catch (e) {}
   };
@@ -552,51 +558,48 @@ export default function App() {
   // Fetch conversation history directly from Amigo memory backend on mount
   const fetchBackendHistory = async () => {
     try {
-      const res = await fetch("/api/history");
-      if (res.ok) {
-        const memory = await res.json();
-        if (memory && Array.isArray(memory.conversations)) {
-          const formatted: HistoryEntry[] = memory.conversations.map((c: any, idx: number) => {
-            const cleanUser = cleanHistoryPrompt(c.user || "");
-            return {
-              id: `hist-${idx}-${new Date(c.timestamp || Date.now()).getTime()}`,
-              prompt: cleanUser,
-              timestamp: new Date(c.timestamp || Date.now()).getTime(),
-              status: "completed",
-              response: {
-                speechReply: c.assistant || "",
-                displayTitle: cleanUser,
-                intent: c.tool || "chat",
-                requiresDisambiguation: false,
-                actionCards: [],
-                executionSummary: {
-                  status: "completed",
-                  headline: "Executed with Amigo",
-                  details: c.assistant || "",
-                },
+      const memory = await fetchAssistantHistory();
+      if (memory && Array.isArray(memory.conversations)) {
+        const formatted: HistoryEntry[] = memory.conversations.map((c: any, idx: number) => {
+          const cleanUser = cleanHistoryPrompt(c.user || "");
+          return {
+            id: `hist-${idx}-${new Date(c.timestamp || Date.now()).getTime()}`,
+            prompt: cleanUser,
+            timestamp: new Date(c.timestamp || Date.now()).getTime(),
+            status: "completed",
+            response: {
+              speechReply: c.assistant || "",
+              displayTitle: cleanUser,
+              intent: c.tool || "chat",
+              requiresDisambiguation: false,
+              actionCards: [],
+              executionSummary: {
+                status: "completed",
+                headline: "Executed with Amigo",
+                details: c.assistant || "",
               },
-            };
-          });
-          const reversed = formatted.reverse();
-          setHistory(reversed);
+            },
+          };
+        });
+        const reversed = formatted.reverse();
+        setHistory(reversed);
 
-          // Restore latest conversation onto stage on mount if stage is currently idle/greeting
-          if (reversed.length > 0 && !activePromptRef.current) {
-            const latest = reversed[0];
-            const reply = latest.response.speechReply || latest.response.executionSummary?.details;
-            if (reply) {
-              setDisplayText((current) => {
-                const isGreeting = GREETING_PRESETS.some((g) => g.text === current) || current === greetingText;
-                if (isGreeting) {
-                  setActivePrompt(latest.prompt);
-                  activePromptRef.current = latest.prompt;
-                  setAssistantData(latest.response);
-                  setState("completed");
-                  return reply;
-                }
-                return current;
-              });
-            }
+        // Restore latest conversation onto stage on mount if stage is currently idle/greeting
+        if (reversed.length > 0 && !activePromptRef.current) {
+          const latest = reversed[0];
+          const reply = latest.response.speechReply || latest.response.executionSummary?.details;
+          if (reply) {
+            setDisplayText((current) => {
+              const isGreeting = GREETING_PRESETS.some((g) => g.text === current) || current === greetingText;
+              if (isGreeting) {
+                setActivePrompt(latest.prompt);
+                activePromptRef.current = latest.prompt;
+                setAssistantData(latest.response);
+                setState("completed");
+                return reply;
+              }
+              return current;
+            });
           }
         }
       }
@@ -605,28 +608,24 @@ export default function App() {
 
   // Fetch saved settings from Amigo backend on mount
   const fetchBackendSettings = async () => {
-
     try {
-      const res = await fetch("/api/settings");
-      if (res.ok) {
-        const data = await res.json();
-        const ui = data.ui_settings;
-        if (ui && typeof ui === "object") {
-          if (typeof ui.isDark === "boolean") setIsDark(ui.isDark);
-          if (typeof ui.soundEnabled === "boolean") setSoundEnabled(ui.soundEnabled);
-          if (ui.colorTheme && (COLOR_THEMES as any)[ui.colorTheme]) setColorTheme(ui.colorTheme);
-          if (ui.visualizerMode) setVisualizerMode(ui.visualizerMode);
-          if (ui.textAnimationStyle) setTextAnimationStyle(ui.textAnimationStyle);
-          if (ui.pluginMode) setPluginMode(ui.pluginMode);
-          if (ui.greetingText) setGreetingText(ui.greetingText);
-          if (typeof ui.autoCycleGreetings === "boolean") setAutoCycleGreetings(ui.autoCycleGreetings);
-          if (typeof ui.autoCycleInterval === "number") setAutoCycleInterval(ui.autoCycleInterval);
-          if (ui.backendConfig && typeof ui.backendConfig === "object") {
-            setBackendConfig((prev) => ({ ...prev, ...ui.backendConfig }));
-          }
-          if (typeof ui.thinkingEnabled === "boolean") {
-            setBackendConfig((prev) => ({ ...prev, thinkingEnabled: ui.thinkingEnabled }));
-          }
+      const data = await fetchAssistantSettings();
+      const ui = data?.ui_settings;
+      if (ui && typeof ui === "object") {
+        if (typeof ui.isDark === "boolean") setIsDark(ui.isDark);
+        if (typeof ui.soundEnabled === "boolean") setSoundEnabled(ui.soundEnabled);
+        if (ui.colorTheme && (COLOR_THEMES as any)[ui.colorTheme]) setColorTheme(ui.colorTheme);
+        if (ui.visualizerMode) setVisualizerMode(ui.visualizerMode);
+        if (ui.textAnimationStyle) setTextAnimationStyle(ui.textAnimationStyle);
+        if (ui.pluginMode) setPluginMode(ui.pluginMode);
+        if (ui.greetingText) setGreetingText(ui.greetingText);
+        if (typeof ui.autoCycleGreetings === "boolean") setAutoCycleGreetings(ui.autoCycleGreetings);
+        if (typeof ui.autoCycleInterval === "number") setAutoCycleInterval(ui.autoCycleInterval);
+        if (ui.backendConfig && typeof ui.backendConfig === "object") {
+          setBackendConfig((prev) => ({ ...prev, ...ui.backendConfig }));
+        }
+        if (typeof ui.thinkingEnabled === "boolean") {
+          setBackendConfig((prev) => ({ ...prev, thinkingEnabled: ui.thinkingEnabled }));
         }
       }
     } catch (e) {}
@@ -690,6 +689,9 @@ export default function App() {
     const connectSSE = () => {
       try {
         es = new EventSource("/events");
+        es.onopen = () => {
+          window.dispatchEvent(new CustomEvent("amigo_backend_status", { detail: { online: true } }));
+        };
         es.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
@@ -801,6 +803,7 @@ export default function App() {
           } catch (e) {}
         };
         es.onerror = () => {
+          window.dispatchEvent(new CustomEvent("amigo_backend_status", { detail: { online: false } }));
           es?.close();
           es = null;
           clearTimeout(reconnectTimeout);
@@ -1066,7 +1069,7 @@ export default function App() {
     setHistory([]);
     try {
       localStorage.removeItem("windows11_voice_assistant_history");
-      await fetch("/api/clear-memory", { method: "POST" });
+      await clearAssistantHistory();
     } catch (e) {}
   };
 
@@ -1143,7 +1146,7 @@ export default function App() {
     }, 1500);
   };
 
-  const activeThemeObj = COLOR_THEMES[colorTheme] || COLOR_THEMES.violet;
+  const activeThemeObj = COLOR_THEMES[colorTheme] || COLOR_THEMES.beams || COLOR_THEMES.violet;
 
   // Plugin container layout styling based on pluginMode
   const getPluginContainerClasses = () => {
@@ -1151,11 +1154,11 @@ export default function App() {
 
     switch (pluginMode) {
       case "docked_right":
-        return "fixed top-0 right-0 h-screen w-full sm:w-[460px] shadow-2xl z-50 border-l border-white/10";
+        return "fixed top-0 right-0 h-screen w-full sm:w-[460px] shadow-2xl z-50 border-l border-black/10 dark:border-white/10 bg-white/70 dark:bg-black/40 backdrop-blur-2xl";
       case "docked_bottom":
-        return "fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-4xl h-[560px] rounded-t-3xl shadow-2xl z-50 border-t border-x border-white/10";
+        return "fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-4xl h-[560px] rounded-t-3xl shadow-2xl z-50 border-t border-x border-black/10 dark:border-white/10 bg-white/70 dark:bg-black/40 backdrop-blur-2xl";
       case "floating":
-        return "fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[94vw] max-w-4xl h-[86vh] max-h-[820px] rounded-3xl shadow-2xl z-50 border border-white/15 overflow-hidden";
+        return "fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[94vw] max-w-4xl h-[86vh] max-h-[820px] rounded-3xl shadow-2xl z-50 border border-black/10 dark:border-white/15 bg-white/75 dark:bg-black/45 backdrop-blur-2xl overflow-hidden";
       case "fullscreen":
       default:
         return "fixed inset-0 w-full h-[var(--visual-viewport-height,100dvh)] z-50";
@@ -1163,7 +1166,7 @@ export default function App() {
   };
 
   return (
-    <BeamsBackground className="relative w-full h-[var(--visual-viewport-height,100dvh)] min-h-0 flex items-center justify-center">
+    <BeamsBackground isDark={isDark} className="relative w-full h-[var(--visual-viewport-height,100dvh)] min-h-0 flex items-center justify-center">
       {/* Floating Trigger Button when Plugin is Minimized */}
       {!isOpen && (
         <motion.button
@@ -1290,40 +1293,45 @@ export default function App() {
                 colorTheme={colorTheme}
               />
 
-              {/* State-driven Thinking Orb layer */}
+              {/* State-driven Thinking Orb & Central Display layer */}
               {(() => {
-                // Strictly keep the 3D Orb and spoken text centralized overlapping each other for all chat, voice responses, and queries.
-                // Only compact when an interactive card (action card checklist or contact picker) needs stage space.
                 const isCompact = state === "action_card" || state === "contact_picker";
                 return (
                   <div className="relative flex-1 w-full min-h-0 flex flex-col items-center justify-center overflow-hidden">
-                    <CanvasVisualizer
-                      mode={visualizerMode}
-                      state={state}
-                      colorTheme={colorTheme}
-                      isDark={isDark}
-                      compact={isCompact}
-                      isPaused={showSettings || showBackendModal || showHistory}
-                      thinkingOrbStyle={thinkingOrbStyle}
-                    />
-
-                    {/* Central Display & Animated State Cards with 60fps Hardware-Accelerated Smooth Scrolling */}
+                    {/* Central Display Area with Orb above & Spoken / Greeting text cleanly below */}
                     <div
                       id="central-display-area"
                       className="relative z-20 flex-1 min-h-0 w-full max-w-4xl flex flex-col items-center justify-center px-4 py-4 sm:py-6 overflow-y-auto smooth-scroll-container bg-transparent transition-opacity duration-200"
                     >
                       <div className="w-full flex flex-col items-center justify-center my-auto transition-opacity duration-200 max-w-2xl">
-                  {/* State Pill Badge (Only for listening or interactive pickers) */}
-                  {(state === "listening" || isListening) && (
-                    <div className="mb-2 sm:mb-3">
-                      <KineticStateBadge
-                        stateText={liveTranscript ? "Live Transcribing" : "Listening to voice"}
-                        colorTheme={colorTheme}
-                        isDark={isDark}
-                        pulse={true}
-                      />
-                    </div>
-                  )}
+                        {/* 3D Orb Avatar (Positioned above text, never covered) */}
+                        <div
+                          className={`relative flex items-center justify-center transition-all duration-500 ease-out ${
+                            isCompact ? "h-0 opacity-0 overflow-hidden mb-0" : "h-[15rem] sm:h-[16rem] shrink-0 mb-3 sm:mb-4"
+                          }`}
+                        >
+                          <CanvasVisualizer
+                            mode={visualizerMode}
+                            state={state}
+                            colorTheme={colorTheme}
+                            isDark={isDark}
+                            compact={isCompact}
+                            isPaused={showSettings || showBackendModal || showHistory}
+                            thinkingOrbStyle={thinkingOrbStyle}
+                          />
+                        </div>
+
+                        {/* State Pill Badge (Only for listening or interactive pickers) */}
+                        {(state === "listening" || isListening) && (
+                          <div className="mb-2 sm:mb-3">
+                            <KineticStateBadge
+                              stateText={liveTranscript ? "Live Transcribing" : "Listening to voice"}
+                              colorTheme={colorTheme}
+                              isDark={isDark}
+                              pulse={true}
+                            />
+                          </div>
+                        )}
 
                   {/* Dedicated Action Card Spoken Context */}
                   {state === "action_card" && displayText && displayText !== greetingText && (
@@ -1538,6 +1546,8 @@ export default function App() {
                 onTranscriptChange={setLiveTranscript}
                 isDark={isDark}
                 colorTheme={colorTheme}
+                isLoading={loading || state === "working" || state === "processing"}
+                loadingText={state === "working" ? "Working on task..." : "Searching..."}
                 disabled={loading || state === "working"}
                 backendConfig={backendConfig}
               />

@@ -1,12 +1,11 @@
 <!doctype html>
-<html lang="en" style="background-color: #030712; color-scheme: dark;">
+<html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
-    <meta name="theme-color" content="#030712" />
+    <meta name="theme-color" content="#0a0a0a" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="color-scheme" content="dark" />
     <title>Amigo - Windows 11 Voice Assistant</title>
     <meta name="description" content="Amigo - A native Windows 11 Fluent voice assistant featuring acrylic blurred backgrounds, fluid glow animations, and speech recognition." />
     <meta property="og:title" content="Amigo Voice Assistant" />
@@ -14,14 +13,7 @@
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
     <style>
-      :root {
-        color-scheme: dark;
-        background-color: #030712;
-      }
       html, body, #root {
-        background-color: #030712 !important;
-        background: #030712 !important;
-        color-scheme: dark;
         margin: 0;
         padding: 0;
         width: 100%;
@@ -29,9 +21,17 @@
         overflow: hidden;
         -webkit-tap-highlight-color: transparent;
       }
+      html.dark, html.dark body, html.dark #root {
+        background-color: #0a0a0a;
+        color-scheme: dark;
+      }
+      html:not(.dark), html:not(.dark) body, html:not(.dark) #root {
+        background-color: #f5f5f5;
+        color-scheme: light;
+      }
     </style>
   </head>
-  <body style="background-color: #030712; background: #030712; margin: 0; padding: 0;">
+  <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

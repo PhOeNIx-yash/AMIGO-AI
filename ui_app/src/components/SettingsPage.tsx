@@ -36,7 +36,7 @@ import {
 } from "../types";
 import { KineticHeading, TextAnimationStyle } from "./KineticText";
 import { COLOR_THEMES, GREETING_PRESETS } from "../data/presets";
-import { testBackendConnection, fetchRagStatus, triggerRagReindex, RagStatusData } from "../services/assistantApi";
+import { testBackendConnection, fetchRagStatus, triggerRagReindex, fetchAssistantSettings, RagStatusData } from "../services/assistantApi";
 import { VoiceSettingsTab } from "./VoiceSettingsTab";
 import { THINKING_ORB_PRESETS } from "./CanvasVisualizer";
 import { DeleteButton } from "./HistoryPanel";
@@ -108,35 +108,56 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
 
   // Voice state - managed by VoiceSettingsTab
   const [selectedVoice, setSelectedVoice] = useState<string>(() => {
-    return localStorage.getItem("amigo_selected_voice") || "nicole";
+    try {
+      const v = localStorage.getItem("amigo_selected_voice");
+      return v && v !== "nicole" ? v : "nova";
+    } catch {
+      return "nova";
+    }
   });
   const [voiceFilter, setVoiceFilter] = useState<"all" | "female" | "male">("all");
   const [playingVoiceId, setPlayingVoiceId] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch("/api/settings")
-      .then((res) => res.json())
+    const ac = new AbortController();
+    fetchAssistantSettings(ac.signal)
       .then((data) => {
-        const v =
+        let v =
           data?.user_profile?.preferences?.voice ||
-          data?.ui_settings?.voice ||
-          localStorage.getItem("amigo_selected_voice");
+          data?.ui_settings?.voice;
+        if (!v) {
+          try {
+            v = localStorage.getItem("amigo_selected_voice");
+          } catch (_) {}
+        }
+        if (v === "nicole") v = "nova";
         if (v) {
           setSelectedVoice(v);
-          localStorage.setItem("amigo_selected_voice", v);
+          try {
+            localStorage.setItem("amigo_selected_voice", v);
+          } catch (_) {}
         }
       })
-      .catch(() => {
-        const saved = localStorage.getItem("amigo_selected_voice");
-        if (saved) setSelectedVoice(saved);
+      .catch((err) => {
+        if (err?.name === "AbortError") return;
+        try {
+          const saved = localStorage.getItem("amigo_selected_voice");
+          if (saved) setSelectedVoice(saved === "nicole" ? "nova" : saved);
+        } catch (_) {}
       });
+
+    return () => {
+      ac.abort();
+    };
   }, []);
 
   // Form states
   const [endpointUrl, setEndpointUrl] = useState(backendConfig.endpointUrl || "/api/assistant/process");
   const [actionWebhookUrl, setActionWebhookUrl] = useState(backendConfig.actionWebhookUrl || "");
   const [apiKey, setApiKey] = useState(backendConfig.apiKey || "");
-  const [transcriptionEngine, setTranscriptionEngine] = useState(backendConfig.transcriptionEngine || "amigo-speech");
+  const [transcriptionEngine, setTranscriptionEngine] = useState<"amigo-speech" | "whisper" | "web-speech" | "custom">(
+    backendConfig.transcriptionEngine || "amigo-speech"
+  );
   const [autoSpeech, setAutoSpeech] = useState(backendConfig.autoSpeech !== false);
   const [thinkingEnabled, setThinkingEnabled] = useState(backendConfig.thinkingEnabled === true);
 
@@ -160,6 +181,40 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     };
   }, []);
 
+  // Compute dirty state to prevent accidental discards or sync overwrites
+  const isDirty = useMemo(() => {
+    return (
+      endpointUrl.trim() !== (backendConfig.endpointUrl || "/api/assistant/process").trim() ||
+      actionWebhookUrl.trim() !== (backendConfig.actionWebhookUrl || "").trim() ||
+      apiKey.trim() !== (backendConfig.apiKey || "").trim() ||
+      transcriptionEngine !== (backendConfig.transcriptionEngine || "amigo-speech") ||
+      autoSpeech !== (backendConfig.autoSpeech !== false) ||
+      thinkingEnabled !== (backendConfig.thinkingEnabled === true)
+    );
+  }, [endpointUrl, actionWebhookUrl, apiKey, transcriptionEngine, autoSpeech, thinkingEnabled, backendConfig]);
+
+  // Sync state if config changes from outside, only if user is not actively editing
+  const prevIsOpenRef = useRef(isOpen);
+  useEffect(() => {
+    // When modal opens fresh, always sync to latest backendConfig
+    if (isOpen && !prevIsOpenRef.current) {
+      setEndpointUrl(backendConfig.endpointUrl || "/api/assistant/process");
+      setActionWebhookUrl(backendConfig.actionWebhookUrl || "");
+      setApiKey(backendConfig.apiKey || "");
+      setTranscriptionEngine(backendConfig.transcriptionEngine || "amigo-speech");
+      setAutoSpeech(backendConfig.autoSpeech !== false);
+      setThinkingEnabled(backendConfig.thinkingEnabled === true);
+    } else if (!isDirty) {
+      setEndpointUrl(backendConfig.endpointUrl || "/api/assistant/process");
+      setActionWebhookUrl(backendConfig.actionWebhookUrl || "");
+      setApiKey(backendConfig.apiKey || "");
+      setTranscriptionEngine(backendConfig.transcriptionEngine || "amigo-speech");
+      setAutoSpeech(backendConfig.autoSpeech !== false);
+      setThinkingEnabled(backendConfig.thinkingEnabled === true);
+    }
+    prevIsOpenRef.current = isOpen;
+  }, [isOpen, backendConfig, isDirty]);
+
   // RAG / Knowledge Base states
   const [ragStatus, setRagStatus] = useState<RagStatusData | null>(null);
   const [isReindexing, setIsReindexing] = useState(false);
@@ -176,8 +231,11 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     completed?: boolean;
   } | null>(null);
   const dismissTimerRef = useRef<any>(null);
+  const inFlightRagRef = useRef(false);
 
   const loadRagStatus = async () => {
+    if (inFlightRagRef.current) return;
+    inFlightRagRef.current = true;
     try {
       const stats = await fetchRagStatus();
       setRagStatus(stats);
@@ -186,7 +244,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
       } else if (!stats.is_indexing && !stats.indexer?.is_indexing && !indexingProgress?.is_indexing) {
         setIsReindexing(false);
       }
-    } catch (e) {}
+    } catch (e) {
+    } finally {
+      inFlightRagRef.current = false;
+    }
   };
 
   // Real-time SSE progress listener for background indexing
@@ -228,15 +289,21 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     };
   }, []);
 
+  // Stable polling effect with in-flight guard and busy-state awareness
+  const isBusyRef = useRef(false);
+  isBusyRef.current = Boolean(isReindexing || ragStatus?.is_indexing || ragStatus?.indexer?.is_indexing || indexingProgress?.is_indexing);
+
   useEffect(() => {
     if (!isOpen || activeTab !== "data") return;
     loadRagStatus();
-    const isBusy = isReindexing || ragStatus?.is_indexing || ragStatus?.indexer?.is_indexing || indexingProgress?.is_indexing;
+
+    // Poll every 3s if actively indexing, or 6s when monitoring idle status
+    const pollInterval = isBusyRef.current ? 3000 : 6000;
     const interval = setInterval(() => {
       loadRagStatus();
-    }, isBusy ? 1000 : 4000);
+    }, pollInterval);
     return () => clearInterval(interval);
-  }, [isOpen, activeTab, isReindexing, ragStatus?.is_indexing, ragStatus?.indexer?.is_indexing, indexingProgress?.is_indexing]);
+  }, [isOpen, activeTab]);
 
   const handleTriggerReindex = async () => {
     setIsReindexing(true);
@@ -263,16 +330,6 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     }
   };
 
-  // Sync state if config changes
-  useEffect(() => {
-    setEndpointUrl(backendConfig.endpointUrl || "/api/assistant/process");
-    setActionWebhookUrl(backendConfig.actionWebhookUrl || "");
-    setApiKey(backendConfig.apiKey || "");
-    setTranscriptionEngine(backendConfig.transcriptionEngine || "web-speech");
-    setAutoSpeech(backendConfig.autoSpeech !== false);
-    setThinkingEnabled(backendConfig.thinkingEnabled === true);
-  }, [backendConfig]);
-
   const handleSave = () => {
     const updated: BackendConfig = {
       ...backendConfig,
@@ -290,17 +347,41 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     savedTimerRef.current = setTimeout(() => setSavedBanner(false), 2000);
   };
 
+  const handleCloseWithCheck = () => {
+    if (isDirty) {
+      if (window.confirm("You have unsaved changes in AI & Endpoint settings. Would you like to save them before exiting?")) {
+        handleSave();
+      }
+    }
+    onClose();
+  };
+
+  // Keyboard navigation: Escape key closes with unsaved check
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        handleCloseWithCheck();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, isDirty, endpointUrl, actionWebhookUrl, apiKey, transcriptionEngine, autoSpeech, thinkingEnabled, backendConfig]);
+
   const handleTestBackend = async () => {
     setTesting(true);
     setTestResult(null);
 
     const testConf: BackendConfig = {
+      ...backendConfig,
       endpointUrl,
       actionWebhookUrl,
       apiKey,
       protocol: "rest",
       autoSpeech,
       transcriptionEngine,
+      thinkingEnabled,
     };
 
     const result = await testBackendConnection(testConf);
@@ -309,8 +390,11 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   };
 
   const handleResetToDefaults = () => {
-    onChangeColorTheme("violet");
-    onChangeVisualizerMode("ribbon");
+    if (!window.confirm("Are you sure you want to reset all assistant settings to default values?")) {
+      return;
+    }
+    onChangeColorTheme?.("beams");
+    onChangeVisualizerMode("orb");
     onChangeThinkingOrbStyle?.("globe");
     onChangeTextAnimationStyle("silk_blur");
     onChangePluginMode("fullscreen");
@@ -320,7 +404,20 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     setEndpointUrl("/api/assistant/process");
     setActionWebhookUrl("");
     setApiKey("");
+
+    const defaultBackend: BackendConfig = {
+      ...backendConfig,
+      endpointUrl: "/api/assistant/process",
+      actionWebhookUrl: "",
+      apiKey: "",
+      protocol: "rest",
+      autoSpeech: true,
+      transcriptionEngine: "amigo-speech",
+      thinkingEnabled: false,
+    };
+    onSaveBackendConfig(defaultBackend);
     onResetAssistant();
+
     if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
     setSavedBanner(true);
     savedTimerRef.current = setTimeout(() => setSavedBanner(false), 2000);
@@ -337,19 +434,19 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     <AnimatePresence>
       {isOpen && (
         <motion.div
-          initial={{ opacity: 0, scale: 0.985, y: 8 }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
-          exit={{ opacity: 0, scale: 0.985, y: 8 }}
-          transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-          className={`fixed inset-0 z-[100] h-[var(--visual-viewport-height,100dvh)] flex flex-col backdrop-blur-md shadow-2xl overflow-hidden ${
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 12 }}
+          transition={{ duration: 0.18, ease: "easeOut" }}
+          className={`fixed inset-0 z-[100] h-[var(--visual-viewport-height,100dvh)] flex flex-col shadow-2xl overflow-hidden ${
             isDark ? "text-white" : "text-slate-900"
           }`}
           style={{
             willChange: "transform, opacity",
             transform: "translate3d(0, 0, 0)",
             background: isDark
-              ? `radial-gradient(ellipse 120% 70% at 50% 0%, ${theme.primary}12 0%, rgba(11, 10, 23, 0.98) 70%)`
-              : `radial-gradient(ellipse 120% 70% at 50% 0%, ${theme.primary}08 0%, rgba(248, 249, 252, 0.98) 70%)`,
+              ? `radial-gradient(ellipse 120% 70% at 50% 0%, ${theme.primary}15 0%, #0b0a17 70%)`
+              : `radial-gradient(ellipse 120% 70% at 50% 0%, ${theme.primary}08 0%, #f8f9fc 70%)`,
           }}
         >
           {/* Header - Fixed layout with grid to prevent overlap */}
@@ -363,7 +460,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
             <div className="flex items-center space-x-3 min-w-0">
               <button
                 id="settings-back-btn"
-                onClick={onClose}
+                onClick={handleCloseWithCheck}
                 className={`p-2 rounded-xl border transition-colors flex items-center justify-center flex-shrink-0 ${
                   isDark
                     ? "bg-white/5 border-white/10 hover:bg-white/10 text-slate-200"
@@ -527,49 +624,6 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                   </div>
                 </div>
 
-                {/* Color Palette */}
-                <div
-                  className={`p-4 rounded-2xl border ${
-                    isDark ? "bg-white/[0.03]" : "bg-white"
-                  }`}
-                  style={{ borderColor: isDark ? `${theme.primary}18` : `${theme.primary}12` }}
-                >
-                  <div className="text-xs font-semibold uppercase tracking-wider opacity-60 mb-3">Accent Color</div>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    {(Object.keys(COLOR_THEMES) as ColorTheme[]).map((key) => {
-                      const ct = COLOR_THEMES[key];
-                      const isSelected = colorTheme === key;
-                      return (
-                        <button
-                          key={key}
-                          onClick={() => onChangeColorTheme(key)}
-                          className={`p-2.5 rounded-xl border flex items-center space-x-2.5 transition-all text-left ${
-                            isSelected
-                              ? "shadow-sm font-medium"
-                              : isDark
-                              ? "border-white/10 bg-white/[0.02] hover:bg-white/5"
-                              : "border-black/10 bg-white hover:bg-slate-50"
-                          }`}
-                          style={
-                            isSelected
-                              ? {
-                                  borderColor: ct.primary,
-                                  boxShadow: `0 0 0 1.5px ${ct.primary}40`,
-                                  backgroundColor: `${ct.primary}12`,
-                                }
-                              : {}
-                          }
-                        >
-                          <span
-                            className="w-3.5 h-3.5 rounded-full flex-shrink-0 shadow-sm"
-                            style={{ backgroundColor: ct.primary }}
-                          />
-                          <span className="text-xs font-medium truncate">{ct.name}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
 
                 {/* Thinking Orb Animation Selector */}
                 <div
@@ -659,6 +713,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     </div>
                     {/* Auto-cycle toggle */}
                     <button
+                      type="button"
+                      role="switch"
+                      aria-checked={autoCycleGreetings}
                       onClick={onToggleAutoCycleGreetings}
                       className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-all flex items-center space-x-1.5 ${
                         autoCycleGreetings
@@ -1043,6 +1100,61 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                   />
                 </div>
 
+                {/* Speech Recognition & Voice Output Engine */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  <div>
+                    <label htmlFor="settings-transcription-engine" className="block text-xs font-semibold uppercase tracking-wider mb-1.5 opacity-80">
+                      Voice Transcription STT
+                    </label>
+                    <select
+                      id="settings-transcription-engine"
+                      value={transcriptionEngine}
+                      onChange={(e) => {
+                        setTranscriptionEngine(e.target.value as any);
+                        if (testResult) setTestResult(null);
+                      }}
+                      className={`w-full p-2 rounded-xl border text-xs font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/50 ${
+                        isDark ? "bg-[#181829] border-white/10 text-white" : "bg-white border-black/10 text-slate-900"
+                      }`}
+                    >
+                      <option value="amigo-speech" className={isDark ? "bg-[#181829] text-white" : "bg-white text-slate-900"}>
+                        Amigo Local Audio STT
+                      </option>
+                      <option value="web-speech" className={isDark ? "bg-[#181829] text-white" : "bg-white text-slate-900"}>
+                        Browser Web Speech API
+                      </option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5 opacity-80">
+                      Voice Output TTS
+                    </label>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={autoSpeech}
+                      aria-label="Toggle auto-speak responses"
+                      onClick={() => {
+                        setAutoSpeech(!autoSpeech);
+                        if (testResult) setTestResult(null);
+                      }}
+                      className={`w-full p-2 rounded-xl border text-xs font-medium flex items-center justify-between transition-all ${
+                        autoSpeech
+                          ? isDark
+                            ? "bg-indigo-600/20 border-indigo-500/40 text-indigo-300"
+                            : "bg-indigo-50 border-indigo-300 text-indigo-700"
+                          : isDark
+                          ? "bg-white/5 border-white/10 opacity-60"
+                          : "bg-black/5 border-black/10 opacity-60"
+                      }`}
+                    >
+                      <span>Auto-speak responses</span>
+                      <span className="font-semibold">{autoSpeech ? "ON" : "OFF"}</span>
+                    </button>
+                  </div>
+                </div>
+
                 {/* Reasoning / Thinking Mode Toggle */}
                 <div
                   className={`p-3.5 rounded-xl border transition-colors ${
@@ -1083,6 +1195,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     </div>
                     <button
                       type="button"
+                      role="switch"
+                      aria-checked={thinkingEnabled}
+                      aria-label="Toggle deep reasoning mode"
                       onClick={() => setThinkingEnabled(!thinkingEnabled)}
                       className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${
                         isDark && !thinkingEnabled ? "bg-white/20" : !thinkingEnabled ? "bg-slate-300" : ""

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { fluidSpring, scaleFade, getTransition } from "../utils/motionConfig";
 import {
@@ -57,12 +57,54 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
 
   const [showDocs, setShowDocs] = useState(false);
 
+  // Sync draft inputs whenever modal opens or config updates from parent
+  const resetDraftsToConfig = () => {
+    setEndpointUrl(config.endpointUrl || "");
+    setActionWebhookUrl(config.actionWebhookUrl || "");
+    setApiKey(config.apiKey || "");
+    setCustomHeaders(config.customHeaders || "");
+    setTranscriptionEngine(config.transcriptionEngine || "amigo-speech");
+    setAutoSpeech(config.autoSpeech !== false);
+    setThinkingEnabled(config.thinkingEnabled === true);
+    setTestResult(null);
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      resetDraftsToConfig();
+    }
+  }, [config, isOpen]);
+
+  // Handle Escape key to close modal
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        resetDraftsToConfig();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, config, onClose]);
+
+  const handleClose = () => {
+    resetDraftsToConfig();
+    onClose();
+  };
+
+  const handleInputChange = (setter: (val: string) => void) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    setter(e.target.value);
+    if (testResult) setTestResult(null); // Clear test result when input changes
+  };
+
   const handleTest = async () => {
     sfx.playClick();
     setTesting(true);
     setTestResult(null);
 
     const testConf: BackendConfig = {
+      ...config,
       endpointUrl,
       actionWebhookUrl,
       apiKey,
@@ -70,6 +112,7 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
       protocol: "rest",
       autoSpeech,
       transcriptionEngine,
+      thinkingEnabled,
     };
 
     const result = await testBackendConnection(testConf);
@@ -83,6 +126,7 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
   const handleSave = () => {
     sfx.playSuccess();
     const updated: BackendConfig = {
+      ...config,
       endpointUrl: endpointUrl.trim(),
       actionWebhookUrl: actionWebhookUrl.trim() || undefined,
       apiKey: apiKey.trim() || undefined,
@@ -118,12 +162,15 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={getTransition(fluidSpring)}
-            onClick={onClose}
+            onClick={handleClose}
             className="fixed inset-0 bg-black/60 backdrop-blur-md gpu-accelerated"
           />
 
-          {/* Modal Card */}
+          {/* Modal Card with Accessible Dialog Semantics */}
           <motion.div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="backend-settings-title"
             variants={scaleFade}
             initial="hidden"
             animate="show"
@@ -148,14 +195,18 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
                   <Server className="w-4 h-4" />
                 </div>
                 <div>
-                  <h2 className="text-sm font-semibold tracking-tight">Plug-and-Play Backend Connector</h2>
+                  <h2 id="backend-settings-title" className="text-sm font-semibold tracking-tight">Plug-and-Play Backend Connector</h2>
                   <p className="text-xs opacity-60">Connect your custom API, agent, or FastAPI/Flask/Express service</p>
                 </div>
               </div>
 
               <button
-                onClick={onClose}
-                className="p-1.5 rounded-lg opacity-60 hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/10 transition-all"
+                type="button"
+                onClick={handleClose}
+                aria-label="Close backend settings"
+                className={`p-1.5 rounded-lg opacity-60 hover:opacity-100 transition-all ${
+                  isDark ? "hover:bg-white/10" : "hover:bg-black/5"
+                }`}
               >
                 <X className="w-4 h-4" />
               </button>
@@ -165,15 +216,16 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
             <div className="p-5 space-y-4 overflow-y-auto custom-scrollbar flex-1 text-xs sm:text-sm">
               {/* Endpoint URL Input */}
               <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5 opacity-80">
+                <label htmlFor="backend-endpoint-url" className="block text-xs font-semibold uppercase tracking-wider mb-1.5 opacity-80">
                   Assistant Process Endpoint URL
                 </label>
                 <div className="relative">
-                  <Globe className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 opacity-40" />
+                  <Globe className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 opacity-40 pointer-events-none" />
                   <input
+                    id="backend-endpoint-url"
                     type="text"
                     value={endpointUrl}
-                    onChange={(e) => setEndpointUrl(e.target.value)}
+                    onChange={handleInputChange(setEndpointUrl)}
                     placeholder="e.g. http://localhost:8000/api/assistant or /api/assistant/process"
                     className={`w-full pl-9 pr-3 py-2 rounded-xl border text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 font-mono transition-all ${
                       isDark
@@ -189,15 +241,16 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
 
               {/* Action Webhook URL */}
               <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5 opacity-80">
+                <label htmlFor="backend-action-webhook" className="block text-xs font-semibold uppercase tracking-wider mb-1.5 opacity-80">
                   Intent Action Callback Webhook (Optional)
                 </label>
                 <div className="relative">
-                  <Radio className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 opacity-40" />
+                  <Radio className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 opacity-40 pointer-events-none" />
                   <input
+                    id="backend-action-webhook"
                     type="text"
                     value={actionWebhookUrl}
-                    onChange={(e) => setActionWebhookUrl(e.target.value)}
+                    onChange={handleInputChange(setActionWebhookUrl)}
                     placeholder="e.g. http://localhost:8000/api/assistant/action"
                     className={`w-full pl-9 pr-3 py-2 rounded-xl border text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 font-mono transition-all ${
                       isDark
@@ -213,15 +266,16 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
 
               {/* Auth API Key */}
               <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5 opacity-80">
+                <label htmlFor="backend-api-key" className="block text-xs font-semibold uppercase tracking-wider mb-1.5 opacity-80">
                   Authorization Bearer Token / API Key (Optional)
                 </label>
                 <div className="relative">
-                  <Key className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 opacity-40" />
+                  <Key className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 opacity-40 pointer-events-none" />
                   <input
+                    id="backend-api-key"
                     type="password"
                     value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
+                    onChange={handleInputChange(setApiKey)}
                     placeholder="e.g. sk-backend-token-..."
                     className={`w-full pl-9 pr-3 py-2 rounded-xl border text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 font-mono transition-all ${
                       isDark
@@ -234,13 +288,14 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
 
               {/* Custom Headers */}
               <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5 opacity-80">
+                <label htmlFor="backend-custom-headers" className="block text-xs font-semibold uppercase tracking-wider mb-1.5 opacity-80">
                   Custom Headers JSON (Optional)
                 </label>
                 <textarea
+                  id="backend-custom-headers"
                   rows={2}
                   value={customHeaders}
-                  onChange={(e) => setCustomHeaders(e.target.value)}
+                  onChange={handleInputChange(setCustomHeaders)}
                   placeholder='e.g. { "X-Session-ID": "user-123", "X-Custom-Env": "production" }'
                   className={`w-full p-2.5 rounded-xl border text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/50 font-mono transition-all ${
                     isDark
@@ -250,15 +305,19 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
                 />
               </div>
 
-              {/* Speech Recognition Engine */}
+              {/* Speech Recognition & Reasoning Engine */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                 <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5 opacity-80">
+                  <label htmlFor="backend-transcription-engine" className="block text-xs font-semibold uppercase tracking-wider mb-1.5 opacity-80">
                     Voice Transcription STT
                   </label>
                   <select
+                    id="backend-transcription-engine"
                     value={transcriptionEngine}
-                    onChange={(e) => setTranscriptionEngine(e.target.value as any)}
+                    onChange={(e) => {
+                      setTranscriptionEngine(e.target.value as any);
+                      if (testResult) setTestResult(null);
+                    }}
                     className={`w-full p-2 rounded-xl border text-xs font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/50 ${
                       isDark ? "bg-[#181829] border-white/10 text-white" : "bg-white border-black/10 text-slate-900"
                     }`}
@@ -278,7 +337,12 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
                   </label>
                   <button
                     type="button"
-                    onClick={() => setAutoSpeech(!autoSpeech)}
+                    role="switch"
+                    aria-checked={autoSpeech}
+                    onClick={() => {
+                      setAutoSpeech(!autoSpeech);
+                      if (testResult) setTestResult(null);
+                    }}
                     className={`w-full p-2 rounded-xl border text-xs font-medium flex items-center justify-between transition-all ${
                       autoSpeech
                         ? "bg-indigo-600/20 border-indigo-500/40 text-indigo-400"
@@ -301,7 +365,12 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
                   </label>
                   <button
                     type="button"
-                    onClick={() => setThinkingEnabled(!thinkingEnabled)}
+                    role="switch"
+                    aria-checked={thinkingEnabled}
+                    onClick={() => {
+                      setThinkingEnabled(!thinkingEnabled);
+                      if (testResult) setTestResult(null);
+                    }}
                     className={`w-full p-2 rounded-xl border text-xs font-medium flex items-center justify-between transition-all ${
                       thinkingEnabled
                         ? "bg-purple-600/20 border-purple-500/40 text-purple-300"
@@ -342,7 +411,7 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
               )}
 
               {/* Expandable JSON Schema Specs */}
-              <div className="border-t border-white/10 dark:border-white/5 pt-3">
+              <div className={`border-t pt-3 ${isDark ? "border-white/10" : "border-black/5"}`}>
                 <button
                   type="button"
                   onClick={() => setShowDocs(!showDocs)}
@@ -356,10 +425,12 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
                   <motion.div
                     initial={{ opacity: 0, height: 0 }}
                     animate={{ opacity: 1, height: "auto" }}
-                    className="mt-2 p-3 rounded-xl bg-black/40 border border-white/10 font-mono text-[11px] space-y-2 text-slate-300 overflow-x-auto"
+                    className={`mt-2 p-3 rounded-xl border font-mono text-[11px] space-y-2 overflow-x-auto ${
+                      isDark ? "bg-black/40 border-white/10 text-slate-300" : "bg-slate-100 border-black/10 text-slate-800"
+                    }`}
                   >
-                    <p className="text-indigo-300 font-semibold">// Example Backend Response JSON:</p>
-                    <pre className="text-slate-400">
+                    <p className="text-indigo-400 font-semibold">// Example Backend Response JSON:</p>
+                    <pre className="opacity-80">
 {`{
   "speechReply": "I found 3 emails and scheduled your meeting.",
   "displayTitle": "Schedule meeting with team",
@@ -380,7 +451,7 @@ export const BackendSettingsModal: React.FC<BackendSettingsModalProps> = ({
   }
 }`}
                     </pre>
-                    <p className="text-[10px] text-slate-400">
+                    <p className="text-[10px] opacity-70">
                       *Note: The frontend also automatically adapts raw text or custom agent responses!
                     </p>
                   </motion.div>

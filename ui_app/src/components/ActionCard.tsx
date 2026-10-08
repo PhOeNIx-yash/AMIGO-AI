@@ -1,6 +1,5 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { motion } from "motion/react";
-// Import motion configurations
 import { scaleFade, staggerContainer, staggerItem } from "../utils/motionConfig";
 import {
   MessageSquare,
@@ -42,6 +41,7 @@ import {
   Settings,
   Cpu,
   X,
+  AlertCircle,
 } from "lucide-react";
 import { ActionCardItem, ColorTheme } from "../types";
 import { COLOR_THEMES } from "../data/presets";
@@ -57,6 +57,62 @@ interface ActionCardProps {
   isDark: boolean;
   colorTheme?: ColorTheme;
 }
+
+const isSafeHttpUrl = (url?: string): boolean => {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+};
+
+// Unified item type detectors to eliminate inconsistent matching
+export const isWeatherItem = (item: ActionCardItem): boolean => {
+  const type = (item.type || "").toLowerCase();
+  const tool = (item.payload?.tool || "").toLowerCase();
+  const badge = (item.badge || "").toLowerCase();
+  return (
+    type === "weather" ||
+    tool === "get_weather" ||
+    badge === "weather" ||
+    /^weather\b/i.test(item.title)
+  );
+};
+
+export const isTimerItem = (item: ActionCardItem): boolean => {
+  const type = (item.type || "").toLowerCase();
+  const tool = (item.payload?.tool || "").toLowerCase();
+  const mode = (item.payload?.mode || "").toLowerCase();
+  const badge = (item.badge || "").toLowerCase();
+  return (
+    type === "timer" ||
+    type === "stopwatch" ||
+    tool === "set_timer" ||
+    tool === "stopwatch" ||
+    mode === "timer" ||
+    mode === "stopwatch" ||
+    badge === "timer" ||
+    badge === "stopwatch" ||
+    /\b(timer|stopwatch|countdown)\b/i.test(item.title) ||
+    /\b(timer|stopwatch|countdown)\b/i.test(badge)
+  );
+};
+
+export const isFileItem = (item: ActionCardItem): boolean => {
+  const type = (item.type || "").toLowerCase();
+  const tool = (item.payload?.tool || "").toLowerCase();
+  const badge = (item.badge || "").toLowerCase();
+  return (
+    Boolean(item.payload?.file) ||
+    type === "file" ||
+    badge === "file" ||
+    tool === "open_file" ||
+    tool === "find_files" ||
+    tool === "search_files"
+  );
+};
 
 /**
  * Atmospheric Weather Icon with Micro-Animations
@@ -165,7 +221,7 @@ function getAtmosphericPalette(iconType: string = "sunny", isDark: boolean) {
 }
 
 /**
- * 100% Dynamic, Non-Hardcoded Meteorological Weather Card Palette
+ * Dynamic, Non-Hardcoded Meteorological Weather Card Widget
  */
 const WeatherCardPalette: React.FC<{
   item: ActionCardItem;
@@ -174,34 +230,52 @@ const WeatherCardPalette: React.FC<{
 }> = ({ item, isDark, theme }) => {
   const [unit, setUnit] = useState<"C" | "F">("C");
   const [weatherData, setWeatherData] = useState<Record<string, any>>(() => item.payload || {});
-  const [loading, setLoading] = useState<boolean>(!item.payload?.temp_c);
+  const [loading, setLoading] = useState<boolean>(item.payload?.temp_c == null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [isLiveTelemetry, setIsLiveTelemetry] = useState<boolean>(false);
   const [showSearch, setShowSearch] = useState<boolean>(false);
   const [searchInput, setSearchInput] = useState<string>("");
 
+  const activeAbortRef = useRef<AbortController | null>(null);
   const initialCity = item.payload?.city || item.title?.replace(/^Weather in\s+/i, "") || "";
 
   const fetchLiveWeather = async (targetCity: string) => {
+    if (activeAbortRef.current) {
+      activeAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    activeAbortRef.current = controller;
+
     setLoading(true);
+    setFetchError(null);
     try {
       const url = targetCity ? `/api/weather?city=${encodeURIComponent(targetCity)}` : "/api/weather";
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: controller.signal });
       if (res.ok) {
         const data = await res.json();
         if (data && typeof data === "object") {
           setWeatherData(data);
+          setIsLiveTelemetry(true);
         }
+      } else {
+        setFetchError("Unable to retrieve weather telemetry");
       }
-    } catch (e) {
-      console.warn("Live weather fetch failed:", e);
+    } catch (e: any) {
+      if (e?.name !== "AbortError") {
+        setFetchError("Connection error while fetching weather");
+      }
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    if (!item.payload?.temp_c) {
+    if (item.payload?.temp_c == null) {
       fetchLiveWeather(initialCity);
     }
+    return () => {
+      if (activeAbortRef.current) activeAbortRef.current.abort();
+    };
   }, [initialCity]);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
@@ -213,7 +287,7 @@ const WeatherCardPalette: React.FC<{
     }
   };
 
-  const tempC = weatherData.temp_c ?? weatherData.temp_C ?? "";
+  const tempC = weatherData.temp_c ?? weatherData.temp_C ?? weatherData.temperature ?? "";
   const tempF = weatherData.temp_f ?? weatherData.temp_F ?? (tempC !== "" && !isNaN(Number(tempC)) ? Math.round((Number(tempC) * 9) / 5 + 32) : "");
   const feelsLike = weatherData.feels_like_c ?? weatherData.FeelsLikeC ?? tempC;
   const condition = weatherData.condition ?? weatherData.weatherDesc?.[0]?.value ?? "Meteorological Live Data";
@@ -228,7 +302,7 @@ const WeatherCardPalette: React.FC<{
   const eveningC = weatherData.evening_c ?? weatherData.eveningC ?? tempC;
 
   const formatTemp = (val: any) => {
-    if (val === "" || val === undefined || isNaN(Number(val))) return "--";
+    if (val === "" || val === undefined || val === null || isNaN(Number(val))) return "--";
     return unit === "C" ? `${Math.round(Number(val))}°C` : `${Math.round((Number(val) * 9) / 5 + 32)}°F`;
   };
 
@@ -242,15 +316,12 @@ const WeatherCardPalette: React.FC<{
 
   return (
     <div
-      className={`relative overflow-hidden rounded-2xl p-4 sm:p-5 border transition-all shadow-xl ${
+      className={`relative overflow-hidden rounded-2xl p-4 sm:p-5 border transition-all shadow-xl bg-gradient-to-br ${palette.bgGradient} ${
         isDark ? "text-white" : "text-slate-900"
       }`}
       style={{
-        background: isDark
-          ? `linear-gradient(135deg, rgba(15, 23, 42, 0.94) 0%, ${theme.primary}22 50%, rgba(10, 15, 30, 0.96) 100%)`
-          : `linear-gradient(135deg, rgba(255, 255, 255, 0.96) 0%, ${theme.primary}14 50%, rgba(240, 245, 255, 0.94) 100%)`,
         borderColor: `${theme.primary}45`,
-        boxShadow: `0 12px 32px rgba(0, 0, 0, 0.25), 0 0 24px ${theme.glow}`,
+        boxShadow: `0 12px 32px rgba(0, 0, 0, 0.25), 0 0 24px ${palette.glowColor || theme.glow}`,
       }}
     >
       <div
@@ -281,7 +352,7 @@ const WeatherCardPalette: React.FC<{
               borderColor: `${theme.primary}40`,
             }}
           >
-            Live
+            {isLiveTelemetry ? "Live" : "Forecast"}
           </span>
         </div>
 
@@ -292,6 +363,7 @@ const WeatherCardPalette: React.FC<{
             className="p-1 rounded-lg bg-white/10 hover:bg-white/20 transition-all border"
             style={{ borderColor: `${theme.primary}30` }}
             title="Search another city"
+            aria-label="Search another city"
           >
             <Search className="w-3.5 h-3.5" />
           </button>
@@ -304,6 +376,7 @@ const WeatherCardPalette: React.FC<{
             }`}
             style={{ borderColor: `${theme.primary}30`, color: loading ? theme.accent : undefined }}
             title="Refresh live telemetry"
+            aria-label="Refresh live telemetry"
           >
             <RotateCw className="w-3.5 h-3.5" />
           </button>
@@ -314,6 +387,7 @@ const WeatherCardPalette: React.FC<{
             className="px-2 py-0.5 rounded-lg text-xs font-mono font-semibold bg-white/10 hover:bg-white/20 transition-all border"
             style={{ borderColor: `${theme.primary}30` }}
             title="Toggle Celsius / Fahrenheit"
+            aria-label="Toggle Celsius or Fahrenheit"
           >
             °{unit}
           </button>
@@ -345,6 +419,13 @@ const WeatherCardPalette: React.FC<{
             </button>
           </div>
         </form>
+      )}
+
+      {fetchError && (
+        <div className="mb-2 p-2 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs flex items-center space-x-1.5">
+          <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+          <span>{fetchError}</span>
+        </div>
       )}
 
       <div className="flex items-center justify-between my-2 relative z-10">
@@ -415,7 +496,7 @@ const WeatherCardPalette: React.FC<{
         >
           <Thermometer className="w-3.5 h-3.5 mb-1 text-rose-400" />
           <span className="text-[10px] opacity-60">Feels Like</span>
-          <span className="text-xs font-semibold">{feelsLike !== "--" ? `${feelsLike}°C` : "--"}</span>
+          <span className="text-xs font-semibold">{formatTemp(feelsLike)}</span>
         </div>
       </div>
 
@@ -443,7 +524,7 @@ const WeatherCardPalette: React.FC<{
 };
 
 /**
- * Live Countdown Timer & Stopwatch Palette Widget
+ * Live Countdown Timer & Stopwatch Widget with Drift-Free Timestamp Ticks
  */
 const TimerCardPalette: React.FC<{
   item: ActionCardItem;
@@ -455,46 +536,56 @@ const TimerCardPalette: React.FC<{
     item.type === "stopwatch" ||
     payload.mode === "stopwatch" ||
     payload.tool === "stopwatch" ||
-    /stopwatch/i.test(item.title) ||
-    /stopwatch/i.test(payload.label || "");
+    /\bstopwatch\b/i.test(item.title) ||
+    /\bstopwatch\b/i.test(payload.label || "");
 
   const initialDuration = Math.max(1, payload.duration_seconds || payload.seconds || 300);
   const timerTitle = payload.label || item.title?.replace(/^(?:Timer|Stopwatch):\s*/i, "") || (isStopwatch ? "Live Stopwatch" : "Countdown Timer");
 
-  // Timer states
   const [totalSeconds, setTotalSeconds] = useState<number>(initialDuration);
   const [remainingSeconds, setRemainingSeconds] = useState<number>(initialDuration);
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
   const [isRunning, setIsRunning] = useState<boolean>(true);
   const [isCompleted, setIsCompleted] = useState<boolean>(false);
 
+  // Target timestamp tracking to eliminate drift across background tab throttling
+  const targetEndRef = useRef<number>(Date.now() + initialDuration * 1000);
+  const stopwatchStartRef = useRef<number>(Date.now());
+
   useEffect(() => {
-    let interval: any = null;
-    if (isRunning) {
-      interval = setInterval(() => {
-        if (isStopwatch) {
-          setElapsedSeconds((prev) => prev + 1);
-        } else {
-          setRemainingSeconds((prev) => {
-            if (prev <= 1) {
-              setIsRunning(false);
-              setIsCompleted(true);
-              return 0;
-            }
-            return prev - 1;
-          });
-        }
-      }, 1000);
+    if (!isRunning) return;
+
+    if (isStopwatch) {
+      stopwatchStartRef.current = Date.now() - elapsedSeconds * 1000;
+    } else {
+      targetEndRef.current = Date.now() + remainingSeconds * 1000;
     }
-    return () => {
-      if (interval) clearInterval(interval);
-    };
+
+    const interval = setInterval(() => {
+      if (isStopwatch) {
+        const elapsed = Math.floor((Date.now() - stopwatchStartRef.current) / 1000);
+        setElapsedSeconds(elapsed);
+      } else {
+        const remaining = Math.max(0, Math.ceil((targetEndRef.current - Date.now()) / 1000));
+        setRemainingSeconds(remaining);
+        if (remaining <= 0) {
+          setIsRunning(false);
+          setIsCompleted(true);
+          try {
+            sfx.playSuccess();
+          } catch {}
+        }
+      }
+    }, 500);
+
+    return () => clearInterval(interval);
   }, [isRunning, isStopwatch]);
 
   const handleTogglePlayPause = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!isStopwatch && remainingSeconds === 0) {
       setRemainingSeconds(totalSeconds);
+      targetEndRef.current = Date.now() + totalSeconds * 1000;
       setIsCompleted(false);
       setIsRunning(true);
     } else {
@@ -508,8 +599,10 @@ const TimerCardPalette: React.FC<{
     setIsCompleted(false);
     if (isStopwatch) {
       setElapsedSeconds(0);
+      stopwatchStartRef.current = Date.now();
     } else {
       setRemainingSeconds(totalSeconds);
+      targetEndRef.current = Date.now() + totalSeconds * 1000;
     }
   };
 
@@ -517,7 +610,11 @@ const TimerCardPalette: React.FC<{
     e.stopPropagation();
     const addedSecs = mins * 60;
     setTotalSeconds((prev) => prev + addedSecs);
-    setRemainingSeconds((prev) => prev + addedSecs);
+    setRemainingSeconds((prev) => {
+      const next = prev + addedSecs;
+      targetEndRef.current = Date.now() + next * 1000;
+      return next;
+    });
     if (isCompleted) {
       setIsCompleted(false);
       setIsRunning(true);
@@ -525,8 +622,12 @@ const TimerCardPalette: React.FC<{
   };
 
   const formatTime = (secs: number) => {
-    const m = Math.floor(secs / 60);
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
     const s = secs % 60;
+    if (h > 0) {
+      return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+    }
     return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
   };
 
@@ -538,8 +639,12 @@ const TimerCardPalette: React.FC<{
     : 0;
 
   const radius = 42;
-  const circumference = 2 * Math.PI * radius; // ~263.89
+  const circumference = 2 * Math.PI * radius;
   const strokeDashoffset = circumference * (1 - progressPercent);
+
+  const targetLabel = totalSeconds < 60
+    ? `Target: ${totalSeconds} sec`
+    : `Target: ${Math.round(totalSeconds / 60)} min`;
 
   return (
     <div
@@ -560,7 +665,6 @@ const TimerCardPalette: React.FC<{
         boxShadow: `0 12px 32px rgba(0, 0, 0, 0.25), 0 0 24px ${theme.glow}`,
       }}
     >
-      {/* Ambient Fluid Glow */}
       <div
         className="absolute -right-6 -top-6 w-32 h-32 rounded-full pointer-events-none opacity-25"
         style={{
@@ -598,7 +702,6 @@ const TimerCardPalette: React.FC<{
           </span>
         </div>
 
-        {/* Quick Add Mins (Timer mode only) */}
         {!isStopwatch && (
           <div className="flex items-center space-x-1">
             {[1, 5].map((m) => (
@@ -616,10 +719,9 @@ const TimerCardPalette: React.FC<{
         )}
       </div>
 
-      {/* Main Timer / Stopwatch Display with Circular SVG Progress Ring */}
+      {/* Main Timer Display */}
       <div className="flex items-center justify-between my-2 relative z-10">
         <div className="flex items-center space-x-4">
-          {/* Progress Ring */}
           <div className="relative w-24 h-24 flex items-center justify-center flex-shrink-0">
             <svg className="w-full h-full transform -rotate-90" viewBox="0 0 100 100">
               <circle
@@ -640,7 +742,7 @@ const TimerCardPalette: React.FC<{
                 strokeDashoffset={strokeDashoffset}
                 strokeLinecap="round"
                 fill="transparent"
-                className="transition-[stroke-dashoffset] duration-500 ease-linear"
+                className="transition-[stroke-dashoffset] duration-1000 ease-linear"
               />
             </svg>
             <div className="absolute inset-0 flex items-center justify-center">
@@ -654,7 +756,6 @@ const TimerCardPalette: React.FC<{
             </div>
           </div>
 
-          {/* Time text & Status */}
           <div className="flex flex-col">
             <div className="text-3xl sm:text-4xl font-mono font-bold tracking-tight">
               {displayTime}
@@ -666,12 +767,11 @@ const TimerCardPalette: React.FC<{
                   : "Stopwatch Paused"
                 : isCompleted
                 ? "Countdown Finished"
-                : `Target: ${Math.round(totalSeconds / 60)} min`}
+                : targetLabel}
             </div>
           </div>
         </div>
 
-        {/* Action Controls */}
         <div className="flex items-center space-x-2">
           <button
             type="button"
@@ -683,6 +783,7 @@ const TimerCardPalette: React.FC<{
                 : theme.gradient,
             }}
             title={isRunning ? "Pause" : "Start"}
+            aria-label={isRunning ? "Pause timer" : "Start timer"}
           >
             {isRunning ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" />}
           </button>
@@ -691,6 +792,7 @@ const TimerCardPalette: React.FC<{
             onClick={handleReset}
             className="w-10 h-10 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 transition-all border border-white/15"
             title="Reset"
+            aria-label="Reset timer"
           >
             <RotateCcw className="w-4 h-4 opacity-80" />
           </button>
@@ -711,22 +813,22 @@ export const ActionCard: React.FC<ActionCardProps> = ({
   colorTheme = "violet",
 }) => {
   const theme = COLOR_THEMES[colorTheme] || COLOR_THEMES.violet;
+
   const getIcon = (item: ActionCardItem) => {
     const type = (item.type || "").toLowerCase();
     const badge = (item.badge || "").toLowerCase();
     const tool = (item.payload?.tool || "").toLowerCase();
     const title = (item.title || "").toLowerCase();
 
-    // Media, Music & YouTube Audio/Video
+    // Media & Music
     if (
       type === "media" ||
       badge === "media" ||
       badge === "youtube" ||
       badge === "music" ||
-      tool.includes("youtube") ||
-      tool.includes("media") ||
-      title.startsWith("play:") ||
-      title.startsWith("playing")
+      /\b(youtube|media|music|audio|song|track)\b/i.test(tool) ||
+      /^play:\s*/i.test(title) ||
+      /^playing\b/i.test(title)
     ) {
       return (
         <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-rose-500 via-pink-500 to-purple-600 flex items-center justify-center shadow-md shadow-rose-500/25 text-white flex-shrink-0">
@@ -736,7 +838,7 @@ export const ActionCard: React.FC<ActionCardProps> = ({
     }
 
     // Weather & Meteorology
-    if (type === "weather" || badge === "weather" || tool.includes("weather") || title.includes("weather")) {
+    if (isWeatherItem(item)) {
       return (
         <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-sky-500 via-cyan-500 to-amber-400 flex items-center justify-center shadow-md shadow-sky-500/25 text-white flex-shrink-0">
           <CloudSun className="w-4 h-4" />
@@ -745,7 +847,7 @@ export const ActionCard: React.FC<ActionCardProps> = ({
     }
 
     // Timer & Stopwatch
-    if (type === "timer" || type === "stopwatch" || badge === "timer" || badge === "stopwatch" || tool.includes("timer")) {
+    if (isTimerItem(item)) {
       return (
         <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-amber-500 via-orange-500 to-rose-500 flex items-center justify-center shadow-md shadow-amber-500/25 text-white flex-shrink-0">
           <Timer className="w-4 h-4" />
@@ -753,17 +855,8 @@ export const ActionCard: React.FC<ActionCardProps> = ({
       );
     }
 
-    // Reminders & Clock
-    if (badge === "reminder" || tool.includes("reminder") || badge === "clock" || tool.includes("time")) {
-      return (
-        <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-orange-500 to-rose-500 flex items-center justify-center shadow-md shadow-orange-500/25 text-white flex-shrink-0">
-          <Clock className="w-4 h-4" />
-        </div>
-      );
-    }
-
-    // File Operations & Folders
-    if (type === "file" || badge === "file" || badge === "folder" || tool.includes("file") || tool.includes("folder") || title.includes("file")) {
+    // File Operations & Folders (using exact boundaries to not hit "profile")
+    if (isFileItem(item) || /\b(file|folder|dir|directory)\b/i.test(title)) {
       return (
         <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-blue-500 via-indigo-500 to-cyan-500 flex items-center justify-center shadow-md shadow-indigo-500/25 text-white flex-shrink-0">
           <FolderOpen className="w-4 h-4" />
@@ -771,8 +864,17 @@ export const ActionCard: React.FC<ActionCardProps> = ({
       );
     }
 
-    // Web Search, Google, Browser & Links
-    if (type === "link" || badge === "web" || badge === "google" || tool.includes("search") || tool.includes("google") || item.url) {
+    // Reminders & Clock
+    if (badge === "reminder" || tool === "reminder" || badge === "clock" || tool === "clock") {
+      return (
+        <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-orange-500 to-rose-500 flex items-center justify-center shadow-md shadow-orange-500/25 text-white flex-shrink-0">
+          <Clock className="w-4 h-4" />
+        </div>
+      );
+    }
+
+    // Web Search, Google & Browser (not blindly any item with URL)
+    if (badge === "web" || badge === "google" || /\b(search|google_search|browse)\b/i.test(tool)) {
       return (
         <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-sky-500 via-blue-600 to-indigo-600 flex items-center justify-center shadow-md shadow-sky-500/25 text-white flex-shrink-0">
           <Search className="w-4 h-4" />
@@ -780,8 +882,17 @@ export const ActionCard: React.FC<ActionCardProps> = ({
       );
     }
 
+    // Links & URLs
+    if (type === "link" || (item.url && isSafeHttpUrl(item.url))) {
+      return (
+        <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-teal-500 via-emerald-500 to-cyan-600 flex items-center justify-center shadow-md shadow-teal-500/25 text-white flex-shrink-0">
+          <Globe className="w-4 h-4" />
+        </div>
+      );
+    }
+
     // System Settings
-    if (badge === "settings" || tool.includes("settings") || title.includes("settings")) {
+    if (badge === "settings" || /\bsettings\b/i.test(tool) || /\bsettings\b/i.test(title)) {
       return (
         <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-slate-600 via-slate-700 to-indigo-600 flex items-center justify-center shadow-md shadow-slate-600/25 text-white flex-shrink-0">
           <Settings className="w-4 h-4" />
@@ -789,8 +900,8 @@ export const ActionCard: React.FC<ActionCardProps> = ({
       );
     }
 
-    // System Status, CPU & Hardware
-    if (type === "device" || badge === "system" || badge === "hardware" || tool.includes("system") || tool.includes("brightness") || tool.includes("volume")) {
+    // System Status & Hardware
+    if (type === "device" || badge === "system" || badge === "hardware" || /\b(system|brightness|volume|cpu|ram)\b/i.test(tool)) {
       return (
         <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-amber-500 via-yellow-500 to-orange-500 flex items-center justify-center shadow-md shadow-amber-500/25 text-white flex-shrink-0">
           <Cpu className="w-4 h-4" />
@@ -798,8 +909,8 @@ export const ActionCard: React.FC<ActionCardProps> = ({
       );
     }
 
-    // Message & Conversational Notes
-    if (type === "message" || badge === "message" || tool.includes("chat")) {
+    // Messaging & Chat Notes
+    if (type === "message" || badge === "message" || tool === "chat") {
       return (
         <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-emerald-500 to-green-400 flex items-center justify-center shadow-md shadow-emerald-500/25 text-white flex-shrink-0">
           <MessageSquare className="w-4 h-4" />
@@ -825,8 +936,8 @@ export const ActionCard: React.FC<ActionCardProps> = ({
       );
     }
 
-    // Code & Scripts
-    if (type === "code" || badge === "code" || tool.includes("code")) {
+    // Code & Scripts (exact whole word boundary to avoid "decode")
+    if (type === "code" || badge === "code" || /\b(code|python|script|bash)\b/i.test(tool)) {
       return (
         <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-purple-600 to-indigo-500 flex items-center justify-center shadow-md shadow-purple-600/25 text-white flex-shrink-0">
           <Code2 className="w-4 h-4" />
@@ -835,7 +946,7 @@ export const ActionCard: React.FC<ActionCardProps> = ({
     }
 
     // Calendar
-    if (type === "calendar" || badge === "calendar" || tool.includes("calendar")) {
+    if (type === "calendar" || badge === "calendar" || /\bcalendar\b/i.test(tool)) {
       return (
         <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-purple-500 to-indigo-400 flex items-center justify-center shadow-md shadow-purple-500/25 text-white flex-shrink-0">
           <Calendar className="w-4 h-4" />
@@ -854,9 +965,9 @@ export const ActionCard: React.FC<ActionCardProps> = ({
     );
   };
 
-  const isWeatherCard = items.some(i => i.type === "weather" || i.payload?.tool === "get_weather");
-  const isTimerCard = items.some(i => i.type === "timer" || i.type === "stopwatch" || i.payload?.tool === "set_timer" || i.payload?.tool === "stopwatch");
-  const isFileCard = items.some(i => i.payload?.file || i.type === "file");
+  const isWeatherCard = items.some(isWeatherItem);
+  const isTimerCard = items.some(isTimerItem);
+  const isFileCard = items.some(isFileItem);
 
   const cardTitle = isWeatherCard
     ? "Weather Forecast"
@@ -866,7 +977,11 @@ export const ActionCard: React.FC<ActionCardProps> = ({
     ? "Matching Files"
     : "Quick Actions";
 
-  const content = (
+  // Check if multiple items have checkboxes and are selectable
+  const hasSelectableItems = items.some((i) => i.actionType !== "button" && !i.payload?.file && !isTimerItem(i) && !isWeatherItem(i));
+  const selectedCount = items.filter((i) => i.selected).length;
+
+  return (
     <motion.div
       id="fluent-action-card-container"
       variants={scaleFade}
@@ -875,7 +990,6 @@ export const ActionCard: React.FC<ActionCardProps> = ({
       exit="exit"
       className="w-full max-w-xl mx-auto relative px-2 sm:px-4 gpu-accelerated"
     >
-      {/* Ambient Fluid Glow Behind Card */}
       <div
         className="absolute -inset-2 rounded-3xl opacity-35 pointer-events-none blur-xl"
         style={{
@@ -884,7 +998,6 @@ export const ActionCard: React.FC<ActionCardProps> = ({
         }}
       />
 
-      {/* Fluent Frosted Mica Card */}
       <div
         className={`relative rounded-2xl sm:rounded-3xl p-4 sm:p-5 shadow-2xl transition-colors duration-150 border transform-gpu ${
           isDark
@@ -898,7 +1011,7 @@ export const ActionCard: React.FC<ActionCardProps> = ({
             : `0 20px 40px rgba(0,0,0,0.08), 0 0 25px ${theme.glow}`,
         }}
       >
-        {/* Clean Header with Title & Close Button */}
+        {/* Card Header */}
         <div
           className="flex items-center justify-between mb-3.5 pb-2.5 border-b text-xs"
           style={{ borderColor: `${theme.primary}25` }}
@@ -908,7 +1021,7 @@ export const ActionCard: React.FC<ActionCardProps> = ({
               className="w-5 h-5 rounded-lg flex items-center justify-center text-white text-[10px] shadow-sm"
               style={{ background: theme.gradient }}
             >
-              <Sparkles className="w-3 h-3" />
+              <Sparkles className="w-3.5 h-3.5" />
             </div>
             <span className="font-semibold text-xs tracking-wide opacity-90" style={{ color: theme.accent }}>
               {cardTitle}
@@ -925,6 +1038,7 @@ export const ActionCard: React.FC<ActionCardProps> = ({
             className="p-1 rounded-lg opacity-60 hover:opacity-100 hover:bg-white/10 transition-all border border-transparent hover:border-white/10"
             style={{ color: theme.accent }}
             title="Close"
+            aria-label="Close action card"
           >
             <X className="w-3.5 h-3.5" />
           </button>
@@ -932,7 +1046,7 @@ export const ActionCard: React.FC<ActionCardProps> = ({
 
         {/* Action Items List */}
         <motion.div className="space-y-3 mb-4 max-h-[46vh] sm:max-h-[50vh] overflow-y-auto custom-scrollbar pr-0.5" variants={staggerContainer} initial="hidden" animate="show">
-          {items.map((item, idx) => {
+          {items.map((item) => {
             if (item.payload?.file) {
               const file = item.payload.file;
               const actionItem = (action: string): ActionCardItem => ({
@@ -958,42 +1072,22 @@ export const ActionCard: React.FC<ActionCardProps> = ({
                 </motion.div>
               );
             }
-            if (
-              item.type === "timer" ||
-              item.type === "stopwatch" ||
-              item.payload?.tool === "set_timer" ||
-              item.payload?.tool === "stopwatch" ||
-              item.payload?.mode === "stopwatch" ||
-              item.payload?.mode === "timer" ||
-              /timer|stopwatch|countdown/i.test(item.title) ||
-              /timer|stopwatch|countdown/i.test(item.badge || "")
-            ) {
+
+            if (isTimerItem(item)) {
               return (
-                <motion.div
-                  key={item.id}
-                  variants={staggerItem}
-                  className="gpu-accelerated"
-                >
+                <motion.div key={item.id} variants={staggerItem} className="gpu-accelerated">
                   <TimerCardPalette item={item} isDark={isDark} theme={theme} />
                 </motion.div>
               );
             }
 
-            if (item.type === "weather" || item.payload?.tool === "get_weather") {
+            if (isWeatherItem(item)) {
               return (
-                <motion.div
-                  key={item.id}
-                  variants={staggerItem}
-                  className="gpu-accelerated"
-                >
+                <motion.div key={item.id} variants={staggerItem} className="gpu-accelerated">
                   <WeatherCardPalette item={item} isDark={isDark} theme={theme} />
                 </motion.div>
               );
             }
-
-
-
-
 
             return (
               <motion.div
@@ -1004,14 +1098,13 @@ export const ActionCard: React.FC<ActionCardProps> = ({
                 whileTap={{ scale: 0.99 }}
                 transition={{ duration: 0.15, ease: "easeOut" }}
                 onClick={() => {
+                  if (item.actionType === "button") return;
                   sfx.playClick();
-                  if (item.actionType === "button" && onExecuteSingleItem) {
-                    onExecuteSingleItem(item);
-                  } else {
-                    onToggleItem(item.id);
-                  }
+                  onToggleItem(item.id);
                 }}
-                className={`flex items-center justify-between p-3 rounded-xl cursor-pointer transition-colors duration-150 border transform-gpu ${
+                className={`flex items-center justify-between p-3 rounded-xl transition-colors duration-150 border transform-gpu ${
+                  item.actionType === "button" ? "" : "cursor-pointer"
+                } ${
                   item.selected
                     ? "shadow-sm"
                     : isDark
@@ -1047,74 +1140,97 @@ export const ActionCard: React.FC<ActionCardProps> = ({
                   </div>
                 </div>
 
-              {/* Action Button or Checkbox Toggle Indicator */}
-              {item.actionType === "button" ? (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    sfx.playClick();
-                    if (onExecuteSingleItem) onExecuteSingleItem(item);
-                  }}
-                  className="px-2.5 py-1 rounded-lg text-xs font-semibold text-white shadow-sm transition-all hover:scale-105 active:scale-95"
-                  style={{ background: theme.gradient }}
-                >
-                  Execute
-                </button>
-              ) : item.url ? (
-                <a
-                  href={item.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  onClick={(e) => e.stopPropagation()}
-                  className="p-1.5 rounded-lg opacity-60 hover:opacity-100 hover:bg-white/10 transition-all"
-                  style={{ color: theme.accent }}
-                >
-                  <ExternalLink className="w-4 h-4" />
-                </a>
-              ) : (
-                <motion.div
-                  animate={{ scale: item.selected ? [1, 1.12, 1] : 1 }}
-                  transition={{ duration: 0.15 }}
-                  className={`w-5 h-5 rounded-full flex items-center justify-center transition-colors duration-150 transform-gpu ${
-                    item.selected
-                      ? "text-white shadow-sm"
-                      : "border border-white/30 dark:border-white/20"
-                  }`}
-                  style={item.selected ? { backgroundColor: theme.primary } : {}}
-                >
-                  {item.selected && <Check className="w-3.5 h-3.5 stroke-[2.5]" />}
-                </motion.div>
-              )}
-            </motion.div>
-          );
-        })}
-      </motion.div>
+                {/* Explicit Action Button or Valid Link */}
+                {item.actionType === "button" ? (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      sfx.playClick();
+                      if (onExecuteSingleItem) onExecuteSingleItem(item);
+                    }}
+                    className="px-2.5 py-1 rounded-lg text-xs font-semibold text-white shadow-sm transition-all hover:scale-105 active:scale-95"
+                    style={{ background: theme.gradient }}
+                  >
+                    Execute
+                  </button>
+                ) : item.url && isSafeHttpUrl(item.url) ? (
+                  <a
+                    href={item.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    className="p-1.5 rounded-lg opacity-60 hover:opacity-100 hover:bg-white/10 transition-all"
+                    style={{ color: theme.accent }}
+                    title="Open external link"
+                    aria-label={`Open external link for ${item.title}`}
+                  >
+                    <ExternalLink className="w-4 h-4" />
+                  </a>
+                ) : (
+                  <motion.div
+                    animate={{ scale: item.selected ? [1, 1.12, 1] : 1 }}
+                    transition={{ duration: 0.15 }}
+                    className={`w-5 h-5 rounded-full flex items-center justify-center transition-colors duration-150 transform-gpu ${
+                      item.selected
+                        ? "text-white shadow-sm"
+                        : "border border-white/30 dark:border-white/20"
+                    }`}
+                    style={item.selected ? { backgroundColor: theme.primary } : {}}
+                  >
+                    {item.selected && <Check className="w-3.5 h-3.5 stroke-[2.5]" />}
+                  </motion.div>
+                )}
+              </motion.div>
+            );
+          })}
+        </motion.div>
 
-      <div className="pt-2">
-        {onRetry && isFileCard && (
-          <button type="button" onClick={onRetry} className="mb-2 flex w-full items-center justify-center gap-1.5 rounded-xl border border-white/10 px-4 py-2 text-xs font-semibold transition-colors hover:bg-white/10">
-            <RotateCcw className="h-3.5 w-3.5" />Retry search
+        {/* Footer actions */}
+        <div className="pt-2 space-y-2">
+          {hasSelectableItems && selectedCount > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                sfx.playClick();
+                onConfirm();
+              }}
+              className="w-full py-2.5 px-4 rounded-xl text-xs font-semibold text-white transition-all shadow-md active:scale-95 flex items-center justify-center space-x-1.5"
+              style={{ background: theme.gradient }}
+            >
+              <Check className="w-4 h-4" />
+              <span>Confirm ({selectedCount} selected)</span>
+            </button>
+          )}
+
+          {onRetry && isFileCard && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-white/10 px-4 py-2 text-xs font-semibold transition-colors hover:bg-white/10"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              <span>Retry search</span>
+            </button>
+          )}
+
+          <button
+            id="action-cancel-button"
+            type="button"
+            onClick={onCancel}
+            className={`w-full py-2.5 px-4 rounded-xl text-xs font-semibold transition-colors duration-150 border active:scale-95 flex items-center justify-center space-x-1.5 ${
+              isDark
+                ? "bg-white/5 hover:bg-white/10 text-slate-300"
+                : "bg-black/5 hover:bg-black/10 text-slate-700"
+            }`}
+            style={{
+              borderColor: `${theme.primary}35`,
+            }}
+          >
+            <span>Close</span>
           </button>
-        )}
-        <button
-          id="action-cancel-button"
-          type="button"
-          onClick={onCancel}
-          className={`w-full py-2.5 px-4 rounded-xl text-xs font-semibold transition-colors duration-150 border active:scale-95 flex items-center justify-center space-x-1.5 ${
-            isDark
-              ? "bg-white/5 hover:bg-white/10 text-slate-300"
-              : "bg-black/5 hover:bg-black/10 text-slate-700"
-          }`}
-          style={{
-            borderColor: `${theme.primary}35`,
-          }}
-        >
-          <span>Close</span>
-        </button>
+        </div>
       </div>
-    </div>
-  </motion.div>
+    </motion.div>
   );
-  return content;
 };

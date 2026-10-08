@@ -347,18 +347,21 @@ def _tool_get_weather(params, query, spoken):
         reply = _offline_reply(query, "live weather reports cannot be fetched without an internet connection")
         return reply, None, {"status": "offline", "error": "No internet connection"}
     city = str(params.get("city") or "").strip()
-    # Use cached weather data to avoid duplicate network calls
-    w_data = _cached_weather_data(city if city else query)
-    if w_data:
+    w_data = _cached_weather_data(city)
+    temp = w_data.get("temp_c") or w_data.get("temperature") if isinstance(w_data, dict) else None
+    if w_data and w_data.get("success", True) and temp and temp not in ("--", "unknown"):
         # Format a response from the cached data
         city_name = w_data.get("city", city or "your area")
-        temp = w_data.get("temperature", "unknown")
-        condition = w_data.get("condition", "unknown")
-        result = f"Weather in {city_name}: {temp}°C, {condition}."
+        condition = w_data.get("condition", "Clear")
+        humidity = w_data.get("humidity")
+        if humidity and str(humidity) not in ("0", "--"):
+            result = f"Weather in {city_name}: {temp}°C, {condition} with {humidity}% humidity."
+        else:
+            result = f"Weather in {city_name}: {temp}°C, {condition}."
     else:
         result = weather_command(city if city else query) or spoken
     try:  # remember the place so a follow-up like "and tomorrow?" can reuse it
-        resolved = w_data.get("city") or city
+        resolved = (w_data.get("city") if isinstance(w_data, dict) else None) or city
         if resolved:
             update_active_state("last_weather", {"city": resolved})
     except Exception:
@@ -712,7 +715,7 @@ def _tool_stop(params, query, spoken):
             os_automation.play_pause_media()
         except Exception:
             pass
-    return "Stopped.", None
+    return "", None
 
 
 def _tool_blocked(params, query, spoken):
@@ -1681,9 +1684,9 @@ def _tool(name: str, description: str, props: dict | None = None, required: list
 
 
 TOOL_DEFINITIONS = [
-    _tool("chat", "Conversational response: talk with the user, answer questions, provide explanations, opinions, greetings, advice, jokes, writing help, or general conversation.",
+    _tool("chat", "Conversational response: talk with the user, casual conversation, greetings, opinions, advice, jokes, or creative dialogue. Do NOT use for current external facts or real-world office holders.",
           {"response": _p("string", "Your direct, natural conversational response or answer to the user (1-3 sentences)")}, ["response"]),
-    _tool("web_search", "Search the web for news, real-time facts, current events, definitions, people, or external knowledge.",
+    _tool("web_search", "Search the web for real-time facts, current office holders, political leaders, ministers, presidents, CEOs, news, recent events, live scores, or external knowledge.",
           {"query": _p("string", "Search query resolved from context"),
            "show_in_browser": _p("boolean", "True if user asked to open search results in a browser")}, ["query"]),
     _tool("stock_quote", "Look up real-time stock prices, share prices, market quotes, or cryptocurrency rates.",
@@ -1847,32 +1850,44 @@ TOOLS AVAILABLE:
 
 ROUTING GUIDELINES:
 1. INTENT MATCHING & CHAT RESPONSE:
-   - For conversation, questions, greetings, jokes, explanations, opinions, empathy, or general talk: select 'chat' and write a warm, engaging, and conversational answer directly in params.response (1-3 natural sentences).
+   - For casual conversation, greetings, jokes, subjective advice, opinions, empathy, or general chit-chat: select 'chat' and write a warm, engaging, and conversational answer directly in params.response (1-3 natural sentences).
    - CRITICAL: Never write cold, robotic, or 1-word responses like "Great.", "Good.", "Okay.", "Stopped.", or "Fine."! Embody Amigo's friendly, helpful, and natural personality.
-   - For PC actions (open/close apps, volume, brightness, media, timers, screenshots, web search): select the specific tool with necessary parameters.
+   - For PC actions (open/close apps, volume, brightness, media, timers, screenshots): select the specific tool with necessary parameters.
    - For multiple requests in one turn (e.g. "open notepad and set volume to 50"): return multiple tool actions in execution order.
 
-2. CONTEXT & FOLLOW-UP RESOLUTION:
+2. REAL-TIME FACTS & WEB SEARCH (CRITICAL):
+   - Use 'web_search' for any queries requiring real-time, current, or external factual knowledge that changes over time or that you do not have verified knowledge of, including:
+     * Current political office holders, ministers, prime ministers, presidents, governors, mayors, heads of state, CEOs (e.g. 'who is the current education minister of India', 'who is the president of France')
+     * Current events, latest news, recent developments, updates, or 'current/latest/new' status
+     * Live sports scores, matches, tournaments, winners, awards, election results
+     * Real-time information, definitions, factual lookup, public figures' current status
+   - NEVER guess, invent, or hallucinate facts in 'chat' for current real-world roles, office holders, or news! ALWAYS route them to 'web_search' with a concise search query in params.query.
+
+3. CONTEXT & FOLLOW-UP RESOLUTION:
    - Resolve pronouns ("it", "that", "again") from RECENT ACTIVITY and ACTIVE STATE into explicit parameter values.
    - For ongoing discussions about prior topics ("why?", "tell me more"): use 'chat' with your answer in params.response.
 
-3. MEDIA PLAYBACK CONTROLS:
+4. MEDIA PLAYBACK CONTROLS:
    - Use 'pause_media' whenever the user asks to pause music, pause video, or pause playback ("pause", "pause music", "pause song", "hold playback").
    - Use 'resume_media' whenever the user asks to resume or unpause playback ("resume", "unpause", "continue music").
    - Use 'current_media' whenever the user asks what song or video is currently playing ("which music is playing", "what is playing", "current song").
    - Use 'next_track' to skip to the next track, and 'prev_track' for the previous track.
    - Use 'play_youtube' whenever the user asks to play a song, artist, video, or playlist.
 
-4. CONFIRMATIONS:
+5. CONFIRMATIONS:
    - If awaiting confirmation: use 'confirm_action' for agreement, or 'cancel_action' to decline.
 
-5. SPECIALIZED TOOLS:
+6. SPECIALIZED TOOLS:
    - Stock/crypto prices: 'stock_quote'
    - Weather: 'get_weather'
    - Local user tickets, bookings, flights, PNR, invoices: 'document_qa'
    - Finding local files: 'find_document'
 
 EXAMPLES:
+- "who is the current education minister of india" -> {"actions": [{"tool": "web_search", "params": {"query": "current education minister of India"}}]}
+- "who is the prime minister of the uk" -> {"actions": [{"tool": "web_search", "params": {"query": "current prime minister of UK"}}]}
+- "who is the ceo of google" -> {"actions": [{"tool": "web_search", "params": {"query": "current CEO of Google"}}]}
+- "what is the latest news on spacex" -> {"actions": [{"tool": "web_search", "params": {"query": "latest news on spacex"}}]}
 - "what is the capital of france" -> {"actions": [{"tool": "chat", "params": {"response": "The capital of France is Paris."}}]}
 - "hello how are you" -> {"actions": [{"tool": "chat", "params": {"response": "Hello! I'm doing great, how can I help you today?"}}]}
 - "i love this song" -> {"actions": [{"tool": "chat", "params": {"response": "It really is an amazing track! Glad you're enjoying it."}}]}
@@ -2087,7 +2102,7 @@ def parse_user_intent_fast(query: str) -> dict[str, Any] | None:
     if text in _EXACT_EXIT:
         return {"tool": "exit", "params": {}, "speak": "Goodbye!"}
     if text in _EXACT_STOP:
-        return {"tool": "stop", "params": {}, "speak": "Stopped."}
+        return {"tool": "stop", "params": {}, "speak": ""}
     if text in _EXACT_PAUSE:
         return {"tool": "pause_media", "params": {}, "speak": ""}
     if text in _EXACT_RESUME:

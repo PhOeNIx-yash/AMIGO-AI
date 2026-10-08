@@ -329,7 +329,8 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
 
     primary_tool = "multi_command" if len(actions) > 1 else last_tool
     final_reply = " ".join(combined_spoken).strip()
-    if not final_reply and primary_tool != "chat":
+    silent_tools = {"chat", "stop", "stop_speaking", "pause_media", "resume_media", "next_track", "prev_track", "blocked"}
+    if not final_reply and primary_tool not in silent_tools:
         from amigo.core.llm_agent import get_quick_feedback
         final_reply = get_quick_feedback(f"finished {primary_tool.replace('_', ' ')}")
     elif not final_reply:
@@ -651,7 +652,8 @@ def api_assistant_process():
         )
     )
 
-    speech_reply = response_text or get_quick_feedback(f"starting {tool.replace('_', ' ')}")
+    silent_tools = {"chat", "stop", "stop_speaking", "pause_media", "resume_media", "next_track", "prev_track", "blocked"}
+    speech_reply = response_text or (get_quick_feedback(f"starting {tool.replace('_', ' ')}") if tool not in silent_tools else "")
     if "matching file" in speech_reply and "\n" in speech_reply:
         m_count = _RE_FILE_MATCH_COUNT.search(speech_reply)
         c_num = m_count.group(1) if m_count else "some"
@@ -981,8 +983,9 @@ def handle_speak_endpoint():
         return jsonify({"status": "ok"})
     data = request.get_json() or {}
     text = data.get("text", "").strip()
+    voice = data.get("voice")
     if text:
-        speak(text)
+        speak(text, voice=voice)
     return jsonify({"success": True})
 
 
