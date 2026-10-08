@@ -603,10 +603,10 @@ export const HaloSearchInput = forwardRef<
     }
     if (isLoading) {
       return {
-        opacityIdle: 0.95,
-        primaryBg: "linear-gradient(90deg, #00d4ff, #6366f1, #38bdf8, #0ea5e9)",
-        secondaryBg: "linear-gradient(90deg, #38bdf8, #818cf8, #00d4ff)",
-        tertiaryBg: "linear-gradient(90deg, #0284c7, #00d4ff, #6366f1)",
+        opacityIdle: 0.98,
+        primaryBg: "linear-gradient(90deg, #ff0080, #7928ca, #00d4ff, #0070f3)",
+        secondaryBg: "linear-gradient(90deg, #ff4d4d, #f9cb28, #ff0080)",
+        tertiaryBg: "linear-gradient(90deg, #0070f3, #00d4ff, #7928ca)",
         xPrimary: ["-15%", "85%", "-15%"],
         xSecondary: ["75%", "-10%", "75%"],
         xTertiary: ["15%", "65%", "15%"],
@@ -618,26 +618,25 @@ export const HaloSearchInput = forwardRef<
     }
 
     const idleOpacity = showBlobTranslucent
-      ? (isFocused ? 0.90 : 0.65)
-      : (isFocused ? 0.75 : 0.35)
+      ? (isFocused ? 0.92 : 0.72)
+      : (isFocused ? 0.85 : 0.65)
 
     return {
       opacityIdle: idleOpacity,
-      primaryBg: "linear-gradient(90deg, #00d4ff, #6366f1, #38bdf8, #0ea5e9)",
-      secondaryBg: "linear-gradient(90deg, #38bdf8, #818cf8, #00d4ff)",
-      tertiaryBg: "linear-gradient(90deg, #0284c7, #00d4ff, #6366f1)",
+      primaryBg: "linear-gradient(90deg, #ff0080, #7928ca, #00d4ff, #0070f3)",
+      secondaryBg: "linear-gradient(90deg, #ff4d4d, #f9cb28, #ff0080)",
+      tertiaryBg: "linear-gradient(90deg, #0070f3, #00d4ff, #7928ca)",
       xPrimary: ["-5%", "75%", "-5%"],
       xSecondary: ["65%", "10%", "65%"],
       xTertiary: ["25%", "55%", "25%"],
       durationMain: 5.5,
       durationSec: 4.8,
       durationTer: 3.8,
-      isAnimActive,
+      isAnimActive: true,
     }
   }, [showBlobTranslucent, isDeleting, isFocused, isLoading, isListening])
 
-  const shouldAnimateGlow =
-    borderGlow.isAnimActive && isPageVisible && !reduceMotion
+  const shouldAnimateGlow = isPageVisible && !reduceMotion
 
   const accessibleLabel =
     (props["aria-label"] as string) ||
@@ -649,7 +648,7 @@ export const HaloSearchInput = forwardRef<
     <div className={cn("relative w-full max-w-2xl", className)}>
       {/* Outer container */}
       <div className="relative rounded-full p-px">
-        {/* Animated GPU-composited gradient glow layer (runs on transforms, pauses when idle/hidden) */}
+        {/* Animated GPU-composited gradient glow layer */}
         <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-full">
           <motion.div
             animate={{
@@ -733,11 +732,10 @@ export const HaloSearchInput = forwardRef<
             "relative flex items-center gap-2 sm:gap-3 rounded-full px-3 sm:px-4 py-2 sm:py-2.5",
             "backdrop-blur-xl backdrop-saturate-150",
             "border border-slate-200/50 dark:border-white/15",
-            "bg-white/80 dark:bg-slate-900/80",
+            "bg-white/60 dark:bg-slate-900/60",
             "shadow-[0_8px_32px_rgba(0,0,0,0.06),inset_0_1px_1px_rgba(255,255,255,0.7)] dark:shadow-[0_8px_32px_rgba(0,0,0,0.4),inset_0_1px_1px_rgba(255,255,255,0.12)]",
             "transition-[background,border-color,box-shadow] duration-200",
-            (isFocused || isListening) &&
-              "border-cyan-500/60 dark:border-cyan-400/60 shadow-[0_0_24px_rgba(34,211,238,0.28),inset_0_1px_1px_rgba(255,255,255,0.25)]"
+            isFocused && "border-slate-300 dark:border-white/25 shadow-[0_0_20px_rgba(0,212,255,0.2)]"
           )}
         >
           {leftSlot}
