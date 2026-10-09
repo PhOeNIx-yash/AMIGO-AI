@@ -984,46 +984,47 @@ export const ActionCard: React.FC<ActionCardProps> = ({
   return (
     <motion.div
       id="fluent-action-card-container"
-      variants={scaleFade}
-      initial="hidden"
-      animate="show"
-      exit="exit"
-      className="w-full max-w-xl mx-auto relative px-2 sm:px-4 gpu-accelerated"
+      layout
+      initial={{ opacity: 0, y: 20, scale: 0.95 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: 15, scale: 0.95, filter: "blur(8px)" }}
+      transition={{ type: "spring", stiffness: 400, damping: 30 }}
+      className="w-full max-w-xl mx-auto relative px-2 sm:px-4 z-50"
     >
+      {/* Deep Ambient Glow behind the card */}
       <div
-        className="absolute -inset-2 rounded-3xl opacity-35 pointer-events-none blur-xl"
+        className="absolute -inset-4 rounded-full opacity-40 blur-3xl pointer-events-none transition-all duration-700"
         style={{
-          background: `radial-gradient(circle, ${theme.primary}66 0%, ${theme.secondary}25 70%, transparent 100%)`,
-          transform: "translateZ(0)",
+          background: `radial-gradient(ellipse at top, ${theme.primary}88 0%, ${theme.secondary || theme.primary}44 40%, transparent 70%)`,
         }}
       />
 
       <div
-        className={`relative rounded-2xl sm:rounded-3xl p-4 sm:p-5 shadow-2xl transition-colors duration-150 border transform-gpu ${
+        className={`relative rounded-[24px] sm:rounded-[32px] p-5 sm:p-7 shadow-2xl transition-all duration-300 transform-gpu overflow-hidden backdrop-blur-3xl border ${
           isDark
-            ? "acrylic-glass text-slate-100 shadow-black/50"
-            : "acrylic-glass-light text-slate-900 shadow-slate-300/50"
+            ? "bg-gradient-to-b from-slate-900/80 to-slate-950/90 text-slate-100 shadow-black/60"
+            : "bg-gradient-to-b from-white/90 to-slate-50/95 text-slate-900 shadow-slate-400/40"
         }`}
         style={{
-          borderColor: `${theme.primary}40`,
-          boxShadow: isDark
-            ? `0 20px 50px rgba(0,0,0,0.55), 0 0 35px ${theme.glow}`
-            : `0 20px 40px rgba(0,0,0,0.08), 0 0 25px ${theme.glow}`,
+          borderColor: isDark ? `${theme.primary}40` : `${theme.primary}25`,
         }}
       >
+        {/* Inner subtle top highlight for depth */}
+        <div className="absolute inset-x-0 top-0 h-[1px] bg-gradient-to-r from-transparent via-white/20 to-transparent" />
+
         {/* Card Header */}
         <div
-          className="flex items-center justify-between mb-3.5 pb-2.5 border-b text-xs"
-          style={{ borderColor: `${theme.primary}25` }}
+          className="flex items-center justify-between mb-5 pb-4 border-b relative"
+          style={{ borderColor: isDark ? `${theme.primary}30` : `${theme.primary}20` }}
         >
-          <div className="flex items-center space-x-2">
+          <div className="flex items-center space-x-3">
             <div
-              className="w-5 h-5 rounded-lg flex items-center justify-center text-white text-[10px] shadow-sm"
-              style={{ background: theme.gradient }}
+              className="w-8 h-8 rounded-xl flex items-center justify-center text-white shadow-lg ring-1 ring-white/20"
+              style={{ background: theme.gradient, boxShadow: `0 4px 14px ${theme.primary}50` }}
             >
-              <Sparkles className="w-3.5 h-3.5" />
+              <Sparkles className="w-4 h-4" />
             </div>
-            <span className="font-semibold text-xs tracking-wide opacity-90" style={{ color: theme.accent }}>
+            <span className="font-bold text-sm sm:text-base tracking-wide" style={{ color: isDark ? theme.accent : theme.primary }}>
               {cardTitle}
             </span>
           </div>
@@ -1035,17 +1036,15 @@ export const ActionCard: React.FC<ActionCardProps> = ({
               sfx.playClick();
               onCancel();
             }}
-            className="p-1 rounded-lg opacity-60 hover:opacity-100 hover:bg-white/10 transition-all border border-transparent hover:border-white/10"
-            style={{ color: theme.accent }}
+            className="w-8 h-8 flex items-center justify-center rounded-full opacity-60 hover:opacity-100 hover:bg-slate-500/20 transition-all active:scale-95"
             title="Close"
-            aria-label="Close action card"
           >
-            <X className="w-3.5 h-3.5" />
+            <X className="w-4 h-4" />
           </button>
         </div>
 
         {/* Action Items List */}
-        <motion.div className="space-y-3 mb-4 max-h-[46vh] sm:max-h-[50vh] overflow-y-auto custom-scrollbar pr-0.5" variants={staggerContainer} initial="hidden" animate="show">
+        <motion.div className="space-y-3 mb-6 max-h-[46vh] sm:max-h-[50vh] overflow-y-auto custom-scrollbar pr-1" variants={staggerContainer} initial="hidden" animate="show">
           {items.map((item) => {
             if (item.payload?.file) {
               const file = item.payload.file;
@@ -1055,19 +1054,19 @@ export const ActionCard: React.FC<ActionCardProps> = ({
                 payload: { tool: action === "open" ? "open_file" : action === "reveal" ? "reveal_file" : "copy_file_path", action, path: file.path },
               });
               return (
-                <motion.div key={item.id} variants={staggerItem} className={`rounded-xl border p-3 gpu-accelerated transition-colors duration-150 ${isDark ? "border-white/10 bg-white/[0.04]" : "border-black/10 bg-white/80"}`}>
-                  <div className="flex min-w-0 items-start gap-3">
-                    <FileText className="mt-0.5 h-4 w-4 flex-shrink-0" style={{ color: theme.accent }} />
+                <motion.div key={item.id} variants={staggerItem} className={`rounded-[18px] border p-4 transition-all duration-200 shadow-sm ${isDark ? "border-white/10 bg-white/[0.03] hover:bg-white/[0.06]" : "border-black/5 bg-white hover:bg-slate-50"}`}>
+                  <div className="flex min-w-0 items-start gap-3.5">
+                    <div className="p-2 rounded-xl bg-slate-500/10">
+                      <FileText className="h-5 w-5 flex-shrink-0" style={{ color: theme.accent }} />
+                    </div>
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-semibold" title={file.name}>{file.name}</p>
-                      <p className="truncate text-[11px] opacity-60" title={file.folder}>{file.folder}</p>
-                      <p className="mt-1 text-[10px] opacity-50">{file.extension} · {new Date(file.modified).toLocaleString()}</p>
+                      <p className="truncate text-sm font-bold" title={file.name}>{file.name}</p>
+                      <p className="truncate text-xs opacity-60 mt-0.5" title={file.folder}>{file.folder}</p>
                     </div>
                   </div>
-                  <div className="mt-3 flex flex-wrap gap-1.5">
-                    <button type="button" onClick={() => onExecuteSingleItem?.(actionItem("open"))} className="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-semibold text-white" style={{ background: theme.gradient }}><FileText className="h-3 w-3" />Open</button>
-                    <button type="button" onClick={() => onExecuteSingleItem?.(actionItem("reveal"))} className="flex items-center gap-1 rounded-md border border-white/15 px-2 py-1 text-[10px] font-semibold"><FolderOpen className="h-3 w-3" />Reveal</button>
-                    <button type="button" onClick={() => onExecuteSingleItem?.(actionItem("copy"))} className="flex items-center gap-1 rounded-md border border-white/15 px-2 py-1 text-[10px] font-semibold"><Copy className="h-3 w-3" />Copy Path</button>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button type="button" onClick={() => onExecuteSingleItem?.(actionItem("open"))} className="flex flex-1 justify-center items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold text-white shadow-md active:scale-95 transition-all" style={{ background: theme.gradient }}><FileText className="h-3.5 w-3.5" />Open</button>
+                    <button type="button" onClick={() => onExecuteSingleItem?.(actionItem("reveal"))} className="flex flex-1 justify-center items-center gap-1.5 rounded-xl border border-slate-500/30 px-3 py-2 text-xs font-semibold active:scale-95 transition-all hover:bg-slate-500/10"><FolderOpen className="h-3.5 w-3.5" />Reveal</button>
                   </div>
                 </motion.div>
               );
@@ -1092,42 +1091,43 @@ export const ActionCard: React.FC<ActionCardProps> = ({
             return (
               <motion.div
                 key={item.id}
-                initial={{ opacity: 0, x: -8 }}
-                animate={{ opacity: 1, x: 0 }}
-                whileHover={{ scale: 1.01 }}
-                whileTap={{ scale: 0.99 }}
-                transition={{ duration: 0.15, ease: "easeOut" }}
+                variants={staggerItem}
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
                 onClick={() => {
                   if (item.actionType === "button") return;
                   sfx.playClick();
                   onToggleItem(item.id);
                 }}
-                className={`flex items-center justify-between p-3 rounded-xl transition-colors duration-150 border transform-gpu ${
-                  item.actionType === "button" ? "" : "cursor-pointer"
-                } ${
+                className={`relative flex items-center justify-between p-3.5 sm:p-4 rounded-[18px] transition-all duration-200 border cursor-pointer overflow-hidden ${
                   item.selected
-                    ? "shadow-sm"
+                    ? "shadow-md"
                     : isDark
-                    ? "bg-white/5 border-transparent opacity-60 hover:opacity-90"
-                    : "bg-black/5 border-transparent opacity-60 hover:opacity-90"
+                    ? "bg-white/5 border-white/5 hover:bg-white/10"
+                    : "bg-white border-black/5 hover:bg-slate-50 shadow-sm"
                 }`}
                 style={item.selected ? {
-                  backgroundColor: isDark ? `${theme.primary}18` : `${theme.primary}12`,
-                  borderColor: `${theme.primary}50`,
+                  backgroundColor: isDark ? `${theme.primary}25` : `${theme.primary}15`,
+                  borderColor: `${theme.primary}60`,
+                  boxShadow: `0 4px 15px ${theme.primary}30`,
                 } : {}}
               >
-                <div className="flex items-center space-x-3.5 min-w-0 pr-2 flex-1">
+                {/* Selection Highlight background */}
+                {item.selected && (
+                  <div className="absolute inset-0 opacity-20 pointer-events-none" style={{ background: `linear-gradient(90deg, ${theme.primary}, transparent)` }} />
+                )}
+
+                <div className="flex items-center space-x-4 min-w-0 pr-2 flex-1 relative z-10">
                   {getIcon(item)}
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center space-x-2">
-                      <span className="text-sm font-medium leading-snug truncate">{item.title}</span>
+                      <span className="text-sm sm:text-base font-bold leading-snug truncate">{item.title}</span>
                       {item.badge && (
                         <span
-                          className="text-[10px] px-1.5 py-0.5 rounded-full font-mono border"
+                          className="text-[10px] px-2 py-0.5 rounded-full font-mono font-bold tracking-wide uppercase"
                           style={{
-                            backgroundColor: `${theme.primary}20`,
+                            backgroundColor: `${theme.accent}20`,
                             color: theme.accent,
-                            borderColor: `${theme.primary}40`,
                           }}
                         >
                           {item.badge}
@@ -1135,59 +1135,59 @@ export const ActionCard: React.FC<ActionCardProps> = ({
                       )}
                     </div>
                     {item.subtitle && (
-                      <div className="text-xs opacity-65 truncate mt-0.5">{item.subtitle}</div>
+                      <div className="text-xs font-medium opacity-60 truncate mt-0.5">{item.subtitle}</div>
                     )}
                   </div>
                 </div>
 
                 {/* Explicit Action Button or Valid Link */}
-                {item.actionType === "button" ? (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      sfx.playClick();
-                      if (onExecuteSingleItem) onExecuteSingleItem(item);
-                    }}
-                    className="px-2.5 py-1 rounded-lg text-xs font-semibold text-white shadow-sm transition-all hover:scale-105 active:scale-95"
-                    style={{ background: theme.gradient }}
-                  >
-                    Execute
-                  </button>
-                ) : item.url && isSafeHttpUrl(item.url) ? (
-                  <a
-                    href={item.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={(e) => e.stopPropagation()}
-                    className="p-1.5 rounded-lg opacity-60 hover:opacity-100 hover:bg-white/10 transition-all"
-                    style={{ color: theme.accent }}
-                    title="Open external link"
-                    aria-label={`Open external link for ${item.title}`}
-                  >
-                    <ExternalLink className="w-4 h-4" />
-                  </a>
-                ) : (
-                  <motion.div
-                    animate={{ scale: item.selected ? [1, 1.12, 1] : 1 }}
-                    transition={{ duration: 0.15 }}
-                    className={`w-5 h-5 rounded-full flex items-center justify-center transition-colors duration-150 transform-gpu ${
-                      item.selected
-                        ? "text-white shadow-sm"
-                        : "border border-white/30 dark:border-white/20"
-                    }`}
-                    style={item.selected ? { backgroundColor: theme.primary } : {}}
-                  >
-                    {item.selected && <Check className="w-3.5 h-3.5 stroke-[2.5]" />}
-                  </motion.div>
-                )}
+                <div className="relative z-10">
+                  {item.actionType === "button" ? (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        sfx.playClick();
+                        if (onExecuteSingleItem) onExecuteSingleItem(item);
+                      }}
+                      className="px-4 py-2 rounded-xl text-xs font-bold text-white shadow-md transition-all hover:scale-105 active:scale-95 hover:shadow-lg"
+                      style={{ background: theme.gradient, boxShadow: `0 4px 12px ${theme.primary}40` }}
+                    >
+                      Execute
+                    </button>
+                  ) : item.url && isSafeHttpUrl(item.url) ? (
+                    <a
+                      href={item.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      className="w-10 h-10 flex items-center justify-center rounded-xl bg-slate-500/10 hover:bg-slate-500/20 transition-all text-slate-400 hover:text-slate-200"
+                      title="Open external link"
+                    >
+                      <ExternalLink className="w-4 h-4" />
+                    </a>
+                  ) : (
+                    <motion.div
+                      animate={{ scale: item.selected ? [1, 1.2, 1] : 1 }}
+                      transition={{ duration: 0.2 }}
+                      className={`w-6 h-6 rounded-full flex items-center justify-center transition-all duration-200 ${
+                        item.selected
+                          ? "text-white shadow-md"
+                          : "border-2 border-slate-500/30"
+                      }`}
+                      style={item.selected ? { backgroundColor: theme.primary, boxShadow: `0 2px 10px ${theme.primary}60` } : {}}
+                    >
+                      {item.selected && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                    </motion.div>
+                  )}
+                </div>
               </motion.div>
             );
           })}
         </motion.div>
 
         {/* Footer actions */}
-        <div className="pt-2 space-y-2">
+        <div className="pt-2 space-y-2.5 relative z-10">
           {hasSelectableItems && selectedCount > 0 && (
             <button
               type="button"
@@ -1195,10 +1195,10 @@ export const ActionCard: React.FC<ActionCardProps> = ({
                 sfx.playClick();
                 onConfirm();
               }}
-              className="w-full py-2.5 px-4 rounded-xl text-xs font-semibold text-white transition-all shadow-md active:scale-95 flex items-center justify-center space-x-1.5"
-              style={{ background: theme.gradient }}
+              className="w-full py-3.5 px-4 rounded-xl text-sm font-bold text-white transition-all hover:scale-[1.02] shadow-lg active:scale-95 flex items-center justify-center space-x-2"
+              style={{ background: theme.gradient, boxShadow: `0 8px 20px ${theme.primary}50` }}
             >
-              <Check className="w-4 h-4" />
+              <Check className="w-5 h-5 stroke-[2.5]" />
               <span>Confirm ({selectedCount} selected)</span>
             </button>
           )}
@@ -1207,10 +1207,10 @@ export const ActionCard: React.FC<ActionCardProps> = ({
             <button
               type="button"
               onClick={onRetry}
-              className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-white/10 px-4 py-2 text-xs font-semibold transition-colors hover:bg-white/10"
+              className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-500/30 px-4 py-3 text-sm font-bold transition-all hover:bg-slate-500/10 active:scale-95"
             >
-              <RotateCcw className="h-3.5 w-3.5" />
-              <span>Retry search</span>
+              <RotateCcw className="h-4 w-4" />
+              <span>Retry Search</span>
             </button>
           )}
 
@@ -1218,16 +1218,13 @@ export const ActionCard: React.FC<ActionCardProps> = ({
             id="action-cancel-button"
             type="button"
             onClick={onCancel}
-            className={`w-full py-2.5 px-4 rounded-xl text-xs font-semibold transition-colors duration-150 border active:scale-95 flex items-center justify-center space-x-1.5 ${
+            className={`w-full py-3 px-4 rounded-xl text-xs font-bold transition-all duration-200 border active:scale-95 flex items-center justify-center space-x-1.5 ${
               isDark
-                ? "bg-white/5 hover:bg-white/10 text-slate-300"
-                : "bg-black/5 hover:bg-black/10 text-slate-700"
+                ? "bg-slate-800/50 hover:bg-slate-700/60 text-slate-300 border-slate-700"
+                : "bg-slate-100/50 hover:bg-slate-200/80 text-slate-700 border-slate-200"
             }`}
-            style={{
-              borderColor: `${theme.primary}35`,
-            }}
           >
-            <span>Close</span>
+            <span>Close Panel</span>
           </button>
         </div>
       </div>

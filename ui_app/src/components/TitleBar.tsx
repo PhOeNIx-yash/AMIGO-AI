@@ -209,28 +209,8 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         </button>
       </div>
 
-      {/* Right Controls: Endpoint Config & Settings Button */}
+      {/* Right Controls: Settings Button */}
       <div className="flex items-center space-x-2">
-        {onOpenBackendSettings && (
-          <button
-            id="backend-settings-modal-btn"
-            type="button"
-            aria-label="Configure AI Endpoint and Backend"
-            onClick={() => {
-              sfx.playClick();
-              onOpenBackendSettings();
-            }}
-            className={`relative px-2 py-1 rounded-lg transition-all duration-200 flex items-center space-x-1 text-xs border ${
-              isDark
-                ? "bg-white/[0.04] hover:bg-white/[0.08] border-white/[0.08] text-slate-300 hover:text-white"
-                : "bg-black/[0.04] hover:bg-black/[0.08] border-black/[0.08] text-slate-700 hover:text-black"
-            }`}
-            title="Backend Endpoint & Model Config"
-          >
-            <Server className="w-3.5 h-3.5" style={{ color: theme.accent }} />
-            <span className="hidden md:inline">Endpoint</span>
-          </button>
-        )}
 
         <button
           id="settings-page-toggle-btn"

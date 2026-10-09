@@ -632,8 +632,16 @@ def _tool_click_screen(params, query, spoken):
         return f"Click error: {e}", None
 
 
+_audio_playing_cache = {"status": False, "time": 0.0}
+
 def _is_system_audio_playing() -> bool:
     """Checks if any application on the PC is actively outputting sound."""
+    import time
+    now = time.time()
+    if now - _audio_playing_cache["time"] < 1.0:
+        return _audio_playing_cache["status"]
+
+    status = False
     try:
         from pycaw.pycaw import AudioUtilities, IAudioMeterInformation
         for s in AudioUtilities.GetAllSessions():
@@ -641,12 +649,16 @@ def _is_system_audio_playing() -> bool:
                 try:
                     meter = s._ctl.QueryInterface(IAudioMeterInformation)
                     if meter.GetPeakValue() > 0.0005:
-                        return True
+                        status = True
+                        break
                 except Exception:
                     pass
     except Exception:
         pass
-    return False
+        
+    _audio_playing_cache["status"] = status
+    _audio_playing_cache["time"] = now
+    return status
 
 
 _live_media_cache: tuple[str, str, str] | None = None
@@ -715,6 +727,15 @@ def _tool_stop(params, query, spoken):
             os_automation.play_pause_media()
         except Exception:
             pass
+    return "", None
+
+def _tool_stop_speaking(params, query, spoken):
+    """Only stops TTS playback, without pausing system media."""
+    try:
+        from amigo.utils.tts import stop_speaking
+        stop_speaking()
+    except Exception:
+        pass
     return "", None
 
 
@@ -906,16 +927,10 @@ def _require_confirmation(action_name: str, params: dict, query: str, spoken: st
 def _tool_chat(params, query, spoken, conversation_history=None):
     """Conversational reply with full context and conversation history."""
     params = params if isinstance(params, dict) else {}
-    direct = (spoken or params.get("response") or "").strip()
-
-    # Reject degenerate single-word/robotic answers like "Great.", "Good.", "Stopped.", "Paused."
-    words = direct.split()
-    is_degenerate = len(words) <= 2 and direct.rstrip(".!?, ").lower() in {
-        "great", "good", "fine", "okay", "ok", "cool", "nice", "yes", "no",
-        "sure", "stopped", "paused", "done", "alright", "hello", "hi", "thanks"
-    }
-    if direct and not is_degenerate:
-        return direct, None
+    
+    # If a specific spoken message was provided directly by a system action, use it
+    if spoken and spoken.strip():
+        return spoken.strip(), None
 
     call = getattr(_call_ctx, "value", None) or {}
     conv_history = conversation_history if conversation_history is not None else call.get("conversation_history")
@@ -929,7 +944,10 @@ def _tool_chat(params, query, spoken, conversation_history=None):
     except Exception as e:
         logger.debug(f"[Chat RAG context]: {e}")
 
-    return get_ai_response(query, doc_context=doc_context, conversation_history=conv_history), None
+    # Always generate a full, intelligent response using Amigo's core AI model (with thinking & persona)
+    # Never return dead 1-line router stubs for questions/conversation!
+    ai_reply = get_ai_response(query, doc_context=doc_context, conversation_history=conv_history)
+    return ai_reply, None
 
 
 def _tool_generate_content(params, query, spoken):
@@ -1358,7 +1376,7 @@ UI_TOOL_HANDLERS = {
     "market_quote":      _tool_stock_quote,
     "stock_price":       _tool_stock_quote,
     "stop":              _tool_stop,
-    "stop_speaking":     _tool_stop,
+    "stop_speaking":     _tool_stop_speaking,
     "next_track":        _tool_next_track,
     "prev_track":        _tool_prev_track,
     "set_timer":         _tool_set_timer,
@@ -1729,7 +1747,10 @@ TOOL_DEFINITIONS = [
           {"city": _p("string", "City or location name resolved from context")}),
     _tool("calculate", "Evaluate a mathematical expression or arithmetic calculation.",
           {"expression": _p("string", "Math expression to evaluate")}, ["expression"]),
-    _tool("set_timer", "Start a countdown timer.", {"query": _p("string", "Timer duration or description")}, ["query"]),
+    _tool("set_timer", "Start a countdown timer.", {
+        "duration": _p("integer", "The exact duration in seconds (e.g., 60 for 1 minute)."),
+        "label": _p("string", "Timer description or label (optional, e.g. 'Pasta timer')")
+    }, ["duration"]),
     _tool("set_reminder", "Create a task reminder.", {"query": _p("string", "Reminder content and time")}, ["query"]),
     _tool("list_reminders", "List pending reminders."),
     _tool("cancel_reminder", "Cancel one or all reminders.", {"query": _p("string", "'all' or specific reminder title")}, ["query"]),
@@ -1850,8 +1871,7 @@ TOOLS AVAILABLE:
 
 ROUTING GUIDELINES:
 1. INTENT MATCHING & CHAT RESPONSE:
-   - For casual conversation, greetings, jokes, subjective advice, opinions, empathy, or general chit-chat: select 'chat' and write a warm, engaging, and conversational answer directly in params.response (1-3 natural sentences).
-   - CRITICAL: Never write cold, robotic, or 1-word responses like "Great.", "Good.", "Okay.", "Stopped.", or "Fine."! Embody Amigo's friendly, helpful, and natural personality.
+   - For casual conversation, greetings, jokes, subjective advice, questions, opinions, empathy, or general chit-chat: select 'chat' with params: {}. Amigo's conversational intelligence will provide a full, thoughtful answer.
    - For PC actions (open/close apps, volume, brightness, media, timers, screenshots): select the specific tool with necessary parameters.
    - For multiple requests in one turn (e.g. "open notepad and set volume to 50"): return multiple tool actions in execution order.
 
@@ -1865,7 +1885,7 @@ ROUTING GUIDELINES:
 
 3. CONTEXT & FOLLOW-UP RESOLUTION:
    - Resolve pronouns ("it", "that", "again") from RECENT ACTIVITY and ACTIVE STATE into explicit parameter values.
-   - For ongoing discussions about prior topics ("why?", "tell me more"): use 'chat' with your answer in params.response.
+   - For ongoing discussions about prior topics ("why?", "tell me more"): use 'chat' with params: {}.
 
 4. MEDIA PLAYBACK CONTROLS:
    - Use 'pause_media' whenever the user asks to pause music, pause video, or pause playback ("pause", "pause music", "pause song", "hold playback").
@@ -1888,11 +1908,10 @@ EXAMPLES:
 - "who is the prime minister of the uk" -> {"actions": [{"tool": "web_search", "params": {"query": "current prime minister of UK"}}]}
 - "who is the ceo of google" -> {"actions": [{"tool": "web_search", "params": {"query": "current CEO of Google"}}]}
 - "what is the latest news on spacex" -> {"actions": [{"tool": "web_search", "params": {"query": "latest news on spacex"}}]}
-- "what is the capital of france" -> {"actions": [{"tool": "chat", "params": {"response": "The capital of France is Paris."}}]}
-- "hello how are you" -> {"actions": [{"tool": "chat", "params": {"response": "Hello! I'm doing great, how can I help you today?"}}]}
-- "i love this song" -> {"actions": [{"tool": "chat", "params": {"response": "It really is an amazing track! Glad you're enjoying it."}}]}
-- "no i am yash you are amigo" -> {"actions": [{"tool": "chat", "params": {"response": "Got it, Yash! Nice to meet you. I'm Amigo, your desktop assistant."}}]}
-- "tell me a joke" -> {"actions": [{"tool": "chat", "params": {"response": "Why do programmers prefer dark mode? Because light attracts bugs!"}}]}
+- "what is the capital of france" -> {"actions": [{"tool": "chat", "params": {}}]}
+- "hello how are you" -> {"actions": [{"tool": "chat", "params": {}}]}
+- "i want to make you more intelligent" -> {"actions": [{"tool": "chat", "params": {}}]}
+- "tell me a joke" -> {"actions": [{"tool": "chat", "params": {}}]}
 - "pause music" -> {"actions": [{"tool": "pause_media", "params": {}}]}
 - "pause" -> {"actions": [{"tool": "pause_media", "params": {}}]}
 - "resume" -> {"actions": [{"tool": "resume_media", "params": {}}]}
@@ -2030,6 +2049,7 @@ def _parse_xml_calls(text: str) -> list[dict]:
 
 def _parse_tool_calls(response: str) -> list[dict]:
     clean = re.sub(r"<think>[\s\S]*?</think>", "", response, flags=re.I).strip()
+    clean = re.sub(r',\s*([\]}])', r'\1', clean)  # Fix trailing commas common in LLM JSON
     calls: list[dict] = []
     for _start, _end, obj in _iter_json_objects(clean):
         calls.extend(_call_from_obj(obj))
@@ -2047,6 +2067,7 @@ def _parse_tool_calls(response: str) -> list[dict]:
 
 def _extract_final_response(response: str, tool_calls: list) -> str:
     clean = re.sub(r"<think>[\s\S]*?</think>", "", response, flags=re.I).strip()
+    clean = re.sub(r',\s*([\]}])', r'\1', clean)  # Fix trailing commas
     parts = []
     pos = 0
     for start, end, obj in _iter_json_objects(clean):

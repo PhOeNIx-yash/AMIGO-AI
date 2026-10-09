@@ -2278,11 +2278,7 @@ def get_user_profile_prompt(query: str = "", semantic_search: bool = True) -> st
     parts: list[str] = []
     user_name = profile.get("identity", {}).get("name")
     if user_name:
-        parts.append(
-            f"The human user speaking with you is named {user_name}. "
-            f"Remember: your name is Amigo, and the user's name is {user_name}. "
-            f"Address them as {user_name} naturally when appropriate, but never call yourself {user_name}."
-        )
+        parts.append(f"You are talking to {user_name}. Use their name naturally in conversation.")
     if artists := profile.get("preferences", {}).get("favorite_artists"):
         parts.append(f"User's favorite artists: {', '.join(artists[:3])}.")
     if city := profile.get("preferences", {}).get("favorite_city"):

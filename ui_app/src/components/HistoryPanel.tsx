@@ -184,9 +184,10 @@ export function DeleteButton({
   const settle = useMotionValue(1);
 
   useEffect(() => {
+    if (!open) return;
     const walls = animate(
       top,
-      open ? WALL_TOP_OPEN : WALL_TOP,
+      WALL_TOP_OPEN,
       reduced ? INSTANT : WALL,
     );
     return () => walls.stop();
@@ -355,7 +356,7 @@ interface HistoryPanelProps {
   colorTheme?: ColorTheme;
 }
 
-export const HistoryPanel: React.FC<HistoryPanelProps> = ({
+const HistoryPanelComponent: React.FC<HistoryPanelProps> = ({
   isOpen,
   onClose,
   history,
@@ -499,14 +500,12 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
           animate={{ x: 0 }}
           exit={{ x: "-100%" }}
           transition={{ duration: 0.2, ease: "easeOut" }}
-          className={`absolute top-0 left-0 bottom-0 z-40 w-80 sm:w-96 flex flex-col border-r shadow-2xl transition-colors duration-200 ${
+          className={`absolute top-0 left-0 bottom-0 z-40 w-80 sm:w-96 flex flex-col border-r shadow-2xl transition-colors duration-150 antialiased transform-gpu [contain:content] ${
             isDark
-              ? "border-white/10 text-white"
+              ? "border-white/10 text-slate-100"
               : "border-black/10 text-slate-900"
           }`}
           style={{
-            willChange: "transform",
-            transform: "translate3d(0, 0, 0)",
             background: isDark
               ? `radial-gradient(ellipse 120% 70% at 0% 0%, ${theme.primary}15 0%, #0c0c18 65%)`
               : `radial-gradient(ellipse 120% 70% at 0% 0%, ${theme.primary}08 0%, #ffffff 65%)`,
@@ -723,11 +722,9 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
                 "";
 
               return (
-                <motion.div
+                <div
                   key={item.id}
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className={`group relative rounded-xl p-3 border transition-all duration-200 cursor-pointer ${
+                  className={`group relative rounded-xl p-3 border transition-colors duration-150 cursor-pointer ${
                     isDark
                       ? isExpanded
                         ? "bg-white/[0.08] shadow-lg"
@@ -852,7 +849,7 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
                       <ChevronRight className="w-3 h-3 opacity-40 group-hover:opacity-80 transition-opacity" />
                     </div>
                   )}
-                </motion.div>
+                </div>
               );
             })
           )}
@@ -870,3 +867,6 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
     </AnimatePresence>
   );
 };
+
+export const HistoryPanel = React.memo(HistoryPanelComponent);
+export default HistoryPanel;

@@ -209,7 +209,6 @@ function BeamsBackground({
       if (!(canvas && ctx)) return;
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.filter = "blur(35px)";
 
       const totalBeams = beamsRef.current.length;
       beamsRef.current.forEach((beam, index) => {
@@ -733,7 +732,12 @@ export default function App() {
                 setActivePrompt(cleanUser);
                 activePromptRef.current = cleanUser;
                 setDisplayText(data.text);
-                setState("completed");
+                setState((current) => {
+                  if (current === "action_card" || current === "contact_picker" || current === "generated_content") {
+                    return current; // Don't aggressively override interactive UI states
+                  }
+                  return "completed";
+                });
 
                 // Optimistically update History Drawer immediately
                 const optimisticEntry: HistoryEntry = {
@@ -775,7 +779,12 @@ export default function App() {
               const msg = data.message || data.text;
               if (msg) {
                 setDisplayText(msg);
-                setState("completed");
+                setState((current) => {
+                  if (current === "action_card" || current === "contact_picker" || current === "generated_content") {
+                    return current; // Preserve interactive UI states
+                  }
+                  return "completed";
+                });
                 const entry: HistoryEntry = {
                   id: `proactive-${Date.now()}`,
                   prompt: `Proactive Alert (${data.level || "Info"})`,
@@ -961,14 +970,18 @@ export default function App() {
     }
   };
 
+  const handleCloseHistory = useCallback(() => {
+    setShowHistory(false);
+  }, []);
+
   // Re-run previous voice command from history
-  const handleReRunHistoryCommand = (prompt: string) => {
+  const handleReRunHistoryCommand = useCallback((prompt: string) => {
     setShowHistory(false);
     handleProcessCommand(prompt);
-  };
+  }, [backendConfig]);
 
   // Inspect previous result from history
-  const handleSelectHistoryEntry = (entry: HistoryEntry) => {
+  const handleSelectHistoryEntry = useCallback((entry: HistoryEntry) => {
     setHudDismissed(false);
     setActivePrompt(entry.prompt);
     const responseData = entry.response;
@@ -998,7 +1011,7 @@ export default function App() {
     if (responseData.speechReply && backendConfig.autoSpeech !== false && soundEnabled) {
       speakText(responseData.speechReply);
     }
-  };
+  }, [backendConfig.autoSpeech, soundEnabled]);
 
   // Generated content panel handlers
   const handleGeneratedContentInsert = async (content: string) => {
@@ -1064,14 +1077,14 @@ export default function App() {
   };
 
   // Clear all command history across UI and Amigo memory backend
-  const handleClearHistory = async () => {
+  const handleClearHistory = useCallback(async () => {
     sfx.playClick();
     setHistory([]);
     try {
       localStorage.removeItem("windows11_voice_assistant_history");
       await clearAssistantHistory();
     } catch (e) {}
-  };
+  }, []);
 
   // Toggle items on the action card
   const handleToggleActionItem = (id: string) => {
@@ -1274,7 +1287,7 @@ export default function App() {
               {/* History Sidebar Panel */}
               <HistoryPanel
                 isOpen={showHistory}
-                onClose={() => setShowHistory(false)}
+                onClose={handleCloseHistory}
                 history={history}
                 onReRunCommand={handleReRunHistoryCommand}
                 onSelectHistoryEntry={handleSelectHistoryEntry}
@@ -1316,7 +1329,7 @@ export default function App() {
                             colorTheme={colorTheme}
                             isDark={isDark}
                             compact={isCompact}
-                            isPaused={showSettings || showBackendModal || showHistory}
+                            isPaused={showSettings || showBackendModal}
                             thinkingOrbStyle={thinkingOrbStyle}
                           />
                         </div>

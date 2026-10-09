@@ -1,24 +1,30 @@
-import React, { useRef, useEffect, useId } from "react";
-import { motion, AnimatePresence } from "motion/react";
+import React, { useRef, useEffect } from "react";
+import { motion } from "motion/react";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
-  CheckCircle2,
-  AlertCircle,
-  Sparkles,
-  X,
-  Music,
-  Terminal,
-  Volume2,
-  Sun,
-  Camera,
-  Calendar as CalendarIcon,
-  Folder,
-  Cpu,
-  Mail,
-  Calculator,
-  Layers,
-  Sliders,
-  Search,
-} from "lucide-react";
+  AiBrain01Icon,
+  AiSparklesIcon,
+  SparklesIcon,
+  FlashIcon,
+  Search01Icon,
+  YoutubeIcon,
+  SpotifyIcon,
+  VolumeHighIcon,
+  Sun01Icon,
+  Camera01Icon,
+  Folder01Icon,
+  Mail01Icon,
+  Calculator01Icon,
+  SlidersHorizontalIcon,
+  Rocket01Icon,
+  Clock01Icon,
+  Timer01Icon,
+  CloudIcon,
+  CheckmarkCircle02Icon,
+  AlertCircleIcon,
+  Cancel01Icon,
+  ArrowRight01Icon,
+} from "@hugeicons/core-free-icons";
 import { ColorTheme } from "../types";
 import { COLOR_THEMES } from "../data/presets";
 
@@ -34,9 +40,10 @@ export const NON_ACTION_INTENTS = new Set([
 ]);
 
 // Polite conversational prefixes to strip when evaluating user prompts
-const POLITE_PREFIXES = /^(?:hey\s+amigo|amigo|please|could\s+you(?:\s+please)?|can\s+you(?:\s+please)?|would\s+you(?:\s+mind)?|kindly|i\s+want\s+to|i\s+need\s+to|help\s+me(?:\s+to)?|tell\s+me|what\s+is|what's|how\s+is|how's|check)\s+/i;
+const POLITE_PREFIXES =
+  /^(?:hey\s+amigo|amigo|please|could\s+you(?:\s+please)?|can\s+you(?:\s+please)?|would\s+you(?:\s+mind)?|kindly|i\s+want\s+to|i\s+need\s+to|help\s+me(?:\s+to)?|tell\s+me|what\s+is|what's|how\s+is|how's|check)\s+/i;
 
-// Precompiled action triggers at module level (not re-allocated per render/call)
+// Precompiled action triggers at module level
 const ACTION_TRIGGERS = [
   /\b(?:open|launch)\s+([a-z0-9_.-]+)/i,
   /\b(?:play|stream|listen\s+to)\s+/i,
@@ -65,84 +72,62 @@ export function isActionIntent(text: string, intent?: string): boolean {
   return ACTION_TRIGGERS.some((p) => p.test(clean));
 }
 
-// Brand Icons
-const YouTubeIcon = () => (
-  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none">
-    <path
-      d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814z"
-      fill="#FF0000"
-    />
-    <path d="M9.545 15.568V8.432L15.818 12l-6.273 3.568z" fill="#FFFFFF" />
-  </svg>
-);
-
-const GoogleIcon = () => (
-  <svg className="w-4 h-4" viewBox="0 0 24 24">
-    <path
-      d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-      fill="#4285F4"
-    />
-    <path
-      d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-      fill="#34A853"
-    />
-    <path
-      d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-      fill="#FBBC05"
-    />
-    <path
-      d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-      fill="#EA4335"
-    />
-  </svg>
-);
-
-const SpotifyIcon = () => (
-  <svg className="w-4 h-4" viewBox="0 0 24 24">
-    <circle cx="12" cy="12" r="12" fill="#1DB954" />
-    <path
-      d="M17.5 16.3c-.2.3-.5.4-.8.2-2.3-1.4-5.2-1.7-8.6-.9-.3.1-.7-.1-.8-.4-.1-.3.1-.7.4-.8 3.8-.9 7-.5 9.6 1.1.3.2.4.5.2.8zm1.2-2.6c-.2.4-.7.5-1.1.3-2.6-1.6-6.6-2.1-9.7-1.1-.4.1-.9-.1-1-.5-.1-.4.1-.9.5-1 3.6-1.1 8-.5 11 1.3.4.2.5.7.3 1zm.1-2.7c-3.1-1.9-8.3-2-11.3-1.1-.5.1-1-.2-1.1-.7-.1-.5.2-1 .7-1.1 3.5-1.1 9.2-.9 12.8 1.2.4.3.6.9.3 1.3-.3.5-.9.6-1.4.4z"
-      fill="#FFFFFF"
-    />
-  </svg>
-);
-
 interface ActionVisualInfo {
   name: string;
+  category: string;
   actionVerb: string;
   completedText: string;
-  icon: React.ReactNode;
+  icon: any;
+  accentColor: string;
+  glowColor: string;
 }
 
-const SENSITIVE_KEY_PATTERN = /(?:key|token|auth|secret|pass|cred|bearer|hash|salt|jwt|session|cookie|private)/i;
+const SENSITIVE_KEY_PATTERN =
+  /(?:key|token|auth|secret|pass|cred|bearer|hash|salt|jwt|session|cookie|private)/i;
 
-function extractDynamicParam(params?: Record<string, any>, prompt?: string): string {
+function extractDynamicParam(
+  params?: Record<string, any>,
+  prompt?: string
+): string {
   if (params && typeof params === "object") {
     const candidateKeys = [
-      "query", "q", "song", "video", "app_name", "application", "app",
-      "city", "location", "target", "task", "action", "command",
-      "recipient", "to", "subject", "file", "filename", "path",
-      "title", "url", "text", "message"
+      "query",
+      "q",
+      "song",
+      "video",
+      "app_name",
+      "application",
+      "app",
+      "city",
+      "location",
+      "target",
+      "task",
+      "action",
+      "command",
+      "recipient",
+      "to",
+      "subject",
+      "file",
+      "filename",
+      "path",
+      "title",
+      "url",
+      "text",
+      "message",
     ];
     for (const key of candidateKeys) {
       if (SENSITIVE_KEY_PATTERN.test(key)) continue;
       const val = params[key];
       if (typeof val === "string" && val.trim()) {
         const trimmed = val.trim();
-        if (trimmed.length > 36) {
-          return trimmed.slice(0, 34) + "...";
-        }
-        return trimmed;
+        return trimmed.length > 34 ? trimmed.slice(0, 32) + "..." : trimmed;
       }
     }
     for (const [key, val] of Object.entries(params)) {
       if (SENSITIVE_KEY_PATTERN.test(key) || key.startsWith("_")) continue;
       if (typeof val === "string" && val.trim()) {
         const trimmed = val.trim();
-        if (trimmed.length > 36) {
-          return trimmed.slice(0, 34) + "...";
-        }
-        return trimmed;
+        return trimmed.length > 34 ? trimmed.slice(0, 32) + "..." : trimmed;
       }
     }
   }
@@ -150,10 +135,12 @@ function extractDynamicParam(params?: Record<string, any>, prompt?: string): str
   // Fallback: extract target directly from prompt
   if (prompt && prompt.trim()) {
     const clean = prompt.trim().replace(/[.!?]+$/, "");
-    const match = clean.match(/^(?:open|launch|start|run|play|search\s+for|find)\s+(.+)$/i);
+    const match = clean.match(
+      /^(?:open|launch|start|run|play|search\s+for|find)\s+(.+)$/i
+    );
     if (match && match[1]) {
       const target = match[1].trim();
-      return target.length > 36 ? target.slice(0, 34) + "..." : target;
+      return target.length > 34 ? target.slice(0, 32) + "..." : target;
     }
   }
 
@@ -168,131 +155,173 @@ function formatIntentName(raw: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-// Word-boundary exact matching for icons so substrings like "program" don't match "ram"
-function getDynamicToolIcon(intentStr: string, name: string): React.ReactNode {
-  const s = (intentStr + " " + name).toLowerCase();
-  if (/\bantigravity\b/.test(s)) return <Cpu className="w-4 h-4 text-cyan-400" />;
-  if (/\byoutube\b/.test(s)) return <YouTubeIcon />;
-  if (/\bspotify\b/.test(s)) return <SpotifyIcon />;
-  if (/\b(google|web_search|browse)\b/.test(s)) return <GoogleIcon />;
-  if (/\b(screen|vision|camera|photo|snip)\b/.test(s)) return <Camera className="w-4 h-4 text-cyan-400" />;
-  if (/\b(weather|forecast)\b/.test(s) || /\btemp\b/.test(s)) return <Sun className="w-4 h-4 text-amber-400" />;
-  if (/\b(volume|sound|mute|audio)\b/.test(s)) return <Volume2 className="w-4 h-4 text-sky-400" />;
-  if (/\b(brightness|display)\b/.test(s)) return <Sun className="w-4 h-4 text-amber-400" />;
-  if (/\b(music|track|playlist)\b/.test(s)) return <Music className="w-4 h-4 text-emerald-400" />;
-  if (/\b(timer|stopwatch|clock|alarm|calendar|schedule)\b/.test(s)) return <CalendarIcon className="w-4 h-4 text-amber-400" />;
-  if (/\b(mail|email|inbox)\b/.test(s)) return <Mail className="w-4 h-4 text-blue-400" />;
-  if (/\b(calc|math|compute)\b/.test(s)) return <Calculator className="w-4 h-4 text-emerald-400" />;
-  if (/\b(file|folder|directory|doc|notes)\b/.test(s)) return <Folder className="w-4 h-4 text-indigo-400" />;
-  if (/\b(cpu|hardware|battery)\b/.test(s) || /\bram\b/.test(s)) return <Cpu className="w-4 h-4 text-purple-400" />;
-  if (/\b(terminal|shell|cmd|bash)\b/.test(s) || /\b(run|git)\b/.test(s)) return <Terminal className="w-4 h-4 text-rose-400" />;
-  if (/\b(settings|config|preferences)\b/.test(s)) return <Sliders className="w-4 h-4 text-violet-400" />;
-  return <Layers className="w-4 h-4 text-violet-400" />;
-}
-
-function resolveActionInfo(intent?: string, params?: Record<string, any>, prompt?: string): ActionVisualInfo {
+function resolveActionInfo(
+  intent?: string,
+  params?: Record<string, any>,
+  prompt?: string
+): ActionVisualInfo {
   const cleanIntent = (intent || "").toLowerCase().trim();
   const p = params || {};
   const pr = (prompt || "").toLowerCase().trim();
   const paramVal = extractDynamicParam(p, prompt);
 
-  // File Search / Finder (check before generic search)
-  if (cleanIntent.includes("file") || cleanIntent.includes("folder") || (pr.includes("file") && cleanIntent === "find_files")) {
+  // File Search / Explorer
+  if (
+    cleanIntent.includes("file") ||
+    cleanIntent.includes("folder") ||
+    (pr.includes("file") && cleanIntent === "find_files")
+  ) {
     const q = paramVal || "Documents";
     return {
       name: "File Search",
+      category: "Filesystem",
       actionVerb: `Searching files for "${q}"...`,
       completedText: `File Match Located`,
-      icon: <Folder className="w-4 h-4 text-indigo-400" />,
+      icon: Folder01Icon,
+      accentColor: "#6366f1",
+      glowColor: "rgba(99, 102, 241, 0.4)",
     };
   }
 
-  // YouTube — only stream if intent is YouTube or prompt specifically asks to play/watch
-  if (cleanIntent.includes("youtube") || (pr.includes("youtube") && /\b(play|watch|stream|listen)\b/.test(pr))) {
+  // YouTube
+  if (
+    cleanIntent.includes("youtube") ||
+    (pr.includes("youtube") && /\b(play|watch|stream|listen)\b/.test(pr))
+  ) {
     const q = paramVal || "YouTube Video";
     return {
       name: "YouTube",
+      category: "Media",
       actionVerb: `Streaming "${q}"...`,
       completedText: `Playing on YouTube`,
-      icon: <YouTubeIcon />,
+      icon: YoutubeIcon,
+      accentColor: "#ef4444",
+      glowColor: "rgba(239, 68, 68, 0.4)",
     };
   }
 
   // Spotify / Music
-  if (cleanIntent.includes("spotify") || (cleanIntent.includes("music") && !cleanIntent.includes("search"))) {
+  if (
+    cleanIntent.includes("spotify") ||
+    (cleanIntent.includes("music") && !cleanIntent.includes("search"))
+  ) {
     return {
       name: "Spotify",
-      actionVerb: paramVal ? `Playing "${paramVal}"...` : "Controlling Audio Playback...",
+      category: "Audio",
+      actionVerb: paramVal ? `Playing "${paramVal}"...` : "Routing Audio Stream...",
       completedText: "Playback Updated",
-      icon: <SpotifyIcon />,
+      icon: SpotifyIcon,
+      accentColor: "#10b981",
+      glowColor: "rgba(16, 185, 129, 0.4)",
     };
   }
 
-  // Web Search / Google (strict intent check so "summarize" doesn't trigger search)
-  if (cleanIntent === "google_search" || cleanIntent === "web_search" || cleanIntent === "search") {
+  // Web Search / Google
+  if (
+    cleanIntent === "google_search" ||
+    cleanIntent === "web_search" ||
+    cleanIntent === "search" ||
+    pr.includes("search")
+  ) {
     const q = paramVal || prompt || "Web Knowledge";
     return {
       name: "Google Search",
+      category: "Web Radar",
       actionVerb: `Searching "${q}"...`,
-      completedText: `Search Results Retrieved`,
-      icon: <GoogleIcon />,
+      completedText: `Results Retrieved`,
+      icon: Search01Icon,
+      accentColor: "#38bdf8",
+      glowColor: "rgba(56, 189, 248, 0.4)",
     };
   }
 
-  // Screen Vision
-  if (cleanIntent.includes("screen") || cleanIntent.includes("vision") || pr.includes("screenshot")) {
+  // Screen Vision / Screenshot
+  if (
+    cleanIntent.includes("screen") ||
+    cleanIntent.includes("vision") ||
+    pr.includes("screenshot")
+  ) {
     return {
       name: "Screen Vision",
+      category: "Perception",
       actionVerb: "Analyzing Screen Context...",
       completedText: "Screen Analyzed",
-      icon: <Camera className="w-4 h-4 text-cyan-400" />,
+      icon: Camera01Icon,
+      accentColor: "#06b6d4",
+      glowColor: "rgba(6, 182, 212, 0.4)",
     };
   }
 
-  // Weather
-  if (cleanIntent.includes("weather") || (pr.includes("weather") && !cleanIntent)) {
+  // Weather Radar
+  if (
+    cleanIntent.includes("weather") ||
+    (pr.includes("weather") && !cleanIntent)
+  ) {
     const loc = paramVal || "Local Area";
     return {
       name: "Weather Radar",
-      actionVerb: `Querying Weather for ${loc}...`,
-      completedText: `Weather Data Synchronized`,
-      icon: <Sun className="w-4 h-4 text-amber-400" />,
+      category: "Atmosphere",
+      actionVerb: `Checking Weather for ${loc}...`,
+      completedText: `Weather Synchronized`,
+      icon: CloudIcon,
+      accentColor: "#f59e0b",
+      glowColor: "rgba(245, 158, 11, 0.4)",
     };
   }
 
-  // Volume
+  // System Volume
   if (cleanIntent.includes("volume") || cleanIntent.includes("sound")) {
     return {
       name: "System Audio",
+      category: "Hardware",
       actionVerb: "Adjusting System Volume...",
       completedText: "Volume Adjusted",
-      icon: <Volume2 className="w-4 h-4 text-sky-400" />,
+      icon: VolumeHighIcon,
+      accentColor: "#0ea5e9",
+      glowColor: "rgba(14, 165, 233, 0.4)",
     };
   }
 
-  // Brightness
+  // Display Brightness
   if (cleanIntent.includes("brightness") || cleanIntent.includes("display")) {
     return {
       name: "Display",
+      category: "Hardware",
       actionVerb: "Adjusting Display Brightness...",
       completedText: "Brightness Updated",
-      icon: <Sun className="w-4 h-4 text-amber-400" />,
+      icon: Sun01Icon,
+      accentColor: "#fbbf24",
+      glowColor: "rgba(251, 191, 36, 0.4)",
     };
   }
 
-  // Timer & Stopwatch & Alarm
-  if (cleanIntent.includes("timer") || cleanIntent.includes("alarm") || cleanIntent.includes("stopwatch")) {
-    const label = cleanIntent.includes("stopwatch") ? "Stopwatch" : cleanIntent.includes("alarm") ? "Alarm" : "Timer";
+  // Timer & Stopwatch
+  if (
+    cleanIntent.includes("timer") ||
+    cleanIntent.includes("alarm") ||
+    cleanIntent.includes("stopwatch")
+  ) {
+    const isStopwatch = cleanIntent.includes("stopwatch");
+    const isAlarm = cleanIntent.includes("alarm");
+    const label = isStopwatch ? "Stopwatch" : isAlarm ? "Alarm" : "Timer";
     return {
       name: `${label} Engine`,
+      category: "Chrono",
       actionVerb: `Configuring ${label}...`,
       completedText: `${label} Active`,
-      icon: <CalendarIcon className="w-4 h-4 text-amber-400" />,
+      icon: isStopwatch ? Clock01Icon : Timer01Icon,
+      accentColor: "#14b8a6",
+      glowColor: "rgba(20, 184, 166, 0.4)",
     };
   }
 
-  // App Launcher
-  if (cleanIntent.includes("open") || cleanIntent.includes("launch") || pr.startsWith("open ") || pr.startsWith("launch ")) {
+  // Application Launcher
+  if (
+    cleanIntent.includes("open") ||
+    cleanIntent.includes("launch") ||
+    pr.startsWith("open ") ||
+    pr.startsWith("launch ")
+  ) {
     let appName = paramVal || (p.app_name || p.application);
     if (!appName || appName === "Application") {
       const match = pr.match(/^(?:open|launch|start|run)\s+(.+)$/i);
@@ -303,9 +332,51 @@ function resolveActionInfo(intent?: string, params?: Record<string, any>, prompt
 
     return {
       name: appName,
+      category: "Application",
       actionVerb: `Launching ${appName}...`,
-      completedText: `${appName} Running`,
-      icon: getDynamicToolIcon(cleanIntent, appName),
+      completedText: `${appName} Active`,
+      icon: Rocket01Icon,
+      accentColor: "#8b5cf6",
+      glowColor: "rgba(139, 92, 246, 0.4)",
+    };
+  }
+
+  // Settings & System Controls
+  if (cleanIntent.includes("setting") || cleanIntent.includes("config")) {
+    return {
+      name: "System Settings",
+      category: "Preferences",
+      actionVerb: "Updating System Settings...",
+      completedText: "Settings Applied",
+      icon: SlidersHorizontalIcon,
+      accentColor: "#a855f7",
+      glowColor: "rgba(168, 85, 247, 0.4)",
+    };
+  }
+
+  // Mail & Communication
+  if (cleanIntent.includes("mail") || cleanIntent.includes("message")) {
+    return {
+      name: "Communication",
+      category: "Messaging",
+      actionVerb: "Drafting Communication...",
+      completedText: "Message Prepared",
+      icon: Mail01Icon,
+      accentColor: "#3b82f6",
+      glowColor: "rgba(59, 130, 246, 0.4)",
+    };
+  }
+
+  // Calculator
+  if (cleanIntent.includes("calc") || cleanIntent.includes("math")) {
+    return {
+      name: "Math Engine",
+      category: "Computation",
+      actionVerb: "Computing Expression...",
+      completedText: "Calculation Finished",
+      icon: Calculator01Icon,
+      accentColor: "#10b981",
+      glowColor: "rgba(16, 185, 129, 0.4)",
     };
   }
 
@@ -313,9 +384,12 @@ function resolveActionInfo(intent?: string, params?: Record<string, any>, prompt
   const fallbackName = formatIntentName(cleanIntent || "Agentic Action");
   return {
     name: fallbackName,
+    category: "Amigo Automation",
     actionVerb: paramVal ? `Executing ${fallbackName} (${paramVal})...` : `Executing ${fallbackName}...`,
     completedText: `${fallbackName} Completed`,
-    icon: getDynamicToolIcon(cleanIntent, fallbackName),
+    icon: FlashIcon,
+    accentColor: "#ec4899",
+    glowColor: "rgba(236, 72, 153, 0.4)",
   };
 }
 
@@ -332,6 +406,11 @@ export interface IntentBridgeHUDProps {
   onDismiss?: () => void;
 }
 
+/**
+ * IntentBridgeHUD (Customized for Amigo)
+ * Ultra-sleek, dynamic agentic action capsule tailored specifically for Amigo.
+ * Built with Motion and Hugeicons for smooth, responsive micro-interactions.
+ */
 export const IntentBridgeHUD: React.FC<IntentBridgeHUDProps> = ({
   intent,
   params,
@@ -343,7 +422,6 @@ export const IntentBridgeHUD: React.FC<IntentBridgeHUDProps> = ({
   onDismiss,
 }) => {
   const theme = COLOR_THEMES[colorTheme] || COLOR_THEMES.violet;
-  const laserGradId = useId();
 
   const isSuccess =
     isCompleted &&
@@ -364,13 +442,14 @@ export const IntentBridgeHUD: React.FC<IntentBridgeHUDProps> = ({
       statusText?.toLowerCase().includes("no internet"));
 
   const actionInfo = resolveActionInfo(intent, params, prompt);
+  const paramSnippet = extractDynamicParam(params, prompt);
 
   const onDismissRef = useRef(onDismiss);
   useEffect(() => {
     onDismissRef.current = onDismiss;
   }, [onDismiss]);
 
-  // Auto-dismiss completed HUD bridge smoothly after 7 seconds without resetting timer on parent renders
+  // Smooth auto-dismiss after completion
   useEffect(() => {
     if (isCompleted) {
       const timer = setTimeout(() => {
@@ -380,155 +459,246 @@ export const IntentBridgeHUD: React.FC<IntentBridgeHUDProps> = ({
     }
   }, [isCompleted]);
 
-  const beamGradientStart = theme.primary;
-  const beamGradientStop = isSuccess
-    ? "#10b981"
+  // Primary active display state
+  const stateLabel = isSuccess
+    ? actionInfo.completedText
+    : isOffline
+    ? `${actionInfo.name} (Offline)`
     : isFailed
-    ? "#f59e0b"
-    : (theme.accent || "#ec4899");
+    ? "Execution Interrupted"
+    : isCompleted
+    ? actionInfo.completedText
+    : actionInfo.actionVerb;
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 8, scale: 0.96 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: 4, scale: 0.96 }}
-      transition={{ duration: 0.18, ease: "easeOut" }}
-      className="relative w-auto max-w-[240px] sm:max-w-[260px] mx-auto pointer-events-auto select-none bg-transparent border-0 shadow-none"
+      initial={{ opacity: 0, y: 14, scale: 0.94, filter: "blur(6px)" }}
+      animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
+      exit={{ opacity: 0, y: 8, scale: 0.95, filter: "blur(4px)" }}
+      transition={{ type: "spring", stiffness: 380, damping: 28 }}
+      whileHover={{ scale: 1.015 }}
+      className="relative pointer-events-auto select-none"
     >
-      <div className="relative w-full py-1 bg-transparent border-0 shadow-none overflow-visible flex flex-col items-center group">
-        {/* 2 Connected Interactive Nodes via Laser Stream */}
-        <div className="relative flex items-center justify-between w-full px-2 py-1">
-          {/* Node 1: Amigo AI Core Logo Node */}
-          <div className="flex flex-col items-center text-center z-10">
-            <div
-              className="relative w-9 h-9 rounded-xl flex items-center justify-center shadow-lg transition-transform hover:scale-105"
+      {/* Ambient Radial Backlight Glow */}
+      <div
+        className="absolute -inset-1.5 rounded-full opacity-35 blur-xl pointer-events-none transition-all duration-500"
+        style={{
+          background: isSuccess
+            ? "radial-gradient(ellipse at center, rgba(16, 185, 129, 0.45), transparent 70%)"
+            : isFailed
+            ? "radial-gradient(ellipse at center, rgba(245, 158, 11, 0.45), transparent 70%)"
+            : `radial-gradient(ellipse at center, ${theme.glow}, ${actionInfo.glowColor}, transparent 70%)`,
+        }}
+      />
+
+      {/* Main Glass HUD Capsule */}
+      <div
+        className={`relative flex items-center gap-2.5 sm:gap-3 px-3.5 py-2 sm:px-4 sm:py-2.5 rounded-full border backdrop-blur-2xl shadow-2xl transition-colors duration-300 ${
+          isDark
+            ? "bg-slate-950/85 border-white/12 text-slate-100 shadow-black/60"
+            : "bg-white/85 border-slate-200/90 text-slate-800 shadow-slate-300/40"
+        }`}
+      >
+        {/* Top-rim highlight shimmer */}
+        <div className="absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-white/25 to-transparent pointer-events-none" />
+
+        {/* 1. Amigo Neural Core Indicator */}
+        <div className="relative flex items-center justify-center flex-shrink-0">
+          <motion.div
+            animate={
+              !isCompleted
+                ? {
+                    scale: [1, 1.15, 1],
+                    opacity: [0.6, 0.9, 0.6],
+                  }
+                : { scale: 1, opacity: 0.6 }
+            }
+            transition={{
+              repeat: isCompleted ? 0 : Infinity,
+              duration: 2.2,
+              ease: "easeInOut",
+            }}
+            className="absolute -inset-1 rounded-full blur-sm"
+            style={{
+              background: isSuccess ? "#10b981" : theme.primary,
+            }}
+          />
+          <div
+            className="relative w-8 h-8 rounded-full flex items-center justify-center shadow-md ring-1 ring-white/20"
+            style={{
+              background: theme.gradient,
+            }}
+          >
+            <HugeiconsIcon
+              icon={isCompleted ? SparklesIcon : AiSparklesIcon}
+              size={15}
+              strokeWidth={1.8}
+              className="text-white drop-shadow"
+            />
+          </div>
+        </div>
+
+        {/* 2. Fluid Neural Energy Conduit (GPU Accelerated SVG Laser) */}
+        <div className="relative flex items-center justify-center w-10 sm:w-14 h-5 select-none pointer-events-none flex-shrink-0">
+          <svg width="100%" height="4" className="absolute overflow-visible" style={{ filter: "drop-shadow(0 0 3px rgba(255,255,255,0.4))" }}>
+            {/* Background Track */}
+            <line 
+              x1="0" y1="2" x2="100%" y2="2" 
+              stroke={isDark ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.1)"} 
+              strokeWidth="2" 
+              strokeLinecap="round" 
+            />
+            
+            {/* Animated Laser Beam */}
+            <line 
+              x1="0" y1="2" x2="100%" y2="2" 
+              stroke={isSuccess ? "#10b981" : isFailed ? "#f59e0b" : theme.primary}
+              strokeWidth="2.5" 
+              strokeLinecap="round"
+              className={!isCompleted ? "laser-beam-stream" : ""}
               style={{
-                background: theme.gradient,
-                boxShadow: `0 0 16px -2px ${theme.glow}`,
+                transition: "stroke 0.4s ease",
+                opacity: isCompleted ? 0.3 : 1
               }}
-            >
-              <span
-                className="absolute inset-0 rounded-xl border animate-pulse opacity-60 pointer-events-none"
-                style={{ borderColor: theme.accent || "#fff" }}
+            />
+          </svg>
+
+          {/* Micro dispatch chevron */}
+          <motion.div
+            animate={
+              !isCompleted
+                ? { x: [-3, 3, -3], opacity: [0.5, 1, 0.5] }
+                : { x: 0, opacity: 0.4 }
+            }
+            transition={{
+              repeat: isCompleted ? 0 : Infinity,
+              duration: 1.2,
+              ease: "easeInOut",
+            }}
+            className="absolute flex items-center justify-center z-10"
+          >
+            <div className={`p-0.5 rounded-full shadow-sm ${isDark ? "bg-slate-900" : "bg-white"}`}>
+              <HugeiconsIcon
+                icon={ArrowRight01Icon}
+                size={11}
+                strokeWidth={2.5}
+                className={isDark ? "text-white" : "text-slate-800"}
               />
-              <Sparkles className="w-4 h-4 text-white drop-shadow" />
             </div>
-            <span className={`text-[10px] font-semibold mt-1 ${isDark ? "text-white" : "text-slate-800"}`}>
-              Amigo Core
-            </span>
-          </div>
+          </motion.div>
+        </div>
 
-          {/* Laser Beam Stream */}
-          <div className="relative flex-1 flex items-center justify-center mx-2 h-6 select-none pointer-events-none">
-            <svg className="w-full h-4 overflow-visible" fill="none">
-              <defs>
-                <linearGradient id={laserGradId} x1="0%" y1="0%" x2="100%" y2="0%">
-                  <stop offset="0%" stopColor={beamGradientStart} stopOpacity="0.3" />
-                  <stop offset="50%" stopColor={beamGradientStop} stopOpacity="1" />
-                  <stop offset="100%" stopColor={beamGradientStop} stopOpacity="0.4" />
-                </linearGradient>
-              </defs>
-              <line
-                x1="2"
-                y1="8"
-                x2="100%"
-                y2="8"
-                stroke={isDark ? "rgba(255, 255, 255, 0.12)" : "rgba(0, 0, 0, 0.10)"}
-                strokeWidth="1.5"
-                strokeLinecap="round"
-              />
-              <line
-                x1="2"
-                y1="8"
-                x2="100%"
-                y2="8"
-                stroke={
-                  isSuccess
-                    ? "#10b981"
-                    : isOffline
-                    ? isDark
-                      ? "#64748b"
-                      : "#94a3b8"
-                    : isFailed
-                    ? "#f59e0b"
-                    : `url(#${laserGradId})`
-                }
-                strokeWidth={isSuccess ? "2" : isOffline ? "1.5" : "2.5"}
-                strokeLinecap="round"
-                className={isCompleted || isOffline ? "" : "laser-beam-stream"}
-                style={isSuccess ? { filter: "drop-shadow(0 0 6px #10b981)" } : undefined}
-              />
-            </svg>
-          </div>
-
-          {/* Node 2: Target Action / Service Node */}
-          <div className="flex flex-col items-center text-center z-10">
-            <div
-              className={`relative w-9 h-9 rounded-xl border flex items-center justify-center shadow-md transition-all hover:scale-105 ${
-                isDark
-                  ? "bg-slate-900/60 border-white/10 text-slate-200"
-                  : "bg-white/60 border-slate-200 text-slate-800"
-              }`}
-              style={
-                isSuccess
-                  ? { borderColor: "#10b981", boxShadow: "0 0 14px -2px #10b98160" }
-                  : isOffline
-                  ? { borderColor: isDark ? "rgba(255,255,255,0.25)" : "rgba(0,0,0,0.25)" }
+        {/* 3. Target Module Badge */}
+        <div className="relative flex items-center justify-center flex-shrink-0">
+          <div
+            className={`relative w-8 h-8 rounded-full flex items-center justify-center border transition-all duration-300 ${
+              isDark
+                ? "bg-slate-900/90 border-white/10"
+                : "bg-slate-100 border-slate-200"
+            }`}
+            style={{
+              borderColor: isSuccess
+                ? "#10b981"
+                : isFailed
+                ? "#f59e0b"
+                : actionInfo.accentColor + "55",
+              boxShadow: isSuccess
+                ? "0 0 12px rgba(16, 185, 129, 0.35)"
+                : isFailed
+                ? "0 0 12px rgba(245, 158, 11, 0.35)"
+                : `0 0 12px ${actionInfo.glowColor}`,
+            }}
+          >
+            <HugeiconsIcon
+              icon={actionInfo.icon}
+              size={16}
+              strokeWidth={1.75}
+              style={{
+                color: isSuccess
+                  ? "#10b981"
                   : isFailed
-                  ? { borderColor: "#f59e0b", boxShadow: "0 0 14px -2px #f59e0b60" }
-                  : {}
-              }
+                  ? "#f59e0b"
+                  : actionInfo.accentColor,
+              }}
+            />
+          </div>
+        </div>
+
+        {/* 4. Action Context & Telemetry Details */}
+        <div className="flex flex-col min-w-0 pr-1 max-w-[140px] sm:max-w-[220px]">
+          {/* Top row: Target Name + Parameter chip */}
+          <div className="flex items-center gap-1.5 truncate">
+            <span
+              className={`text-[11px] font-semibold tracking-tight truncate ${
+                isDark ? "text-white" : "text-slate-900"
+              }`}
             >
-              {actionInfo.icon}
-            </div>
-            <span className="text-[10px] font-medium opacity-75 mt-1 max-w-[85px] truncate">
               {actionInfo.name}
             </span>
+
+            {paramSnippet && (
+              <span
+                className={`text-[9.5px] font-medium px-1.5 py-0.2 rounded-full border truncate hidden sm:inline-block ${
+                  isDark
+                    ? "bg-white/5 border-white/10 text-slate-300"
+                    : "bg-slate-100 border-slate-200 text-slate-600"
+                }`}
+              >
+                {paramSnippet}
+              </span>
+            )}
+          </div>
+
+          {/* Bottom row: Live Status Telemetry */}
+          <div className="flex items-center gap-1.5 mt-0.5">
+            {isSuccess ? (
+              <HugeiconsIcon
+                icon={CheckmarkCircle02Icon}
+                size={11}
+                strokeWidth={2.2}
+                className="text-emerald-400 flex-shrink-0"
+              />
+            ) : isFailed ? (
+              <HugeiconsIcon
+                icon={AlertCircleIcon}
+                size={11}
+                strokeWidth={2.2}
+                className="text-amber-400 flex-shrink-0"
+              />
+            ) : isOffline ? (
+              <span className="w-1.5 h-1.5 rounded-full bg-slate-400 flex-shrink-0" />
+            ) : (
+              <span
+                className="w-1.5 h-1.5 rounded-full animate-ping flex-shrink-0"
+                style={{ backgroundColor: theme.primary }}
+              />
+            )}
+
+            <span
+              className={`text-[10px] font-medium truncate ${
+                isDark ? "text-slate-300/85" : "text-slate-600"
+              }`}
+            >
+              {statusText || stateLabel}
+            </span>
           </div>
         </div>
 
-        {/* Seamless Status Label with Accessible Live Region */}
-        <div
-          role="status"
-          aria-live="polite"
-          className="flex items-center justify-center gap-1.5 mt-1 text-[10px] font-medium max-w-[240px] px-2"
-        >
-          {isSuccess ? (
-            <CheckCircle2 className="w-3 h-3 text-emerald-400 flex-shrink-0" />
-          ) : isOffline ? (
-            <span className="w-1.5 h-1.5 rounded-full bg-slate-400 flex-shrink-0" />
-          ) : isFailed ? (
-            <AlertCircle className="w-3 h-3 text-amber-400 flex-shrink-0" />
-          ) : isCompleted ? (
-            <CheckCircle2 className="w-3 h-3 text-emerald-400 flex-shrink-0" />
-          ) : (
-            <span
-              className="w-1.5 h-1.5 rounded-full animate-ping flex-shrink-0"
-              style={{ backgroundColor: theme.primary }}
-            />
-          )}
-          <span className={`opacity-80 truncate ${isDark ? "text-slate-300" : "text-slate-700"}`}>
-            {statusText ||
-              (isSuccess
-                ? actionInfo.completedText
-                : isOffline
-                ? `${actionInfo.name} (Offline)`
-                : isCompleted
-                ? actionInfo.completedText
-                : actionInfo.actionVerb)}
-          </span>
-          {onDismiss && (
-            <button
-              type="button"
-              onClick={onDismiss}
-              className="opacity-60 hover:opacity-100 focus:opacity-100 transition-opacity ml-1 p-0.5 rounded-full text-slate-400 hover:text-slate-200 focus:outline-none flex-shrink-0"
-              title="Dismiss"
-              aria-label="Dismiss action notice"
-            >
-              <X className="w-2.5 h-2.5" />
-            </button>
-          )}
-        </div>
+        {/* 5. Quick Dismiss Control */}
+        {onDismiss && (
+          <button
+            type="button"
+            onClick={onDismiss}
+            aria-label="Dismiss action notification"
+            className={`p-1 rounded-full transition-all flex-shrink-0 ${
+              isDark
+                ? "text-slate-400 hover:text-white hover:bg-white/10"
+                : "text-slate-500 hover:text-slate-800 hover:bg-slate-200"
+            }`}
+          >
+            <HugeiconsIcon icon={Cancel01Icon} size={13} strokeWidth={2} />
+          </button>
+        )}
       </div>
     </motion.div>
   );

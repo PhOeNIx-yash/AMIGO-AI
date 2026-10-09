@@ -193,43 +193,52 @@ set_media_update_callback(_on_media_update)
 def get_active_model_info():
     try:
         info = get_llm_model_info()
-        vision_ok = is_vision_ready()
-        name = info.get("name", "MiniCPM 5 2B Claude-Fable 5.1 Thinking Agentic")
-        return {
-            "key": info.get("key", "minicpm5-2b-claude"),
-            "name": name,
-            "type": "local_gguf",
-            "context_length": 8192,
-            "tts_engine": get_tts_engine_name(),
-            "system1_router": f"LLM Agent ({name})",
-            "vision_ready": vision_ok,
-            "vision_mode": f"Native Multimodal ({name})" if vision_ok else "OCR Fallback (Windows Media OCR)",
-            "hotkey": "Alt+V",
-        }
     except Exception:
+        try:
+            models = get_llm_available_models()
+            if models:
+                first_key = list(models.keys())[0]
+                info = models[first_key]
+            else:
+                info = {}
+        except Exception:
+            info = {}
+
+    name = info.get("name", "Default LLM Model")
+    key = info.get("key", "default-model")
+    
+    try:
         vision_ok = is_vision_ready()
-        return {
-            "key": "minicpm5-2b-claude",
-            "name": "MiniCPM 5 2B Claude-Fable 5.1 Thinking Agentic",
-            "type": "local_gguf",
-            "context_length": 8192,
-            "tts_engine": get_tts_engine_name(),
-            "system1_router": "LLM Agent (MiniCPM 5 2B Claude-Fable 5.1 Thinking Agentic)",
-            "vision_ready": vision_ok,
-            "vision_mode": "OCR Fallback (Windows Media OCR)",
-            "hotkey": "Alt+V",
-        }
+    except Exception:
+        vision_ok = False
+        
+    try:
+        tts = get_tts_engine_name()
+    except Exception:
+        tts = "Unknown"
+
+    return {
+        "key": key,
+        "name": name,
+        "type": "local_gguf",
+        "context_length": 8192,
+        "tts_engine": tts,
+        "system1_router": f"LLM Agent ({name})",
+        "vision_ready": vision_ok,
+        "vision_mode": f"Native Multimodal ({name})" if vision_ok else "OCR Fallback (Windows Media OCR)",
+        "hotkey": "Alt+V",
+    }
 
 
 
 def get_available_models():
     try:
-        active_key = get_active_model_info().get("key", "minicpm5-2b-claude")
+        active_key = get_active_model_info().get("key", "default-model")
         models_dict = get_llm_available_models()
         return [
             {
                 "key": k,
-                "name": v["name"],
+                "name": v.get("name", k),
                 "status": "active" if k == active_key else ("downloaded" if v.get("downloaded") else "available"),
                 "type": "local",
             }
@@ -237,7 +246,7 @@ def get_available_models():
         ]
     except Exception:
         return [
-            {"key": "minicpm5-2b-claude", "name": "MiniCPM 5 2B Claude-Fable 5.1 Thinking Agentic", "status": "active", "type": "local"},
+            {"key": "default-model", "name": "Default Model", "status": "active", "type": "local"},
         ]
 
 
