@@ -74,12 +74,19 @@ logger = logging.getLogger("amigo.tool_registry")
 
 # Callback to broadcast media state updates to UI
 _media_update_cb = None
+_ui_broadcast_cb = None
 
 
 def set_media_update_callback(cb):
     """Set callback to broadcast media updates to UI."""
     global _media_update_cb
     _media_update_cb = cb
+
+
+def set_ui_broadcast_callback(cb):
+    """Set callback to broadcast custom UI events (e.g. open_settings, open_history)."""
+    global _ui_broadcast_cb
+    _ui_broadcast_cb = cb
 
 
 def extract_and_open_urls(text: str) -> bool:
@@ -581,52 +588,91 @@ def _tool_document_qa(params, query, spoken, conversation_history=None):
 
 
 def _tool_type_text(params, query, spoken):
-    # Require confirmation for potentially disruptive action
-    text = params.get("text", "").strip() if isinstance(params, dict) else ""
-    app = params.get("app", "").strip() if isinstance(params, dict) else ""
-    action_desc = f"type '{text[:50]}'" + (f" into {app}" if app else "")
-    confirm_result = _require_confirmation(action_desc, params, query, spoken or f"Typing {action_desc}")
-    if confirm_result[2].get("requires_confirmation"):
-        return confirm_result
+    params = params if isinstance(params, dict) else {}
+    text = str(params.get("text", "")).strip()
+    app = str(params.get("app", "")).strip()
+
     if app:
         open_windows_app(app)
-        # Wait briefly for the app to gain focus before typing
+        # Give launched app window time to gain focus
         import time
-        time.sleep(0.5)
+        time.sleep(1.0)
+
+    # If the user asked to write an email, letter, or document, draft realistic content if text is just a request
+    is_draft_request = bool(re.search(r"^(?:an?\s+)?(?:email|e-mail|letter|message|note|essay|application)\b", text, re.IGNORECASE))
+    if is_draft_request or text.lower() in ("an email", "an e-mail", "email", "e-mail", "a letter", "letter"):
+        try:
+            topic_hint = text if len(text) > 15 else (query or "general professional email")
+            draft_content = get_ai_response(
+                f"Draft a short, professional {topic_hint}. Write ONLY the actual email text (Subject, formal salutation, concise body, and professional closing). Do not write any explanations or conversational preambles.",
+                use_memory=False,
+                is_voice=False,
+            )
+            if draft_content and len(draft_content.strip()) > 10:
+                text = draft_content.strip()
+        except Exception as e:
+            logger.warning(f"[Tool type_text] Draft generation fallback: {e}")
+            text = "Subject: Update\n\nDear recipient,\n\nI am writing to provide a quick update.\n\nBest regards,\nYash"
+
     if text:
-        os_automation.type_text(text)
-    return (f"Typed text into {app or 'active window'}." if text else "Typed text."), None
+        typed = False
+        try:
+            from amigo.services.computer_use_agent import get_cua_driver_bridge
+            bridge = get_cua_driver_bridge()
+            if bridge.is_available:
+                bridge.type_text(text)
+                typed = True
+        except Exception:
+            pass
+
+        if not typed:
+            os_automation.type_text(text)
+
+    app_desc = f" into {app}" if app else ""
+    return (f"Typed content{app_desc}." if text else "Typed text."), None
 
 
 def _tool_press_key(params, query, spoken):
-    # Require confirmation for potentially disruptive action
     keys = params.get("keys", "") if isinstance(params, dict) else ""
-    action_desc = f"press {keys}" if keys else "press key(s)"
-    confirm_result = _require_confirmation(action_desc, params, query, spoken or f"Pressing {action_desc}")
-    if confirm_result[2].get("requires_confirmation"):
-        return confirm_result
     if keys:
+        try:
+            from amigo.services.computer_use_agent import get_cua_driver_bridge
+            bridge = get_cua_driver_bridge()
+            if bridge.is_available:
+                bridge.press_key(keys)
+                return f"Pressed {keys}.", None
+        except Exception:
+            pass
         os_automation.press_shortcut(keys)
     return (f"Pressed {keys}." if keys else "Done."), None
 
 
 def _tool_click_screen(params, query, spoken):
-    # Require confirmation for potentially disruptive action
     import pyautogui
-    x = params.get("x") if isinstance(params, dict) else None
-    y = params.get("y") if isinstance(params, dict) else None
-    action_desc = f"click at ({x}, {y})" if x is not None and y is not None else "click at current position"
-    confirm_result = _require_confirmation(action_desc, params, query, spoken or f"Clicking {action_desc}")
-    if confirm_result[2].get("requires_confirmation"):
-        return confirm_result
+    params = params if isinstance(params, dict) else {}
+    x = params.get("x")
+    y = params.get("y")
+    button = params.get("button", "left")
+
+    # Try CUA driver bridge first
+    try:
+        from amigo.services.computer_use_agent import get_cua_driver_bridge
+        bridge = get_cua_driver_bridge()
+        if bridge.is_available:
+            bridge.click(x=x, y=y, button=button)
+            loc = f" at ({x}, {y})" if x is not None and y is not None else ""
+            return f"Clicked{loc}.", None
+    except Exception:
+        pass
+
     if x is not None and y is not None:
         try:
-            pyautogui.click(int(x), int(y))
+            pyautogui.click(int(x), int(y), button=button)
             return f"Clicked at ({x}, {y}).", None
         except Exception as e:
             return f"Click error: {e}", None
     try:
-        pyautogui.click()
+        pyautogui.click(button=button)
         return "Clicked.", None
     except Exception as e:
         return f"Click error: {e}", None
@@ -663,56 +709,68 @@ def _is_system_audio_playing() -> bool:
 
 _live_media_cache: tuple[str, str, str] | None = None
 _live_media_cache_time: float = 0.0
+_live_media_refreshing: bool = False
+_live_media_lock = threading.Lock()
 
 
-def _get_live_media_title_from_windows() -> tuple[str, str, str] | None:
-    """Queries real-time live media from Windows GSMTC with 3s TTL cache to avoid expensive window enumeration."""
-    global _live_media_cache, _live_media_cache_time
-    now = time.time()
-    if (now - _live_media_cache_time) < 3.0:
-        return _live_media_cache
-
-    res = None
-    # 1. Native Windows GSMTC session (works for Chrome, Edge, Spotify even in background tabs!)
+def _fetch_live_media_worker() -> None:
+    global _live_media_cache, _live_media_cache_time, _live_media_refreshing
     try:
-        sys_media = os_automation.get_system_media_info()
-        if sys_media and sys_media.get("title"):
-            status = sys_media.get("status", "playing")
-            if status.lower() not in ("closed", "stopped"):
-                res = (sys_media["title"], sys_media.get("artist", ""), status)
-    except Exception:
-        pass
-
-    # 2. Fallback to visible window title enumeration
-    if not res:
+        res = None
         try:
-            import win32gui
-            titles = []
-
-            def _enum(hwnd, _):
-                if win32gui.IsWindowVisible(hwnd):
-                    txt = win32gui.GetWindowText(hwnd).strip()
-                    if txt and (" - YouTube" in txt or "Spotify" in txt):
-                        titles.append(txt)
-
-            win32gui.EnumWindows(_enum, None)
-            for t in titles:
-                if " - YouTube" in t:
-                    clean = t.split(" - YouTube")[0].strip()
-                    if clean:
-                        res = (clean, "", "playing")
-                        break
-                if "Spotify" in t and " - " in t:
-                    clean = t.replace("Spotify Premium", "").replace("Spotify Free", "").strip(" -")
-                    if clean and clean.lower() != "spotify":
-                        res = (clean, "", "playing")
-                        break
+            sys_media = os_automation.get_system_media_info()
+            if sys_media and sys_media.get("title"):
+                status = sys_media.get("status", "playing")
+                if status.lower() not in ("closed", "stopped"):
+                    res = (sys_media["title"], sys_media.get("artist", ""), status)
         except Exception:
             pass
 
-    _live_media_cache = res
-    _live_media_cache_time = now
-    return res
+        if not res:
+            try:
+                import win32gui
+                titles = []
+
+                def _enum(hwnd, _):
+                    if win32gui.IsWindowVisible(hwnd):
+                        txt = win32gui.GetWindowText(hwnd).strip()
+                        if txt and (" - YouTube" in txt or "Spotify" in txt):
+                            titles.append(txt)
+
+                win32gui.EnumWindows(_enum, None)
+                for t in titles:
+                    if " - YouTube" in t:
+                        clean = t.split(" - YouTube")[0].strip()
+                        if clean:
+                            res = (clean, "", "playing")
+                            break
+                    if "Spotify" in t and " - " in t:
+                        clean = t.replace("Spotify Premium", "").replace("Spotify Free", "").strip(" -")
+                        if clean and clean.lower() != "spotify":
+                            res = (clean, "", "playing")
+                            break
+            except Exception:
+                pass
+
+        _live_media_cache = res
+        _live_media_cache_time = time.time()
+    finally:
+        _live_media_refreshing = False
+
+
+def _get_live_media_title_from_windows() -> tuple[str, str, str] | None:
+    """Queries real-time live media from Windows GSMTC with async background refresh (0ms latency on query thread)."""
+    global _live_media_cache, _live_media_cache_time, _live_media_refreshing
+    now = time.time()
+    if (now - _live_media_cache_time) < 15.0:
+        return _live_media_cache
+
+    with _live_media_lock:
+        if not _live_media_refreshing:
+            _live_media_refreshing = True
+            threading.Thread(target=_fetch_live_media_worker, daemon=True, name="LiveMediaWorker").start()
+
+    return _live_media_cache
 
 
 def _tool_stop(params, query, spoken):
@@ -928,9 +986,10 @@ def _tool_chat(params, query, spoken, conversation_history=None):
     """Conversational reply with full context and conversation history."""
     params = params if isinstance(params, dict) else {}
     
-    # If a specific spoken message was provided directly by a system action, use it
-    if spoken and spoken.strip():
-        return spoken.strip(), None
+    # If a specific response was provided directly by router or action, return immediately
+    direct_reply = (spoken or params.get("response") or "").strip()
+    if direct_reply:
+        return direct_reply, None
 
     call = getattr(_call_ctx, "value", None) or {}
     conv_history = conversation_history if conversation_history is not None else call.get("conversation_history")
@@ -1277,7 +1336,39 @@ def _tool_set_brightness(params, query, spoken):
 
 
 def _tool_open_settings(params, query, spoken):
-    return open_setting(params.get("setting", "")), None
+    params = params if isinstance(params, dict) else {}
+    s = str(params.get("setting", "")).strip().lower()
+
+    # Broadcast to Amigo UI (React frontend)
+    if _ui_broadcast_cb:
+        try:
+            if s in ("close", "hide", "dismiss"):
+                _ui_broadcast_cb("close_settings", {})
+                return "Closed settings.", None
+            else:
+                _ui_broadcast_cb("open_settings", {"setting": s})
+        except Exception:
+            pass
+
+    # If user asks for a specific Windows system setting (like wifi, sound, display), also trigger Windows Settings URI
+    if s and s not in ("settings", "setting", "setting tab", "settings tab", "tab", "app settings", "ui", "close"):
+        return open_setting(s), None
+    return "Opened settings.", None
+
+
+def _tool_open_history(params, query, spoken):
+    params = params if isinstance(params, dict) else {}
+    action = str(params.get("action", "open")).strip().lower()
+    if _ui_broadcast_cb:
+        try:
+            if action in ("close", "hide"):
+                _ui_broadcast_cb("close_history", {})
+                return "Closed history.", None
+            else:
+                _ui_broadcast_cb("open_history", {})
+        except Exception:
+            pass
+    return "Opened history.", None
 
 def _tool_system_status(params, query, spoken):
     return os_automation.get_system_status().get("summary", "System status checked."), None
@@ -1675,12 +1766,46 @@ def _tool_cancel_action(params, query, spoken):
     return ("Okay, I won't do that." if had_pending else "Nothing to cancel."), None
 
 
+def _tool_computer_use(params, query, spoken):
+    """
+    Autonomous Computer-Use Agent (CUA) powered by official CUA Driver.
+    Drives native OS GUI automation and accessibility via CUA Driver runtime.
+    """
+    params = params if isinstance(params, dict) else {}
+    task_desc = str(params.get("task") or params.get("goal") or query or "").strip()
+    if not task_desc:
+        task_desc = query
+    max_steps = int(params.get("max_steps") or 8)
+
+    try:
+        from amigo.services.computer_use_agent import execute_computer_task, get_cua_driver_bridge
+        bridge = get_cua_driver_bridge()
+        if not bridge.is_available:
+            return "CUA Driver is currently disconnected or not initialized.", None, {"status": "error", "error": "CUA Driver unavailable"}
+
+        result = execute_computer_task(task_desc, max_steps=max_steps)
+        summary = result.get("summary") or f"Finished autonomous task: {task_desc}"
+        meta = {
+            "status": result.get("status", "completed"),
+            "task": task_desc,
+            "steps": result.get("steps", []),
+            "driver_status": result.get("driver_status", {}),
+        }
+        return summary, None, meta
+    except Exception as e:
+        logger.error(f"[CUA Tool] Autonomous execution failed: {e}", exc_info=True)
+        return f"Autonomous computer task failed: {e}", None, {"status": "error", "error": str(e)}
+
+
 UI_TOOL_HANDLERS.update({
-    "confirm_action": _tool_confirm_action,
-    "cancel_action":  _tool_cancel_action,
-    "time_date":      _tool_time_date,
-    "reveal_file":    _make_file_handler("reveal"),
-    "copy_file_path": _make_file_handler("copy_path"),
+    "confirm_action":   _tool_confirm_action,
+    "cancel_action":    _tool_cancel_action,
+    "time_date":        _tool_time_date,
+    "reveal_file":      _make_file_handler("reveal"),
+    "copy_file_path":   _make_file_handler("copy_path"),
+    "computer_use":     _tool_computer_use,
+    "cua_agent":        _tool_computer_use,
+    "autonomous_agent": _tool_computer_use,
 })
 
 
@@ -1789,19 +1914,22 @@ TOOL_DEFINITIONS = [
     _tool("click_screen", "Click mouse at specific screen coordinates.", {"x": _p("integer"), "y": _p("integer")}),
     _tool("confirm_action", "Confirm and execute a pending action when the user agrees."),
     _tool("cancel_action", "Cancel a pending action when the user declines or cancels."),
+    _tool("computer_use", "Autonomous Computer-Use Agent (CUA) to perform multi-step desktop GUI tasks, click buttons, fill forms, navigate software, or automate computer workflows via official CUA Driver.",
+          {"task": _p("string", "Description of the computer task to accomplish autonomously"),
+           "max_steps": _p("integer", "Maximum execution steps (default 8)")}, ["task"]),
     _tool("stop", "Stop active speech, playback, or running operations."),
     _tool("exit", "Close and terminate the Amigo application."),
 ]
 
 # Build a set of valid tool names from TOOL_DEFINITIONS for validation
-VALID_TOOL_NAMES = {tool["name"] for tool in TOOL_DEFINITIONS} | {"play_media", "resume_playback", "get_stock_quote", "market_quote", "stock_price"}
+VALID_TOOL_NAMES = {tool["name"] for tool in TOOL_DEFINITIONS} | {"play_media", "resume_playback", "get_stock_quote", "market_quote", "stock_price", "cua_agent", "autonomous_agent"}
 
 
 _TOOLS_BLOCK_CACHE: str | None = None
 
 
 def _tools_block() -> str:
-    """Render the tool list dynamically from TOOL_DEFINITIONS."""
+    """Render the tool list dynamically and concisely from TOOL_DEFINITIONS."""
     global _TOOLS_BLOCK_CACHE
     if _TOOLS_BLOCK_CACHE is None:
         rows = []
@@ -1810,16 +1938,10 @@ def _tools_block() -> str:
             props = params.get("properties", {}) or {}
             required = set(params.get("required", []) or [])
             if props:
-                parts = []
-                for key, spec in props.items():
-                    part = f"{key}: {spec.get('type', 'string')}{' (required)' if key in required else ''}"
-                    if spec.get("description"):
-                        part += f" - {spec['description']}"
-                    parts.append(part)
-                signature = "; ".join(parts)
-                rows.append(f"- {tool['name']}: {tool['description']} [{signature}]")
+                parts = [f"{key}*" if key in required else key for key in props]
+                rows.append(f"- {tool['name']}({', '.join(parts)}): {tool['description']}")
             else:
-                rows.append(f"- {tool['name']}: {tool['description']}")
+                rows.append(f"- {tool['name']}(): {tool['description']}")
         _TOOLS_BLOCK_CACHE = "\n".join(rows)
     return _TOOLS_BLOCK_CACHE
 
@@ -1863,64 +1985,30 @@ def _format_recent_activity(conversation_history: list | None, current_query: st
     return "\n".join(lines) if lines else "No recent conversation."
 
 
-_ROUTER_SYSTEM_PROMPT = """You are Amigo, an intelligent, helpful, and natural Windows desktop voice assistant.
-Your task is to understand the user's intent from their latest message, using the conversation context and PC state, and select the appropriate tool action(s).
+_ROUTER_SYSTEM_PROMPT = """You are Amigo, an intelligent Windows voice assistant.
+Understand user intent and select the appropriate tool action(s).
 
 TOOLS AVAILABLE:
 <<TOOLS>>
 
 ROUTING GUIDELINES:
-1. INTENT MATCHING & CHAT RESPONSE:
-   - For casual conversation, greetings, jokes, subjective advice, questions, opinions, empathy, or general chit-chat: select 'chat' with params: {}. Amigo's conversational intelligence will provide a full, thoughtful answer.
-   - For PC actions (open/close apps, volume, brightness, media, timers, screenshots): select the specific tool with necessary parameters.
-   - For multiple requests in one turn (e.g. "open notepad and set volume to 50"): return multiple tool actions in execution order.
-
-2. REAL-TIME FACTS & WEB SEARCH (CRITICAL):
-   - Use 'web_search' for any queries requiring real-time, current, or external factual knowledge that changes over time or that you do not have verified knowledge of, including:
-     * Current political office holders, ministers, prime ministers, presidents, governors, mayors, heads of state, CEOs (e.g. 'who is the current education minister of India', 'who is the president of France')
-     * Current events, latest news, recent developments, updates, or 'current/latest/new' status
-     * Live sports scores, matches, tournaments, winners, awards, election results
-     * Real-time information, definitions, factual lookup, public figures' current status
-   - NEVER guess, invent, or hallucinate facts in 'chat' for current real-world roles, office holders, or news! ALWAYS route them to 'web_search' with a concise search query in params.query.
-
-3. CONTEXT & FOLLOW-UP RESOLUTION:
-   - Resolve pronouns ("it", "that", "again") from RECENT ACTIVITY and ACTIVE STATE into explicit parameter values.
-   - For ongoing discussions about prior topics ("why?", "tell me more"): use 'chat' with params: {}.
-
-4. MEDIA PLAYBACK CONTROLS:
-   - Use 'pause_media' whenever the user asks to pause music, pause video, or pause playback ("pause", "pause music", "pause song", "hold playback").
-   - Use 'resume_media' whenever the user asks to resume or unpause playback ("resume", "unpause", "continue music").
-   - Use 'current_media' whenever the user asks what song or video is currently playing ("which music is playing", "what is playing", "current song").
-   - Use 'next_track' to skip to the next track, and 'prev_track' for the previous track.
-   - Use 'play_youtube' whenever the user asks to play a song, artist, video, or playlist.
-
-5. CONFIRMATIONS:
-   - If awaiting confirmation: use 'confirm_action' for agreement, or 'cancel_action' to decline.
-
-6. SPECIALIZED TOOLS:
-   - Stock/crypto prices: 'stock_quote'
-   - Weather: 'get_weather'
-   - Local user tickets, bookings, flights, PNR, invoices: 'document_qa'
-   - Finding local files: 'find_document'
+1. GREETINGS & CHAT: For casual conversation, greetings, opinions, or general answers: select 'chat' with params: {"response": "<direct concise reply>"}. When offering multiple ideas, games, or options, always format each item cleanly on its own line with bullet markers (\\n• Title: description).
+2. PC ACTIONS: For apps, volume, brightness, media, timers, screenshots, files: select the specific tool with necessary parameters.
+3. REAL-TIME FACTS: Use 'web_search' for current office holders, political leaders, latest news, live scores, or events.
+4. COMPOUND REQUESTS: Return multiple actions in execution order (e.g. open app then type text).
+5. CONTEXT: Resolve pronouns ('it', 'that') from RECENT ACTIVITY into explicit parameters.
 
 EXAMPLES:
-- "who is the current education minister of india" -> {"actions": [{"tool": "web_search", "params": {"query": "current education minister of India"}}]}
+- "hello how are you" -> {"actions": [{"tool": "chat", "params": {"response": "Hello! I'm doing well and ready to assist you. How can I help?"}}]}
 - "who is the prime minister of the uk" -> {"actions": [{"tool": "web_search", "params": {"query": "current prime minister of UK"}}]}
-- "who is the ceo of google" -> {"actions": [{"tool": "web_search", "params": {"query": "current CEO of Google"}}]}
-- "what is the latest news on spacex" -> {"actions": [{"tool": "web_search", "params": {"query": "latest news on spacex"}}]}
-- "what is the capital of france" -> {"actions": [{"tool": "chat", "params": {}}]}
-- "hello how are you" -> {"actions": [{"tool": "chat", "params": {}}]}
-- "i want to make you more intelligent" -> {"actions": [{"tool": "chat", "params": {}}]}
-- "tell me a joke" -> {"actions": [{"tool": "chat", "params": {}}]}
+- "what is the capital of france" -> {"actions": [{"tool": "chat", "params": {"response": "The capital of France is Paris."}}]}
 - "pause music" -> {"actions": [{"tool": "pause_media", "params": {}}]}
-- "pause" -> {"actions": [{"tool": "pause_media", "params": {}}]}
 - "resume" -> {"actions": [{"tool": "resume_media", "params": {}}]}
-- "which music is playing" -> {"actions": [{"tool": "current_media", "params": {}}]}
-- "tell me apple stock price" -> {"actions": [{"tool": "stock_quote", "params": {"symbol": "Apple"}}]}
 - "weather in new york" -> {"actions": [{"tool": "get_weather", "params": {"city": "New York"}}]}
 - "play believer" -> {"actions": [{"tool": "play_youtube", "params": {"query": "believer"}}]}
 - "open notepad" -> {"actions": [{"tool": "open_app", "params": {"name": "Notepad"}}]}
 - "find my resume" -> {"actions": [{"tool": "find_document", "params": {"query": "resume"}}]}
+- "click submit button" -> {"actions": [{"tool": "computer_use", "params": {"task": "click submit button"}}]}
 
 OUTPUT FORMAT:
 Respond with exactly one valid JSON object in this format:
@@ -1984,7 +2072,7 @@ def build_agent_system_prompt(query: str = "", conversation_history: list | None
 
 _JSON_DECODER = json.JSONDecoder()
 _RE_XML_CALL = re.compile(r'<function\s+name="[^"]+">[\s\S]*?</function>')
-_ROUTER_STOP = ["<|endoftext|>"]
+_ROUTER_STOP = ["<|im_end|>", "<|endoftext|>", "<|im_start|>"]
 
 
 def _iter_json_objects(text: str):
@@ -2153,11 +2241,11 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
         response = query_local_llm(
             messages,
             system_prompt="",
-            max_tokens=384,
+            max_tokens=256,
             temperature=0.3,
             thinking=False,
             sanitize=False,
-            response_format={"type": "json_object"},
+            response_format=None,
             stop=_ROUTER_STOP,
             raise_on_error=True,
         )
@@ -2424,7 +2512,27 @@ def build_action_cards(tool: str, params: dict, result_metadata: dict, url: str 
                 },
             })
 
-    # 4. Screen Vision Perception Card
+    # 4. Autonomous CUA Action Card (Official CUA Driver)
+    elif tool in ("computer_use", "cua_agent", "autonomous_agent"):
+        steps = result_metadata.get("steps", [])
+        task_label = params.get("task") or prompt
+        cards.append({
+            "id": "act-cua-agent",
+            "type": "cua_agent",
+            "title": f"CUA Driver: {task_label[:45]}",
+            "subtitle": f"{len(steps)} step(s) executed via official CUA driver runtime",
+            "selected": True,
+            "badge": "CUA Driver",
+            "payload": {
+                "tool": "computer_use",
+                "task": task_label,
+                "steps": steps,
+                "status": result_metadata.get("status", "completed"),
+                "driver": result_metadata.get("driver_status", {}),
+            },
+        })
+
+    # 5. Screen Vision Perception Card
     elif tool in ("screen_vision", "read_screen", "ask_about_screen"):
         win_title = result_metadata.get("window_title", "Desktop")
         cards.append({

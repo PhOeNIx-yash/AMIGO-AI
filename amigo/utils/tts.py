@@ -87,7 +87,7 @@ if not os.path.exists(_PROFILE_PATH):
 ACTIVE_VOICE = "nova"
 SUPERTONIC_VOICE = "F1"
 SUPERTONIC_SPEED = 1.00
-SUPERTONIC_STEPS = 12
+SUPERTONIC_STEPS = 6
 SUPERTONIC_SILENCE_DURATION = 0.20
 SUPERTONIC_LANG = "en"
 _tts_lock = threading.Lock()
@@ -301,6 +301,7 @@ def normalize_text_for_tts(text: str) -> str:
     """
     Normalizes raw text into clean, phonetically expressive speech:
     - Strips markdown formatting, links, and code symbols while preserving semantic emphasis
+    - Converts markdown tables into fluent, articulate conversational sentences
     - Converts list markers into articulate conversational transitions (First, Second, etc.)
     - Promotes affirmative openers (Sure, Great, Done, etc.) to energetic, enthusiastic delivery
     - Natural breath pauses at colons, semicolons, em-dashes, and parentheticals
@@ -310,23 +311,61 @@ def normalize_text_for_tts(text: str) -> str:
     if not text:
         return ""
     t = text
-    # 1. Remove URLs
+
+    # 1. Markdown tables to natural conversational speech
+    t = re.sub(r'\|\s*\|+', '|\n|', t)
+    # Strip table divider rows (|---|---| or |:---|:---:| or |--------|)
+    t = re.sub(r'(?:^|\n)\s*\|?[\s\-:|]{3,}\|[\s\-:|]*(?=\n|$)', '\n', t)
+    lines = t.split('\n')
+    parsed_lines = []
+    headers = []
+    for line in lines:
+        if '|' in line:
+            pipe_pos = line.find('|')
+            prefix = line[:pipe_pos].strip()
+            table_part = line[pipe_pos:]
+            if prefix:
+                for p in re.split(r'#{1,6}\s*', prefix):
+                    if p.strip():
+                        parsed_lines.append(p.strip() + '.')
+            cells = [c.strip() for c in table_part.split('|') if c.strip()]
+            if not cells:
+                continue
+            if not headers:
+                headers = cells
+            else:
+                subject = cells[0]
+                details = []
+                for idx, cell in enumerate(cells[1:], 1):
+                    col_name = headers[idx] if idx < len(headers) else ''
+                    if col_name and not col_name.lower().startswith('col'):
+                        details.append(f"{col_name}: {cell}")
+                    else:
+                        details.append(cell)
+                row_str = f"{subject}: {', '.join(details)}." if details else f"{subject}."
+                parsed_lines.append(row_str)
+        else:
+            parsed_lines.append(line)
+    t = '\n'.join(parsed_lines)
+
+    # 2. Remove URLs
     t = _RE_URL.sub('', t)
 
-    # 2. Markdown headers (# Header -> Header.)
+    # 3. Markdown headers (# Header -> Header.)
     t = re.sub(r'^(?:#{1,6}\s+)(.+)$', r'\1.', t, flags=re.MULTILINE)
+    t = re.sub(r'#{1,6}\s*', '', t)
 
-    # 3. Markdown bullet points (* item / - item / • item -> , item)
+    # 4. Markdown bullet points (* item / - item / • item -> , item)
     t = re.sub(r'(?:^|\n)\s*[-*•]\s+', r', ', t)
 
-    # 4. Numbered lists (1. item \n 2. item -> First, item. Second, item.)
+    # 5. Numbered lists (1. item \n 2. item -> First, item. Second, item.)
     ord_map = {1: 'First', 2: 'Second', 3: 'Third', 4: 'Fourth', 5: 'Fifth'}
     def _list_repl(m):
         num = int(m.group(1))
         return f"{ord_map.get(num, f'Number {num}')}, "
     t = re.sub(r'(?:^|\n)\s*(\d+)\.\s+', _list_repl, t)
 
-    # 5. Energetic, enthusiastic affirmation openers
+    # 6. Energetic, enthusiastic affirmation openers
     affirmations = r'\b(Sure|Certainly|Great|Awesome|Done|Got it|Alright|Of course|Perfect|Understood|Absolutely|Welcome back|Good morning|Good afternoon|Good evening)\b([,.]|\s+)'
     def _aff_repl(m):
         word = m.group(1).capitalize()
@@ -334,26 +373,28 @@ def normalize_text_for_tts(text: str) -> str:
     t = re.sub(rf'^{affirmations}', _aff_repl, t, flags=re.IGNORECASE)
     t = re.sub(rf'(?<=[.!?]\s){affirmations}', _aff_repl, t, flags=re.IGNORECASE)
 
-    # 6. Colons at the end of clauses -> natural comma pause
+    # 7. Colons at the end of clauses -> natural comma pause
     t = re.sub(r':(?=\s|$)', r', ', t)
 
-    # 7. Parentheses: (extra info) -> , extra info,
+    # 8. Parentheses: (extra info) -> , extra info,
     t = re.sub(r'\(([^)]+)\)', r', \1, ', t)
 
-    # 8. Em-dashes and long dashes -> conversational comma pause
+    # 9. Em-dashes and long dashes -> conversational comma pause
     t = re.sub(r'\s*[-–—]{1,2}\s*', r', ', t)
 
-    # 9. Semicolons -> comma pause
+    # 10. Semicolons -> comma pause
     t = re.sub(r';\s*', r', ', t)
 
-    # 10. Strip remaining markdown formatting characters
+    # 11. Strip remaining markdown formatting characters
     t = _RE_SPECIAL_CHARS.sub(' ', t)
 
-    # 11. Hyphenated scores and ranges (e.g. 3-1 -> 3 to 1, 2024-2025 -> 2024 to 2025)
+    # 12. Hyphenated scores and ranges (e.g. 3-1 -> 3 to 1, 2024-2025 -> 2024 to 2025)
     t = re.sub(r'(\d+)\s*[-–—]\s*(\d+)', r'\1 to \2', t)
+    # Remove commas in large numbers (e.g. 5,895 -> 5895) so num2words speaks full cardinal
+    t = re.sub(r'(\d+),(\d{3})\b', r'\1\2', t)
     t = re.sub(r'[/|]', ' ', t)
 
-    # 12. Currency and percentages
+    # 13. Currency and percentages
     t = re.sub(r'\$(\d+(?:\.\d{2})?)', r'\1 dollars', t)
     t = re.sub(r'(\d+)%', r'\1 percent', t)
 
@@ -431,7 +472,22 @@ def normalize_text_for_tts(text: str) -> str:
 
 def _clean_tts_text(text: str) -> str:
     """Cleans and normalizes text for natural neural TTS prosody."""
-    return normalize_text_for_tts(text)
+    norm = normalize_text_for_tts(text)
+    if _USE_SUPERTONIC:
+        try:
+            engine = _get_supertonic()
+            valid_set = engine.model.text_processor.supported_character_set
+            clean_chars = []
+            for ch in norm:
+                p = engine.model.text_processor._preprocess_text(ch)
+                if not (set(p) - valid_set):
+                    clean_chars.append(ch)
+                else:
+                    clean_chars.append(" ")
+            norm = _RE_WHITESPACE.sub(" ", "".join(clean_chars)).strip()
+        except Exception:
+            pass
+    return norm
 
 
 def _compact_tts_text(text: str, max_chars: int = 1500) -> str:
@@ -548,6 +604,55 @@ def _process_audio_clarity(samples, sr=44100) -> tuple[np.ndarray, int]:
     return samples, int(sr)
 
 
+def _split_into_safe_tts_chunks(text: str, max_chunk_len: int = 240) -> list[str]:
+    """Splits text into prosody-preserving speech chunks strictly bounded under max_chunk_len."""
+    if not text or not text.strip():
+        return []
+    raw_sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+|\n+', text) if s.strip()]
+    if not raw_sentences:
+        raw_sentences = [text.strip()]
+    safe_units = []
+    for s in raw_sentences:
+        if len(s) <= max_chunk_len:
+            safe_units.append(s)
+            continue
+        # Split long run-on sentences by clause markers (, ; : —)
+        clause_splits = [c.strip() for c in re.split(r'(?<=[,;:—])\s+', s) if c.strip()]
+        for c in clause_splits:
+            if len(c) <= max_chunk_len:
+                safe_units.append(c)
+                continue
+            # Split overlong clauses by whitespace boundaries
+            words = c.split()
+            cur_w = []
+            cur_w_len = 0
+            for w in words:
+                if cur_w_len + len(w) + 1 > max_chunk_len and cur_w:
+                    safe_units.append(" ".join(cur_w))
+                    cur_w = [w]
+                    cur_w_len = len(w)
+                else:
+                    cur_w.append(w)
+                    cur_w_len += len(w) + 1
+            if cur_w:
+                safe_units.append(" ".join(cur_w))
+
+    chunks = []
+    cur_chunk = []
+    cur_len = 0
+    for unit in safe_units:
+        if cur_len + len(unit) + 1 > max_chunk_len and cur_chunk:
+            chunks.append(" ".join(cur_chunk))
+            cur_chunk = [unit]
+            cur_len = len(unit)
+        else:
+            cur_chunk.append(unit)
+            cur_len += len(unit) + 1
+    if cur_chunk:
+        chunks.append(" ".join(cur_chunk))
+    return chunks
+
+
 def _synthesize_and_play_supertonic(engine, text, generation, voice_override=None):
     """Natural, studio 44.1kHz Supertonic-3 neural speech synthesis with artifact-free streaming."""
     global _active_stream
@@ -557,26 +662,10 @@ def _synthesize_and_play_supertonic(engine, text, generation, voice_override=Non
     if not clean_text:
         return
 
-    raw_sentences = [s.strip() for s in _RE_SENTENCE_SPLIT.split(clean_text) if s.strip()]
-    if not raw_sentences:
-        raw_sentences = [clean_text]
-
-    chunks = []
-    current_chunk = []
-    current_len = 0
-    for s in raw_sentences:
-        if current_len + len(s) + 1 > 300 and current_chunk:
-            chunks.append(" ".join(current_chunk))
-            current_chunk = [s]
-            current_len = len(s)
-        else:
-            current_chunk.append(s)
-            current_len += len(s) + 1
-    if current_chunk:
-        chunks.append(" ".join(current_chunk))
-
+    # Strictly bounded chunks (max 240 chars) to prevent ONNX sequence overflow (limit 1000)
+    chunks = _split_into_safe_tts_chunks(clean_text, max_chunk_len=240)
     if not chunks:
-        chunks = [clean_text]
+        chunks = [clean_text[:240]]
 
     audio_queue = queue.Queue(maxsize=6)
     sentinel = object()
@@ -593,25 +682,29 @@ def _synthesize_and_play_supertonic(engine, text, generation, voice_override=Non
             for chunk in chunks:
                 if not chunk or not _speech_is_current(generation):
                     break
-                spoken_chunk = chunk if chunk.endswith((".", "!", "?", ",", ";", ":")) else chunk + "."
-                with _tts_lock:
-                    wav, dur = engine.synthesize(
-                        spoken_chunk,
-                        voice_style=style,
-                        total_steps=SUPERTONIC_STEPS,
-                        speed=SUPERTONIC_SPEED,
-                        silence_duration=SUPERTONIC_SILENCE_DURATION,
-                        lang="en",
-                    )
-                if wav is not None and wav.size > 0:
-                    samples = wav.squeeze(0) if wav.ndim > 1 else wav
-                    samples, sr = _process_audio_clarity(samples, sr=engine.sample_rate)
-                    while _speech_is_current(generation):
-                        try:
-                            audio_queue.put((samples, sr), timeout=0.1)
-                            break
-                        except queue.Full:
-                            continue
+                try:
+                    spoken_chunk = chunk if chunk.endswith((".", "!", "?", ",", ";", ":")) else chunk + "."
+                    with _tts_lock:
+                        wav, dur = engine.synthesize(
+                            spoken_chunk,
+                            voice_style=style,
+                            total_steps=SUPERTONIC_STEPS,
+                            speed=SUPERTONIC_SPEED,
+                            silence_duration=SUPERTONIC_SILENCE_DURATION,
+                            lang="en",
+                        )
+                    if wav is not None and wav.size > 0:
+                        samples = wav.squeeze(0) if wav.ndim > 1 else wav
+                        samples, sr = _process_audio_clarity(samples, sr=engine.sample_rate)
+                        while _speech_is_current(generation):
+                            try:
+                                audio_queue.put((samples, sr), timeout=0.1)
+                                break
+                            except queue.Full:
+                                continue
+                except Exception as chunk_err:
+                    logger.error(f"[Supertonic TTS Chunk Error] {chunk_err} on chunk: {chunk[:60]}")
+                    continue
         except Exception as e:
             logger.error(f"[Supertonic TTS Stream Error] {e}")
         finally:
@@ -709,10 +802,24 @@ def _speech_worker():
 threading.Thread(target=_speech_worker, daemon=True).start()
 
 
+_last_spoken_text = ""
+_last_spoken_time = 0.0
+_speech_dedup_lock = threading.Lock()
+
+
 def speak(text: str, block: bool = False, request_id: str | None = None, broadcast_chat: bool = False, voice: str | None = None) -> None:
     """Speak text asynchronously, update assistant state, and animate UI with 0ms delay."""
     if not text:
         return
+    global _last_spoken_text, _last_spoken_time
+    clean = text.strip()
+    now = time.time()
+    with _speech_dedup_lock:
+        if clean == _last_spoken_text and (now - _last_spoken_time) < 4.0:
+            return
+        _last_spoken_text = clean
+        _last_spoken_time = now
+
     with _speech_generation_lock:
         generation = _speech_generation
     item = (text, generation, request_id, broadcast_chat, voice)

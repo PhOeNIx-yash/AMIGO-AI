@@ -808,6 +808,14 @@ export default function App() {
               }
             } else if (data.type === "history_cleared") {
               setHistory([]);
+            } else if (data.type === "open_settings" || data.type === "show_settings") {
+              setShowSettings(true);
+            } else if (data.type === "close_settings" || data.type === "hide_settings") {
+              setShowSettings(false);
+            } else if (data.type === "open_history" || data.type === "show_history") {
+              setShowHistory(true);
+            } else if (data.type === "close_history" || data.type === "hide_history") {
+              setShowHistory(false);
             }
           } catch (e) {}
         };

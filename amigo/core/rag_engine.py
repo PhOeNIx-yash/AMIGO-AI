@@ -233,6 +233,7 @@ def _init_chroma() -> None:
                         chosen,
                         model_kwargs={"torch_dtype": dtype},
                         device=device,
+                        local_files_only=os.path.isdir(chosen),
                     )
                     logger.info("[RAG v2] Initialized EmbeddingGemma 2 embedding model: %s (device=%s, dtype=%s)", chosen, device, dtype)
 
@@ -380,10 +381,16 @@ def _init_reranker() -> None:
         from sentence_transformers import CrossEncoder
         cache_root = os.path.expanduser(os.path.join("~", ".cache", "huggingface", "hub"))
         reranker_dir = f"models--{RERANKER_MODEL.replace('/', '--')}"
-        if os.path.exists(os.path.join(cache_root, reranker_dir)):
+        is_cached = os.path.exists(os.path.join(cache_root, reranker_dir))
+        if is_cached:
             os.environ["HF_HUB_OFFLINE"] = "1"
             os.environ["TRANSFORMERS_OFFLINE"] = "1"
-        _reranker = CrossEncoder(RERANKER_MODEL, max_length=512)
+            try:
+                _reranker = CrossEncoder(RERANKER_MODEL, max_length=512, local_files_only=True)
+            except Exception:
+                _reranker = CrossEncoder(RERANKER_MODEL, max_length=512)
+        else:
+            _reranker = CrossEncoder(RERANKER_MODEL, max_length=512)
         logger.info("[RAG v2] Cross-encoder reranker initialized: %s", RERANKER_MODEL)
     except Exception as e:
         logger.warning("[RAG v2] Reranker init failed (will use semantic only): %s", e)

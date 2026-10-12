@@ -314,7 +314,7 @@ class RAGIndexer:
                     pass
         return ok
 
-    def start_background_daemon(self, interval_minutes: int = 30, initial_delay: int = 10) -> None:
+    def start_background_daemon(self, interval_minutes: int = 30, initial_delay: int = 120) -> None:
         """Start background indexing daemon thread."""
         if self._daemon_thread and self._daemon_thread.is_alive():
             return

@@ -12,6 +12,14 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+# Enforce UTF-8 stream output on Windows terminals to prevent charmap errors on emojis
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # Configure logging FIRST so messages from all imports are visible
 logging.basicConfig(
     level=logging.INFO,
@@ -82,12 +90,14 @@ from amigo.utils.tool_registry import (
     UI_TOOL_HANDLERS,
     build_action_cards,
     set_media_update_callback,
+    set_ui_broadcast_callback,
     get_agent_action,
     execute_tool,
     _tool_chat,
 )
 from amigo.utils.tts import (
     speak,
+    stop_speaking,
     set_tts_callbacks,
     get_tts_engine_name,
     transcribe_b64,
@@ -185,6 +195,7 @@ def _on_media_update(media_data: dict):
 
 
 set_media_update_callback(_on_media_update)
+set_ui_broadcast_callback(broadcaster.broadcast)
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +287,7 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
     for action in actions:
         tool = action.get("tool", "chat")
         params = action.get("params", {})
-        spoken = action.get("speak", "") or (params.get("speak", "") if isinstance(params, dict) else "")
+        spoken = action.get("speak", "") or (params.get("speak", "") if isinstance(params, dict) else "") or (params.get("response", "") if isinstance(params, dict) else "")
         speak_prefix = action.get("speak_prefix", "")
         remember = action.get("remember", "")
 
@@ -337,7 +348,7 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
             last_url = res_url
 
     primary_tool = "multi_command" if len(actions) > 1 else last_tool
-    final_reply = " ".join(combined_spoken).strip()
+    final_reply = "\n\n".join(combined_spoken).strip() if len(combined_spoken) > 1 else (combined_spoken[0] if combined_spoken else "")
     silent_tools = {"chat", "stop", "stop_speaking", "pause_media", "resume_media", "next_track", "prev_track", "blocked"}
     if not final_reply and primary_tool not in silent_tools:
         from amigo.core.llm_agent import get_quick_feedback
@@ -432,7 +443,7 @@ def index():
     return jsonify({
         "status": "online",
         "service": "Amigo AI Engine & Windows 11 Voice Assistant Backend",
-        "model": info.get("name", "MiniCPM 5 2B"),
+        "model": info.get("name", "Qwen 3.8 2B"),
         "endpoints": {
             "assistant_process": "/api/assistant/process",
             "action_execute": "/api/action/execute",
@@ -593,7 +604,7 @@ def api_assistant_process():
         return jsonify({
             "status": "online",
             "message": "Amigo AI Engine online",
-            "model": info.get("name", "MiniCPM 5 2B"),
+            "model": info.get("name", "Qwen 3.8 2B"),
             "version": "Windows 11 Voice Assistant",
         })
 
@@ -782,6 +793,29 @@ def api_transcribe():
             logger.error("[STT API] Transcription error: %s", e)
             return jsonify({"transcription": "", "error": str(e)}), 500
     return jsonify({"transcription": data.get("text", "")})
+
+
+@app.route("/api/speak", methods=["POST", "OPTIONS"])
+def api_speak():
+    """Text-to-speech bridge for the React UI voice assistant."""
+    if request.method == "OPTIONS":
+        return jsonify({"status": "ok"})
+    data = request.get_json(silent=True) or {}
+    text = (data.get("text") or "").strip()
+    if not text:
+        return jsonify({"success": False, "error": "Empty text"}), 400
+    voice = data.get("voice")
+    speak(text, voice=voice)
+    return jsonify({"success": True})
+
+
+@app.route("/api/stop-speaking", methods=["POST", "OPTIONS"])
+def api_stop_speaking():
+    """Interrupt and stop current speech playback immediately."""
+    if request.method == "OPTIONS":
+        return jsonify({"status": "ok"})
+    stop_speaking()
+    return jsonify({"success": True})
 
 
 @app.route("/events")
@@ -1417,6 +1451,79 @@ def api_hotkey_status():
         return jsonify({"running": False, "error": str(e)})
 
 
+# ---------------------------------------------------------------------------
+# Official CUA (Computer-Use Agent) Driver Endpoints
+# ---------------------------------------------------------------------------
+
+@app.route("/api/cua/status", methods=["GET"])
+def api_cua_status():
+    """Get official CUA Driver status, active session, and screen resolution."""
+    try:
+        from amigo.services.computer_use_agent import get_cua_driver_bridge
+        bridge = get_cua_driver_bridge()
+        status = bridge.get_status()
+        if bridge.is_available:
+            try:
+                status["screen"] = bridge.get_screen_size()
+                status["cursor"] = bridge.get_cursor_position()
+            except Exception:
+                pass
+        return jsonify(status)
+    except Exception as e:
+        logger.error("[CUA API] Failed getting status: %s", e)
+        return jsonify({"connected": False, "error": str(e)}), 500
+
+
+@app.route("/api/cua/execute", methods=["POST"])
+def api_cua_execute():
+    """Execute a single native tool call via the official CUA Driver."""
+    try:
+        data = request.get_json(silent=True) or {}
+        tool_name = data.get("tool") or data.get("name")
+        if not tool_name:
+            return jsonify({"status": "error", "error": "Missing 'tool' parameter"}), 400
+
+        params = data.get("params") or data.get("arguments") or {}
+        from amigo.services.computer_use_agent import get_cua_driver_bridge
+        bridge = get_cua_driver_bridge()
+        if not bridge.is_available:
+            return jsonify({"status": "error", "error": "CUA Driver is disconnected"}), 503
+
+        res = bridge.call_tool(tool_name, params)
+        broadcaster.broadcast("cua_action", {
+            "tool": tool_name,
+            "params": params,
+            "result": res,
+            "timestamp": time.time(),
+        })
+        return jsonify(res)
+    except Exception as e:
+        logger.error("[CUA API] Execute failed: %s", e)
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
+@app.route("/api/cua/run_task", methods=["POST"])
+def api_cua_run_task():
+    """Run an autonomous computer-use task via CUA Driver with live SSE event streaming."""
+    try:
+        data = request.get_json(silent=True) or {}
+        task = data.get("task", "").strip()
+        if not task:
+            return jsonify({"status": "error", "error": "Missing 'task' parameter"}), 400
+
+        max_steps = int(data.get("max_steps", 8))
+
+        def _on_progress(event):
+            broadcaster.broadcast("cua_event", event)
+
+        from amigo.services.computer_use_agent import execute_computer_task
+        report = execute_computer_task(task, max_steps=max_steps, progress_cb=_on_progress)
+        return jsonify(report)
+    except Exception as e:
+        logger.error("[CUA API] Task execution failed: %s", e)
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
 # Async initialization state
 _llm_ready = threading.Event()
 _llm_load_error: Optional[Exception] = None
@@ -1500,20 +1607,35 @@ def _wait_for_llm_with_progress(executor: ThreadPoolExecutor):
 
 
 def initialize_amigo_async():
-    """Initialize all Amigo components asynchronously with proper executor lifecycle."""
+    """Initialize all Amigo components asynchronously with non-blocking lifecycle."""
     print("[ AMIGO ] Starting async initialization...")
     
-    # Create executor locally to ensure proper lifecycle management
-    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="AmigoStartup") as executor:
-        # Start all background initializations immediately (non-blocking)
-        _start_background_initializations()
-        
-        # Wait for LLM with progress (this is the critical path)
-        _wait_for_llm_with_progress(executor)
-        
-        # Don't wait for RAG - let it initialize in background
-        # The server will start and RAG will be ready when needed
-        print("[ AMIGO ] RAG engine initializing in background...")
+    # Start all background initializations immediately (non-blocking)
+    _start_background_initializations()
+    
+    # Launch LLM loading in a dedicated daemon thread
+    threading.Thread(target=_load_llm_background, daemon=True, name="LLMLoader").start()
+    
+    # Wait for LLM with progress (this is the critical path)
+    spinner = ["|", "/", "-", "\\"]
+    i = 0
+    start_time = time.time()
+    print("[ AMIGO ] Loading AI model...", end=" ", flush=True)
+    while not _llm_ready.is_set():
+        elapsed = time.time() - start_time
+        print(f"\r[ AMIGO ] Loading AI model... {spinner[i % len(spinner)]} ({elapsed:.1f}s)", end="", flush=True)
+        i += 1
+        time.sleep(0.1)
+    
+    elapsed = time.time() - start_time
+    if _llm_load_error:
+        print(f"\r[ AMIGO ] AI model load FAILED after {elapsed:.1f}s: {_llm_load_error}")
+        raise _llm_load_error
+    else:
+        print(f"\r[ AMIGO ] AI model loaded in {elapsed:.1f}s OK")
+    
+    # Don't wait for RAG - let it initialize in background
+    print("[ AMIGO ] RAG engine initializing in background...")
     
     # Initialize proactive intelligence after LLM is ready
     print("[ AMIGO ] Starting proactive intelligence...")
