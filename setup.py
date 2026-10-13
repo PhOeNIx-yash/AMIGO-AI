@@ -96,11 +96,11 @@ def main():
         print(f"    Sherpa-ONNX model check note: {e}")
 
 
-    # Local LLM GGUF Model Check (Qwen 3.8 2B Distill Q4_K_M — System 2)
+    # Local LLM GGUF Model Check (Granite 4.1 3B Q4_K_M — System 2)
     try:
         from amigo.core.llm_agent import get_active_model_info, get_model_path, ensure_model_downloaded
         model_info = get_active_model_info()
-        print(f" -> Checking Agent LLM (System 2): {model_info['name']} (~{model_info.get('size_gb', 1.31)}GB)...")
+        print(f" -> Checking Agent LLM (System 2): {model_info['name']} (~{model_info.get('size_gb', 2.1)}GB)...")
         model_path = get_model_path()
         if os.path.exists(model_path):
             print(f"    {model_info['name']} is ready at {model_path}.")
@@ -116,7 +116,7 @@ def main():
     print("           AMIGO SETUP COMPLETED SUCCESSFULLY!")
     print("=" * 60)
     print("\nActive Engine Stack:")
-    print("  Agent Engine  — Qwen 3.8 2B Distill Q4_K_M : reasoning & agentic execution")
+    print("  Agent Engine  — Granite 4.1 3B Q4_K_M : reasoning & agentic execution")
     print("  Speech Engine — Supertonic-3  : 44.1kHz studio on-device neural speech synthesis")
     print("  Voice Input   — Sherpa-ONNX   : streaming neural speech recognition")
     print("\nHow to launch Amigo:")

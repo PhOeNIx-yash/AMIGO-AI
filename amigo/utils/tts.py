@@ -644,25 +644,14 @@ def _process_audio_clarity(samples, sr=44100, is_final_chunk: bool = False) -> t
 
     # 5. Intra-chunk vs Final-chunk boundary treatment
     if is_final_chunk:
-        # Final chunk of utterance: intelligent tail detection + smooth 20ms fade-out + 25ms cushion
-        frame_len = max(64, int(0.01 * sr))
-        n_frames = len(samples) // frame_len
-        if n_frames > 2:
-            framed = samples[:n_frames * frame_len].reshape(n_frames, frame_len)
-            rms = np.sqrt(np.mean(framed ** 2, axis=1))
-            speech_indices = np.where(rms > 0.0018)[0]
-            if len(speech_indices) > 0:
-                last_speech_frame = speech_indices[-1]
-                pad_samples = int(0.05 * sr)
-                end_sample = min(len(samples), (last_speech_frame + 1) * frame_len + pad_samples)
-                samples = samples[:end_sample]
-
-        fade_out_len = min(int(0.020 * sr), len(samples))
+        # Smooth fade-out and trailing silence cushion so the DAC buffer plays out every syllable
+        fade_out_len = min(int(0.015 * sr), len(samples))
         if fade_out_len > 0:
             ramp_out = 0.5 * (1.0 + np.cos(np.linspace(0.0, np.pi, fade_out_len, dtype=np.float32)))
             samples[-fade_out_len:] *= ramp_out
 
-        cushion = np.zeros(int(0.025 * sr), dtype=np.float32)
+        # Generous 120ms cushion at the end to prevent hardware buffer cut-off
+        cushion = np.zeros(int(0.12 * sr), dtype=np.float32)
         samples = np.concatenate([samples, cushion])
     else:
         # Intermediate chunk within sentence: 2ms micro-fade out, NO silence cushion to prevent pause gaps
@@ -679,79 +668,39 @@ def _process_audio_clarity(samples, sr=44100, is_final_chunk: bool = False) -> t
     return samples, int(sr)
 
 
-def _split_into_safe_tts_chunks(text: str, max_chunk_len: int = 200, first_chunk_max: int = 70) -> list[str]:
+def _split_into_safe_tts_chunks(text: str, max_chunk_len: int = 250) -> list[str]:
     """
-    Splits text into prosody-preserving speech chunks strictly bounded under max_chunk_len.
-    Makes the FIRST chunk dynamically smaller (max first_chunk_max chars) so initial audio
-    synthesizes and begins playing in <100ms while subsequent chunks synthesize in the background.
+    Splits text along natural sentence boundaries (. ! ? \n) to maintain complete
+    prosodic flow, avoiding choppy clause-level cutting mid-sentence.
     """
     if not text or not text.strip():
         return []
 
     raw_sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+|\n+', text) if s.strip()]
     if not raw_sentences:
-        raw_sentences = [text.strip()]
-
-    all_units = []
-    first_split_done = False
-
-    for s in raw_sentences:
-        if not first_split_done and len(s) > first_chunk_max:
-            clauses = [c.strip() for c in re.split(r'(?<=[,;:—])\s+', s) if c.strip()]
-            if len(clauses) > 1 and len(clauses[0]) <= first_chunk_max:
-                all_units.append(clauses[0])
-                rest = " ".join(clauses[1:])
-                all_units.append(rest)
-                first_split_done = True
-                continue
-            elif len(s) <= max_chunk_len:
-                all_units.append(s)
-                first_split_done = True
-                continue
-        first_split_done = True
-
-        if len(s) <= max_chunk_len:
-            all_units.append(s)
-            continue
-
-        clause_splits = [c.strip() for c in re.split(r'(?<=[,;:—])\s+', s) if c.strip()]
-        for c in clause_splits:
-            if len(c) <= max_chunk_len:
-                all_units.append(c)
-                continue
-            words = c.split()
-            cur_w = []
-            cur_w_len = 0
-            for w in words:
-                if cur_w_len + len(w) + 1 > max_chunk_len and cur_w:
-                    all_units.append(" ".join(cur_w))
-                    cur_w = [w]
-                    cur_w_len = len(w)
-                else:
-                    cur_w.append(w)
-                    cur_w_len += len(w) + 1
-            if cur_w:
-                all_units.append(" ".join(cur_w))
+        return [text.strip()]
 
     chunks = []
-    cur_chunk = []
-    cur_len = 0
-    is_first = True
+    for s in raw_sentences:
+        if len(s) <= max_chunk_len:
+            chunks.append(s)
+            continue
+        # Only split excessively long sentences along commas/semicolons
+        subparts = [c.strip() for c in re.split(r'(?<=[,;:—])\s+', s) if c.strip()]
+        cur = []
+        cur_len = 0
+        for p in subparts:
+            if cur_len + len(p) + 1 > max_chunk_len and cur:
+                chunks.append(" ".join(cur))
+                cur = [p]
+                cur_len = len(p)
+            else:
+                cur.append(p)
+                cur_len += len(p) + 1
+        if cur:
+            chunks.append(" ".join(cur))
 
-    for unit in all_units:
-        limit = first_chunk_max if is_first else max_chunk_len
-        if cur_len + len(unit) + 1 > limit and cur_chunk:
-            chunks.append(" ".join(cur_chunk))
-            cur_chunk = [unit]
-            cur_len = len(unit)
-            is_first = False
-        else:
-            cur_chunk.append(unit)
-            cur_len += len(unit) + 1
-    if cur_chunk:
-        chunks.append(" ".join(cur_chunk))
-
-    return chunks
+    return chunks or [text.strip()]
 
 
 # ── Audio Playback Worker (Continuous Stream across Sentences) ──────────────
@@ -776,6 +725,7 @@ def _playback_worker():
                     if _active_stream is stream:
                         _active_stream = None
                 try:
+                    time.sleep(0.15)  # Allow hardware DAC buffer to drain before stopping stream
                     stream.stop()
                     stream.close()
                 except Exception:
@@ -805,7 +755,7 @@ def _playback_worker():
                         stream.close()
                     except Exception:
                         pass
-                stream = _sd.OutputStream(samplerate=sr, channels=1, dtype="float32")
+                stream = _sd.OutputStream(samplerate=sr, channels=1, dtype="float32", blocksize=1024)
                 stream.start()
                 stream_sr = sr
                 with _active_stream_lock:
@@ -819,7 +769,7 @@ def _playback_worker():
 
         # Check if playback is finished and all queues are empty
         if is_last_in_utterance and _speech_queue.empty() and _playback_queue.empty():
-            time.sleep(0.04)
+            time.sleep(0.15)
             if _speech_queue.empty() and _playback_queue.empty():
                 _update_state("idle")
 

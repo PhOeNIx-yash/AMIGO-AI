@@ -1,13 +1,13 @@
 {
-  "last_weather_check": 1791885024.116021,
-  "last_calendar_check": 1791885024.116021,
-  "last_system_check": 1791885265.3770056,
+  "last_weather_check": 1791896849.419017,
+  "last_calendar_check": 1791897750.7208369,
+  "last_system_check": 1791897990.738371,
   "last_notification_time": 1791883219.6339848,
   "last_priority_alert_time": 0,
-  "suggestions_this_hour": 1,
-  "last_hour_reset": 1791883217.185338,
-  "active_window_start": 1791885265.3770056,
-  "current_window_title": "amigo-main - Antigravity IDE - VoiceSettingsTab.tsx",
+  "suggestions_this_hour": 0,
+  "last_hour_reset": 1791894996.9608185,
+  "active_window_start": 1791897990.738371,
+  "current_window_title": "amigo-main - Antigravity IDE - amigo_profile.json",
   "recent_suggestions": [
     {
       "id": "wellness_break",

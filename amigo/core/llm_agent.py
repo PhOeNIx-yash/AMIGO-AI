@@ -1,6 +1,6 @@
 """
 LLM-Based Agent for Amigo Voice Assistant.
-Provides natural language understanding using Qwen 3.8 2B with tool calling for action execution.
+Provides natural language understanding using Granite 4.1 3B with tool calling for action execution.
 """
 
 import json
@@ -47,6 +47,51 @@ package_root = project_root / "amigo" if (project_root / "amigo").is_dir() else 
 for candidate in {project_root, package_root}:
     if candidate and str(candidate) not in sys.path:
         sys.path.insert(0, str(candidate))
+def _setup_cuda_dll_directory():
+    """Ensure CUDA and cuBLAS runtime DLLs in site-packages or system are accessible on Windows."""
+    if sys.platform == "win32":
+        try:
+            import site
+            sp_list = []
+            try:
+                sp_list.extend(site.getsitepackages())
+            except Exception:
+                pass
+            try:
+                sp_list.append(site.getusersitepackages())
+            except Exception:
+                pass
+            for sp in sp_list:
+                for sub in (
+                    os.path.join("nvidia", "cuda_runtime", "bin"),
+                    os.path.join("nvidia", "cublas", "bin"),
+                    os.path.join("nvidia", "cuda_nvrtc", "bin"),
+                ):
+                    d = os.path.join(sp, sub)
+                    if os.path.isdir(d):
+                        try:
+                            os.add_dll_directory(d)
+                        except Exception:
+                            pass
+                        if d not in os.environ.get("PATH", ""):
+                            os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
+
+            # Also inspect system CUDA Toolkit environment variables if installed
+            for env_key in ("CUDA_PATH", "CUDA_HOME", "CUDA_PATH_V12_4", "CUDA_PATH_V12_5", "CUDA_PATH_V12_0", "CUDA_PATH_V11_8"):
+                cuda_home = os.environ.get(env_key)
+                if cuda_home and os.path.isdir(cuda_home):
+                    bin_dir = os.path.join(cuda_home, "bin")
+                    if os.path.isdir(bin_dir):
+                        try:
+                            os.add_dll_directory(bin_dir)
+                        except Exception:
+                            pass
+                        if bin_dir not in os.environ.get("PATH", ""):
+                            os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+        except Exception:
+            pass
+
+_setup_cuda_dll_directory()
 
 import datetime
 import amigo.core.rag_engine as rag_engine
@@ -440,31 +485,31 @@ _PHYSICAL_CORES = None
 _LLM_CONFIG = None
 _CONFIG_LOCK = threading.Lock()
 
-# Model Configuration (Qwen 3.8 2B Distill Q4_K_M)
+# Model Configuration (Granite 4.1 3B Q4_K_M)
 MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "models"))
 
-MODEL_NAME = "Qwen 3.8 2B Distill"
-MODEL_FILENAME = "Qwen3.8-2B-Q4_K_M.gguf"
+MODEL_NAME = "Granite 4.1 3B"
+MODEL_FILENAME = "granite-4.1-3b-Q4_K_M.gguf"
 MODEL_PATH = os.path.join(MODEL_DIR, MODEL_FILENAME)
 MODEL_TARGETS = [
-    ("empero-ai/Qwen3.8-2B-Distill-GGUF", "Qwen3.8-2B-Q4_K_M.gguf"),
+    ("ibm-granite/granite-4.1-3b-GGUF", "granite-4.1-3b-Q4_K_M.gguf"),
 ]
 
-STOP_TOKENS = ["<|endoftext|>", "<|im_end|>", "\nUser:", "\nHuman:", "\nAssistant:"]  # newline-anchored so normal answers are not cut
+STOP_TOKENS = ["<|end_of_text|>", "<|endoftext|>", "<|end_of_role|>", "<|im_end|>", "\nUser:", "\nHuman:", "\nAssistant:"]
 
 AVAILABLE_MODELS = {
-    "qwen3.8-2b": {
-        "key": "qwen3.8-2b",
+    "granite-4.1-3b": {
+        "key": "granite-4.1-3b",
         "name": MODEL_NAME,
         "filename": MODEL_FILENAME,
         "path": MODEL_PATH,
         "targets": MODEL_TARGETS,
         "downloaded": os.path.exists(MODEL_PATH) and os.path.getsize(MODEL_PATH) > 500_000_000,
-        "size_gb": 1.31,
+        "size_gb": 2.1,
     },
 }
 
-_active_model_key = "qwen3.8-2b"
+_active_model_key = "granite-4.1-3b"
 
 _local_llm_instance = None
 _llm_lock = threading.Lock()
@@ -741,14 +786,25 @@ def init_local_llm(force_reload: bool = False):
                 "verbose": False,
             }
 
-            _local_llm_instance = Llama(**kwargs)
+            try:
+                _local_llm_instance = Llama(**kwargs)
+            except Exception as gpu_exc:
+                if kwargs.get("n_gpu_layers", 0) != 0:
+                    logger.warning(f"[Local AI Engine] GPU offload failed ({gpu_exc}). Falling back to CPU mode...")
+                    print(f"\n[Amigo AI] Notice: GPU offload unavailable ({gpu_exc}), falling back to CPU...")
+                    kwargs["n_gpu_layers"] = 0
+                    kwargs["offload_kqv"] = False
+                    _local_llm_instance = Llama(**kwargs)
+                else:
+                    raise gpu_exc
             try:
                 from llama_cpp import LlamaRAMCache
                 _local_llm_instance.set_cache(LlamaRAMCache(capacity_bytes=256 * 1024 * 1024))
             except Exception:
                 pass
             _setup_chat_formatter(_local_llm_instance)
-            logger.info(f"[Local AI Engine] {MODEL_NAME} loaded (ctx={config['n_ctx']}, threads={config['n_threads']}, gpu_layers={config['n_gpu_layers']})")
+            actual_gpu = kwargs.get("n_gpu_layers", 0)
+            logger.info(f"[Local AI Engine] {MODEL_NAME} loaded (ctx={config['n_ctx']}, threads={config['n_threads']}, gpu_layers={actual_gpu})")
             return _local_llm_instance
 
         except Exception as e:

@@ -1023,7 +1023,7 @@ def _tool_generate_content(params, query, spoken):
         "Do not include meta-commentary or explanations - just the content itself."
     )
     # Generated documents are not spoken replies: no chat history, no 1-3 sentence limit, longer budget.
-    generated_content = get_ai_response(generation_prompt, use_memory=False, is_voice=False, max_tokens=1500)
+    generated_content = get_ai_response(generation_prompt, use_memory=False, is_voice=False, max_tokens=300)
 
     # Store generated content in active state for insert_content to use
     try:
@@ -1221,23 +1221,32 @@ def resolve_document_path(query_or_target: str) -> str | None:
         if candidate and candidate not in search_terms and candidate.lower() not in _REFERENT_WORDS and candidate.lower() not in _ORDINAL_WORDS:
             search_terms.append(candidate)
 
-    # 3. Only search clean string if it is short (1-2 tokens)
-    if not search_terms and len(clean.split()) <= 2 and len(clean) >= 3:
+    # 3. Search clean string if it has substance
+    if not search_terms and len(clean) >= 3:
         search_terms.append(clean)
 
-    for term in search_terms:  # 1. filename lookup
+    # 1. Fast filename lookup ONLY for explicit names / extensions / short keywords (<= 2 words)
+    filename_candidates = [t for t in search_terms if len(t.split()) <= 2]
+    for term in filename_candidates:
         if len(term) >= 2:
             matches, _ = find_files(term)
             if matches:
                 update_active_state("active_file", {"path": matches[0], "name": os.path.basename(matches[0])})
                 return matches[0]
 
-    for term in search_terms:  # 2. semantic lookup
+    # 2. Semantic lookup on extracted search terms, clean query, or raw query
+    semantic_candidates = list(search_terms)
+    if clean and len(clean) >= 3 and clean not in semantic_candidates:
+        semantic_candidates.append(clean)
+    if raw and len(raw) >= 3 and raw not in semantic_candidates:
+        semantic_candidates.append(raw)
+
+    for term in semantic_candidates:
         if len(term) >= 3 and term.lower() not in _REFERENT_WORDS:
             results = rag_engine.search_files_by_context(term, top_k=1)
-            if results and results[0].get("score", 0) > 0.30:
+            if results and results[0].get("score", 0) > 0.35:
                 fpath = results[0].get("filepath")
-                if fpath:
+                if fpath and os.path.exists(fpath):
                     update_active_state("active_file", {"path": fpath, "name": os.path.basename(fpath)})
                     return fpath
 
@@ -1509,7 +1518,25 @@ def _tool_ask_document(params, query, spoken):
     filepath = str(params.get("filepath") or "").strip()
     question = str(params.get("question") or query or "").strip() or query
 
-    target_path = resolve_document_path(filepath) if filepath else None
+    target_path = None
+    if filepath:
+        candidate_path = resolve_document_path(filepath)
+        if candidate_path and os.path.exists(candidate_path):
+            fname = os.path.basename(candidate_path).lower()
+            fname_stem = os.path.splitext(fname)[0].replace(" ", "").replace("_", "")
+            q_clean = (query or "").lower().replace(" ", "").replace("_", "")
+            # If the user actually mentioned this file in their query
+            if fname_stem in q_clean or fname in q_clean:
+                target_path = candidate_path
+            else:
+                # Filepath may be a hallucination from prior conversation history;
+                # check if the actual question resolves to a more relevant file
+                semantic_path = resolve_document_path(question)
+                target_path = semantic_path if semantic_path else candidate_path
+
+    if not target_path:
+        target_path = resolve_document_path(question)
+
     if target_path:
         try:
             update_active_state("active_file", {"path": target_path, "name": os.path.basename(target_path)})
@@ -1517,7 +1544,13 @@ def _tool_ask_document(params, query, spoken):
             pass
         ctx = rag_engine.build_file_context(target_path, question)
     else:
-        ctx = rag_engine.build_rag_context(question, top_k=6)
+        ctx = rag_engine.build_rag_context(question, top_k=8)
+        # Check if RAG resolved an active document
+        if not target_path:
+            state = get_active_state(clean_expired=False) or {}
+            act_f = state.get("active_file")
+            if isinstance(act_f, dict) and act_f.get("path") and os.path.exists(act_f["path"]):
+                target_path = act_f["path"]
 
     if ctx:
         meta = {"matched_docs": [target_path]} if target_path else {"doc_context_used": True}
@@ -1828,8 +1861,7 @@ def _tool(name: str, description: str, props: dict | None = None, required: list
 
 
 TOOL_DEFINITIONS = [
-    _tool("chat", "Conversational response: talk with the user, casual conversation, greetings, opinions, advice, jokes, or creative dialogue. Do NOT use for current external facts or real-world office holders.",
-          {"response": _p("string", "Your direct, natural conversational response or answer to the user (1-3 sentences)")}, ["response"]),
+    _tool("chat", "Conversational response: talk with the user, casual conversation, advice, questions, opinions, greetings, jokes, or creative dialogue. Takes NO parameters."),
     _tool("web_search", "Search the web for real-time facts, current office holders, political leaders, ministers, presidents, CEOs, news, recent events, live scores, or external knowledge.",
           {"query": _p("string", "Search query resolved from context"),
            "show_in_browser": _p("boolean", "True if user asked to open search results in a browser")}, ["query"]),
@@ -1890,10 +1922,12 @@ TOOL_DEFINITIONS = [
           {"path": _p("string", "File path or name")}, ["path"]),
     _tool("copy_file_path", "Copy a file's full path to clipboard.", {"path": _p("string", "File path")}, ["path"]),
     _tool("open_folder", "Open a folder in File Explorer.", {"name": _p("string", "Folder name or path")}, ["name"]),
-    _tool("document_qa", "Answer questions from the user's indexed local documents, files, tickets, bookings, PNR numbers, or personal records.",
-          {"query": _p("string", "Question about document or personal file contents")}, ["query"]),
+    _tool("document_qa", "Answer questions from the user's indexed local documents, files, tickets, bookings, flights, PNR numbers, invoices, or personal records.",
+          {"query": _p("string", "Question about document or personal file contents"),
+           "filepath": _p("string", "Target document name ONLY if explicitly named by user; otherwise omit")}, ["query"]),
     _tool("ask_document", "Answer questions about a specific document.",
-          {"question": _p("string", "Question"), "filepath": _p("string", "Target document path or name")}, ["question"]),
+          {"question": _p("string", "Question"),
+           "filepath": _p("string", "Target document name ONLY if explicitly named by user; otherwise omit")}, ["question"]),
     _tool("summarize_document", "Summarize the contents of a local document.",
           {"filepath": _p("string", "Document path or name")}),
     _tool("memory_recall", "Store a user fact or recall saved personal information.",
@@ -1993,7 +2027,7 @@ TOOLS AVAILABLE:
 <<TOOLS>>
 
 ROUTING GUIDELINES:
-1. GREETINGS & CHAT: For casual conversation, greetings, opinions, or general answers: select 'chat' with params: {"response": "<direct concise reply>"}. Keep the voice conversational, warm, and natural — like talking to a friend, never robotic or reciting like a book. When offering multiple ideas or options, format each item cleanly on its own line with bullet markers (\\n• Title: description).
+1. GREETINGS & CHAT: For casual conversation, greetings, advice, questions, opinions, or explanations: select 'chat' with empty params: {"tool": "chat", "params": {}}. Do not put full generated answers inside params.
 2. MUSIC & VIDEO PLAYBACK: For songs, music, tracks, artists, or videos, select 'play_youtube'.
 - Extract the user's requested song title and artist into params['query'] exactly as stated in the request.
 - Do not substitute, swap, or alter the requested title with different tracks.
@@ -2004,9 +2038,10 @@ ROUTING GUIDELINES:
 7. CONTEXT: Resolve pronouns ('it', 'that') from RECENT ACTIVITY into explicit parameters.
 
 EXAMPLES:
-- "hello how are you" -> {"actions": [{"tool": "chat", "params": {"response": "Hello! I'm doing well and ready to assist you. How can I help?"}}]}
+- "hello how are you" -> {"actions": [{"tool": "chat", "params": {}}]}
+- "help me become more intelligent" -> {"actions": [{"tool": "chat", "params": {}}]}
 - "who is the prime minister of the uk" -> {"actions": [{"tool": "web_search", "params": {"query": "current prime minister of UK"}}]}
-- "what is the capital of france" -> {"actions": [{"tool": "chat", "params": {"response": "The capital of France is Paris."}}]}
+- "what is the capital of france" -> {"actions": [{"tool": "chat", "params": {}}]}
 - "play bohemian rhapsody" -> {"actions": [{"tool": "play_youtube", "params": {"query": "bohemian rhapsody"}}]}
 - "play some jazz" -> {"actions": [{"tool": "play_youtube", "params": {"query": "jazz music"}}]}
 - "pause music" -> {"actions": [{"tool": "pause_media", "params": {}}]}
@@ -2105,11 +2140,16 @@ def _call_from_obj(obj) -> list[dict]:
         for item in obj["actions"]:
             calls.extend(_call_from_obj(item))
         return calls
-    name = obj.get("tool") or obj.get("name")
-    if not isinstance(name, str) or not name.strip():
+    # Determine tool name: check 'tool' or 'action' first, or 'name' if matching a registered tool
+    tool_candidate = obj.get("tool") or obj.get("action")
+    if not tool_candidate and isinstance(obj.get("name"), str) and obj["name"].strip().lower() in VALID_TOOL_NAMES:
+        tool_candidate = obj["name"]
+    if not isinstance(tool_candidate, str) or not tool_candidate.strip():
+        return []
+    tool_name = tool_candidate.strip().lower()
+    if tool_name not in VALID_TOOL_NAMES:
         return []
     params = _coerce_params(obj["params"] if "params" in obj else obj.get("arguments"))
-    tool_name = name.strip()
     speak = obj.get("speak") or (params.get("response") if tool_name == "chat" else "")
     return [{
         "tool": tool_name,
@@ -2155,6 +2195,20 @@ def _extract_final_response(response: str, tool_calls: list) -> str:
     clean = re.sub(r"<think>[\s\S]*?</think>", "", response, flags=re.I).strip()
     clean = re.sub(r"<think>[\s\S]*$", "", clean, flags=re.I).strip()
     clean = re.sub(r',\s*([\]}])', r'\1', clean)  # Fix trailing commas
+    clean = clean.replace("```json", "").replace("```", "").strip()
+
+    # If the response is raw JSON syntax, never leak JSON keys or structure as spoken text!
+    if clean.startswith("{") or clean.startswith("["):
+        # If there's an embedded response or speak value, extract just that string
+        m = re.search(r'"(?:response|speak|reply)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"?', clean)
+        if m:
+            try:
+                extracted = json.loads(f'"{m.group(1)}"')
+                return sanitize_for_tts(extracted)
+            except Exception:
+                return sanitize_for_tts(m.group(1))
+        return ""
+
     parts = []
     pos = 0
     for start, end, obj in _iter_json_objects(clean):
@@ -2172,61 +2226,17 @@ def _chat_action(text: str = "") -> dict:
     return {"tool": "chat", "params": {"response": text} if text else {}, "speak": text}
 
 
-_EXACT_EXIT = frozenset({"goodbye", "close amigo", "exit amigo", "quit amigo"})
-_EXACT_STOP = frozenset({"stop", "shut up", "be quiet", "stop talking", "stop speaking", "quiet", "silence"})
-_EXACT_PAUSE = frozenset({
-    "pause", "pause music", "pause the music", "pause song", "pause the song",
-    "pause video", "pause the video", "pause playback", "stop music", "stop song"
-})
-_EXACT_RESUME = frozenset({
-    "resume", "resume music", "resume song", "resume the music", "resume playback",
-    "unpause", "unpause music", "unpause song", "continue music", "continue playback"
-})
-_EXACT_NEXT = frozenset({"next track", "next song", "skip song", "skip track", "next video"})
-_EXACT_PREV = frozenset({"previous track", "prev track", "previous song", "prev song", "back track"})
-_EXACT_CURRENT_MEDIA = frozenset({
-    "what is playing", "what's playing", "which music is playing", "what music is playing",
-    "what song is playing", "which song is playing", "current song", "current track",
-    "current music", "what am i listening to"
-})
 _RE_WAKE_WORD = re.compile(r"^(?:(?:hey|hi|hello|ok|okay)\s+)?amigo\b[\s,.:;!-]*", re.IGNORECASE)
-_RE_POLITE = re.compile(r"^please\s+|\s+please$", re.IGNORECASE)
 
 
 def _strip_wake_word(query: str) -> str:
     return _RE_WAKE_WORD.sub("", (query or "").strip()).strip()
 
 
-def clean_spoken_query(query: str) -> str:
-    q = _RE_POLITE.sub("", _strip_wake_word(query))
-    return q.strip().rstrip(".!?,;: ").lower()
-
-
 def parse_user_intent_fast(query: str) -> dict[str, Any] | None:
-    """Tier 0: immediate stop, exit, and media shortcuts without LLM overhead."""
+    """Fast-check for blank/empty inputs."""
     if not query or not query.strip():
         return {"tool": "chat", "params": {}, "speak": ""}
-    text = clean_spoken_query(query)
-    if text in _EXACT_EXIT:
-        return {"tool": "exit", "params": {}, "speak": "Goodbye!"}
-    if text in _EXACT_STOP:
-        return {"tool": "stop", "params": {}, "speak": ""}
-    if text in _EXACT_PAUSE:
-        return {"tool": "pause_media", "params": {}, "speak": ""}
-    if text in _EXACT_RESUME:
-        return {"tool": "resume_media", "params": {}, "speak": ""}
-    if text in _EXACT_NEXT:
-        return {"tool": "next_track", "params": {}, "speak": ""}
-    if text in _EXACT_PREV:
-        return {"tool": "prev_track", "params": {}, "speak": ""}
-    if text in _EXACT_CURRENT_MEDIA:
-        return {"tool": "current_media", "params": {}, "speak": ""}
-    # Fast path for confirmation: if user says "yes" and there's a pending confirmation, execute it
-    pending = get_pending_confirmation()
-    if pending and text in ("yes", "yeah", "yep", "sure", "ok", "okay", "go ahead", "do it", "confirm"):
-        return {"tool": "confirm_action", "params": {}, "speak": ""}
-    if pending and text in ("no", "nope", "cancel", "dont", "don't", "stop", "abort"):
-        return {"tool": "cancel_action", "params": {}, "speak": ""}
     return None
 
 
@@ -2245,7 +2255,7 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
             temperature=0.05,
             thinking=False,
             sanitize=False,
-            response_format=None,
+            response_format={"type": "json_object"},
             stop=_ROUTER_STOP,
             raise_on_error=True,
         )
@@ -2257,6 +2267,7 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
     tool_calls = _parse_tool_calls(response)
     final_response = _extract_final_response(response, tool_calls)
     logger.info("[Router LLM] raw=%r calls=%s", response[:200], tool_calls)
+
     if tool_calls:
         if not final_response:
             for call in tool_calls:

@@ -2023,16 +2023,40 @@ def build_rag_context(
 
         return res.get("score", 0)
 
-    relevant.sort(key=_doc_priority, reverse=True)
+    # Identify top document if present in relevant results
+    for r in relevant:
+        if r.get("source") == DOCUMENTS:
+            meta = r.get("metadata", {})
+            fpath = meta.get("filepath", "")
+            fname = meta.get("filename", os.path.basename(fpath))
+            if fpath and os.path.exists(fpath):
+                top_doc = {"path": fpath, "name": fname}
+                break
 
-    for r in relevant[:4]:
+    if top_doc:
+        try:
+            update_active_state("active_file", top_doc)
+        except Exception:
+            pass
+
+        # For compact personal documents (tickets, invoices, bills, forms, notes <= max_chars),
+        # provide the complete content so key identifiers (PNR, totals, dates, names)
+        # are never missed due to chunk fragmentation.
+        try:
+            fsize = os.path.getsize(top_doc["path"])
+            if 0 < fsize <= 300 * 1024:
+                file_text = extract_text(top_doc["path"])
+                if file_text and len(file_text.strip()) <= max_chars:
+                    return f"[Content from '{top_doc['name']}']:\n{file_text.strip()}"
+        except Exception:
+            pass
+
+    for r in relevant[:max(top_k, 8)]:
         src = r.get("source", "")
         if src == DOCUMENTS:
             meta = r.get("metadata", {})
             fname = meta.get("filename", "document")
             fpath = meta.get("filepath", "")
-            if not top_doc and fpath and os.path.exists(fpath):
-                top_doc = {"path": fpath, "name": fname}
 
             chunk_text = (r.get("text") or "").strip()
             if chunk_text:
@@ -2048,12 +2072,6 @@ def build_rag_context(
                     break
                 parts.append(f"[Known fact]: {text}")
                 total_chars += len(text)
-
-    if top_doc:
-        try:
-            update_active_state("active_file", top_doc)
-        except Exception:
-            pass
 
     return "\n\n".join(parts)
 

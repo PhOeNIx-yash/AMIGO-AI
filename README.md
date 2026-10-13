@@ -1,6 +1,6 @@
 # Amigo Voice Assistant 🎙️✨
 
-A private, intelligent, and agentic personal voice assistant powered locally by the **Qwen 3.8 2B Distill Q4_K_M** GGUF model, **Sherpa-ONNX** real-time neural speech recognition, and **Supertonic 3** 44.1kHz studio neural speech synthesis.
+A private, intelligent, and agentic personal voice assistant powered locally by the **Granite 4.1 3B Q4_K_M** GGUF model, **Sherpa-ONNX** real-time neural speech recognition, and **Supertonic 3** 44.1kHz studio neural speech synthesis.
 
 Amigo provides desktop automation, browser & window control, document intelligence (invoices, PDFs, spreadsheets), live interactive action widgets (countdown timers, stopwatches, weather telemetry), deep web browsing, app management, and an adaptive RAG-powered vector memory system — completely offline, with **zero API keys and zero cloud dependencies**.
 
@@ -9,7 +9,7 @@ Amigo provides desktop automation, browser & window control, document intelligen
 ## 🚀 What's New (v2.0)
 
 ### 🧠 **LLM-Based Agentic Reasoning Architecture** (NEW)
-- **Full natural language understanding & thinking reasoning** via Qwen 3.8 2B Distill with structured tool calling
+- **Full natural language understanding & thinking reasoning** via Granite 4.1 3B with structured tool calling
 - **Internal reasoning scratchpad** with `<think>...</think>` support and intelligent tool decision-making
 - **Multi-step compound command chains** — "Open Notepad and type Hello World" executes atomically
 - **Context-aware follow-ups** — "Play it again", "Close that", "Search for that" resolve from conversation history
@@ -174,7 +174,7 @@ amigo-main/
 │       ├── tool_registry.py        # Central tool registry, dispatcher & action cards
 │       └── tts.py                  # Unified speech engine (Supertonic 3 TTS & Sherpa-ONNX STT)
 ├── models/                 # AI model weights
-│   ├── Qwen3.8-2B-Q4_K_M.gguf  # Qwen 3.8 2B Distill GGUF weights
+│   ├── granite-4.1-3b-Q4_K_M.gguf  # Granite 4.1 3B GGUF weights
 │   └── sherpa-onnx/        # Sherpa-ONNX streaming Zipformer STT model
 ├── rag_data/               # RAG vector database & uploads
 │   ├── chroma/             # ChromaDB persistent storage
@@ -210,7 +210,7 @@ This automatically:
 1. Creates a virtual environment (`venv/`) for isolated dependencies.
 2. Installs all Python dependencies via `pip install -r requirements.txt`.
 3. Initializes the `Supertonic 3` neural voice engine (44.1kHz studio quality).
-4. Downloads the `Qwen 3.8 2B Distill` quantized GGUF model (~1.31 GB).
+4. Downloads the `Granite 4.1 3B` quantized GGUF model (~2.1 GB).
 5. Downloads the `Sherpa-ONNX` streaming Zipformer STT model (~80 MB).
 6. Initializes RAG vector data storage directories and default profile.
 7. Verifies or compiles the Web Dashboard production build (`ui_app/dist`).
