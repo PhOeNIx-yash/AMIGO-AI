@@ -1,14 +1,20 @@
 {
-  "last_weather_check": 1791808788.631017,
-  "last_calendar_check": 1791808850.1931653,
-  "last_system_check": 1791808910.1886733,
-  "last_notification_time": 1791556257.228167,
+  "last_weather_check": 1791885024.116021,
+  "last_calendar_check": 1791885024.116021,
+  "last_system_check": 1791885265.3770056,
+  "last_notification_time": 1791883219.6339848,
   "last_priority_alert_time": 0,
-  "suggestions_this_hour": 0,
-  "last_hour_reset": 1791806622.1014173,
-  "active_window_start": 1791808910.1886733,
-  "current_window_title": "amigo-main - Antigravity IDE - KineticText.tsx",
-  "recent_suggestions": [],
+  "suggestions_this_hour": 1,
+  "last_hour_reset": 1791883217.185338,
+  "active_window_start": 1791885265.3770056,
+  "current_window_title": "amigo-main - Antigravity IDE - VoiceSettingsTab.tsx",
+  "recent_suggestions": [
+    {
+      "id": "wellness_break",
+      "text": "You've been in the zone for quite a while, Yash. Don't forget to take a quick stretch and hydrate.",
+      "time": 1791883217.185338
+    }
+  ],
   "learned_patterns": {},
   "user_routines": {},
   "dismissed_suggestions": [

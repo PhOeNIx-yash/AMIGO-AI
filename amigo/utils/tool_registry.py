@@ -252,16 +252,16 @@ def _tool_play_youtube(params, query, spoken):
         speak_text = f"Playing live stream: '{title}'"
         if channel and channel not in ("YouTube", "YouTube Music", ""):
             speak_text += f" by {channel}"
-        return speak_text + " on YouTube.", media_info.get("url")
+        return speak_text + " on YouTube.", media_info.get("url"), media_payload
     elif media_info.get("not_live_fallback"):
-        return f"{clean_q} is not currently live. Playing their latest stream: '{title}' on YouTube.", media_info.get("url")
+        return f"{clean_q} is not currently live. Playing their latest stream: '{title}' on YouTube.", media_info.get("url"), media_payload
     elif title and title.strip().lower() != clean_q.strip().lower():
         speak_text = f"Playing '{title}'"
         if channel and channel not in ("YouTube", "YouTube Music", ""):
             speak_text += f" by {channel}"
-        return speak_text + " on YouTube.", media_info.get("url")
+        return speak_text + " on YouTube.", media_info.get("url"), media_payload
 
-    return spoken or f"Playing {clean_q} on YouTube.", media_info.get("url")
+    return spoken or f"Playing {clean_q} on YouTube.", media_info.get("url"), media_payload
 
 
 def _tool_get_current_media(params, query, spoken):
@@ -997,9 +997,9 @@ def _tool_chat(params, query, spoken, conversation_history=None):
     doc_context = ""
     try:
         # Inject document context if there is a relevant semantic or keyword match
-        results = rag_engine.search(query, target_collections=[rag_engine.DOCUMENTS, rag_engine.USER_FACTS], top_k=4)
-        if results and any(r.get("rerank_score", 0) >= 0.45 or r.get("score", 0) >= 0.38 for r in results):
-            doc_context = rag_engine.build_rag_context(query, top_k=4, conversation_history=conv_history, search_results=results)
+            results = rag_engine.search(query, target_collections=[rag_engine.DOCUMENTS, rag_engine.USER_FACTS], top_k=4)
+            if results and any(r.get("rerank_score", 0) >= 0.45 or r.get("score", 0) >= 0.38 for r in results):
+                doc_context = rag_engine.build_rag_context(query, top_k=4, conversation_history=conv_history, search_results=results)
     except Exception as e:
         logger.debug(f"[Chat RAG context]: {e}")
 
@@ -1733,6 +1733,7 @@ def _tool_search_calendar(params, query, spoken):
 # Register RAG/Email/Calendar tools
 UI_TOOL_HANDLERS.update({
     "ask_document":       _tool_ask_document,
+    "document_qa":        _tool_ask_document,
     "summarize_document": _tool_summarize_document,
     "find_document":      _tool_find_document,
     "search_knowledge":   _tool_search_knowledge,
@@ -1837,7 +1838,7 @@ TOOL_DEFINITIONS = [
     _tool("open_website", "Open a specific website or URL in the browser.", {"url": _p("string", "Website address or domain")}, ["url"]),
     _tool("show_images", "Show image search results for a topic in the browser.", {"query": _p("string", "Image search topic")}, ["query"]),
     _tool("play_youtube", "Search and play songs, music, artist tracks, albums, or videos on YouTube.",
-          {"query": _p("string", "Song, artist, or video title to play")}, ["query"]),
+          {"query": _p("string", "Exact song title and artist requested by the user without alteration or substitution")}, ["query"]),
     _tool("resume_media", "Resume or unpause paused audio or video playback (e.g. 'resume', 'unpause', 'continue playback')."),
     _tool("pause_media", "Pause currently playing music or video playback."),
     _tool("next_track", "Skip to the next music track."),
@@ -1946,7 +1947,7 @@ def _tools_block() -> str:
     return _TOOLS_BLOCK_CACHE
 
 
-def _format_recent_activity(conversation_history: list | None, current_query: str = "", limit: int = 8) -> str:
+def _format_recent_activity(conversation_history: list | None, current_query: str = "", limit: int = 15) -> str:
     """Format recent turns with user queries, tools used, and assistant responses."""
     if conversation_history:
         turns = [t for t in conversation_history if isinstance(t, dict)]
@@ -1992,26 +1993,33 @@ TOOLS AVAILABLE:
 <<TOOLS>>
 
 ROUTING GUIDELINES:
-1. GREETINGS & CHAT: For casual conversation, greetings, opinions, or general answers: select 'chat' with params: {"response": "<direct concise reply>"}. When offering multiple ideas, games, or options, always format each item cleanly on its own line with bullet markers (\\n• Title: description).
-2. PC ACTIONS: For apps, volume, brightness, media, timers, screenshots, files: select the specific tool with necessary parameters.
-3. REAL-TIME FACTS: Use 'web_search' for current office holders, political leaders, latest news, live scores, or events.
-4. COMPOUND REQUESTS: Return multiple actions in execution order (e.g. open app then type text).
-5. CONTEXT: Resolve pronouns ('it', 'that') from RECENT ACTIVITY into explicit parameters.
+1. GREETINGS & CHAT: For casual conversation, greetings, opinions, or general answers: select 'chat' with params: {"response": "<direct concise reply>"}. Keep the voice conversational, warm, and natural — like talking to a friend, never robotic or reciting like a book. When offering multiple ideas or options, format each item cleanly on its own line with bullet markers (\\n• Title: description).
+2. MUSIC & VIDEO PLAYBACK: For songs, music, tracks, artists, or videos, select 'play_youtube'.
+- Extract the user's requested song title and artist into params['query'] exactly as stated in the request.
+- Do not substitute, swap, or alter the requested title with different tracks.
+3. PC & SYSTEM ACTIONS: For apps, volume, brightness, timers, screenshots, files: select the specific tool. Never reply with conversational chat when asked to perform PC actions.
+4. LOCAL DOCUMENTS & RAG: For finding local documents, personal records, tickets, notes, invoices, or asking questions about user files: use 'find_document' or 'document_qa'. Do NOT use 'web_search' for local files.
+5. REAL-TIME EXTERNAL FACTS: Use 'web_search' for current office holders, political leaders, latest external news, live sports scores, or external web events.
+6. COMPOUND REQUESTS: Return multiple actions in execution order (e.g. open app then type text).
+7. CONTEXT: Resolve pronouns ('it', 'that') from RECENT ACTIVITY into explicit parameters.
 
 EXAMPLES:
 - "hello how are you" -> {"actions": [{"tool": "chat", "params": {"response": "Hello! I'm doing well and ready to assist you. How can I help?"}}]}
 - "who is the prime minister of the uk" -> {"actions": [{"tool": "web_search", "params": {"query": "current prime minister of UK"}}]}
 - "what is the capital of france" -> {"actions": [{"tool": "chat", "params": {"response": "The capital of France is Paris."}}]}
+- "play bohemian rhapsody" -> {"actions": [{"tool": "play_youtube", "params": {"query": "bohemian rhapsody"}}]}
+- "play some jazz" -> {"actions": [{"tool": "play_youtube", "params": {"query": "jazz music"}}]}
 - "pause music" -> {"actions": [{"tool": "pause_media", "params": {}}]}
 - "resume" -> {"actions": [{"tool": "resume_media", "params": {}}]}
 - "weather in new york" -> {"actions": [{"tool": "get_weather", "params": {"city": "New York"}}]}
-- "play believer" -> {"actions": [{"tool": "play_youtube", "params": {"query": "believer"}}]}
 - "open notepad" -> {"actions": [{"tool": "open_app", "params": {"name": "Notepad"}}]}
 - "find my resume" -> {"actions": [{"tool": "find_document", "params": {"query": "resume"}}]}
+- "search my documents for invoice" -> {"actions": [{"tool": "find_document", "params": {"query": "invoice"}}]}
+- "what is in my notes" -> {"actions": [{"tool": "document_qa", "params": {"query": "notes"}}]}
 - "click submit button" -> {"actions": [{"tool": "computer_use", "params": {"task": "click submit button"}}]}
 
 OUTPUT FORMAT:
-Respond with exactly one valid JSON object in this format:
+Do not include <think> tags or reasoning. Output only valid JSON in this format:
 {"actions": [{"tool": "<tool_name>", "params": {<parameters>}}]}"""
 
 
@@ -2036,18 +2044,6 @@ def build_agent_system_prompt(query: str = "", conversation_history: list | None
             active_context = f"{stripped[:-1]} | {note}]"
         else:
             active_context = f"{stripped}\n[Active State: {note}]".strip()
-    else:
-        try:
-            last_song = get_last_played_song(conversation_history)
-        except Exception:
-            last_song = None
-        if last_song and last_song.get("title") and last_song["title"] not in active_context:
-            note = f"Last Media: '{last_song['title']}'"
-            stripped = active_context.rstrip()
-            if stripped.endswith("]"):
-                active_context = f"{stripped[:-1]} | {note}]"
-            else:
-                active_context = f"{stripped}\n[Active State: {note}]".strip()
 
     parts = [
         _ROUTER_SYSTEM_PROMPT.replace("<<TOOLS>>", _tools_block()),
@@ -2058,7 +2054,7 @@ def build_agent_system_prompt(query: str = "", conversation_history: list | None
     if pending:
         parts.append(pending)
     parts.append("RECENT ACTIVITY (oldest first):")
-    parts.append(_format_recent_activity(conversation_history, query))
+    parts.append(_format_recent_activity(conversation_history, query, limit=15))
     if active_context.strip():
         parts.append(active_context.strip())
     try:
@@ -2137,6 +2133,8 @@ def _parse_xml_calls(text: str) -> list[dict]:
 
 def _parse_tool_calls(response: str) -> list[dict]:
     clean = re.sub(r"<think>[\s\S]*?</think>", "", response, flags=re.I).strip()
+    clean = re.sub(r"<think>[\s\S]*$", "", clean, flags=re.I).strip()
+    clean = re.sub(r'```(?:json)?\s*', '', clean).replace('```', '').strip()
     clean = re.sub(r',\s*([\]}])', r'\1', clean)  # Fix trailing commas common in LLM JSON
     calls: list[dict] = []
     for _start, _end, obj in _iter_json_objects(clean):
@@ -2155,6 +2153,7 @@ def _parse_tool_calls(response: str) -> list[dict]:
 
 def _extract_final_response(response: str, tool_calls: list) -> str:
     clean = re.sub(r"<think>[\s\S]*?</think>", "", response, flags=re.I).strip()
+    clean = re.sub(r"<think>[\s\S]*$", "", clean, flags=re.I).strip()
     clean = re.sub(r',\s*([\]}])', r'\1', clean)  # Fix trailing commas
     parts = []
     pos = 0
@@ -2237,12 +2236,13 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
         {"role": "system", "content": build_agent_system_prompt(query, conversation_history=conversation_history)},
         {"role": "user", "content": query},
     ]
+    response = ""
     try:
         response = query_local_llm(
             messages,
             system_prompt="",
             max_tokens=256,
-            temperature=0.3,
+            temperature=0.05,
             thinking=False,
             sanitize=False,
             response_format=None,
@@ -2256,6 +2256,7 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
 
     tool_calls = _parse_tool_calls(response)
     final_response = _extract_final_response(response, tool_calls)
+    logger.info("[Router LLM] raw=%r calls=%s", response[:200], tool_calls)
     if tool_calls:
         if not final_response:
             for call in tool_calls:
@@ -2266,8 +2267,13 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
                         break
         return tool_calls, final_response
 
-    if response.lstrip().startswith("{"):
-        final_response = ""
+    if not final_response:
+        clean_resp = re.sub(r"<think>[\s\S]*?</think>", "", response, flags=re.I).strip()
+        clean_resp = re.sub(r"<think>[\s\S]*$", "", clean_resp, flags=re.I).strip()
+        clean_resp = clean_resp.replace("```json", "").replace("```", "").strip()
+        if clean_resp and not clean_resp.startswith("{"):
+            final_response = clean_resp
+
     return [_chat_action(final_response)], final_response
 
 

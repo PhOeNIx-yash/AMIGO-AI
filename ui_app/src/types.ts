@@ -21,6 +21,8 @@ export type AssistantState =
 
 export type ColorTheme = "beams" | "violet" | "cobalt" | "emerald" | "sunset" | "cyan" | "weather" | "noir";
 
+export type ViewMode = "assistant" | "chat";
+
 export type PluginMode = "floating" | "docked_right" | "docked_bottom" | "fullscreen";
 
 export interface ActionCardItem {

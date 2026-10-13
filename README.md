@@ -1,6 +1,6 @@
 # Amigo Voice Assistant 🎙️✨
 
-A private, intelligent, and agentic personal voice assistant powered locally by the **MiniCPM 5 2B Claude-Fable 5.1 Thinking Agentic** GGUF model, **Sherpa-ONNX** real-time neural speech recognition, and **Supertonic 3** 44.1kHz studio neural speech synthesis.
+A private, intelligent, and agentic personal voice assistant powered locally by the **Qwen 3.8 2B Distill Q4_K_M** GGUF model, **Sherpa-ONNX** real-time neural speech recognition, and **Supertonic 3** 44.1kHz studio neural speech synthesis.
 
 Amigo provides desktop automation, browser & window control, document intelligence (invoices, PDFs, spreadsheets), live interactive action widgets (countdown timers, stopwatches, weather telemetry), deep web browsing, app management, and an adaptive RAG-powered vector memory system — completely offline, with **zero API keys and zero cloud dependencies**.
 
@@ -9,7 +9,7 @@ Amigo provides desktop automation, browser & window control, document intelligen
 ## 🚀 What's New (v2.0)
 
 ### 🧠 **LLM-Based Agentic Reasoning Architecture** (NEW)
-- **Full natural language understanding & thinking reasoning** via MiniCPM 5 2B Claude-Fable 5.1 with structured tool calling
+- **Full natural language understanding & thinking reasoning** via Qwen 3.8 2B Distill with structured tool calling
 - **Internal reasoning scratchpad** with `<think>...</think>` support and intelligent tool decision-making
 - **Multi-step compound command chains** — "Open Notepad and type Hello World" executes atomically
 - **Context-aware follow-ups** — "Play it again", "Close that", "Search for that" resolve from conversation history
@@ -57,7 +57,7 @@ Amigo provides desktop automation, browser & window control, document intelligen
 
 ## 🌟 Key Capabilities & Features
 
-- **100% Offline Local AI** — Powered by `MiniCPM 5 2B` via `llama-cpp-python` with optional CUDA GPU acceleration for near-instant inference.
+- **100% Offline Local AI** — Powered by `Qwen 3.8 2B Distill` via `llama-cpp-python` with optional CUDA GPU acceleration for near-instant inference.
 - **⚡ Natural Language Intent Agent** — Neural agent architecture that understands conversational intent, extracts structured tool parameters, and dispatches actions directly to the desktop environment.
 - **Multi-Step Compound Command Chains** — Execute complex commands like *"Open Notepad and type Hello World"* or *"Minimize all windows and check weather in Tokyo"* as atomically decomposed sequential action chains.
 - **Desktop & Windows Automation** — Type text, press keys, click screen coordinates, manage windows (minimize all, maximize, switch), and launch or close any Windows application.
@@ -103,7 +103,7 @@ User Voice / Text Input
   ┌─────────────────────────────────────────────────────┐
   │  Tier 2: LLM-Based Agent (Natural Language Intent)  │
   │  llm_agent.get_agent_action()                       │
-  │  • MiniCPM 5 2B reasons about user intent           │
+  │  • Qwen 3.8 2B Distill reasons about user intent    │
   │  • Full conversation context & memory integration   │
   │  • Handles ambiguity, follow-ups, anaphora naturally│
   │  • Structured tool calling with validated schemas   │
@@ -111,7 +111,7 @@ User Voice / Text Input
         │
         ▼
   ┌─────────────────────────────────────────────────────┐
-  │  Tier 3: MiniCPM 5 2B (Conversational Reasoning)   │
+  │  Tier 3: Qwen 3.8 2B Distill (Conversational)       │
   │  query_local_llm() — chat, Q&A, math, explanation   │
   └─────────────────────────────────────────────────────┘
 ```
@@ -147,8 +147,7 @@ amigo-main/
 │   ├── core/               # Core AI & reasoning modules
 │   │   ├── __init__.py
 │   │   ├── ai.py                   # RAG memory bridge & voice prompt constructor
-│   │   ├── llm_agent.py            # LLM-based agent (natural language intent understanding)
-│   │   ├── local_llm.py            # MiniCPM 5 2B GGUF engine & agentic pipeline controller
+│   │   ├── llm_agent.py            # Qwen 3.8 2B GGUF engine & agentic reasoning pipeline
 │   │   ├── rag_engine.py           # ChromaDB vector store, semantic search & prompt injection
 │   │   ├── rag_indexer.py          # Background file crawling & incremental hash indexer
 │   │   ├── reminder_timer.py       # Background timer & reminder scheduling engine
@@ -175,7 +174,7 @@ amigo-main/
 │       ├── tool_registry.py        # Central tool registry, dispatcher & action cards
 │       └── tts.py                  # Unified speech engine (Supertonic 3 TTS & Sherpa-ONNX STT)
 ├── models/                 # AI model weights
-│   ├── minicpm/            # MiniCPM 5 2B GGUF weights
+│   ├── Qwen3.8-2B-Q4_K_M.gguf  # Qwen 3.8 2B Distill GGUF weights
 │   └── sherpa-onnx/        # Sherpa-ONNX streaming Zipformer STT model
 ├── rag_data/               # RAG vector database & uploads
 │   ├── chroma/             # ChromaDB persistent storage
@@ -211,7 +210,7 @@ This automatically:
 1. Creates a virtual environment (`venv/`) for isolated dependencies.
 2. Installs all Python dependencies via `pip install -r requirements.txt`.
 3. Initializes the `Supertonic 3` neural voice engine (44.1kHz studio quality).
-4. Downloads the `MiniCPM 5 2B` quantized GGUF model (~1.56 GB).
+4. Downloads the `Qwen 3.8 2B Distill` quantized GGUF model (~1.31 GB).
 5. Downloads the `Sherpa-ONNX` streaming Zipformer STT model (~80 MB).
 6. Initializes RAG vector data storage directories and default profile.
 7. Verifies or compiles the Web Dashboard production build (`ui_app/dist`).
@@ -400,7 +399,7 @@ User Input
     │
     ▼
 ┌──────────────────────────────────────────┐
-│  Tier 4: LLM Agent (MiniCPM 5 2B)        │
+│  Tier 4: LLM Agent (Qwen 3.8 2B Distill) │
 │  • Full conversation context             │
 │  • RAG memory integration                │
 │  • Structured tool calling (JSON)        │

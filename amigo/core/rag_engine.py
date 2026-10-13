@@ -151,6 +151,7 @@ _collections: dict = {}
 _init_lock = threading.Lock()
 
 _profile_cache: dict | None = None
+_profile_mtime: float = 0.0
 _profile_lock = threading.Lock()
 
 _conversation_buffer: collections.deque | None = None
@@ -610,9 +611,16 @@ def _default_profile() -> dict:
 
 
 def load_profile() -> dict:
-    """Load user profile from disk or return defaults."""
-    global _profile_cache
-    if _profile_cache is not None:
+    """Load user profile from disk or return defaults, auto-reloading if disk changed."""
+    global _profile_cache, _profile_mtime
+    current_mtime = 0.0
+    if os.path.exists(PROFILE_FILE):
+        try:
+            current_mtime = os.path.getmtime(PROFILE_FILE)
+        except Exception:
+            pass
+
+    if _profile_cache is not None and current_mtime <= _profile_mtime:
         return _profile_cache
 
     if os.path.exists(PROFILE_FILE):
@@ -628,11 +636,13 @@ def load_profile() -> dict:
                         for k, v in default_val.items():
                             loaded[section].setdefault(k, v)
                 _profile_cache = loaded
+                _profile_mtime = current_mtime
                 return _profile_cache
         except Exception:
             pass
 
     _profile_cache = _default_profile()
+    _profile_mtime = current_mtime
     return _profile_cache
 
 
@@ -640,7 +650,8 @@ _profile_queue = queue.Queue()
 
 
 def _profile_writer_worker():
-    """Background worker that persists profile changes atomically."""
+    """Background worker that persists profile changes atomically without wiping external updates."""
+    global _profile_mtime
     while True:
         p = _profile_queue.get()
         try:
@@ -651,12 +662,31 @@ def _profile_writer_worker():
                 except queue.Empty:
                     break
             with _profile_lock:
+                # Merge external updates (like voice settings) from disk before writing
+                if os.path.exists(PROFILE_FILE):
+                    try:
+                        with open(PROFILE_FILE, "r", encoding="utf-8") as f:
+                            disk_data = json.load(f)
+                        if isinstance(disk_data, dict):
+                            for sec in ("preferences", "ui_settings"):
+                                if sec in disk_data and isinstance(disk_data[sec], dict):
+                                    if "voice" in disk_data[sec]:
+                                        p.setdefault(sec, {})["voice"] = disk_data[sec]["voice"]
+                            up_voice = disk_data.get("user_profile", {}).get("preferences", {}).get("voice")
+                            if up_voice:
+                                p.setdefault("user_profile", {}).setdefault("preferences", {})["voice"] = up_voice
+                    except Exception:
+                        pass
                 dumped = json.dumps(p, indent=2)
                 # Atomic write: write to temp file then replace
                 temp_file = PROFILE_FILE + ".tmp"
                 with open(temp_file, "w", encoding="utf-8") as f:
                     f.write(dumped)
                 os.replace(temp_file, PROFILE_FILE)
+                try:
+                    _profile_mtime = os.path.getmtime(PROFILE_FILE)
+                except Exception:
+                    pass
         except Exception as e:
             logger.error("[RAG v2] Error saving profile: %s", e)
         finally:
@@ -1069,15 +1099,26 @@ def _chunk_by_sentences(text: str, chunk_size: int, overlap: int) -> list[str]:
 # ═══════════════════════════════════════════════════════════════
 
 def _ensure_buffer() -> collections.deque:
-    """Lazy-load conversation buffer from ChromaDB on first access."""
+    """Lazy-load conversation buffer without blocking on ChromaDB initialization."""
     global _conversation_buffer
     if _conversation_buffer is not None:
         return _conversation_buffer
 
     _conversation_buffer = collections.deque(maxlen=_BUFFER_MAX)
 
+    # Do NOT block query threads by initializing heavyweight ChromaDB/embeddings just to get recent turns!
+    if _chroma_client is None:
+        try:
+            profile = load_profile()
+            stored = profile.get("recent_conversations", [])
+            for item in stored[-_BUFFER_MAX:]:
+                _conversation_buffer.append(item)
+        except Exception:
+            pass
+        return _conversation_buffer
+
     try:
-        col = _col(CONVERSATIONS)
+        col = _collections.get(CONVERSATIONS)
         if col and col.count() > 0:
             fetch_count = min(col.count(), _BUFFER_MAX)
             results = col.get(limit=fetch_count, include=["metadatas", "documents"])
@@ -1178,6 +1219,15 @@ def add_conversation(
     }
     buf = _ensure_buffer()
     buf.append(turn_item)
+    try:
+        p = load_profile()
+        rc = p.setdefault("recent_conversations", [])
+        rc.append(turn_item)
+        if len(rc) > _BUFFER_MAX:
+            p["recent_conversations"] = rc[-_BUFFER_MAX:]
+        save_profile(p)
+    except Exception:
+        pass
     with _conv_cache_lock:
         if _all_conversations_cache is not None:
             _all_conversations_cache.append(turn_item)

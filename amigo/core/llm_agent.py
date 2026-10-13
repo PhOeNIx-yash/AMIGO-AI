@@ -203,7 +203,7 @@ def _build_voice_prompt(query: str = "", is_voice: bool = True, has_web_context:
 
     if active_ctx := get_active_context_prompt():
         prompt += f"\n{active_ctx}"
-    if user_prof := get_user_profile_prompt(query):
+    if user_prof := get_user_profile_prompt(query, semantic_search=False):
         prompt += f"\n{user_prof}"
 
     # Clipboard and screen text are private and volatile: only read them when the user asks about them.
@@ -440,14 +440,14 @@ _PHYSICAL_CORES = None
 _LLM_CONFIG = None
 _CONFIG_LOCK = threading.Lock()
 
-# Model Configuration (Qwen 3.8 2B Distill Q5_K_M)
+# Model Configuration (Qwen 3.8 2B Distill Q4_K_M)
 MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "models"))
 
 MODEL_NAME = "Qwen 3.8 2B Distill"
-MODEL_FILENAME = "Qwen3.8-2B-Q5_K_M.gguf"
+MODEL_FILENAME = "Qwen3.8-2B-Q4_K_M.gguf"
 MODEL_PATH = os.path.join(MODEL_DIR, MODEL_FILENAME)
 MODEL_TARGETS = [
-    ("empero-ai/Qwen3.8-2B-Distill-GGUF", "Qwen3.8-2B-Q5_K_M.gguf"),
+    ("empero-ai/Qwen3.8-2B-Distill-GGUF", "Qwen3.8-2B-Q4_K_M.gguf"),
 ]
 
 STOP_TOKENS = ["<|endoftext|>", "<|im_end|>", "\nUser:", "\nHuman:", "\nAssistant:"]  # newline-anchored so normal answers are not cut
@@ -460,8 +460,7 @@ AVAILABLE_MODELS = {
         "path": MODEL_PATH,
         "targets": MODEL_TARGETS,
         "downloaded": os.path.exists(MODEL_PATH) and os.path.getsize(MODEL_PATH) > 500_000_000,
-        "size_gb": 1.39,
-        "has_mmproj": False,
+        "size_gb": 1.31,
     },
 }
 
@@ -674,7 +673,7 @@ def get_model_path() -> str:
 
 
 def is_vision_ready() -> bool:
-    """Checks if native multimodal vision is available (MiniCPM 5 2B uses Windows Media OCR)."""
+    """Checks if native multimodal vision is available."""
     return False
 
 
@@ -1245,11 +1244,11 @@ def stream_sentence_chunks(token_generator, interruption_event: threading.Event 
 
 
 # ---------------------------------------------------------------------------
-# Multimodal Vision Stub (MiniCPM 5 2B uses native Windows Media OCR in screen_vision.py)
+# Multimodal Vision Stub
 # ---------------------------------------------------------------------------
 
 def query_local_vision(*args, **kwargs) -> str | None:
-    """MiniCPM 5 2B is a text model; screen vision is powered by native Windows OCR."""
+    """Screen vision is powered by native Windows Media OCR in screen_vision.py."""
     return None
 
 
@@ -1312,8 +1311,7 @@ def get_active_model_info() -> dict:
         "filename": m_info["filename"],
         "path": m_path,
         "downloaded": os.path.exists(m_path) and os.path.getsize(m_path) > 500_000_000,
-        "size_gb": m_info.get("size_gb", 1.56),
-        "has_mmproj": m_info.get("has_mmproj", False),
+        "size_gb": m_info.get("size_gb", 1.31),
         "vision_ready": is_vision_ready(),
     }
 

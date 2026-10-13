@@ -4,8 +4,9 @@ import {
   History,
   Settings,
   Server,
+  MessageSquare,
 } from "lucide-react";
-import { ColorTheme, PluginMode, VisualizerMode } from "../types";
+import { ColorTheme, PluginMode, VisualizerMode, ViewMode } from "../types";
 import { COLOR_THEMES } from "../data/presets";
 import { TextAnimationStyle } from "./KineticText";
 import { sfx } from "../utils/audio";
@@ -20,6 +21,9 @@ export interface TitleBarProps {
   onToggleSettings?: () => void;
   onOpenBackendSettings?: () => void;
   isBackendCustom?: boolean;
+  viewMode?: ViewMode;
+  onToggleViewMode?: () => void;
+  onChangeViewMode?: (mode: ViewMode) => void;
   // Legacy / optional props kept for backward-compatible interface calls
   onToggleTheme?: () => void;
   soundEnabled?: boolean;
@@ -46,6 +50,9 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   onToggleSettings,
   onOpenBackendSettings,
   isBackendCustom = false,
+  viewMode = "assistant",
+  onToggleViewMode,
+  onChangeViewMode,
 }) => {
   const theme = COLOR_THEMES[colorTheme] || COLOR_THEMES.violet;
   const [isOnline, setIsOnline] = React.useState<boolean>(true);
@@ -122,10 +129,12 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   return (
     <header
       id="windows-11-titlebar"
-      className={`relative z-50 flex items-center justify-between px-3.5 pt-[max(0.625rem,env(safe-area-inset-top))] pb-2.5 transition-colors duration-300 border-b backdrop-blur-xl select-none ${
-        isDark
-          ? "bg-black/25 border-white/[0.06] text-slate-200"
-          : "bg-white/60 border-black/[0.05] text-slate-800"
+      className={`relative z-50 flex items-center justify-between px-3.5 pt-[max(0.625rem,env(safe-area-inset-top))] pb-2.5 transition-colors duration-300 border-b select-none ${
+        viewMode === "chat"
+          ? "bg-black border-white/[0.08] text-slate-100"
+          : isDark
+          ? "bg-black/25 border-white/[0.06] text-slate-200 backdrop-blur-xl"
+          : "bg-white/60 border-black/[0.05] text-slate-800 backdrop-blur-xl"
       }`}
     >
       {/* Left: Brand Identity & Subsystem Live Radar */}
@@ -209,8 +218,62 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         </button>
       </div>
 
-      {/* Right Controls: Settings Button */}
+      {/* Right Controls: Chat Mode Switcher & Settings Button */}
       <div className="flex items-center space-x-2">
+        {/* Chat Mode / Assistant Mode Toggle Button */}
+        <div
+          className={`flex items-center p-0.5 rounded-lg border text-xs backdrop-blur-md ${
+            isDark ? "bg-white/[0.04] border-white/[0.08]" : "bg-black/[0.04] border-black/[0.08]"
+          }`}
+        >
+          <button
+            id="titlebar-mode-assistant-btn"
+            type="button"
+            aria-label="Switch to Assistant Voice Mode"
+            aria-pressed={viewMode === "assistant"}
+            onClick={() => {
+              if (viewMode !== "assistant") {
+                sfx.playClick();
+                if (onChangeViewMode) onChangeViewMode("assistant");
+                else onToggleViewMode?.();
+              }
+            }}
+            className={`px-2 py-1 rounded-md flex items-center space-x-1.5 transition-all duration-200 text-xs ${
+              viewMode === "assistant"
+                ? "text-white font-semibold shadow-sm"
+                : "opacity-60 hover:opacity-100 text-slate-300"
+            }`}
+            style={viewMode === "assistant" ? { backgroundColor: theme.primary } : {}}
+            title="Assistant Mode (Voice & 3D Orb)"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Assistant</span>
+          </button>
+
+          <button
+            id="titlebar-mode-chat-btn"
+            type="button"
+            aria-label="Switch to Chat Mode with Graphs and Tables"
+            aria-pressed={viewMode === "chat"}
+            onClick={() => {
+              if (viewMode !== "chat") {
+                sfx.playClick();
+                if (onChangeViewMode) onChangeViewMode("chat");
+                else onToggleViewMode?.();
+              }
+            }}
+            className={`px-2 py-1 rounded-md flex items-center space-x-1.5 transition-all duration-200 text-xs ${
+              viewMode === "chat"
+                ? "text-white font-semibold shadow-sm"
+                : "opacity-60 hover:opacity-100 text-slate-300"
+            }`}
+            style={viewMode === "chat" ? { backgroundColor: theme.primary } : {}}
+            title="Chat Mode (ChatGPT Layout with Graphs & Tables)"
+          >
+            <MessageSquare className="w-3.5 h-3.5" />
+            <span>Chat</span>
+          </button>
+        </div>
 
         <button
           id="settings-page-toggle-btn"

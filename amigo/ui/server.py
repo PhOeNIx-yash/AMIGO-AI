@@ -101,6 +101,9 @@ from amigo.utils.tts import (
     set_tts_callbacks,
     get_tts_engine_name,
     transcribe_b64,
+    set_voice,
+    get_active_voice,
+    get_voice_catalog,
 )
 from amigo.services.weather import get_weather_data
 import amigo.core.rag_engine as rag_engine
@@ -261,6 +264,101 @@ def get_available_models():
         ]
 
 
+def format_conversational_speech(text: str) -> str:
+    """Transforms raw structured or multi-item output into warm, natural spoken assistant speech."""
+    if not text or len(text.strip()) < 35:
+        return text
+
+    spoken = text
+
+    # 1. Natural contractions to eliminate stiff, robotic phrasing
+    contractions = [
+        (r'\bI have\b', "I've"),
+        (r'\bIt is\b', "It's"),
+        (r'\bThat is\b', "That's"),
+        (r'\bHere is\b', "Here's"),
+        (r'\bThere is\b', "There's"),
+        (r'\bDo not\b', "Don't"),
+        (r'\bCannot\b', "Can't"),
+        (r'\bWill not\b', "Won't"),
+        (r'\bYou will\b', "You'll"),
+        (r'\bWe have\b', "We've"),
+    ]
+    for pat, rep in contractions:
+        spoken = re.sub(pat, rep, spoken, flags=re.IGNORECASE)
+
+    # 2. Markdown tables: summarize conversational takeaway rather than reciting table syntax
+    if '|' in spoken and ('|---' in spoken or spoken.count('|') >= 4):
+        table_raw = re.sub(r'\|\s*\|+', '|\n|', spoken)
+        lines = [l.strip() for l in table_raw.split('\n') if l.strip()]
+        title = ""
+        entities = []
+        for line in lines:
+            if not '|' in line:
+                clean_l = re.sub(r'#{1,6}\s*', '', line).strip()
+                if clean_l and not title:
+                    title = clean_l
+            else:
+                if re.search(r'[\-:]\s*\|', line):
+                    continue
+                cells = [c.strip() for c in line.split('|') if c.strip()]
+                if cells:
+                    first_cell = cells[0]
+                    if any(w in first_cell.lower() for w in ['airline', 'name', 'item', 'option', 'product', 'flight', 'col', 'header']):
+                        continue
+                    entities.append(first_cell)
+
+        if not title and lines and '|' in lines[0]:
+            pre = lines[0].split('|')[0].strip()
+            if pre:
+                title = pre
+
+        if title or entities:
+            clean_title = re.sub(r'\(.*?\)', '', title)
+            clean_title = re.sub(r'->', 'to', clean_title).strip()
+            clean_title = re.sub(r'##.*', '', clean_title).strip()
+            clean_title = re.sub(r':$', '', clean_title).strip()
+            if not clean_title:
+                clean_title = "details"
+
+            if entities:
+                ent_str = ", ".join(entities[:4])
+                return f"Here are the {clean_title.lower()} for {ent_str}. I've displayed the full comparison on your screen."
+            return f"Here are the {clean_title.lower()}. I've displayed the full breakdown on your screen."
+
+    # 3. Long numbered lists (3+ items): summarize titles rather than reciting long paragraphs
+    raw_items = re.findall(r'(?:^|\n|\s)\d+\.\s+["\'*]*([^"\'\n\–\-:]{3,40})["\'*]*\s*[\–\-:]', spoken)
+    clean_items = [it.strip().strip('"\'') for it in raw_items if it.strip()]
+    if len(clean_items) >= 3:
+        intro_match = re.match(r'^(.*?)(?=\s*\d+\.|\n\d+\.)', spoken, re.DOTALL)
+        intro = intro_match.group(1).strip() if intro_match else "Here are a few options"
+        intro = re.sub(r'[:.]+$', '', intro).strip()
+        items_str = ", ".join(clean_items[:-1]) + f", and {clean_items[-1]}"
+        return f"{intro}: {items_str}. Take a look at the cards on screen to see each one!"
+
+    return spoken
+
+
+def _normalize_llm_markdown(t: str) -> str:
+    """Restores collapsed newlines in LLM markdown tables, headers, and bullet points."""
+    if not t or ("|" not in t and " - " not in t and " #" not in t):
+        return t
+    t = t.replace("\r\n", "\n")
+    # Expand collapsed table rows: '| |' or '||' -> '|\n|'
+    t = re.sub(r'\|\s*\|+', '|\n|', t)
+    # If table header starts on the same line after intro text:
+    t = re.sub(r'^([^|\n]+?)\s*(\|\s*[^|\n]+\|)', r'\1\n\n\2', t, flags=re.MULTILINE)
+    # If a closing pipe is followed by markdown headers:
+    t = re.sub(r'(\|\s*)(#{1,6}\s+)', r'\1\n\n\2', t)
+    # If a closing pipe is followed by trailing non-pipe commentary:
+    t = re.sub(r'(\|)\s*([A-Za-z*#][^|\n]*)$', r'\1\n\n\2', t, flags=re.MULTILINE)
+    # Expand collapsed inline bullet points:
+    t = re.sub(r'([^\n])\s+-\s+([A-Za-z0-9*])', r'\1\n- \2', t)
+    # Expand collapsed inline numbered lists:
+    t = re.sub(r'([^\n])\s+(\d+\.)\s+([A-Za-z0-9*])', r'\1\n\2 \3', t)
+    return t
+
+
 # ---------------------------------------------------------------------------
 # Core Query Processor (Agentic)
 # ---------------------------------------------------------------------------
@@ -271,6 +369,7 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
 
     clipboard_used = bool(get_clipboard_text())
     llm_started = time.perf_counter()
+    logger.info("[Query Processing] request_id=%s query=%r", request_id or "unknown", query)
     actions = get_agent_action(query, conversation_history=history)
     logger.info(
         "[Timing] request_id=%s stage=llm duration_ms=%.1f",
@@ -335,20 +434,22 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
         raw_to_speak = res_spoken if res_spoken else spoken
         final_to_speak = (speak_prefix + raw_to_speak) if raw_to_speak else speak_prefix
         if final_to_speak:
-            speech_to_voice = final_to_speak
+            speech_to_voice = format_conversational_speech(final_to_speak)
             if "matching file" in speech_to_voice and "\n" in speech_to_voice:
                 m_count = _RE_FILE_MATCH_COUNT.search(speech_to_voice)
                 c_num = m_count.group(1) if m_count else "some"
                 speech_to_voice = f"I found {c_num} matching files. Choose one on your screen or say 'Open number 1'."
             if speech_to_voice not in combined_spoken:
                 speak(speech_to_voice, request_id=request_id)
-                combined_spoken.append(speech_to_voice)
+                combined_spoken.append(final_to_speak)
 
         if res_url:
             last_url = res_url
 
     primary_tool = "multi_command" if len(actions) > 1 else last_tool
     final_reply = "\n\n".join(combined_spoken).strip() if len(combined_spoken) > 1 else (combined_spoken[0] if combined_spoken else "")
+    if final_reply:
+        final_reply = _normalize_llm_markdown(final_reply)
     silent_tools = {"chat", "stop", "stop_speaking", "pause_media", "resume_media", "next_track", "prev_track", "blocked"}
     if not final_reply and primary_tool not in silent_tools:
         from amigo.core.llm_agent import get_quick_feedback
@@ -940,6 +1041,34 @@ def clear_memory():
     return jsonify({"success": True, "message": "Memory cleared"})
 
 
+def get_current_user_name() -> str:
+    """Retrieve user name dynamically from profile or system environment without hardcoding."""
+    try:
+        memory = load_memory()
+        name = (
+            memory.get("user_profile", {}).get("identity", {}).get("name")
+            or memory.get("identity", {}).get("name")
+        )
+        if name and str(name).strip():
+            return str(name).strip()
+    except Exception:
+        pass
+    try:
+        import getpass
+        uname = getpass.getuser()
+        if uname and uname.strip():
+            return uname.strip().capitalize()
+    except Exception:
+        pass
+    try:
+        uname = os.getenv("USERNAME") or os.getenv("USER")
+        if uname and uname.strip():
+            return uname.strip().capitalize()
+    except Exception:
+        pass
+    return ""
+
+
 @app.route("/api/settings", methods=["GET", "POST", "OPTIONS"])
 def handle_settings():
     """Read and persist assistant settings and user preferences."""
@@ -953,7 +1082,7 @@ def handle_settings():
             "isDark", "soundEnabled", "colorTheme", "visualizerMode",
             "textAnimationStyle", "pluginMode", "greetingText",
             "autoCycleGreetings", "autoCycleInterval", "backendConfig",
-            "theme", "autoSpeech", "model", "thinkingEnabled"
+            "theme", "autoSpeech", "model", "thinkingEnabled", "voice"
         ):
             if k in data:
                 ui_settings[k] = data[k]
@@ -964,24 +1093,42 @@ def handle_settings():
             set_thinking_enabled(bool(data["backendConfig"]["thinkingEnabled"]))
             ui_settings["thinkingEnabled"] = bool(data["backendConfig"]["thinkingEnabled"])
 
+        # Process voice update
+        target_voice = data.get("voice") or data.get("user_profile", {}).get("preferences", {}).get("voice") or data.get("ui_settings", {}).get("voice")
+        if target_voice and isinstance(target_voice, str):
+            v_name = set_voice(target_voice)
+            ui_settings["voice"] = target_voice.lower()
+            memory.setdefault("user_profile", {}).setdefault("preferences", {})["voice"] = target_voice.lower()
+            memory.setdefault("preferences", {})["voice"] = target_voice.lower()
+
         if "user_profile" in data and isinstance(data["user_profile"], dict):
             memory["user_profile"] = data["user_profile"]
+            if target_voice and isinstance(target_voice, str):
+                memory["user_profile"].setdefault("preferences", {})["voice"] = target_voice.lower()
         if "theme" in data:
             memory.setdefault("user_profile", {}).setdefault("preferences", {})["theme"] = data["theme"]
         if "model" in data:
             set_active_model(data["model"])
         save_memory(memory)
         broadcaster.broadcast("settings_updated", data)
-        return jsonify({"success": True, "message": "Settings saved to Amigo memory", "ui_settings": ui_settings})
+        return jsonify({"success": True, "message": "Settings saved to Amigo memory", "ui_settings": ui_settings, "active_voice": get_active_voice()})
 
     info = get_active_model_info()
+    curr_voice = get_active_voice()
+    ui_settings_resp = memory.get("ui_settings", {})
+    ui_settings_resp["voice"] = curr_voice
+    u_prof = memory.get("user_profile", {})
+    u_prof.setdefault("preferences", {})["voice"] = curr_voice
     return jsonify({
-        "ui_settings": memory.get("ui_settings", {}),
-        "user_profile": memory.get("user_profile", {}),
-        "model": info.get("key", "minicpm5-2b-claude"),
-        "model_name": info.get("name", "MiniCPM 5 2B Claude-Fable 5.1 Thinking Agentic"),
+        "ui_settings": ui_settings_resp,
+        "user_profile": u_prof,
+        "user_name": get_current_user_name(),
+        "voice": curr_voice,
+        "model": info.get("key", "qwen3.8-2b"),
+        "model_name": info.get("name", "Qwen 3.8 2B Distill"),
         "thinking_enabled": is_thinking_enabled(),
         "available_models": get_available_models(),
+        "available_voices": get_voice_catalog(),
     })
 
 
@@ -1002,12 +1149,43 @@ def handle_user_profile():
             user_prof.setdefault("identity", {})["name"] = data["name"]
         if "role" in data:
             user_prof.setdefault("identity", {})["role"] = data["role"]
-        if "preferences" in data:
+        if "preferences" in data and isinstance(data["preferences"], dict):
             user_prof.setdefault("preferences", {}).update(data["preferences"])
+            if "voice" in data["preferences"]:
+                v_target = data["preferences"]["voice"]
+                if v_target and isinstance(v_target, str):
+                    set_voice(v_target)
+                    memory.setdefault("ui_settings", {})["voice"] = v_target.lower()
+                    memory.setdefault("preferences", {})["voice"] = v_target.lower()
         save_memory(memory)
         return jsonify({"success": True, "user_profile": memory.get("user_profile", {})})
 
     return jsonify(memory.get("user_profile", {}))
+
+
+@app.route("/api/voices", methods=["GET", "POST", "OPTIONS"])
+def manage_voices():
+    """Get active/available voices or switch the active voice dynamically."""
+    if request.method == "OPTIONS":
+        return jsonify({"status": "ok"})
+    if request.method == "POST":
+        data = request.get_json() or {}
+        v_key = data.get("voice") or data.get("id") or data.get("voice_id")
+        if v_key and isinstance(v_key, str):
+            v_name = set_voice(v_key)
+            memory = load_memory()
+            memory.setdefault("ui_settings", {})["voice"] = v_key.lower()
+            memory.setdefault("user_profile", {}).setdefault("preferences", {})["voice"] = v_key.lower()
+            memory.setdefault("preferences", {})["voice"] = v_key.lower()
+            save_memory(memory)
+            broadcaster.broadcast("voice_change", {"voice": v_key.lower(), "name": v_name})
+            return jsonify({"success": True, "active_voice": v_key.lower(), "name": v_name})
+        return jsonify({"error": "No voice specified"}), 400
+
+    return jsonify({
+        "active_voice": get_active_voice(),
+        "catalog": get_voice_catalog(),
+    })
 
 
 @app.route("/api/health", methods=["GET"])
@@ -1019,17 +1197,6 @@ def handle_health():
         "timestamp": time.time(),
     })
 
-
-@app.route("/api/speak", methods=["POST", "OPTIONS"])
-def handle_speak_endpoint():
-    if request.method == "OPTIONS":
-        return jsonify({"status": "ok"})
-    data = request.get_json() or {}
-    text = data.get("text", "").strip()
-    voice = data.get("voice")
-    if text:
-        speak(text, voice=voice)
-    return jsonify({"success": True})
 
 
 @app.route("/api/shutdown", methods=["POST"])

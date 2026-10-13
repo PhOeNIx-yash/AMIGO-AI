@@ -12,6 +12,7 @@ import {
   BackendConfig,
   ActionCardItem,
   AttachmentItem,
+  ViewMode,
 } from "./types";
 import { CanvasVisualizer } from "./components/CanvasVisualizer";
 import { TitleBar } from "./components/TitleBar";
@@ -22,6 +23,7 @@ import { HistoryPanel } from "./components/HistoryPanel";
 import { BackendSettingsModal } from "./components/BackendSettingsModal";
 import { SettingsPage } from "./components/SettingsPage";
 import { GeneratedContentPanel } from "./components/GeneratedContentPanel";
+import { ChatWorkspace } from "./components/ChatWorkspace";
 import { KineticHeading, KineticStateBadge, TextAnimationStyle, normalizeAnimationStyle } from "./components/KineticText";
 import { IntentBridgeHUD, isActionIntent } from "./components/IntentBridgeHUD";
 import { COLOR_THEMES, GREETING_PRESETS } from "./data/presets";
@@ -350,6 +352,44 @@ export default function App() {
   const [showHistory, setShowHistory] = useState<boolean>(false);
   const [showSettings, setShowSettings] = useState<boolean>(false);
   const [showBackendModal, setShowBackendModal] = useState<boolean>(false);
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("amigo_view_mode");
+      if (saved === "chat" || saved === "assistant") return saved as ViewMode;
+    }
+    return "assistant";
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("amigo_view_mode", viewMode);
+    } catch (e) {}
+  }, [viewMode]);
+
+  const handleSwitchViewMode = useCallback((newMode: ViewMode) => {
+    setViewMode(newMode);
+    if (newMode === "assistant") {
+      // 1. Immediately cancel any speech synthesis / TTS playback
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
+      // 2. Clear long chat response so the voice HUD returns to the clean 3D Orb and greeting
+      setDisplayText("");
+      setActivePrompt("");
+      setState("idle");
+      setLiveTranscript("");
+      setHudActive(false);
+      setHudDismissed(true);
+    }
+  }, []);
+
+  const [userName, setUserName] = useState<string>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("amigo_user_name");
+      if (saved) return saved;
+    }
+    return "";
+  });
 
   // Greeting configuration
   const [greetingText, setGreetingText] = useState<string>(() => {
@@ -626,6 +666,11 @@ export default function App() {
         if (typeof ui.thinkingEnabled === "boolean") {
           setBackendConfig((prev) => ({ ...prev, thinkingEnabled: ui.thinkingEnabled }));
         }
+      }
+      const name = data?.user_name || data?.user_profile?.identity?.name;
+      if (name && typeof name === "string") {
+        setUserName(name);
+        try { localStorage.setItem("amigo_user_name", name); } catch (e) {}
       }
     } catch (e) {}
   };
@@ -1256,6 +1301,9 @@ export default function App() {
               onToggleSettings={() => setShowSettings(!showSettings)}
               onOpenBackendSettings={() => setShowBackendModal(true)}
               isBackendCustom={isBackendCustom}
+              viewMode={viewMode}
+              onToggleViewMode={() => handleSwitchViewMode(viewMode === "chat" ? "assistant" : "chat")}
+              onChangeViewMode={handleSwitchViewMode}
             />
 
             {/* Primary Workspace Area with Visualizer, Dynamic Content & History Sidebar */}
@@ -1314,264 +1362,299 @@ export default function App() {
                 colorTheme={colorTheme}
               />
 
-              {/* State-driven Thinking Orb & Central Display layer */}
-              {(() => {
-                const isCompact = state === "action_card" || state === "contact_picker";
-                return (
-                  <div className="relative flex-1 w-full min-h-0 flex flex-col items-center justify-center overflow-hidden">
-                    {/* Central Display Area with Orb above & Spoken / Greeting text cleanly below */}
-                    <div
-                      id="central-display-area"
-                      className="relative z-20 flex-1 min-h-0 w-full max-w-4xl flex flex-col items-center justify-center px-4 py-4 sm:py-6 overflow-y-auto smooth-scroll-container bg-transparent transition-opacity duration-200"
-                    >
-                      <div className="w-full flex flex-col items-center justify-center my-auto transition-opacity duration-200 max-w-2xl">
-                        {/* 3D Orb Avatar (Positioned above text, never covered) */}
-                        <div
-                          className={`relative flex items-center justify-center transition-all duration-500 ease-out ${
-                            isCompact ? "h-0 opacity-0 overflow-hidden mb-0" : "h-[15rem] sm:h-[16rem] shrink-0 mb-3 sm:mb-4"
-                          }`}
-                        >
-                          <CanvasVisualizer
-                            mode={visualizerMode}
-                            state={state}
-                            colorTheme={colorTheme}
-                            isDark={isDark}
-                            compact={isCompact}
-                            isPaused={showSettings || showBackendModal}
-                            thinkingOrbStyle={thinkingOrbStyle}
-                          />
-                        </div>
-
-                        {/* State Pill Badge (Only for listening or interactive pickers) */}
-                        {(state === "listening" || isListening) && (
-                          <div className="mb-2 sm:mb-3">
-                            <KineticStateBadge
-                              stateText={liveTranscript ? "Live Transcribing" : "Listening to voice"}
-                              colorTheme={colorTheme}
-                              isDark={isDark}
-                              pulse={true}
-                            />
-                          </div>
-                        )}
-
-                  {/* Dedicated Action Card Spoken Context */}
-                  {state === "action_card" && displayText && displayText !== greetingText && (
-                    <motion.div
-                      initial={{ opacity: 0, y: -6 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -6 }}
-                      transition={{ duration: 0.2 }}
-                      className="text-center px-4 max-w-xl mx-auto mb-3 pointer-events-auto"
-                    >
-                      <p className="text-base sm:text-lg md:text-xl font-medium tracking-tight leading-snug drop-shadow-[0_2px_12px_rgba(0,0,0,0.8)] text-slate-100">
-                        {displayText}
-                      </p>
-                    </motion.div>
-                  )}
-
-                  {/* Main Central Spoken / Heading Text (for idle, listening, processing, working, completed) */}
-                  {!isCompact && (
-                    <div className="w-full max-w-2xl sm:max-w-3xl md:max-w-4xl mx-auto px-4 drop-shadow-[0_4px_24px_rgba(0,0,0,0.85)] pointer-events-auto">
-                      {(state === "listening" || isListening) && liveTranscript ? (
-                        <div className="flex min-w-0 w-full flex-col items-center px-2 text-center">
-                          <p className="w-full min-w-0 max-w-2xl break-words text-center text-xl font-semibold leading-snug text-slate-100 sm:text-2xl md:text-3xl">
-                            {liveTranscript}
-                          </p>
-                        </div>
-                      ) : (state === "listening" || isListening) ? (
-                        <div className="flex flex-col items-center space-y-1 text-center">
-                          <KineticHeading
-                            text="Listening... speak now"
-                            isDark={isDark}
-                            colorTheme={colorTheme}
-                            animationStyle={textAnimationStyle}
-                            className="text-xl sm:text-2xl md:text-3xl font-medium tracking-tight leading-snug"
-                          />
-                          <p className="text-xs sm:text-sm opacity-60">
-                            Your voice will transcribe seamlessly in real time
-                          </p>
-                        </div>
-                      ) : (() => {
-                        const isGreeting = GREETING_PRESETS.some((g) => g.text.toLowerCase() === (displayText || "").toLowerCase()) || !displayText;
-
-                        return (
-                          <div className="text-center w-full max-w-2xl mx-auto px-2">
-                            <div
-                              className={`group relative inline-flex flex-col items-center select-none max-h-[46vh] overflow-y-auto no-scrollbar px-2 ${
-                                state === "idle" ? "cursor-pointer" : ""
-                              }`}
-                              onClick={state === "idle" ? handleShuffleGreeting : undefined}
-                              title={state === "idle" ? "Click to cycle greeting phrase" : undefined}
-                            >
-                              <KineticHeading
-                                text={
-                                  state === "processing" || state === "working"
-                                    ? (activePrompt || "Thinking...")
-                                    : (displayText || greetingText)
-                                }
-                                isDark={isDark}
-                                colorTheme={colorTheme}
-                                animationStyle={textAnimationStyle}
-                                className={`${
-                                  (() => {
-                                    const raw = displayText || "";
-                                    const len = raw.length;
-                                    const words = raw.trim().split(/\s+/).filter(Boolean).length;
-                                    if (words > 22 || len > 90) {
-                                      return "text-sm sm:text-base md:text-lg leading-relaxed font-normal";
-                                    }
-                                    if (words > 8 || len > 36) {
-                                      return "text-base sm:text-lg md:text-xl leading-relaxed font-medium";
-                                    }
-                                    return "text-xl sm:text-2xl md:text-3xl font-medium tracking-tight leading-snug";
-                                  })()
-                                } group-hover:opacity-90 transition-opacity`}
-                              />
-                              {state === "idle" && (
-                                <span className="opacity-0 group-hover:opacity-60 transition-opacity text-[10px] mt-1.5 flex items-center space-x-1 font-medium tracking-wide">
-                                  <Shuffle className="w-2.5 h-2.5" />
-                                  <span>Click to shuffle greeting</span>
-                                </span>
-                              )}
-                            </div>
-
-                            {/* Clean, seamless action toolbar without any background box */}
-                            {displayText && !isGreeting && state === "completed" && (
-                              <div className="flex items-center justify-center gap-2 mt-2 opacity-60 hover:opacity-100 transition-opacity">
-                                <button
-                                  type="button"
-                                  onClick={() => handleCopyResponse(displayText)}
-                                  className="p-1 rounded text-slate-400 hover:text-slate-100 transition-colors"
-                                  title="Copy text"
-                                >
-                                  {copiedResponse ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => speakText(displayText)}
-                                  className="p-1 rounded text-slate-400 hover:text-slate-100 transition-colors"
-                                  title="Listen"
-                                >
-                                  <Volume2 className="w-3.5 h-3.5" />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={handleDismissResponse}
-                                  className="p-1 rounded text-slate-400 hover:text-slate-100 transition-colors"
-                                  title="Dismiss"
-                                >
-                                  <X className="w-3.5 h-3.5" />
-                                </button>
+              {/* View Switcher: Assistant Mode (3D Orb & Voice) vs Chat Mode (ChatGPT Layout with Graphs & Tables) */}
+              <AnimatePresence mode="wait">
+                {viewMode === "assistant" ? (
+                  <motion.div
+                    key="assistant-view"
+                    initial={{ opacity: 0, scale: 0.98, filter: "blur(4px)" }}
+                    animate={{ opacity: 1, scale: 1, filter: "blur(0px)" }}
+                    exit={{ opacity: 0, scale: 0.98, filter: "blur(4px)" }}
+                    transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+                    className="relative flex-1 w-full min-h-0 flex flex-col justify-between items-center overflow-hidden"
+                  >
+                    {/* State-driven Thinking Orb & Central Display layer */}
+                    {(() => {
+                      const isCompact = state === "action_card" || state === "contact_picker";
+                      return (
+                        <div className="relative flex-1 w-full min-h-0 flex flex-col items-center justify-center overflow-hidden">
+                          {/* Central Display Area with Orb above & Spoken / Greeting text cleanly below */}
+                          <div
+                            id="central-display-area"
+                            className="relative z-20 flex-1 min-h-0 w-full max-w-4xl flex flex-col items-center justify-center px-4 py-4 sm:py-6 overflow-y-auto smooth-scroll-container bg-transparent transition-opacity duration-200"
+                          >
+                            <div className="w-full flex flex-col items-center justify-center my-auto transition-opacity duration-200 max-w-2xl">
+                              {/* 3D Orb Avatar (Positioned above text, never covered) */}
+                              <div
+                                className={`relative flex items-center justify-center transition-all duration-500 ease-out ${
+                                  isCompact ? "h-0 opacity-0 overflow-hidden mb-0" : "h-[15rem] sm:h-[16rem] shrink-0 mb-3 sm:mb-4"
+                                }`}
+                              >
+                                <CanvasVisualizer
+                                  mode={visualizerMode}
+                                  state={state}
+                                  colorTheme={colorTheme}
+                                  isDark={isDark}
+                                  compact={isCompact}
+                                  isPaused={showSettings || showBackendModal}
+                                  thinkingOrbStyle={thinkingOrbStyle}
+                                />
                               </div>
-                            )}
+
+                              {/* State Pill Badge (Only for listening or interactive pickers) */}
+                              {(state === "listening" || isListening) && (
+                                <div className="mb-2 sm:mb-3">
+                                  <KineticStateBadge
+                                    stateText={liveTranscript ? "Live Transcribing" : "Listening to voice"}
+                                    colorTheme={colorTheme}
+                                    isDark={isDark}
+                                    pulse={true}
+                                  />
+                                </div>
+                              )}
+
+                              {/* Dedicated Action Card Spoken Context */}
+                              {state === "action_card" && displayText && displayText !== greetingText && (
+                                <motion.div
+                                  initial={{ opacity: 0, y: -6 }}
+                                  animate={{ opacity: 1, y: 0 }}
+                                  exit={{ opacity: 0, y: -6 }}
+                                  transition={{ duration: 0.2 }}
+                                  className="text-center px-4 max-w-xl mx-auto mb-3 pointer-events-auto"
+                                >
+                                  <p className="text-base sm:text-lg md:text-xl font-medium tracking-tight leading-snug drop-shadow-[0_2px_12px_rgba(0,0,0,0.8)] text-slate-100">
+                                    {displayText}
+                                  </p>
+                                </motion.div>
+                              )}
+
+                              {/* Main Central Spoken / Heading Text (for idle, listening, processing, working, completed) */}
+                              {!isCompact && (
+                                <div className="w-full max-w-2xl sm:max-w-3xl md:max-w-4xl mx-auto px-4 drop-shadow-[0_4px_24px_rgba(0,0,0,0.85)] pointer-events-auto">
+                                  {(state === "listening" || isListening) && liveTranscript ? (
+                                    <div className="flex min-w-0 w-full flex-col items-center px-2 text-center">
+                                      <p className="w-full min-w-0 max-w-2xl break-words text-center text-xl font-semibold leading-snug text-slate-100 sm:text-2xl md:text-3xl">
+                                        {liveTranscript}
+                                      </p>
+                                    </div>
+                                  ) : (state === "listening" || isListening) ? (
+                                    <div className="flex flex-col items-center space-y-1 text-center">
+                                      <KineticHeading
+                                        text="Listening... speak now"
+                                        isDark={isDark}
+                                        colorTheme={colorTheme}
+                                        animationStyle={textAnimationStyle}
+                                        className="text-xl sm:text-2xl md:text-3xl font-medium tracking-tight leading-snug"
+                                      />
+                                      <p className="text-xs sm:text-sm opacity-60">
+                                        Your voice will transcribe seamlessly in real time
+                                      </p>
+                                    </div>
+                                  ) : (() => {
+                                    const isGreeting = GREETING_PRESETS.some((g) => g.text.toLowerCase() === (displayText || "").toLowerCase()) || !displayText;
+
+                                    return (
+                                      <div className="text-center w-full max-w-2xl mx-auto px-2">
+                                        <div
+                                          className={`group relative inline-flex flex-col items-center select-none max-h-[46vh] overflow-y-auto no-scrollbar px-2 ${
+                                            state === "idle" ? "cursor-pointer" : ""
+                                          }`}
+                                          onClick={state === "idle" ? handleShuffleGreeting : undefined}
+                                          title={state === "idle" ? "Click to cycle greeting phrase" : undefined}
+                                        >
+                                          <KineticHeading
+                                            text={
+                                              state === "processing" || state === "working"
+                                                ? (activePrompt || "Thinking...")
+                                                : (displayText || greetingText)
+                                            }
+                                            isDark={isDark}
+                                            colorTheme={colorTheme}
+                                            animationStyle={textAnimationStyle}
+                                            className={`${
+                                              (() => {
+                                                const raw = displayText || "";
+                                                const len = raw.length;
+                                                const words = raw.trim().split(/\s+/).filter(Boolean).length;
+                                                if (words > 22 || len > 90) {
+                                                  return "text-sm sm:text-base md:text-lg leading-relaxed font-normal";
+                                                }
+                                                if (words > 8 || len > 36) {
+                                                  return "text-base sm:text-lg md:text-xl leading-relaxed font-medium";
+                                                }
+                                                return "text-xl sm:text-2xl md:text-3xl font-medium tracking-tight leading-snug";
+                                              })()
+                                            } group-hover:opacity-90 transition-opacity`}
+                                          />
+                                          {state === "idle" && (
+                                            <span className="opacity-0 group-hover:opacity-60 transition-opacity text-[10px] mt-1.5 flex items-center space-x-1 font-medium tracking-wide">
+                                              <Shuffle className="w-2.5 h-2.5" />
+                                              <span>Click to shuffle greeting</span>
+                                            </span>
+                                          )}
+                                        </div>
+
+                                        {/* Clean, seamless action toolbar without any background box */}
+                                        {displayText && !isGreeting && state === "completed" && (
+                                          <div className="flex items-center justify-center gap-2 mt-2 opacity-60 hover:opacity-100 transition-opacity">
+                                            <button
+                                              type="button"
+                                              onClick={() => handleCopyResponse(displayText)}
+                                              className="p-1 rounded text-slate-400 hover:text-slate-100 transition-colors"
+                                              title="Copy text"
+                                            >
+                                              {copiedResponse ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onClick={() => speakText(displayText)}
+                                              className="p-1 rounded text-slate-400 hover:text-slate-100 transition-colors"
+                                              title="Listen"
+                                            >
+                                              <Volume2 className="w-3.5 h-3.5" />
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onClick={handleDismissResponse}
+                                              className="p-1 rounded text-slate-400 hover:text-slate-100 transition-colors"
+                                              title="Dismiss"
+                                            >
+                                              <X className="w-3.5 h-3.5" />
+                                            </button>
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })()}
+                                </div>
+                              )}
+
+                              {/* Interactive State Cards Section */}
+                              <div className="w-full flex items-center justify-center">
+                                <AnimatePresence mode="wait">
+                                  {/* 1. Action Card Confirmation (if user action requires checkboxes) */}
+                                  {state === "action_card" && assistantData && (
+                                    <ActionCard
+                                      key="action-card"
+                                      items={assistantData.actionCards}
+                                      onToggleItem={handleToggleActionItem}
+                                      onExecuteSingleItem={handleExecuteSingleAction}
+                                      onConfirm={handleConfirmActions}
+                                      onRetry={() => handleReRunHistoryCommand(activePrompt)}
+                                      onCancel={handleReset}
+                                      isDark={isDark}
+                                      colorTheme={colorTheme}
+                                    />
+                                  )}
+
+                                  {/* 2. Contact / Match Disambiguation Picker */}
+                                  {state === "contact_picker" && assistantData && (
+                                    <ContactPicker
+                                      key="contact-picker"
+                                      question={assistantData.disambiguationQuestion}
+                                      contacts={assistantData.contactMatches || []}
+                                      onSelectContact={handleSelectContact}
+                                      isDark={isDark}
+                                      colorTheme={colorTheme}
+                                    />
+                                  )}
+
+                                  {/* 4. Generated Content Panel (for reviewing generated content before inserting) */}
+                                  {state === "generated_content" && generatedContent && (
+                                    <GeneratedContentPanel
+                                      key="generated-content-panel"
+                                      content={generatedContent.content}
+                                      contentType={generatedContent.contentType}
+                                      topic={generatedContent.topic}
+                                      onInsert={handleGeneratedContentInsert}
+                                      onCopy={handleGeneratedContentCopy}
+                                      onRegenerate={handleGeneratedContentRegenerate}
+                                      onSave={handleGeneratedContentSave}
+                                      onClose={handleGeneratedContentClose}
+                                      isDark={isDark}
+                                      colorTheme={colorTheme}
+                                    />
+                                  )}
+                                </AnimatePresence>
+                              </div>
+                            </div>
                           </div>
-                        );
-                      })()}
-                    </div>
-                  )}
 
-                  {/* Interactive State Cards Section */}
-                  <div className="w-full flex items-center justify-center">
-                    <AnimatePresence mode="wait">
-                      {/* 1. Action Card Confirmation (if user action requires checkboxes) */}
-                      {state === "action_card" && assistantData && (
-                        <ActionCard
-                          key="action-card"
-                          items={assistantData.actionCards}
-                          onToggleItem={handleToggleActionItem}
-                          onExecuteSingleItem={handleExecuteSingleAction}
-                          onConfirm={handleConfirmActions}
-                          onRetry={() => handleReRunHistoryCommand(activePrompt)}
-                          onCancel={handleReset}
-                          isDark={isDark}
-                          colorTheme={colorTheme}
-                        />
-                      )}
+                          {/* Docked Dynamic Action Capsule below 3D Visualizer Orb */}
+                          <div className="absolute bottom-3 sm:bottom-4 inset-x-0 z-20 flex justify-center pointer-events-none">
+                            <AnimatePresence mode="wait">
+                              {state !== "action_card" &&
+                                state !== "contact_picker" &&
+                                hudActive &&
+                                !hudDismissed && (
+                                <IntentBridgeHUD
+                                  key="intent-bridge-hud"
+                                  prompt={activePrompt}
+                                  isDark={isDark}
+                                  colorTheme={colorTheme}
+                                  intent={liveIntent || assistantData?.intent}
+                                  params={liveParams || assistantData?.params || assistantData?.metadata?.params}
+                                  historyCount={history.length}
+                                  isCompleted={state === "completed" || (!loading && Boolean(assistantData))}
+                                  status={assistantData?.executionSummary?.status}
+                                  onDismiss={() => {
+                                    setHudDismissed(true);
+                                    setHudActive(false);
+                                  }}
+                                  statusText={
+                                    state === "completed"
+                                      ? (assistantData?.executionSummary?.headline || "Completed")
+                                      : state === "working"
+                                      ? "Executing Action..."
+                                      : undefined
+                                  }
+                                />
+                              )}
+                            </AnimatePresence>
+                          </div>
+                        </div>
+                      );
+                    })()}
 
-                      {/* 2. Contact / Match Disambiguation Picker */}
-                      {state === "contact_picker" && assistantData && (
-                        <ContactPicker
-                          key="contact-picker"
-                          question={assistantData.disambiguationQuestion}
-                          contacts={assistantData.contactMatches || []}
-                          onSelectContact={handleSelectContact}
-                          isDark={isDark}
-                          colorTheme={colorTheme}
-                        />
-                      )}
-
-                      {/* 4. Generated Content Panel (for reviewing generated content before inserting) */}
-                      {state === "generated_content" && generatedContent && (
-                        <GeneratedContentPanel
-                          key="generated-content-panel"
-                          content={generatedContent.content}
-                          contentType={generatedContent.contentType}
-                          topic={generatedContent.topic}
-                          onInsert={handleGeneratedContentInsert}
-                          onCopy={handleGeneratedContentCopy}
-                          onRegenerate={handleGeneratedContentRegenerate}
-                          onSave={handleGeneratedContentSave}
-                          onClose={handleGeneratedContentClose}
-                          isDark={isDark}
-                          colorTheme={colorTheme}
-                        />
-                      )}
-
-                      {/* Interactive Selection Panels (when visualizer is compact) */}
-                    </AnimatePresence>
-                  </div>
-                </div>
-              </div>
-
-              {/* Docked Dynamic Action Capsule below 3D Visualizer Orb (Zero Overlap & Zero Layout Shift) */}
-              <div className="absolute bottom-3 sm:bottom-4 inset-x-0 z-20 flex justify-center pointer-events-none">
-                <AnimatePresence mode="wait">
-                  {state !== "action_card" &&
-                    state !== "contact_picker" &&
-                    hudActive &&
-                    !hudDismissed && (
-                    <IntentBridgeHUD
-                      key="intent-bridge-hud"
-                      prompt={activePrompt}
+                    {/* Bottom Interactive Voice & Text Bar with Chips */}
+                    <VoiceControls
+                      onProcessCommand={handleProcessCommand}
+                      isListening={isListening}
+                      onSetListening={handleSetListening}
+                      onTranscriptChange={setLiveTranscript}
                       isDark={isDark}
                       colorTheme={colorTheme}
-                      intent={liveIntent || assistantData?.intent}
-                      params={liveParams || assistantData?.params || assistantData?.metadata?.params}
-                      historyCount={history.length}
-                      isCompleted={state === "completed" || (!loading && Boolean(assistantData))}
-                      status={assistantData?.executionSummary?.status}
-                      onDismiss={() => {
-                        setHudDismissed(true);
-                        setHudActive(false);
-                      }}
-                      statusText={
-                        state === "completed"
-                          ? (assistantData?.executionSummary?.headline || "Completed")
-                          : state === "working"
-                          ? "Executing Action..."
-                          : undefined
-                      }
+                      isLoading={loading || state === "working" || state === "processing"}
+                      loadingText={state === "working" ? "Working on task..." : "Searching..."}
+                      disabled={loading || state === "working"}
+                      backendConfig={backendConfig}
                     />
-                  )}
-                </AnimatePresence>
-              </div>
-            </div>
-                );
-              })()}
-
-              {/* Bottom Interactive Voice & Text Bar with Chips */}
-              <VoiceControls
-                onProcessCommand={handleProcessCommand}
-                isListening={isListening}
-                onSetListening={handleSetListening}
-                onTranscriptChange={setLiveTranscript}
-                isDark={isDark}
-                colorTheme={colorTheme}
-                isLoading={loading || state === "working" || state === "processing"}
-                loadingText={state === "working" ? "Working on task..." : "Searching..."}
-                disabled={loading || state === "working"}
-                backendConfig={backendConfig}
-              />
+                  </motion.div>
+                ) : (
+                  <motion.div
+                    key="chat-view"
+                    initial={{ opacity: 0, y: 16, filter: "blur(4px)" }}
+                    animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+                    exit={{ opacity: 0, y: -16, filter: "blur(4px)" }}
+                    transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+                    className={`relative flex-1 w-full min-h-0 flex flex-col overflow-hidden text-slate-100 ${
+                      isDark ? "bg-[#212121]" : "bg-white"
+                    }`}
+                  >
+                    <ChatWorkspace
+                      history={history}
+                      onProcessCommand={handleProcessCommand}
+                      onClearHistory={handleClearHistory}
+                      isLoading={loading || state === "working" || state === "processing"}
+                      isDark={isDark}
+                      colorTheme={colorTheme}
+                      backendConfig={backendConfig}
+                      onSwitchToAssistant={() => handleSwitchViewMode("assistant")}
+                      userName={userName}
+                    />
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </main>
           </motion.div>
         )}

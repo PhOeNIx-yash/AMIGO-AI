@@ -77,76 +77,75 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
     [isDark]
   );
 
-  const structuredItems = useMemo(() => {
-    if (!text) return [];
+  const { tableData, listItems } = useMemo(() => {
+    if (!text) return { tableData: null, listItems: [] as string[] };
 
     let processed = text;
 
-    // 1. Markdown table parsing
+    // 1. Check for markdown data tables
     if (processed.includes("|")) {
-      // Split inline row boundaries (| | or ||) to newlines
-      processed = processed.replace(/\|\s*\|+/g, "|\n|");
-      // Remove separator rows (|---|---| or |:---|:---:|)
-      processed = processed.replace(/(?:^|\n)\s*\|?[\s\-:|]{3,}\|[\s\-:|]*(?=\n|$)/g, "");
+      const inlineRows = processed
+        .replace(/\|\s*\|+/g, "|\n|")
+        .replace(/(?:^|\n)\s*\|?[\s\-:|]{3,}\|[\s\-:|]*(?=\n|$)/g, "");
 
-      const rawLines = processed.split(/\n+/).map((l) => l.trim()).filter(Boolean);
-      let headers: string[] = [];
-      const parsedRows: string[] = [];
+      const rawLines = inlineRows.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+      let foundHeaders: string[] = [];
+      const foundRows: string[][] = [];
+      let foundTitle = "";
 
       for (const line of rawLines) {
         if (line.includes("|")) {
           const pipePos = line.indexOf("|");
-          const prefix = line.slice(0, pipePos).trim();
+          const pre = line.slice(0, pipePos).trim();
           const tablePart = line.slice(pipePos);
 
-          if (prefix) {
-            // If prefix has ##, split it cleanly into standalone header lines
-            prefix.split(/#{1,6}\s*/).forEach((p) => {
-              if (p.trim()) parsedRows.push(p.trim());
-            });
+          if (pre && !foundTitle) {
+            foundTitle = pre.replace(/#{1,6}\s*/g, "").trim();
           }
 
           const cells = tablePart.split("|").map((c) => c.trim()).filter(Boolean);
           if (cells.length === 0) continue;
 
-          if (headers.length === 0) {
-            headers = cells;
+          if (foundHeaders.length === 0) {
+            foundHeaders = cells;
           } else {
-            const subject = cells[0];
-            const details: string[] = [];
-            for (let i = 1; i < cells.length; i++) {
-              const colName = headers[i] || "";
-              if (colName && !colName.toLowerCase().startsWith("col")) {
-                details.push(`${colName}: ${cells[i]}`);
-              } else {
-                details.push(cells[i]);
-              }
-            }
-            const detStr = details.join(" · ");
-            parsedRows.push(detStr ? `• ${subject} — ${detStr}` : `• ${subject}`);
+            foundRows.push(cells);
           }
-        } else {
-          parsedRows.push(line);
         }
       }
-      processed = parsedRows.join("\n");
+
+      if (foundHeaders.length >= 2 && foundRows.length >= 1) {
+        return {
+          tableData: {
+            title: foundTitle,
+            headers: foundHeaders,
+            rows: foundRows,
+          },
+          listItems: [],
+        };
+      }
     }
 
-    // Normalize inline dashes or bullet items into separate structured rows
-    const normalized = processed
-      .replace(/(?<=[.:?!])\s+[-•*]\s+/g, "\n• ")
-      .replace(/\s+[-•*]\s+(?=[A-Z])/g, "\n• ")
-      .replace(/(?<=[.!?])\s+(?=Or\b|So\b|Let me know\b|What would you\b|Which one\b|Feel free\b)/g, "\n\n");
+    // 2. Check for multi-item lists (numbered or bullet points), expanding ## and inline lists
+    const cleaned = processed
+      .replace(/\s*##+\s*/g, "\n")
+      .replace(/^[#]+\s*/gm, "")
+      .replace(/(?<=[.:?!])\s+(\d+\.\s+)/g, "\n$1");
 
-    const lines = normalized
+    const lines = cleaned
       .split(/\n+/)
       .map((l) => l.trim())
       .filter(Boolean);
 
-    return lines;
+    const bulletCount = lines.filter((l) => /^[•\-*]\s+|\b^\d+\.\s+/.test(l)).length;
+    if (bulletCount >= 2 || lines.length >= 3) {
+      return { tableData: null, listItems: lines };
+    }
+
+    return { tableData: null, listItems: [] };
   }, [text]);
 
-  if (structuredItems.length > 1) {
+  if (tableData) {
     return (
       <AnimatePresence mode="wait">
         <motion.div
@@ -154,54 +153,107 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, transition: { duration: 0.15 } }}
-          className="flex flex-col items-center w-full max-w-xl mx-auto space-y-2 text-slate-100 select-none py-1"
+          className="w-full max-w-2xl mx-auto my-1 rounded-2xl bg-white/[0.04] border border-white/[0.08] backdrop-blur-md overflow-hidden shadow-2xl text-slate-100"
         >
-          {structuredItems.map((item, idx) => {
-            const isBullet = /^[•\-*]|\b^\d+\./.test(item);
-            const cleanItem = item.replace(/^[•\-*]\s*/, "");
+          {tableData.title && (
+            <div className="px-4 py-3 border-b border-white/[0.08] bg-white/[0.02]">
+              <h3 className="text-sm sm:text-base font-semibold text-slate-100 tracking-tight leading-snug">
+                {tableData.title}
+              </h3>
+            </div>
+          )}
+          <div className="overflow-x-auto max-h-[48vh] no-scrollbar">
+            <table className="w-full text-left text-xs sm:text-sm">
+              <thead className="bg-white/[0.04] border-b border-white/[0.06] text-slate-400 font-medium text-[11px] uppercase tracking-wider sticky top-0 backdrop-blur-md">
+                <tr>
+                  {tableData.headers.map((h, i) => (
+                    <th key={i} className="px-4 py-2.5 font-semibold text-slate-300">
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/[0.04]">
+                {tableData.rows.map((row, rIdx) => (
+                  <tr key={rIdx} className="hover:bg-white/[0.02] transition-colors">
+                    {row.map((cell, cIdx) => (
+                      <td
+                        key={cIdx}
+                        className={`px-4 py-2.5 whitespace-nowrap ${
+                          cIdx === 0 ? "font-medium text-slate-100" : "text-slate-300"
+                        }`}
+                      >
+                        {cell}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </motion.div>
+      </AnimatePresence>
+    );
+  }
+
+  if (listItems.length > 1) {
+    return (
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={`${text}-${activeStyle}`}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, transition: { duration: 0.15 } }}
+          className="flex flex-col w-full max-w-xl mx-auto space-y-2 text-slate-100 py-1"
+        >
+          {listItems.map((item, idx) => {
+            const cleanItem = item.replace(/##+/g, "").replace(/^#+\s*/, "").trim();
+            if (!cleanItem) return null;
+            const numMatch = cleanItem.match(/^(\d+)\.\s+/);
+            const isBullet = /^[•\-*]|\b^\d+\./.test(cleanItem);
 
             if (isBullet) {
-              const dashMatch = cleanItem.match(/^([^\-—:]{3,40})\s*([—\-:]\s*)([\s\S]+)$/);
+              const marker = numMatch ? `${numMatch[1]}.` : "—";
+              let content = cleanItem.replace(/^(\d+\.|[•\-*])\s*/, "");
+              content = content.replace(/\*\*([^*]+)\*\*/g, "$1");
+              const dashMatch = content.match(/^([^\-—:]{2,50})\s*([—\-:]\s*)([\s\S]+)$/);
               const title = dashMatch ? dashMatch[1].trim() : "";
-              const desc = dashMatch ? dashMatch[3].trim() : cleanItem;
+              const desc = dashMatch ? dashMatch[3].trim() : content;
 
               return (
-                <motion.div
+                <div
                   key={idx}
-                  initial={{ opacity: 0, x: -6 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: Math.min(0.25, idx * 0.04), duration: 0.3 }}
-                  className="flex items-start gap-2.5 w-full text-left px-3.5 py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.08] border border-white/[0.08] backdrop-blur-sm transition-all shadow-sm"
+                  className="flex items-baseline gap-2.5 w-full text-left px-1 leading-relaxed"
                 >
-                  <span className="w-1.5 h-1.5 rounded-full bg-violet-400 mt-2 shrink-0 shadow-[0_0_8px_rgba(167,139,250,0.6)]" />
+                  <span className="font-semibold text-xs text-indigo-400/90 select-none shrink-0 w-4 text-right">
+                    {marker}
+                  </span>
                   <div className="text-sm sm:text-base leading-relaxed">
                     {title ? (
                       <>
-                        <span className="font-semibold text-slate-100 mr-1.5">{title}</span>
+                        <span className="font-semibold text-slate-100 mr-1.5">{title}:</span>
                         <span className="text-slate-300 font-normal">{desc}</span>
                       </>
                     ) : (
-                      <span className="text-slate-200 font-normal">{cleanItem}</span>
+                      <span className="text-slate-200 font-normal">{content}</span>
                     )}
                   </div>
-                </motion.div>
+                </div>
               );
             }
 
+            const cleanParagraph = cleanItem.replace(/\*\*([^*]+)\*\*/g, "$1");
             return (
-              <motion.p
+              <p
                 key={idx}
-                initial={{ opacity: 0, y: 4 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: idx * 0.03, duration: 0.3 }}
-                className={`w-full text-center ${
+                className={`w-full ${
                   idx === 0
-                    ? "text-base sm:text-lg font-medium text-slate-100 tracking-tight leading-snug mb-1"
-                    : "text-xs sm:text-sm text-slate-300 font-normal mt-1 opacity-90"
+                    ? "text-base sm:text-lg font-medium text-slate-100 tracking-tight leading-snug mb-1 text-center"
+                    : "text-sm text-slate-300 font-normal text-left px-1"
                 }`}
               >
-                {item}
-              </motion.p>
+                {cleanParagraph}
+              </p>
             );
           })}
         </motion.div>
@@ -226,15 +278,16 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
       >
         {words.map((word, wordIdx) => {
           const delay = isLongText ? Math.min(0.2, wordIdx * 0.016) : wordIdx * 0.026;
-          const cleanWord = word.replace(/^[^\w]+|[^\w]+$/g, "").toLowerCase();
+          const displayWord = word.replace(/^\*+|\*+$/g, "").replace(/^#+/, "");
+          if (!displayWord) return null;
+          const cleanWord = displayWord.replace(/^[^\w]+|[^\w]+$/g, "").toLowerCase();
           const isHighlighted =
             (highlightWords.length > 0 &&
               highlightWords.some((hw) => {
                 const cleanHw = hw.trim().toLowerCase();
                 return cleanHw.length >= 2 && cleanWord === cleanHw;
               })) ||
-            word.startsWith("@") ||
-            word.startsWith("#");
+            displayWord.startsWith("@");
 
           let initialProps: any = { opacity: 0, y: 10 };
           let animateProps: any = { opacity: 1, y: 0 };
@@ -307,7 +360,7 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
                 wordBreak: "break-word",
               }}
             >
-              {word}
+              {displayWord}
             </motion.span>
           );
         })}

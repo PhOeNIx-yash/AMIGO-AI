@@ -201,6 +201,13 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
         user_profile: { preferences: { voice: voiceId } },
         voice: voiceId,
       });
+      try {
+        await fetch("/api/voices", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ voice: voiceId }),
+        });
+      } catch (_) {}
       if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
       setSavedBanner(true);
       savedTimerRef.current = setTimeout(() => setSavedBanner(false), 2000);

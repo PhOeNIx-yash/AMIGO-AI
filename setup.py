@@ -17,7 +17,7 @@ def main():
 
     print("=" * 60)
     print("   AMIGO VOICE ASSISTANT v1.3 — ONE-CLICK EASY SETUP")
-    print("   Agentic Voice Assistant powered by MiniCPM 5 2B")
+    print("   Agentic Voice Assistant powered by Qwen 3.8 2B Distill")
     print("=" * 60)
 
     # 1. Check Python & Git Environment
@@ -96,17 +96,17 @@ def main():
         print(f"    Sherpa-ONNX model check note: {e}")
 
 
-    # Local LLM GGUF Model Check (MiniCPM 5 2B Claude-Fable 5.1 Thinking Agentic — System 2)
+    # Local LLM GGUF Model Check (Qwen 3.8 2B Distill Q4_K_M — System 2)
     try:
-        from amigo.core import local_llm
-        model_info = local_llm.get_active_model_info()
-        print(f" -> Checking Agent LLM (System 2): {model_info['name']} (~{model_info.get('size_gb', 1.56)}GB)...")
-        model_path = local_llm.get_model_path()
+        from amigo.core.llm_agent import get_active_model_info, get_model_path, ensure_model_downloaded
+        model_info = get_active_model_info()
+        print(f" -> Checking Agent LLM (System 2): {model_info['name']} (~{model_info.get('size_gb', 1.31)}GB)...")
+        model_path = get_model_path()
         if os.path.exists(model_path):
             print(f"    {model_info['name']} is ready at {model_path}.")
         else:
             print(f" -> Downloading {model_info['name']} GGUF model...")
-            local_llm.ensure_model_downloaded()
+            ensure_model_downloaded()
         # Vision Configuration Check
         print(" -> Screen Vision: Configured with native Windows Media OCR engine (winocr).")
     except Exception as e:
@@ -116,7 +116,7 @@ def main():
     print("           AMIGO SETUP COMPLETED SUCCESSFULLY!")
     print("=" * 60)
     print("\nActive Engine Stack:")
-    print("  Agent Engine  — MiniCPM 5 2B Claude-Fable 5.1 : reasoning & agentic execution")
+    print("  Agent Engine  — Qwen 3.8 2B Distill Q4_K_M : reasoning & agentic execution")
     print("  Speech Engine — Supertonic-3  : 44.1kHz studio on-device neural speech synthesis")
     print("  Voice Input   — Sherpa-ONNX   : streaming neural speech recognition")
     print("\nHow to launch Amigo:")

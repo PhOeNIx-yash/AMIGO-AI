@@ -8,11 +8,11 @@ This document provides a comprehensive, transparent inventory of everything **Am
 
 | Area | Rating | Status Details |
 |---|:---:|---|
-| **Local AI Models** | 🟢 **Healthy** | `MiniCPM 5 2B Claude-Fable 5.1 Thinking Agentic` (1.56 GB GGUF), `Supertonic 3` (44.1kHz Studio TTS), and `Sherpa-ONNX` (Zipformer STT) are downloaded, present, and functional offline. |
+| **Local AI Models** | 🟢 **Healthy** | `Qwen 3.8 2B Distill Q4_K_M` (1.31 GB GGUF), `Supertonic 3` (44.1kHz Studio TTS), and `Sherpa-ONNX` (Zipformer STT) are downloaded, present, and functional offline. |
 | **Dependencies** | 🟢 **Healthy** | Core packages (`chromadb`, `sentence-transformers`, `CrossEncoder`, `rank_bm25`, `pdfplumber`, `winocr`, `psutil`) are installed and functional on Python 3.12. |
 | **Web Dashboard UI** | 🟢 **Healthy** | React + Vite frontend in `ui_app/dist` is compiled, including live audio visualizers, countdown timers, stopwatches, weather widgets, and settings. |
 | **OS Automation** | 🟢 **Healthy** | Audio volume, screen capture, app launching, brightness, keyboard shortcuts, window minimizing, and ms-settings URIs are fully operational. |
-| **Intent Routing** | 🟢 **Healthy** | Native `llm_agent.py` using MiniCPM 5 2B Claude-Fable 5.1 Thinking Agentic for reasoning, function calling, and structured tool dispatching. |
+| **Intent Routing** | 🟢 **Healthy** | Native `llm_agent.py` using Qwen 3.8 2B Distill Q4_K_M for reasoning, function calling, and structured tool dispatching. |
 | **Test Suite** | 🟢 **Cleaned** | Obsolete `laya_router` tests and invalid dependencies have been cleanly removed. |
 | **Email & Calendar** | 🟡 **Conditional** | Works via local Microsoft Outlook COM (`win32com`). Requires classic Outlook desktop installed; does not sync with Web Outlook/Gmail without Outlook running. |
 
@@ -25,7 +25,7 @@ Amigo exposes **38 distinct agent tools** partitioned across 10 functional domai
 ### 1. General Conversation & Knowledge
 | Tool Name | Parameters | Spoken/Voice Prompt Examples | What It Does |
 |---|---|---|---|
-| `chat` | `response` (str) | *"Tell me a joke"*, *"Explain quantum computing"*, *"How are you?"* | Generates conversational, reasoning, or explanatory responses via MiniCPM 5 2B. Supports deep reasoning mode. |
+| `chat` | `response` (str) | *"Tell me a joke"*, *"Explain quantum computing"*, *"How are you?"* | Generates conversational, reasoning, or explanatory responses via Qwen 3.8 2B Distill. Supports deep reasoning mode. |
 | `calculate` | `expression` (str) | *"What is 45 times 18?"*, *"Calculate square root of 144"*, *"50 * 2"* | Evaluates arithmetic and mathematical expressions instantly using `Calculatenumbers.py`. |
 | `get_time` | None | *"What time is it?"*, *"Tell me the current time"* | Returns local system time formatted naturally. |
 | `get_date` | None | *"What's today's date?"*, *"What day of the week is it?"* | Returns current day, date, month, and year. |
@@ -59,7 +59,7 @@ Amigo exposes **38 distinct agent tools** partitioned across 10 functional domai
 | Tool Name | Parameters | Spoken/Voice Prompt Examples | What It Does |
 |---|---|---|---|
 | `take_screenshot` | None | *"Take a screenshot"*, *"Capture the screen"* | Captures full desktop screen and saves it as `amigo_screenshot.png`. |
-| `screen_vision` / `read_screen` | `question` (opt) | *"What's on my screen?"*, *"Read the error message on my screen"*, *"What code is open?"* | Captures foreground window, runs native Windows Media OCR / pytesseract, and uses MiniCPM to answer questions about on-screen content. |
+| `screen_vision` / `read_screen` | `question` (opt) | *"What's on my screen?"*, *"Read the error message on my screen"*, *"What code is open?"* | Captures foreground window, runs native Windows Media OCR / pytesseract, and uses Qwen 3.8 2B Distill to answer questions about on-screen content. |
 | `ask_about_screen` | `question` (str) | *"Explain the graph on my screen"*, *"What does this dialog say?"* | Targeted visual question-answering on active screen content. |
 
 ---
