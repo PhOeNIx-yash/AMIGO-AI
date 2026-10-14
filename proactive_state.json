@@ -1,20 +1,14 @@
 {
-  "last_weather_check": 1791896849.419017,
-  "last_calendar_check": 1791897750.7208369,
-  "last_system_check": 1791897990.738371,
+  "last_weather_check": 1791905088.4085248,
+  "last_calendar_check": 1791905989.9695587,
+  "last_system_check": 1791906857.6091769,
   "last_notification_time": 1791883219.6339848,
   "last_priority_alert_time": 0,
   "suggestions_this_hour": 0,
-  "last_hour_reset": 1791894996.9608185,
-  "active_window_start": 1791897990.738371,
-  "current_window_title": "amigo-main - Antigravity IDE - amigo_profile.json",
-  "recent_suggestions": [
-    {
-      "id": "wellness_break",
-      "text": "You've been in the zone for quite a while, Yash. Don't forget to take a quick stretch and hydrate.",
-      "time": 1791883217.185338
-    }
-  ],
+  "last_hour_reset": 1791905088.4085248,
+  "active_window_start": 1791906857.6091769,
+  "current_window_title": "amigo-main - Antigravity IDE - tool_registry.py",
+  "recent_suggestions": [],
   "learned_patterns": {},
   "user_routines": {},
   "dismissed_suggestions": [

@@ -365,7 +365,7 @@ def _normalize_llm_markdown(t: str) -> str:
 def _process_query(query: str, is_voice: bool = True, request_id: str | None = None, display_prompt: str | None = None) -> dict:
     """Fully agentic query processor powered by local LLM."""
     set_assistant_state("processing")
-    history = rag_engine.get_recent_conversations(15)
+    history = rag_engine.get_recent_conversations(4)
 
     clipboard_used = bool(get_clipboard_text())
     llm_started = time.perf_counter()

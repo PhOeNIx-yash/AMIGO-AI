@@ -193,7 +193,7 @@ def _execute_action(action: dict, query: str, spoken_so_far: list, interruption_
 
 def process_agent_query(query: str) -> None:
     """Processes user voice query through agent actions and stores context in memory."""
-    history = rag_engine.get_recent_conversations(15)
+    history = rag_engine.get_recent_conversations(4)
     clipboard_used = bool(get_clipboard_text())
 
     # Get both tool actions and final LLM response

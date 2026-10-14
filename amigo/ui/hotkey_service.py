@@ -204,7 +204,7 @@ def _handle_wake_action():
         res_url = None
         history = []
         try:
-            history = rag_engine.get_recent_conversations(15)
+            history = rag_engine.get_recent_conversations(4)
         except Exception:
             history = []
 

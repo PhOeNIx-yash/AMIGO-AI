@@ -1,11 +1,10 @@
 """
 Enhanced RAG Engine for Amigo Voice Assistant.
 Improvements over v1:
-- High-performance multimodal embedding model (google/embeddinggemma-2, 768-d)
+- Lightweight multimodal embedding model (litert-community/embeddinggemma-2-text-vision-440m-litert-lm, 768-d)
 - Semantic chunking with recursive splitting
 - Hybrid search (semantic + BM25 keyword)
-- Cross-encoder reranking
-- Query expansion/rewriting
+- Query expansion/rewriting for documents
 - Conversation summarization
 - Improved document extraction
 - Async search with better caching
@@ -100,8 +99,18 @@ SKIP_RAG_TOOLS = {
     "system_volume", "system_brightness", "system_power",
 }
 
-# Max context tokens for voice responses (~4k chars ≈ 1000 tokens)
-MAX_VOICE_CONTEXT_CHARS = 4000
+# Max context tokens for voice responses (~1.5k chars ≈ 375 tokens for crisp TTFT)
+MAX_VOICE_CONTEXT_CHARS = 1500
+
+_CONVERSATIONAL_FILLER = {
+    "hi", "hello", "hey", "thanks", "thank you", "okay", "ok", "got it",
+    "yes", "no", "yep", "nope", "bye", "goodbye", "good morning", "good evening",
+    "good night", "what's up", "whats up", "sure", "cool", "alright", "all right",
+}
+
+def _is_conversational_filler(query: str) -> bool:
+    clean = re.sub(r"[^\w\s]", "", (query or "").strip().lower()).strip()
+    return clean in _CONVERSATIONAL_FILLER or (len(clean.split()) <= 2 and clean in _CONVERSATIONAL_FILLER)
 
 # Low-value tools that shouldn't be stored in conversation memory
 # Only skip truly mechanical/system commands, not user-facing interactions
@@ -132,8 +141,7 @@ QUESTION_WORDS = {"what", "when", "who", "where", "why", "how", "which", "whose"
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 CHUNK_SIZE = 512
 CHUNK_OVERLAP = 128
-EMBEDDING_MODEL = os.getenv("AMIGO_EMBEDDING_MODEL", "google/embeddinggemma-2")  # EmbeddingGemma 2 (768-d, 8k context)
-RERANKER_MODEL = "BAAI/bge-reranker-base"  # Cross-encoder for reranking
+EMBEDDING_MODEL = os.getenv("AMIGO_EMBEDDING_MODEL", "litert-community/embeddinggemma-2-text-vision-440m-litert-lm")  # LiteRT-LM (440M, 768-d)
 
 MEDIA_STATE_TTL = 1800
 APP_STATE_TTL = 1800
@@ -144,7 +152,6 @@ SUBJECT_STATE_TTL = 1800
 # ── Lazy-loaded globals ────────────────────────────────────────
 _chroma_client = None
 _embedding_fn = None
-_reranker = None
 _bm25_index = None
 _bm25_doc_map = None
 _collections: dict = {}
@@ -155,7 +162,7 @@ _profile_mtime: float = 0.0
 _profile_lock = threading.Lock()
 
 _conversation_buffer: collections.deque | None = None
-_BUFFER_MAX = 100  # Increased from 50
+_BUFFER_MAX = 15  # Optimized compact working memory buffer
 
 _all_conversations_cache: list[dict] | None = None
 _conv_cache_lock = threading.Lock()
@@ -192,7 +199,7 @@ class SearchResult:
 
 def _init_chroma() -> None:
     """Initialize ChromaDB persistent client and embedding function."""
-    global _chroma_client, _embedding_fn, _collections, _reranker
+    global _chroma_client, _embedding_fn, _collections
     
     with _init_lock:
         if _chroma_client is not None:
@@ -206,59 +213,85 @@ def _init_chroma() -> None:
             client = chromadb.PersistentClient(path=CHROMA_DIR)
 
             class EmbeddingGemmaEmbeddingFunction(chromadb.EmbeddingFunction):
-                """Unified ChromaDB embedding function powered by EmbeddingGemma 2 (768-d, local bfloat16)."""
+                """Unified ChromaDB embedding function powered by LiteRT EmbeddingGemma 2 Text-Vision 440M (768-d)."""
                 def __init__(self, target_model: str = EMBEDDING_MODEL):
-                    import torch
-                    from sentence_transformers import SentenceTransformer
+                    import litert_lm
+                    litert_lm.set_min_log_severity(litert_lm.LogSeverity.ERROR)
 
                     models_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models")
                     candidates = [
-                        os.path.join(models_dir, "embeddinggemma-2"),
-                        os.path.join(models_dir, "google--embeddinggemma-2"),
-                        target_model,
+                        os.path.join(models_dir, "embeddinggemma-2-litert", "embeddinggemma-2-text-vision-440m.litertlm"),
+                        os.path.join(models_dir, "embeddinggemma-2", "embeddinggemma-2-text-vision-440m.litertlm"),
+                        os.path.join(models_dir, "embeddinggemma-2-text-vision-440m.litertlm"),
                     ]
-                    chosen = target_model
+                    chosen = None
                     for c in candidates:
-                        if os.path.isdir(c) and os.path.isfile(os.path.join(c, "config.json")):
+                        if os.path.isfile(c):
                             chosen = os.path.abspath(c)
                             break
 
+                    if not chosen:
+                        try:
+                            from huggingface_hub import hf_hub_download
+                            dest_dir = os.path.join(models_dir, "embeddinggemma-2-litert")
+                            os.makedirs(dest_dir, exist_ok=True)
+                            logger.info("[RAG v2] Downloading LiteRT EmbeddingGemma 2 (440M) from Hugging Face...")
+                            chosen = hf_hub_download(
+                                repo_id=target_model if "/" in target_model else "litert-community/embeddinggemma-2-text-vision-440m-litert-lm",
+                                filename="embeddinggemma-2-text-vision-440m.litertlm",
+                                local_dir=dest_dir,
+                            )
+                        except Exception as ex:
+                            logger.error("[RAG v2] Failed downloading LiteRT model: %s", ex)
+                            raise
+
                     self.active_name = chosen
-                    device = "cuda" if torch.cuda.is_available() else "cpu"
-                    dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
-                    if device == "cpu":
-                        # Cap threads to prevent pinning all CPU cores and keeping system cool
-                        max_threads = max(2, min(4, (os.cpu_count() or 4) // 2))
-                        torch.set_num_threads(max_threads)
-                    self._model = SentenceTransformer(
-                        chosen,
-                        model_kwargs={"torch_dtype": dtype},
-                        device=device,
-                        local_files_only=os.path.isdir(chosen),
-                    )
-                    logger.info("[RAG v2] Initialized EmbeddingGemma 2 embedding model: %s (device=%s, dtype=%s)", chosen, device, dtype)
+                    self._opts = litert_lm.EmbeddingOptions(normalize=True)
+
+                    engine = None
+                    try:
+                        if hasattr(litert_lm.Backend, "GPU"):
+                            engine = litert_lm.EmbeddingEngine(chosen, backend=litert_lm.Backend.GPU())
+                            logger.info("[RAG v2] Initialized LiteRT EmbeddingGemma 2 Text-Vision 440M on GPU: %s", chosen)
+                    except Exception as ex:
+                        logger.debug("[RAG v2] LiteRT GPU backend unavailable, falling back to CPU: %s", ex)
+
+                    if engine is None:
+                        engine = litert_lm.EmbeddingEngine(chosen, backend=litert_lm.Backend.CPU())
+                        logger.info("[RAG v2] Initialized LiteRT EmbeddingGemma 2 Text-Vision 440M on CPU: %s", chosen)
+
+                    self._engine = engine
+                    self._lock = threading.Lock()
 
                 def __call__(self, input: list[str]) -> list[list[float]]:
                     if isinstance(input, str):
                         input = [input]
-                    embeddings = self._model.encode(
-                        list(input),
-                        prompt_name="Document",
-                        normalize_embeddings=True,
-                        batch_size=32,
-                    )
-                    return embeddings.tolist()
+                    formatted = [
+                        text if text.startswith(("title:", "task:")) else f"title: none | text: {text}"
+                        for text in input
+                    ]
+                    with self._lock:
+                        resps = self._engine.compute_embedding_batch(formatted, options=self._opts)
+                        return [r.embedding for r in resps]
 
                 def embed_query(self, input: list[str] | str) -> list[list[float]]:
                     if isinstance(input, str):
                         input = [input]
-                    embeddings = self._model.encode(
-                        list(input),
-                        prompt_name="SearchQuery",
-                        normalize_embeddings=True,
-                        batch_size=32,
-                    )
-                    return embeddings.tolist()
+                    formatted = [
+                        text if text.startswith("task:") else f"task: search result | query: {text}"
+                        for text in input
+                    ]
+                    with self._lock:
+                        resps = self._engine.compute_embedding_batch(formatted, options=self._opts)
+                        return [r.embedding for r in resps]
+
+                def embed_image(self, image_path: str) -> list[float]:
+                    """Multimodal embedding: embed image into unified 768-d space."""
+                    import litert_lm
+                    with self._lock:
+                        content = litert_lm.Content.from_file(image_path)
+                        resp = self._engine.compute_embedding(content, options=self._opts)
+                        return resp.embedding
 
             _embedding_fn = EmbeddingGemmaEmbeddingFunction(EMBEDDING_MODEL)
 
@@ -289,9 +322,6 @@ def _init_chroma() -> None:
             # Set client AFTER collections are created to avoid race condition
             _chroma_client = client
 
-            # Initialize cross-encoder reranker
-            _init_reranker()
-            
             # Initialize BM25 index
             _init_bm25_index()
 
@@ -335,7 +365,7 @@ def _recreate_collections_if_needed(client, embedding_fn) -> None:
                                 )
                                 if name == USER_FACTS:
                                     try:
-                                        facts_all = existing_col.get(include=["documents", "metadatas", "ids"])
+                                        facts_all = existing_col.get(include=["documents", "metadatas"])
                                         if facts_all and facts_all.get("documents"):
                                             _pending_facts_restore = facts_all
                                     except Exception as ex:
@@ -373,29 +403,6 @@ def _recreate_collections_if_needed(client, embedding_fn) -> None:
             _executor.submit(_reindex_bg)
     except Exception as e:
         logger.warning("[RAG v2] Could not check collection dimensions: %s", e)
-
-
-def _init_reranker() -> None:
-    """Initialize cross-encoder reranker with offline protection."""
-    global _reranker
-    try:
-        from sentence_transformers import CrossEncoder
-        cache_root = os.path.expanduser(os.path.join("~", ".cache", "huggingface", "hub"))
-        reranker_dir = f"models--{RERANKER_MODEL.replace('/', '--')}"
-        is_cached = os.path.exists(os.path.join(cache_root, reranker_dir))
-        if is_cached:
-            os.environ["HF_HUB_OFFLINE"] = "1"
-            os.environ["TRANSFORMERS_OFFLINE"] = "1"
-            try:
-                _reranker = CrossEncoder(RERANKER_MODEL, max_length=512, local_files_only=True)
-            except Exception:
-                _reranker = CrossEncoder(RERANKER_MODEL, max_length=512)
-        else:
-            _reranker = CrossEncoder(RERANKER_MODEL, max_length=512)
-        logger.info("[RAG v2] Cross-encoder reranker initialized: %s", RERANKER_MODEL)
-    except Exception as e:
-        logger.warning("[RAG v2] Reranker init failed (will use semantic only): %s", e)
-        _reranker = None
 
 
 def _init_bm25_index() -> None:
@@ -1192,22 +1199,23 @@ def add_conversation(
     # Calculate importance based on content
     importance = _calculate_importance(user_msg, assistant_msg, tool, importance)
 
-    # Queue ChromaDB storage asynchronously
-    try:
-        _conv_write_queue.put({
-            "doc_id": doc_id,
-            "doc_text": doc_text,
-            "metadata": {
-                "user_msg": user_msg,
-                "assistant_msg": assistant_msg,
-                "tool": tool,
-                "timestamp": timestamp,
-                "type": "conversation",
-                "importance": importance,
-            },
-        })
-    except Exception as e:
-        logger.error("[RAG v2] Error queueing conversation: %s", e)
+    # Queue ChromaDB storage asynchronously only for high-importance turns
+    if importance >= 0.65:
+        try:
+            _conv_write_queue.put({
+                "doc_id": doc_id,
+                "doc_text": doc_text,
+                "metadata": {
+                    "user_msg": user_msg,
+                    "assistant_msg": assistant_msg,
+                    "tool": tool,
+                    "timestamp": timestamp,
+                    "type": "conversation",
+                    "importance": importance,
+                },
+            })
+        except Exception as e:
+            logger.error("[RAG v2] Error queueing conversation: %s", e)
 
     # Update in-memory buffer
     turn_item = {
@@ -1280,7 +1288,7 @@ def _calculate_importance(user_msg: str, assistant_msg: str, tool: str, base_imp
     return importance
 
 
-def get_recent_conversations(count: int = 6) -> list[dict]:
+def get_recent_conversations(count: int = 4) -> list[dict]:
     """Return the most recent N conversations from in-memory buffer."""
     buf = _ensure_buffer()
     # Buffer is already sorted by timestamp (oldest first), so take last N
@@ -1459,6 +1467,21 @@ def add_user_fact(fact: str, category: str = "general", importance: float = 1.0)
                     col.delete(where={"category": "identity"})
                 except Exception:
                     pass
+            else:
+                # Semantic deduplication: if closest fact has distance <= 0.18 (similarity >= 0.82), reuse id to overwrite
+                try:
+                    q_text = fact.strip()
+                    if _embedding_fn is not None and hasattr(_embedding_fn, "embed_query"):
+                        q_emb = _embedding_fn.embed_query([q_text])
+                        existing = col.query(query_embeddings=q_emb, n_results=1, include=["distances"])
+                    else:
+                        existing = col.query(query_texts=[q_text], n_results=1, include=["distances"])
+                    if existing and existing.get("ids") and existing["ids"] and existing["ids"][0]:
+                        dist = existing["distances"][0][0] if existing.get("distances") and existing["distances"][0] else 1.0
+                        if dist <= 0.18:
+                            doc_id = existing["ids"][0][0]
+                except Exception as ex:
+                    logger.debug("[RAG v2] Fact semantic dedup note: %s", ex)
             col.upsert(
                 ids=[doc_id],
                 documents=[fact.strip()],
@@ -1619,7 +1642,13 @@ def _semantic_search(
             if query_embedding is not None:
                 query_kwargs["query_embeddings"] = [query_embedding]
             else:
-                query_kwargs["query_texts"] = [query]
+                if _embedding_fn is not None and hasattr(_embedding_fn, "embed_query"):
+                    try:
+                        query_kwargs["query_embeddings"] = _embedding_fn.embed_query([query])
+                    except Exception:
+                        query_kwargs["query_texts"] = [query]
+                else:
+                    query_kwargs["query_texts"] = [query]
             if metadata_filter and isinstance(metadata_filter, dict):
                 query_kwargs["where"] = metadata_filter
             results = col.query(**query_kwargs)
@@ -1688,34 +1717,6 @@ def _bm25_search(query: str, top_k: int, metadata_filter: dict | None = None) ->
         return []
 
 
-def _rerank_results(query: str, results: list[SearchResult], top_k: int) -> list[SearchResult]:
-    """Rerank results using cross-encoder."""
-    if _reranker is None or not results:
-        return results[:top_k]
-    
-    try:
-        # Rerank up to 20 candidates with truncated text for fast sub-200ms CPU inference
-        candidates = results[:min(len(results), 20)]
-        pairs = [(query, r.text[:350]) for r in candidates]
-        scores = _reranker.predict(pairs)
-        
-        # Update rerank scores with calibrated sigmoid
-        import math
-        for r, score in zip(candidates, scores):
-            s = float(score)
-            try:
-                r.rerank_score = 1.0 / (1.0 + math.exp(-s)) if s < 20 else 1.0
-            except OverflowError:
-                r.rerank_score = 0.0 if s < 0 else 1.0
-        
-        # Sort candidates by rerank score
-        candidates.sort(key=lambda x: x.rerank_score, reverse=True)
-        return candidates[:top_k]
-    except Exception as e:
-        logger.debug("[RAG v2] Reranking error: %s", e)
-        return results[:top_k]
-
-
 def _hybrid_search(
     query: str,
     target_collections: list[str],
@@ -1724,10 +1725,10 @@ def _hybrid_search(
     conversation_history: list | None = None,
 ) -> list[SearchResult]:
     """
-    Perform hybrid search combining semantic, keyword, and reranking.
-    Preserves calibrated [0..1] confidence scores across both documents and facts.
+    Perform hybrid search combining semantic (LiteRT) and BM25 keyword search.
+    Preserves calibrated [0..1] confidence scores across documents and facts.
     """
-    if len(query.split()) <= 3:
+    if DOCUMENTS not in target_collections or len(query.split()) <= 3:
         expanded_queries = [query]
     else:
         expanded_queries = expand_query(query, conversation_history)
@@ -1771,38 +1772,37 @@ def _hybrid_search(
                 existing.score = r.score
             if r.keyword_score > existing.keyword_score:
                 existing.keyword_score = r.keyword_score
-            if r.rerank_score > existing.rerank_score:
-                existing.rerank_score = r.rerank_score
     
     unique_results = list(seen_texts.values())
-    unique_results.sort(key=lambda x: max(x.score, x.keyword_score / 25.0), reverse=True)
     
-    should_rerank = (
-        _reranker is not None 
-        and DOCUMENTS in target_collections
-        and len(unique_results) >= 2
-    )
-    
-    if should_rerank:
-        reranked = _rerank_results(query, unique_results, top_k * 2)
-    else:
-        reranked = unique_results
-        reranked.sort(key=lambda x: x.score, reverse=True)
-    
-    # Final scoring: combine semantic, keyword, and rerank scores smoothly
-    for r in reranked:
+    # Final scoring: combine semantic and keyword scores smoothly
+    now_dt = datetime.datetime.now()
+    for r in unique_results:
         sem_score = max(0.0, min(1.0, r.score))
-        kw_norm = min(1.0, r.keyword_score / 25.0) if r.keyword_score > 0 else 0.0
-        
-        if _reranker is not None and r.rerank_score > 0:
-            combined = 0.65 * r.rerank_score + 0.25 * sem_score + 0.10 * kw_norm
-        else:
+        if r.keyword_score > 0:
+            kw_norm = min(1.0, r.keyword_score / 25.0)
             combined = 0.75 * sem_score + 0.25 * kw_norm
-            
-        r.score = round(min(1.0, max(0.0, combined)) * r.importance, 4)
+        else:
+            combined = sem_score
+
+        # Recency decay for CONVERSATIONS and USER_FACTS
+        recency_mult = 1.0
+        if r.source in (CONVERSATIONS, USER_FACTS):
+            ts_str = r.metadata.get("timestamp") if isinstance(r.metadata, dict) else None
+            if ts_str:
+                try:
+                    ts_dt = datetime.datetime.fromisoformat(ts_str)
+                    age_days = max(0.0, (now_dt - ts_dt).total_seconds() / 86400.0)
+                    recency_mult = 0.85 + 0.15 * (0.5 ** (age_days / 30.0))
+                except Exception:
+                    pass
+
+        imp = r.importance if getattr(r, "importance", None) is not None else 1.0
+        imp_mult = 1.0 + 0.10 * (imp - 0.5)
+        r.score = round(min(1.0, max(0.0, combined * imp_mult * recency_mult)), 4)
     
-    reranked.sort(key=lambda x: x.score, reverse=True)
-    return reranked[:top_k]
+    unique_results.sort(key=lambda x: x.score, reverse=True)
+    return unique_results[:top_k]
 
 
 def search(
@@ -1820,7 +1820,7 @@ def search(
     Includes fast path for simple queries and support for query_type and metadata_filter.
     skip_rag: if True, returns empty list (for tools that shouldn't use RAG)
     """
-    if skip_rag or not query or not query.strip():
+    if skip_rag or not query or not query.strip() or _is_conversational_filler(query):
         return []
 
     if target_collections is None:
@@ -1855,8 +1855,22 @@ def search(
         except Exception:
             pass
         results = _semantic_search(query, target_collections, top_k, metadata_filter=metadata_filter, query_embedding=query_embedding)
+        now_dt = datetime.datetime.now()
         for r in results:
-            r.score = round(max(0.0, min(1.0, r.score)) * r.importance, 4)
+            sem_score = max(0.0, min(1.0, r.score))
+            recency_mult = 1.0
+            if r.source in (CONVERSATIONS, USER_FACTS):
+                ts_str = r.metadata.get("timestamp") if isinstance(r.metadata, dict) else None
+                if ts_str:
+                    try:
+                        ts_dt = datetime.datetime.fromisoformat(ts_str)
+                        age_days = max(0.0, (now_dt - ts_dt).total_seconds() / 86400.0)
+                        recency_mult = 0.85 + 0.15 * (0.5 ** (age_days / 30.0))
+                    except Exception:
+                        pass
+            imp = r.importance if getattr(r, "importance", None) is not None else 1.0
+            imp_mult = 1.0 + 0.10 * (imp - 0.5)
+            r.score = round(min(1.0, max(0.0, sem_score * imp_mult * recency_mult)), 4)
         results.sort(key=lambda x: x.score, reverse=True)
     else:
         # Full hybrid search for complex queries
@@ -1904,21 +1918,15 @@ def debug_search(
         "count": len(results),
         "results": results,
         "duration_ms": duration_ms,
-        "reranker_active": _reranker is not None,
+        "reranker_active": False,
         "bm25_active": _bm25_index is not None,
         "stats": get_index_stats(),
     }
 
 
 def reinitialize_reranker() -> bool:
-    """Attempt to reinitialize the cross-encoder reranker."""
-    global _reranker
-    try:
-        _init_reranker()
-        return _reranker is not None
-    except Exception as e:
-        logger.error("[RAG v2] Failed to reinitialize reranker: %s", e)
-        return False
+    """Reranker removed in favor of lightweight LiteRT multimodal embeddings."""
+    return False
 
 
 # Convenience search functions
@@ -1977,33 +1985,30 @@ def build_rag_context(
 ) -> str:
     """
     Build enhanced RAG context for LLM prompt injection.
-    Uses hybrid search with query expansion and reranking.
+    Uses hybrid search with query expansion.
     Assembles context STRICTLY from pre-indexed ChromaDB search results (no synchronous file parsing).
-    For voice: caps total context at MAX_VOICE_CONTEXT_CHARS (~1.5k chars).
+    For voice: caps total context at MAX_VOICE_CONTEXT_CHARS (~1.5k chars) and top 3 chunks.
     """
-    if not query or not query.strip():
+    if not query or not query.strip() or _is_conversational_filler(query):
         return ""
 
     if search_results is not None:
         results = search_results
     else:
-        results = search(query, target_collections=[DOCUMENTS, USER_FACTS], top_k=top_k)
+        # Search DOCUMENTS only; USER_FACTS is handled by get_user_profile_prompt to avoid double-querying
+        results = search(query, target_collections=[DOCUMENTS], top_k=top_k)
     
     if not results:
         return ""
 
-    # Filter by relevance threshold (falling back to top results if scores are lower)
-    relevant = [r for r in results if r.get("score", 0) >= 0.25]
-    if not relevant and results:
-        relevant = results[:top_k]
+    # Filter strictly by minimum threshold: 0.50 for documents, 0.48 for user facts.
+    # No top-k fallback to eliminate context pollution from low-scoring noisy chunks.
+    relevant = [
+        r for r in results
+        if r.get("score", 0) >= (0.50 if r.get("source") == DOCUMENTS else 0.48)
+    ]
     if not relevant:
         return ""
-
-    parts: list[str] = []
-    top_doc = None
-    seen_files: set[str] = set()
-    total_chars = 0
-    max_chars = MAX_VOICE_CONTEXT_CHARS if for_voice else 8000
 
     # Prioritize documents whose filename has token overlap with the query
     q_words = set(re.findall(r'[a-zA-Z0-9]+', query.lower()))
@@ -2023,7 +2028,15 @@ def build_rag_context(
 
         return res.get("score", 0)
 
-    # Identify top document if present in relevant results
+    # Sort relevant results using filename priority
+    relevant.sort(key=_doc_priority, reverse=True)
+
+    parts: list[str] = []
+    top_doc = None
+    total_chars = 0
+    max_chars = MAX_VOICE_CONTEXT_CHARS if for_voice else 8000
+
+    # Identify top document if present in relevant results for active state tracking
     for r in relevant:
         if r.get("source") == DOCUMENTS:
             meta = r.get("metadata", {})
@@ -2039,24 +2052,13 @@ def build_rag_context(
         except Exception:
             pass
 
-        # For compact personal documents (tickets, invoices, bills, forms, notes <= max_chars),
-        # provide the complete content so key identifiers (PNR, totals, dates, names)
-        # are never missed due to chunk fragmentation.
-        try:
-            fsize = os.path.getsize(top_doc["path"])
-            if 0 < fsize <= 300 * 1024:
-                file_text = extract_text(top_doc["path"])
-                if file_text and len(file_text.strip()) <= max_chars:
-                    return f"[Content from '{top_doc['name']}']:\n{file_text.strip()}"
-        except Exception:
-            pass
-
-    for r in relevant[:max(top_k, 8)]:
+    # For voice: cap at top 3 chunks; for non-voice allow up to max(top_k, 8)
+    k_limit = min(top_k, 3) if for_voice else max(top_k, 8)
+    for r in relevant[:k_limit]:
         src = r.get("source", "")
         if src == DOCUMENTS:
             meta = r.get("metadata", {})
             fname = meta.get("filename", "document")
-            fpath = meta.get("filepath", "")
 
             chunk_text = (r.get("text") or "").strip()
             if chunk_text:
@@ -2109,12 +2111,26 @@ def build_file_context(filepath: str, question: str, max_chars: int = 8000) -> s
             if docs_list:
                 selected = [docs_list[0]]
                 seen = {docs_list[0][:100]}
-                query_res = col.query(
-                    query_texts=[question],
-                    n_results=min(10, len(docs_list)),
-                    where={"filepath": normalized_path},
-                    include=["documents"],
-                )
+                q_embs = None
+                if _embedding_fn is not None and hasattr(_embedding_fn, "embed_query"):
+                    try:
+                        q_embs = _embedding_fn.embed_query([question])
+                    except Exception:
+                        pass
+                if q_embs is not None:
+                    query_res = col.query(
+                        query_embeddings=q_embs,
+                        n_results=min(10, len(docs_list)),
+                        where={"filepath": normalized_path},
+                        include=["documents"],
+                    )
+                else:
+                    query_res = col.query(
+                        query_texts=[question],
+                        n_results=min(10, len(docs_list)),
+                        where={"filepath": normalized_path},
+                        include=["documents"],
+                    )
                 if query_res and query_res.get("documents") and query_res["documents"][0]:
                     for d in query_res["documents"][0]:
                         if d[:100] not in seen:
@@ -2184,7 +2200,7 @@ def index_document(filepath: str) -> bool:
 
         # Delete old chunks for this file to avoid orphan chunks on re-index
         try:
-            old_results = col.get(where={"filepath": normalized_path}, include=["ids"])
+            old_results = col.get(where={"filepath": normalized_path}, include=[])
             if old_results and old_results.get("ids"):
                 col.delete(ids=old_results["ids"])
         except Exception:
@@ -2207,7 +2223,21 @@ def index_document(filepath: str) -> bool:
         # Batch upsert in chunks to avoid Chroma batch limits
         batch_size = 100
         for i in range(0, len(ids), batch_size):
-            col.upsert(ids=ids[i:i+batch_size], documents=docs[i:i+batch_size], metadatas=metas[i:i+batch_size])
+            b_ids = ids[i:i+batch_size]
+            b_docs = docs[i:i+batch_size]
+            b_metas = metas[i:i+batch_size]
+            b_embs = None
+            if _embedding_fn is not None:
+                try:
+                    # Provide title: {filename} to LiteRT without polluting clean document text in Chroma
+                    prompts = [f"title: {filename} | text: {d}" for d in b_docs]
+                    b_embs = _embedding_fn(prompts)
+                except Exception as ex:
+                    logger.debug("[RAG v2] Explicit title embedding fallback: %s", ex)
+            if b_embs is not None:
+                col.upsert(ids=b_ids, documents=b_docs, metadatas=b_metas, embeddings=b_embs)
+            else:
+                col.upsert(ids=b_ids, documents=b_docs, metadatas=b_metas)
         
                 # NOTE: BM25 rebuild is now scheduled nightly via _schedule_nightly_bm25_rebuild()
                 # instead of on every index_document call to avoid memory issues with large datasets
@@ -2361,7 +2391,7 @@ def get_user_profile_prompt(query: str = "", semantic_search: bool = True) -> st
 
     facts_retrieved = False
     # Only inject specific remembered facts when semantically relevant or asking about user/data
-    if semantic_search and query and query.strip():
+    if semantic_search and query and query.strip() and not _is_conversational_filler(query):
         q_clean = query.strip().lower()
         words = q_clean.split()
         if len(words) >= 2:
@@ -2370,7 +2400,7 @@ def get_user_profile_prompt(query: str = "", semantic_search: bool = True) -> st
                 for mf in matched_facts:
                     doc = (mf.get("text") or mf.get("document") or "").strip()
                     score = mf.get("score", 0)
-                    if doc and score > 0.45 and not doc.startswith("Uploaded image"):
+                    if doc and score >= 0.48 and not doc.startswith("Uploaded image"):
                         # Fence retrieved facts to prevent prompt injection
                         parts.append(f"Relevant remembered fact: <<BEGIN_FACT>>{doc}<<END_FACT>>")
                         facts_retrieved = True
@@ -2393,17 +2423,17 @@ def get_active_context_prompt() -> str:
     if media and isinstance(media, dict):
         title = media.get("title") or media.get("query")
         if title:
-            parts.append(f"Playing '{title}' on {media.get('platform', 'YouTube')}")
+            parts.append(f"Background media playing in user speakers: '{title}' on {media.get('platform', 'YouTube')}")
 
     app = state.get("active_app")
     if app and isinstance(app, dict) and app.get("name"):
-        parts.append(f"Active App: {app['name']}")
+        parts.append(f"Active Desktop App: {app['name']}")
 
     srch = state.get("last_search")
     if srch and isinstance(srch, dict) and srch.get("query"):
         parts.append(f"Recent Search: '{srch['query']}'")
 
-    return f"[Active State: {' | '.join(parts)}]" if parts else ""
+    return f"[PC Environment State: {' | '.join(parts)}]" if parts else ""
 
 
 # ═══════════════════════════════════════════════════════════════

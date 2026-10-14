@@ -2043,6 +2043,7 @@ EXAMPLES:
 - "who is the prime minister of the uk" -> {"actions": [{"tool": "web_search", "params": {"query": "current prime minister of UK"}}]}
 - "what is the capital of france" -> {"actions": [{"tool": "chat", "params": {}}]}
 - "play bohemian rhapsody" -> {"actions": [{"tool": "play_youtube", "params": {"query": "bohemian rhapsody"}}]}
+- "can you play that" (after mentioning a song in previous turn) -> {"actions": [{"tool": "play_youtube", "params": {"query": "<song from immediate previous turn>"}}]}
 - "play some jazz" -> {"actions": [{"tool": "play_youtube", "params": {"query": "jazz music"}}]}
 - "pause music" -> {"actions": [{"tool": "pause_media", "params": {}}]}
 - "resume" -> {"actions": [{"tool": "resume_media", "params": {}}]}
@@ -2089,7 +2090,7 @@ def build_agent_system_prompt(query: str = "", conversation_history: list | None
     if pending:
         parts.append(pending)
     parts.append("RECENT ACTIVITY (oldest first):")
-    parts.append(_format_recent_activity(conversation_history, query, limit=15))
+    parts.append(_format_recent_activity(conversation_history, query, limit=4))
     if active_context.strip():
         parts.append(active_context.strip())
     try:
@@ -2332,7 +2333,7 @@ def get_last_played_song(conversation_history: list | None = None) -> dict | Non
     hist = conversation_history
     if not hist:
         try:
-            hist = rag_engine.get_recent_conversations(count=10)
+            hist = rag_engine.get_recent_conversations(count=4)
         except Exception:
             hist = []
     for turn in reversed(hist or []):

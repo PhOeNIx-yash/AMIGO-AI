@@ -276,10 +276,10 @@ def _build_ai_messages(
 
     if use_memory:
         if conversation_history:
-            recent = [t for t in conversation_history[-10:] if isinstance(t, dict)]
+            recent = [t for t in conversation_history[-4:] if isinstance(t, dict)]
         else:
             try:
-                recent = rag_engine.get_recent_conversations(count=10) or []
+                recent = rag_engine.get_recent_conversations(count=4) or []
             except Exception:
                 recent = []
 
@@ -292,14 +292,22 @@ def _build_ai_messages(
             if last_u == cur_q and not last_a:
                 recent = recent[:-1]
 
+        noisy_tools = {
+            "pause_media", "resume_media", "next_track", "prev_track",
+            "volume", "mute", "unmute", "system_volume", "system_brightness",
+            "system_power", "scroll", "click", "type", "press_key", "error",
+        }
         for c in recent:
+            t = (c.get("tool") or "").strip().lower()
+            if t in noisy_tools:
+                continue
             u = (c.get("user") or c.get("query") or "").strip()
             a = (c.get("assistant") or c.get("response") or "").strip()
-            if u and a and c.get("tool") != "error":
+            if u and a:
                 clean_a, _ = _strip_reasoning(a)
                 clean_a = clean_a.strip() or a
-                messages.append({"role": "user", "content": u[:1000]})
-                messages.append({"role": "assistant", "content": clean_a[:1500]})
+                messages.append({"role": "user", "content": u[:500]})
+                messages.append({"role": "assistant", "content": clean_a[:800]})
 
     user_parts: list[str] = []
     if web_context:
