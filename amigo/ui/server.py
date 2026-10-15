@@ -365,7 +365,7 @@ def _normalize_llm_markdown(t: str) -> str:
 def _process_query(query: str, is_voice: bool = True, request_id: str | None = None, display_prompt: str | None = None) -> dict:
     """Fully agentic query processor powered by local LLM."""
     set_assistant_state("processing")
-    history = rag_engine.get_recent_conversations(4)
+    history = rag_engine.get_recent_conversations(4 if is_voice else 10)
 
     clipboard_used = bool(get_clipboard_text())
     llm_started = time.perf_counter()
@@ -382,6 +382,7 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
     last_remember = ""
     last_url = None
     response_metadata: dict[str, object] = {}
+    last_tool_output = ""
 
     for action in actions:
         tool = action.get("tool", "chat")
@@ -394,6 +395,15 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
             tool = "chat"
         if not isinstance(params, dict):
             params = {}
+
+        # Action Chaining: pass text output from prior tool into text, context, or prompt if left blank
+        if last_tool_output:
+            for key in ("text", "context", "prompt"):
+                if not params.get(key):
+                    if key in params or (key == "text" and tool in ("type_text", "search_and_type", "insert_content")) or (key in ("context", "prompt") and tool in ("draft_email", "generate_content")):
+                        params[key] = last_tool_output
+                        break
+
         last_tool = tool
         last_params = params
         if remember:
@@ -418,6 +428,15 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
             spoken=spoken,
             conversation_history=history,
         )
+
+        # Capture output from this tool for chaining into next action
+        out_text = ""
+        if isinstance(handler_metadata, dict):
+            out_text = handler_metadata.get("generated_content") or handler_metadata.get("screen_text") or handler_metadata.get("text_snippet") or handler_metadata.get("text")
+        if not out_text and res_spoken:
+            out_text = res_spoken
+        if out_text:
+            last_tool_output = str(out_text).strip()
         if handler_metadata:
             # Preserve showGeneratedPanel if already set to True by a previous tool
             if response_metadata.get("showGeneratedPanel") is True:
@@ -445,6 +464,10 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
 
         if res_url:
             last_url = res_url
+
+        # Halt subsequent actions if current step requires confirmation or clarification
+        if isinstance(handler_metadata, dict) and (handler_metadata.get("requires_confirmation") or handler_metadata.get("requires_clarification")):
+            break
 
     primary_tool = "multi_command" if len(actions) > 1 else last_tool
     final_reply = "\n\n".join(combined_spoken).strip() if len(combined_spoken) > 1 else (combined_spoken[0] if combined_spoken else "")
@@ -1618,77 +1641,7 @@ def api_hotkey_status():
         return jsonify({"running": False, "error": str(e)})
 
 
-# ---------------------------------------------------------------------------
-# Official CUA (Computer-Use Agent) Driver Endpoints
-# ---------------------------------------------------------------------------
 
-@app.route("/api/cua/status", methods=["GET"])
-def api_cua_status():
-    """Get official CUA Driver status, active session, and screen resolution."""
-    try:
-        from amigo.services.computer_use_agent import get_cua_driver_bridge
-        bridge = get_cua_driver_bridge()
-        status = bridge.get_status()
-        if bridge.is_available:
-            try:
-                status["screen"] = bridge.get_screen_size()
-                status["cursor"] = bridge.get_cursor_position()
-            except Exception:
-                pass
-        return jsonify(status)
-    except Exception as e:
-        logger.error("[CUA API] Failed getting status: %s", e)
-        return jsonify({"connected": False, "error": str(e)}), 500
-
-
-@app.route("/api/cua/execute", methods=["POST"])
-def api_cua_execute():
-    """Execute a single native tool call via the official CUA Driver."""
-    try:
-        data = request.get_json(silent=True) or {}
-        tool_name = data.get("tool") or data.get("name")
-        if not tool_name:
-            return jsonify({"status": "error", "error": "Missing 'tool' parameter"}), 400
-
-        params = data.get("params") or data.get("arguments") or {}
-        from amigo.services.computer_use_agent import get_cua_driver_bridge
-        bridge = get_cua_driver_bridge()
-        if not bridge.is_available:
-            return jsonify({"status": "error", "error": "CUA Driver is disconnected"}), 503
-
-        res = bridge.call_tool(tool_name, params)
-        broadcaster.broadcast("cua_action", {
-            "tool": tool_name,
-            "params": params,
-            "result": res,
-            "timestamp": time.time(),
-        })
-        return jsonify(res)
-    except Exception as e:
-        logger.error("[CUA API] Execute failed: %s", e)
-        return jsonify({"status": "error", "error": str(e)}), 500
-
-
-@app.route("/api/cua/run_task", methods=["POST"])
-def api_cua_run_task():
-    """Run an autonomous computer-use task via CUA Driver with live SSE event streaming."""
-    try:
-        data = request.get_json(silent=True) or {}
-        task = data.get("task", "").strip()
-        if not task:
-            return jsonify({"status": "error", "error": "Missing 'task' parameter"}), 400
-
-        max_steps = int(data.get("max_steps", 8))
-
-        def _on_progress(event):
-            broadcaster.broadcast("cua_event", event)
-
-        from amigo.services.computer_use_agent import execute_computer_task
-        report = execute_computer_task(task, max_steps=max_steps, progress_cb=_on_progress)
-        return jsonify(report)
-    except Exception as e:
-        logger.error("[CUA API] Task execution failed: %s", e)
-        return jsonify({"status": "error", "error": str(e)}), 500
 
 
 # Async initialization state

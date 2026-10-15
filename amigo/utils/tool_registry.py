@@ -32,6 +32,14 @@ from amigo.services.weather import weather_command, get_weather_data
 from amigo.utils.network_utils import is_internet_connected
 from amigo.services.app_opener import find_files, open_folder, open_windows_app, execute_file_action
 from amigo.utils.calculate import Calc
+from amigo.services.content_generator import (
+    generate_content as _tool_generate_content,
+    regenerate_content as _tool_regenerate_content,
+    insert_content as _tool_insert_content,
+    type_text as _tool_type_text,
+    build_temporal_and_user_context as _build_temporal_and_user_context,
+    route_content_to_destination as _route_content_to_destination,
+)
 
 # Forwarders to llm_agent and rag_engine
 def get_ai_response(*args, **kwargs):
@@ -52,6 +60,14 @@ def sanitize_for_tts(*args, **kwargs):
 
 def _day_period(*args, **kwargs):
     from amigo.core.llm_agent import _day_period as _impl
+    return _impl(*args, **kwargs)
+
+def _get_internet_status(*args, **kwargs):
+    from amigo.core.llm_agent import _get_internet_status as _impl
+    return _impl(*args, **kwargs)
+
+def set_last_screen_text(*args, **kwargs):
+    from amigo.core.llm_agent import set_last_screen_text as _impl
     return _impl(*args, **kwargs)
 
 def update_active_state(*args, **kwargs):
@@ -385,7 +401,7 @@ def is_app_already_running(app_name: str) -> bool:
         import psutil
         for p in psutil.process_iter(["name"]):
             name = (p.info.get("name") or "").lower().replace(".exe", "")
-            if target == name or (len(target) >= 4 and target in name):
+            if target == name or bool(re.search(rf"\b{re.escape(target)}\b", name)):
                 return True
     except Exception:
         pass
@@ -415,7 +431,7 @@ def _tool_open_app(params, query, spoken):
             update_active_state("active_app", {"name": clean_target})
         except Exception:
             pass
-        return get_quick_feedback(f"opened {clean_target}"), None
+        return spoken or f"Opened {clean_target.title()}.", None
 
     # 2. Is it an already running application?
     if is_app_already_running(clean_target):
@@ -492,11 +508,15 @@ def _tool_read_screen(params, query, spoken):
     try:
         from amigo.services.screen_vision import inspect_screen
         res = inspect_screen(q)
+        screen_text = res.get("screen_text", "")
+        if screen_text:
+            set_last_screen_text(screen_text)
         reply = res.get("reply", "I inspected your screen.")
         meta = {
             "window_title": res.get("window_title", "Active Window"),
             "screenshot": res.get("screenshot_path", "amigo_screenshot.png"),
-            "text_snippet": res.get("screen_text", "")[:300],
+            "text_snippet": screen_text[:300],
+            "screen_text": screen_text,
         }
         return reply, None, meta
     except Exception as e:
@@ -550,7 +570,7 @@ def _tool_memory_recall(params, query, spoken):
         recalled = rag_engine.search(q, target_collections=[rag_engine.USER_FACTS, rag_engine.CONVERSATIONS],
                                      top_k=5, query_type="conversation_recall")
         for r in recalled:
-            if r.get("score", 0) > 0.15 and r.get("text"):
+            if r.get("score", 0) >= 0.45 and r.get("text"):
                 recalled_facts.append(r["text"])
     except Exception as e:
         logger.debug(f"[Memory Recall]: {e}")
@@ -587,62 +607,13 @@ def _tool_document_qa(params, query, spoken, conversation_history=None):
     return "I couldn't find anything about that in your indexed documents.", None
 
 
-def _tool_type_text(params, query, spoken):
-    params = params if isinstance(params, dict) else {}
-    text = str(params.get("text", "")).strip()
-    app = str(params.get("app", "")).strip()
 
-    if app:
-        open_windows_app(app)
-        # Give launched app window time to gain focus
-        import time
-        time.sleep(1.0)
 
-    # If the user asked to write an email, letter, or document, draft realistic content if text is just a request
-    is_draft_request = bool(re.search(r"^(?:an?\s+)?(?:email|e-mail|letter|message|note|essay|application)\b", text, re.IGNORECASE))
-    if is_draft_request or text.lower() in ("an email", "an e-mail", "email", "e-mail", "a letter", "letter"):
-        try:
-            topic_hint = text if len(text) > 15 else (query or "general professional email")
-            draft_content = get_ai_response(
-                f"Draft a short, professional {topic_hint}. Write ONLY the actual email text (Subject, formal salutation, concise body, and professional closing). Do not write any explanations or conversational preambles.",
-                use_memory=False,
-                is_voice=False,
-            )
-            if draft_content and len(draft_content.strip()) > 10:
-                text = draft_content.strip()
-        except Exception as e:
-            logger.warning(f"[Tool type_text] Draft generation fallback: {e}")
-            text = "Subject: Update\n\nDear recipient,\n\nI am writing to provide a quick update.\n\nBest regards,\nYash"
-
-    if text:
-        typed = False
-        try:
-            from amigo.services.computer_use_agent import get_cua_driver_bridge
-            bridge = get_cua_driver_bridge()
-            if bridge.is_available:
-                bridge.type_text(text)
-                typed = True
-        except Exception:
-            pass
-
-        if not typed:
-            os_automation.type_text(text)
-
-    app_desc = f" into {app}" if app else ""
-    return (f"Typed content{app_desc}." if text else "Typed text."), None
 
 
 def _tool_press_key(params, query, spoken):
     keys = params.get("keys", "") if isinstance(params, dict) else ""
     if keys:
-        try:
-            from amigo.services.computer_use_agent import get_cua_driver_bridge
-            bridge = get_cua_driver_bridge()
-            if bridge.is_available:
-                bridge.press_key(keys)
-                return f"Pressed {keys}.", None
-        except Exception:
-            pass
         os_automation.press_shortcut(keys)
     return (f"Pressed {keys}." if keys else "Done."), None
 
@@ -654,28 +625,18 @@ def _tool_click_screen(params, query, spoken):
     y = params.get("y")
     button = params.get("button", "left")
 
-    # Try CUA driver bridge first
-    try:
-        from amigo.services.computer_use_agent import get_cua_driver_bridge
-        bridge = get_cua_driver_bridge()
-        if bridge.is_available:
-            bridge.click(x=x, y=y, button=button)
-            loc = f" at ({x}, {y})" if x is not None and y is not None else ""
-            return f"Clicked{loc}.", None
-    except Exception:
-        pass
-
     if x is not None and y is not None:
         try:
             pyautogui.click(int(x), int(y), button=button)
             return f"Clicked at ({x}, {y}).", None
         except Exception as e:
             return f"Click error: {e}", None
-    try:
-        pyautogui.click(button=button)
-        return "Clicked.", None
-    except Exception as e:
-        return f"Click error: {e}", None
+    else:
+        try:
+            pyautogui.click(button=button)
+            return "Clicked.", None
+        except Exception as e:
+            return f"Click error: {e}", None
 
 
 _audio_playing_cache = {"status": False, "time": 0.0}
@@ -689,16 +650,21 @@ def _is_system_audio_playing() -> bool:
 
     status = False
     try:
+        import pythoncom
         from pycaw.pycaw import AudioUtilities, IAudioMeterInformation
-        for s in AudioUtilities.GetAllSessions():
-            if s.Process:
-                try:
-                    meter = s._ctl.QueryInterface(IAudioMeterInformation)
-                    if meter.GetPeakValue() > 0.0005:
-                        status = True
-                        break
-                except Exception:
-                    pass
+        pythoncom.CoInitialize()
+        try:
+            for s in AudioUtilities.GetAllSessions():
+                if s.Process:
+                    try:
+                        meter = s._ctl.QueryInterface(IAudioMeterInformation)
+                        if meter.GetPeakValue() > 0.0005:
+                            status = True
+                            break
+                    except Exception:
+                        pass
+        finally:
+            pythoncom.CoUninitialize()
     except Exception:
         pass
         
@@ -758,17 +724,23 @@ def _fetch_live_media_worker() -> None:
         _live_media_refreshing = False
 
 
-def _get_live_media_title_from_windows() -> tuple[str, str, str] | None:
+def _get_live_media_title_from_windows(wait_if_cold: bool = True) -> tuple[str, str, str] | None:
     """Queries real-time live media from Windows GSMTC with async background refresh (0ms latency on query thread)."""
     global _live_media_cache, _live_media_cache_time, _live_media_refreshing
     now = time.time()
-    if (now - _live_media_cache_time) < 15.0:
+    if (now - _live_media_cache_time) < 15.0 and _live_media_cache is not None:
         return _live_media_cache
 
     with _live_media_lock:
         if not _live_media_refreshing:
             _live_media_refreshing = True
             threading.Thread(target=_fetch_live_media_worker, daemon=True, name="LiveMediaWorker").start()
+
+    if _live_media_cache is None and wait_if_cold and _live_media_refreshing:
+        # Wait briefly (up to 1.5 seconds) on cold start for worker to populate cache
+        end_time = time.time() + 1.5
+        while _live_media_refreshing and time.time() < end_time:
+            time.sleep(0.05)
 
     return _live_media_cache
 
@@ -946,7 +918,7 @@ def _pending_confirmation_line() -> str:
     pending = get_pending_confirmation()
     if not pending:
         return ""
-    action_name = pending.get("action_name") or pending.get("tool") or "action"
+    action_name = pending.get("action") or pending.get("action_name") or pending.get("tool") or "action"
     return f"[Awaiting user confirmation: user was asked to confirm '{action_name}']"
 
 
@@ -996,10 +968,7 @@ def _tool_chat(params, query, spoken, conversation_history=None):
 
     doc_context = ""
     try:
-        # Inject document context if there is a relevant semantic or keyword match
-            results = rag_engine.search(query, target_collections=[rag_engine.DOCUMENTS, rag_engine.USER_FACTS], top_k=4)
-            if results and any(r.get("rerank_score", 0) >= 0.45 or r.get("score", 0) >= 0.38 for r in results):
-                doc_context = rag_engine.build_rag_context(query, top_k=4, conversation_history=conv_history, search_results=results)
+        doc_context = rag_engine.build_rag_context(query, top_k=3, conversation_history=conv_history)
     except Exception as e:
         logger.debug(f"[Chat RAG context]: {e}")
 
@@ -1009,89 +978,7 @@ def _tool_chat(params, query, spoken, conversation_history=None):
     return ai_reply, None
 
 
-def _tool_generate_content(params, query, spoken):
-    """Generate content (email, letter, code, ...) and return it for panel display."""
-    params = params if isinstance(params, dict) else {}
-    content_type = params.get("type", "text")
-    topic = params.get("topic", query)
-    context = params.get("context", "")
 
-    generation_prompt = (
-        f"Generate a {content_type} about: {topic}\n\n"
-        f"Context: {context}\n\n"
-        f"Write a professional, well-structured {content_type}. Be concise but complete. "
-        "Do not include meta-commentary or explanations - just the content itself."
-    )
-    # Generated documents are not spoken replies: no chat history, no 1-3 sentence limit, longer budget.
-    generated_content = get_ai_response(generation_prompt, use_memory=False, is_voice=False, max_tokens=300)
-
-    # Store generated content in active state for insert_content to use
-    try:
-        update_active_state("generated_content", {
-            "content": generated_content,
-            "type": content_type,
-            "topic": topic,
-        })
-    except Exception:
-        pass
-
-    return f"Generated {content_type} about {topic}.", None, {
-        "generated_content": generated_content,
-        "content_type": content_type,
-        "topic": topic,
-        "showGeneratedPanel": True,
-    }
-
-
-def _tool_insert_content(params, query, spoken):
-    """Insert generated content into active window via clipboard paste.
-    Uses try/finally to ensure clipboard is always restored."""
-    # Require confirmation for potentially disruptive action
-    confirm_result = _require_confirmation("Insert content", params, query, spoken or "Inserting content")
-    if confirm_result[2].get("requires_confirmation"):
-        return confirm_result
-    
-    content = params.get("content", "")
-    # If no content provided, try to get the last generated content from active state
-    if not content:
-        try:
-            state = get_active_state(clean_expired=False)
-            generated = state.get("generated_content", {})
-            content = generated.get("content", "")
-        except Exception:
-            pass
-    if not content:
-        return "No content to insert.", None
-    
-    import pyperclip
-    import pyautogui
-    import time
-    
-    # Save current clipboard
-    old_clipboard = ""
-    try:
-        old_clipboard = pyperclip.paste()
-    except Exception:
-        pass
-    
-    try:
-        # Set new content
-        pyperclip.copy(content)
-        # Paste
-        pyautogui.hotkey("ctrl", "v")
-        # Wait for paste to complete - use a longer delay and check
-        time.sleep(0.3)
-        return "Content inserted successfully.", None
-    except Exception as e:
-        logger.error(f"[Insert Content] Error: {e}")
-        return f"Failed to insert content: {e}", None
-    finally:
-        # Always restore clipboard, even if paste failed
-        try:
-            if old_clipboard:
-                pyperclip.copy(old_clipboard)
-        except Exception:
-            pass
 
 
 
@@ -1272,7 +1159,7 @@ def _tool_file_action(params, query, spoken, default_action="open"):
         return msg or f"I couldn't {str(action).replace('_', ' ')} that file.", None
     clean_name = os.path.splitext(os.path.basename(target_path))[0].replace("_", " ").replace("-", " ").title()
     if action == "open":
-        return get_quick_feedback(f"opened {clean_name}"), None
+        return spoken or f"Opened {clean_name}.", None
     return msg or f"Done with {clean_name}.", None
 
 
@@ -1283,7 +1170,7 @@ def _make_file_handler(default_action):
 
 
 def _tool_show_images(params, query, spoken):
-    return spoken or get_quick_feedback("showing image results"), "https://www.google.com/search?q=" + urllib.parse.quote(params.get("query", query))
+    return spoken or "Showing image results.", "https://www.google.com/search?q=" + urllib.parse.quote(params.get("query", query))
 
 def _tool_search_and_type(params, query, spoken):
     # Require confirmation for potentially disruptive action
@@ -1487,19 +1374,16 @@ UI_TOOL_HANDLERS = {
     "open_folder":       _tool_open_folder,
     "find_file":         _tool_find_file,
     "open_file":         _tool_file_action,
-    "reveal_file":       _tool_file_action,
-    "copy_file_path":    _tool_file_action,
     "screen_vision":     _tool_read_screen,
     "memory_recall":     _tool_memory_recall,
-    "document_qa":       _tool_document_qa,
     "current_media":     _tool_get_current_media,
     "get_current_media": _tool_get_current_media,
     "clarification":     _tool_clarification,
-    "time_date":         _tool_get_time,
     "exit":              _tool_exit,
     "chat":              _tool_chat,
-    "generate_content":  _tool_generate_content,
-    "insert_content":    _tool_insert_content,
+    "generate_content":   _tool_generate_content,
+    "regenerate_content": _tool_regenerate_content,
+    "insert_content":     _tool_insert_content,
     "empty_recycle_bin": _tool_empty_recycle_bin,
     "lock_pc":           _tool_lock_pc,
     "sleep_pc":          _tool_sleep_pc,
@@ -1800,46 +1684,18 @@ def _tool_cancel_action(params, query, spoken):
     return ("Okay, I won't do that." if had_pending else "Nothing to cancel."), None
 
 
-def _tool_computer_use(params, query, spoken):
-    """
-    Autonomous Computer-Use Agent (CUA) powered by official CUA Driver.
-    Drives native OS GUI automation and accessibility via CUA Driver runtime.
-    """
-    params = params if isinstance(params, dict) else {}
-    task_desc = str(params.get("task") or params.get("goal") or query or "").strip()
-    if not task_desc:
-        task_desc = query
-    max_steps = int(params.get("max_steps") or 8)
-
-    try:
-        from amigo.services.computer_use_agent import execute_computer_task, get_cua_driver_bridge
-        bridge = get_cua_driver_bridge()
-        if not bridge.is_available:
-            return "CUA Driver is currently disconnected or not initialized.", None, {"status": "error", "error": "CUA Driver unavailable"}
-
-        result = execute_computer_task(task_desc, max_steps=max_steps)
-        summary = result.get("summary") or f"Finished autonomous task: {task_desc}"
-        meta = {
-            "status": result.get("status", "completed"),
-            "task": task_desc,
-            "steps": result.get("steps", []),
-            "driver_status": result.get("driver_status", {}),
-        }
-        return summary, None, meta
-    except Exception as e:
-        logger.error(f"[CUA Tool] Autonomous execution failed: {e}", exc_info=True)
-        return f"Autonomous computer task failed: {e}", None, {"status": "error", "error": str(e)}
-
-
 UI_TOOL_HANDLERS.update({
     "confirm_action":   _tool_confirm_action,
     "cancel_action":    _tool_cancel_action,
     "time_date":        _tool_time_date,
     "reveal_file":      _make_file_handler("reveal"),
     "copy_file_path":   _make_file_handler("copy_path"),
-    "computer_use":     _tool_computer_use,
-    "cua_agent":        _tool_computer_use,
-    "autonomous_agent": _tool_computer_use,
+})
+
+UI_TOOL_HANDLERS.update({
+    "generate_content":   _tool_generate_content,
+    "regenerate_content": _tool_regenerate_content,
+    "insert_content":     _tool_insert_content,
 })
 
 
@@ -1940,24 +1796,48 @@ TOOL_DEFINITIONS = [
     _tool("search_emails", "Search emails by keyword.", {"query": _p("string", "Search keyword")}, ["query"]),
     _tool("draft_email", "Draft an email in Outlook.",
           {"to": _p("string", "Recipient email"), "subject": _p("string", "Email subject"), "prompt": _p("string", "Email body content")}, ["prompt"]),
-    _tool("generate_content", "Draft longer written content (email, essay, notes, code) to display in the UI panel.",
-          {"type": _p("string", "Content type"), "topic": _p("string", "Topic"), "context": _p("string", "Additional context")}, ["topic"]),
-    _tool("insert_content", "Paste generated content into the active window.", {"content": _p("string", "Text content to insert")}, ["content"]),
+    _tool(
+        "generate_content",
+        "Write, draft, or generate any content (email, leave application, code, poem, letter, essay, message) with full date awareness. Optionally specify where to insert it.",
+        {
+            "type": _p("string", "Type of content to generate (e.g. email, python code, poem, letter, leave application)"),
+            "topic": _p("string", "Detailed topic or purpose including any time/date references mentioned by user"),
+            "tone": _p("string", "Desired tone or style (e.g. professional, friendly, casual, concise, poetic)"),
+            "destination": _p("string", "Target destination if mentioned (e.g. Gmail, Notepad, Word, VS Code, Clipboard, Outlook), or empty if not specified yet"),
+            "recipient": _p("string", "Recipient name or email if applicable"),
+        },
+        ["type", "topic"],
+    ),
+    _tool(
+        "regenerate_content",
+        "Regenerate, rewrite, or modify the last generated content (email, code, poem, text) when the user asks to change tone, length, style, or details (e.g. 'regenerate it', 'make it more friendly', 'make it shorter').",
+        {
+            "feedback": _p("string", "How the user wants to modify or improve the current draft (e.g. 'more friendly', 'shorter', 'add a thank you')"),
+            "destination": _p("string", "Optional destination if the user also says where to put the new version"),
+        },
+        ["feedback"],
+    ),
+    _tool(
+        "insert_content",
+        "Insert, send, copy, or paste the generated content into a destination chosen by the user (e.g. 'put it in Gmail', 'insert into Notepad', 'copy to clipboard', 'paste in Word').",
+        {
+            "destination": _p("string", "Where to insert the content (e.g. Gmail, Notepad, Word, Clipboard, VS Code, active window)"),
+            "content": _p("string", "Leave empty to use the last generated content from state"),
+        },
+        ["destination"],
+    ),
     _tool("type_text", "Type text into an application.",
           {"text": _p("string", "Text to type"), "app": _p("string", "Target app name")}, ["text"]),
     _tool("press_key", "Send a keyboard key or shortcut combination.", {"keys": _p("string", "Key or shortcut, e.g. ctrl+c")}, ["keys"]),
     _tool("click_screen", "Click mouse at specific screen coordinates.", {"x": _p("integer"), "y": _p("integer")}),
     _tool("confirm_action", "Confirm and execute a pending action when the user agrees."),
     _tool("cancel_action", "Cancel a pending action when the user declines or cancels."),
-    _tool("computer_use", "Autonomous Computer-Use Agent (CUA) to perform multi-step desktop GUI tasks, click buttons, fill forms, navigate software, or automate computer workflows via official CUA Driver.",
-          {"task": _p("string", "Description of the computer task to accomplish autonomously"),
-           "max_steps": _p("integer", "Maximum execution steps (default 8)")}, ["task"]),
     _tool("stop", "Stop active speech, playback, or running operations."),
     _tool("exit", "Close and terminate the Amigo application."),
 ]
 
 # Build a set of valid tool names from TOOL_DEFINITIONS for validation
-VALID_TOOL_NAMES = {tool["name"] for tool in TOOL_DEFINITIONS} | {"play_media", "resume_playback", "get_stock_quote", "market_quote", "stock_price", "cua_agent", "autonomous_agent"}
+VALID_TOOL_NAMES = {tool["name"] for tool in TOOL_DEFINITIONS} | set(UI_TOOL_HANDLERS.keys())
 
 
 _TOOLS_BLOCK_CACHE: str | None = None
@@ -2036,6 +1916,10 @@ ROUTING GUIDELINES:
 5. REAL-TIME EXTERNAL FACTS: Use 'web_search' for current office holders, political leaders, latest external news, live sports scores, or external web events.
 6. COMPOUND REQUESTS: Return multiple actions in execution order (e.g. open app then type text).
 7. CONTEXT: Resolve pronouns ('it', 'that') from RECENT ACTIVITY into explicit parameters.
+8. CONTENT GENERATION, REGENERATION & INSERTION:
+- When the user asks to write, draft, or create an email, code, poem, letter, or any text: select 'generate_content'. Extract 'type', 'topic', 'tone', and 'destination' (leave 'destination' empty if the user didn't state where to put it).
+- When the user wants to modify, tweak, or redo the previous draft (e.g. "regenerate", "make it more friendly", "make it shorter", "change the tone"): select 'regenerate_content' with their instructions in 'feedback'.
+- When the user answers where to put/insert the generated content (e.g. "put it in Gmail", "in Notepad", "copy to clipboard", "Word"): select 'insert_content' with 'destination'.
 
 EXAMPLES:
 - "hello how are you" -> {"actions": [{"tool": "chat", "params": {}}]}
@@ -2052,7 +1936,11 @@ EXAMPLES:
 - "find my resume" -> {"actions": [{"tool": "find_document", "params": {"query": "resume"}}]}
 - "search my documents for invoice" -> {"actions": [{"tool": "find_document", "params": {"query": "invoice"}}]}
 - "what is in my notes" -> {"actions": [{"tool": "document_qa", "params": {"query": "notes"}}]}
-- "click submit button" -> {"actions": [{"tool": "computer_use", "params": {"task": "click submit button"}}]}
+- "can you write an email for me for taking tomorrow leave" -> {"actions": [{"tool": "generate_content", "params": {"type": "email", "topic": "taking leave tomorrow"}}]}
+- "write a python script for binary search in notepad" -> {"actions": [{"tool": "generate_content", "params": {"type": "python code", "topic": "binary search", "destination": "Notepad"}}]}
+- "regenerate and make it more friendly" -> {"actions": [{"tool": "regenerate_content", "params": {"feedback": "more friendly"}}]}
+- "put it in gmail" -> {"actions": [{"tool": "insert_content", "params": {"destination": "Gmail"}}]}
+- "copy that to clipboard" -> {"actions": [{"tool": "insert_content", "params": {"destination": "Clipboard"}}]}
 
 OUTPUT FORMAT:
 Do not include <think> tags or reasoning. Output only valid JSON in this format:
@@ -2060,13 +1948,31 @@ Do not include <think> tags or reasoning. Output only valid JSON in this format:
 
 
 def build_agent_system_prompt(query: str = "", conversation_history: list | None = None) -> str:
-    now = datetime.datetime.now()
-    online = is_internet_connected()
-    net_status = "Connected (Online)" if online else "Disconnected (Offline)"
+    try:
+        import win32gui
+        hwnd = win32gui.GetForegroundWindow()
+        if hwnd:
+            fg_title = win32gui.GetWindowText(hwnd).strip()
+            if fg_title and "amigo" not in fg_title.lower():
+                update_active_state("active_app", {"name": fg_title})
+    except Exception:
+        pass
 
     active_context = ""
     try:
         active_context = rag_engine.get_active_context_prompt() or ""
+    except Exception:
+        pass
+
+    try:
+        state = get_active_state(clean_expired=True) or {}
+        gen_info = state.get("generated_content")
+        if isinstance(gen_info, dict) and gen_info.get("content"):
+            g_type = gen_info.get("type", "content")
+            g_topic = gen_info.get("topic", "")
+            g_dest = gen_info.get("destination") or "awaiting user destination choice"
+            gen_note = f"Active Generated Draft: {g_type} about '{g_topic}' (Destination: {g_dest})"
+            active_context = f"{active_context}\n[{gen_note}]".strip()
     except Exception:
         pass
 
@@ -2084,7 +1990,6 @@ def build_agent_system_prompt(query: str = "", conversation_history: list | None
     parts = [
         _ROUTER_SYSTEM_PROMPT.replace("<<TOOLS>>", _tools_block()),
         "",
-        f"Today is {now.strftime('%A, %B')} {now.day}, {now.year}. Local time: {now.strftime('%I:%M %p').lstrip('0')} ({_day_period(now.hour)}). Internet: {net_status}.",
     ]
     pending = _pending_confirmation_line()
     if pending:
@@ -2099,6 +2004,10 @@ def build_agent_system_prompt(query: str = "", conversation_history: list | None
             parts.append(profile)
     except Exception:
         pass
+
+    now = datetime.datetime.now()
+    net_status, _ = _get_internet_status()
+    parts.append(f"Today is {now.strftime('%A, %B')} {now.day}, {now.year}. Local time: {now.strftime('%I:%M %p').lstrip('0')} ({_day_period(now.hour)}). Internet: {net_status}.")
     return "\n".join(parts)
 
 
@@ -2446,6 +2355,60 @@ def execute_tool(
         _call_ctx.value = None
 
 
+def execute_actions(
+    actions: list[dict],
+    query: str = "",
+    conversation_history: list | None = None,
+) -> list[tuple[str, str | None, dict]]:
+    """
+    Execute a sequence of actions with automatic chaining:
+    passes text output from preceding tools into blank text/context/prompt params.
+    """
+    results = []
+    last_tool_output = ""
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        tool = action.get("tool", "chat")
+        params = action.get("params", {})
+        if not isinstance(params, dict):
+            params = {}
+        spoken = action.get("speak", "") or params.get("speak", "") or params.get("response", "")
+
+        # Action Chaining: pass text output from prior tool into text, context, or prompt if blank
+        if last_tool_output:
+            for key in ("text", "context", "prompt"):
+                if not params.get(key):
+                    if key in params or (key == "text" and tool in ("type_text", "search_and_type", "insert_content")) or (key in ("context", "prompt") and tool in ("draft_email", "generate_content")):
+                        params[key] = last_tool_output
+                        break
+
+        step_query = action.get("step_text") or query
+        res_spoken, res_url, meta = execute_tool(
+            tool,
+            params,
+            query=step_query,
+            spoken=spoken,
+            conversation_history=conversation_history,
+        )
+        results.append((res_spoken, res_url, meta))
+
+        # Halt subsequent actions if current step requires confirmation or clarification
+        if isinstance(meta, dict) and (meta.get("requires_confirmation") or meta.get("requires_clarification")):
+            break
+
+        # Capture output from this tool for chaining
+        out_text = ""
+        if isinstance(meta, dict):
+            out_text = meta.get("generated_content") or meta.get("screen_text") or meta.get("text_snippet") or meta.get("text")
+        if not out_text and res_spoken:
+            out_text = res_spoken
+        if out_text:
+            last_tool_output = str(out_text).strip()
+
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Action Card Generator for React UI
 # ---------------------------------------------------------------------------
@@ -2530,27 +2493,7 @@ def build_action_cards(tool: str, params: dict, result_metadata: dict, url: str 
                 },
             })
 
-    # 4. Autonomous CUA Action Card (Official CUA Driver)
-    elif tool in ("computer_use", "cua_agent", "autonomous_agent"):
-        steps = result_metadata.get("steps", [])
-        task_label = params.get("task") or prompt
-        cards.append({
-            "id": "act-cua-agent",
-            "type": "cua_agent",
-            "title": f"CUA Driver: {task_label[:45]}",
-            "subtitle": f"{len(steps)} step(s) executed via official CUA driver runtime",
-            "selected": True,
-            "badge": "CUA Driver",
-            "payload": {
-                "tool": "computer_use",
-                "task": task_label,
-                "steps": steps,
-                "status": result_metadata.get("status", "completed"),
-                "driver": result_metadata.get("driver_status", {}),
-            },
-        })
-
-    # 5. Screen Vision Perception Card
+    # 4. Screen Vision Perception Card
     elif tool in ("screen_vision", "read_screen", "ask_about_screen"):
         win_title = result_metadata.get("window_title", "Desktop")
         cards.append({

@@ -266,10 +266,14 @@ def _init_chroma() -> None:
                 def __call__(self, input: list[str]) -> list[list[float]]:
                     if isinstance(input, str):
                         input = [input]
-                    formatted = [
-                        text if text.startswith(("title:", "task:")) else f"title: none | text: {text}"
-                        for text in input
-                    ]
+                    formatted = []
+                    for text in input:
+                        # Safety cap at 2000 chars to never exceed LiteRT 1024 token signature limit
+                        safe_text = text[:2000] if len(text) > 2000 else text
+                        if safe_text.startswith(("title:", "task:")):
+                            formatted.append(safe_text)
+                        else:
+                            formatted.append(f"title: none | text: {safe_text}")
                     with self._lock:
                         resps = self._engine.compute_embedding_batch(formatted, options=self._opts)
                         return [r.embedding for r in resps]
@@ -277,10 +281,13 @@ def _init_chroma() -> None:
                 def embed_query(self, input: list[str] | str) -> list[list[float]]:
                     if isinstance(input, str):
                         input = [input]
-                    formatted = [
-                        text if text.startswith("task:") else f"task: search result | query: {text}"
-                        for text in input
-                    ]
+                    formatted = []
+                    for text in input:
+                        safe_text = text[:1500] if len(text) > 1500 else text
+                        if safe_text.startswith("task:"):
+                            formatted.append(safe_text)
+                        else:
+                            formatted.append(f"task: search result | query: {safe_text}")
                     with self._lock:
                         resps = self._engine.compute_embedding_batch(formatted, options=self._opts)
                         return [r.embedding for r in resps]
@@ -1078,7 +1085,7 @@ def _chunk_by_paragraphs(text: str, chunk_size: int, overlap: int) -> list[str]:
 
 
 def _chunk_by_sentences(text: str, chunk_size: int, overlap: int) -> list[str]:
-    """Split text by sentences with overlap."""
+    """Split text by sentences with overlap, sub-chunking sentences that exceed chunk_size."""
     sentences = _RE_CHUNK_SENTENCES.split(text)
     chunks = []
     current = ""
@@ -1087,7 +1094,23 @@ def _chunk_by_sentences(text: str, chunk_size: int, overlap: int) -> list[str]:
         sentence = sentence.strip()
         if not sentence:
             continue
-            
+
+        # If a single sentence exceeds chunk_size (e.g. unpunctuated Excel rows, raw lists),
+        # sub-split it by words so no individual chunk exceeds chunk_size
+        if len(sentence) > chunk_size:
+            words = sentence.split()
+            sub_chunk = ""
+            for w in words:
+                if len(sub_chunk) + len(w) + 1 > chunk_size and sub_chunk:
+                    if current:
+                        chunks.append(current.strip())
+                        current = ""
+                    chunks.append(sub_chunk.strip())
+                    sub_chunk = w
+                else:
+                    sub_chunk = (sub_chunk + " " + w).strip()
+            sentence = sub_chunk
+
         if len(current) + len(sentence) > chunk_size and current:
             chunks.append(current.strip())
             overlap_text = current[-overlap:] if len(current) > overlap else current

@@ -37,6 +37,7 @@ SKIP_DIRS = {
     ".idea", ".vscode", ".cache", ".npm", ".nuget", "appdata", ".checkpoints",
     "rag_data", "dist", "build", ".next", ".turbo", "vendor", "target",
     "bin", "obj", "packages", "site-packages", "temp", "tmp",
+    "models", ".models", "weights",
 }
 
 

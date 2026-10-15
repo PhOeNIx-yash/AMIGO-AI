@@ -179,10 +179,10 @@ def _handle_wake_action():
         except Exception as e:
             logger.warning(f"[Hotkey Wake] Speech recognition note: {e}")
 
-        # If user didn't speak, default to describing the screen
+        # If user didn't speak, cleanly return to idle without forcing screen reading
         if not query:
-            query = "What is on my screen?"
-            logger.info("[Hotkey Wake] Defaulting to general screen description.")
+            logger.info("[Hotkey Wake] No speech detected, returning to idle.")
+            return
 
         # Step 4: Play searching/thinking sound and update UI state to 'processing'
         _play_searching_sound()

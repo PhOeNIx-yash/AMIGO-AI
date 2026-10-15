@@ -136,6 +136,12 @@ def window_action(action):
         if action == "minimize_all":
             pyautogui.hotkey("win", "d")
             print("[OS Automation] Minimized all windows")
+        elif action == "maximize":
+            pyautogui.hotkey("win", "up")
+            print("[OS Automation] Maximized window")
+        elif action == "restore":
+            pyautogui.hotkey("win", "down")
+            print("[OS Automation] Restored window")
         elif action == "close_window":
             pyautogui.hotkey("alt", "f4")
             print("[OS Automation] Closed current window")
@@ -166,14 +172,14 @@ def close_app(app_name: str = "") -> bool:
 
     closed = False
 
-    # 1. Graceful close via matching top-level window titles (e.g. "Settings", "Notepad", "Spotify")
+    # 1. Graceful close via matching top-level window titles (word-boundary or exact check)
     try:
         import win32gui, win32con
         def _close_win_enum(hwnd, _):
             nonlocal closed
             if win32gui.IsWindowVisible(hwnd):
                 title = (win32gui.GetWindowText(hwnd) or "").lower()
-                if clean in title:
+                if clean == title or bool(re.search(rf"\b{re.escape(clean)}\b", title)):
                     win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
                     closed = True
         win32gui.EnumWindows(_close_win_enum, None)
@@ -197,14 +203,14 @@ def close_app(app_name: str = "") -> bool:
     except Exception:
         pass
 
-    # 3. Fallback scan via psutil for partial/fuzzy process names
+    # 3. Fallback scan via psutil for exact stem or word-boundary process names
     try:
         import psutil
         for proc in psutil.process_iter(['pid', 'name']):
             try:
                 pname = (proc.info['name'] or '').lower()
                 stem = pname.replace(".exe", "")
-                if clean == stem or clean == pname or clean in stem or (len(clean) >= 4 and stem in clean):
+                if clean == stem or clean == pname or bool(re.search(rf"\b{re.escape(clean)}\b", stem)):
                     proc.terminate()
                     closed = True
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
@@ -233,9 +239,9 @@ def lock_pc():
 
 
 def sleep_pc():
-    """Puts the computer into sleep mode."""
+    """Puts the computer into sleep mode (Suspend, not Hibernate)."""
     try:
-        os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
+        ctypes.windll.powrprof.SetSuspendState(0, 1, 0)
         print("[OS Automation] System sleeping")
         return True
     except Exception as e:
@@ -256,10 +262,12 @@ def empty_recycle_bin():
 
 
 def restart_pc(delay=30):
-    """Schedules a system restart."""
+    """Schedules a system restart safely."""
     try:
-        os.system(f"shutdown /r /t {delay}")
-        print(f"[OS Automation] Scheduled system restart in {delay} seconds")
+        import subprocess
+        safe_delay = max(0, int(delay))
+        subprocess.run(["shutdown", "/r", "/t", str(safe_delay)], check=True)
+        print(f"[OS Automation] Scheduled system restart in {safe_delay} seconds")
         return True
     except Exception as e:
         print(f"[OS Automation] Error restarting system: {e}")
@@ -310,6 +318,8 @@ def play_pause_media():
                 KEYEVENTF_KEYUP = 0x0002
                 ctypes.windll.user32.keybd_event(VK_MEDIA_PLAY_PAUSE, 0, 0, 0)
                 ctypes.windll.user32.keybd_event(VK_MEDIA_PLAY_PAUSE, 0, KEYEVENTF_KEYUP, 0)
+                print("[OS Automation] Toggled play/pause media (Win32)")
+                return True
             except Exception as we:
                 print(f"[OS Automation] Windows keybd_event fallback: {we}")
         pyautogui.press("playpause")
@@ -423,10 +433,13 @@ def set_brightness(level: int | str) -> tuple[bool, str]:
 
         if not success:
             ps_cmd = f"(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1, {level_int})"
-            subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], capture_output=True, timeout=4)
-            success = True
+            r = subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], capture_output=True, timeout=4)
+            if r.returncode == 0:
+                success = True
 
-        return True, f"Screen brightness set to {level_int} percent."
+        if success:
+            return True, f"Screen brightness set to {level_int} percent."
+        return False, f"Could not adjust brightness to {level_int} percent."
     except Exception as e:
         print(f"[OS Automation] Brightness Error: {e}")
         return False, f"Could not adjust brightness to {level}."

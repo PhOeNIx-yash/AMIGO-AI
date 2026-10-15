@@ -123,16 +123,18 @@ function BeamsBackground({
     updateDarkMode();
 
     const updateCanvasSize = () => {
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = window.innerWidth * dpr;
-      canvas.height = window.innerHeight * dpr;
-      canvas.style.width = `${window.innerWidth}px`;
-      canvas.style.height = `${window.innerHeight}px`;
-      ctx.scale(dpr, dpr);
+      // Downscale ambient background buffer to 0.5x; bilinear upscaling gives a natural velvety blur with 75% lower GPU fill rate
+      const scale = 0.5;
+      const w = Math.ceil(window.innerWidth * scale);
+      const h = Math.ceil(window.innerHeight * scale);
+      canvas.width = w;
+      canvas.height = h;
+      canvas.style.width = "100%";
+      canvas.style.height = "100%";
 
-      const totalBeams = MINIMUM_BEAMS * 1.5;
+      const totalBeams = 10;
       beamsRef.current = Array.from({ length: totalBeams }, () =>
-        createBeam(canvas.width, canvas.height, isDarkModeRef.current)
+        createBeam(w, h, isDarkModeRef.current)
       );
     };
 
@@ -148,13 +150,13 @@ function BeamsBackground({
       const hueBase = isDarkModeRef.current ? 190 : 210;
       const hueRange = isDarkModeRef.current ? 70 : 50;
 
-      beam.y = canvas.height + 100;
+      beam.y = canvas.height + 60;
       beam.x =
         column * spacing + spacing / 2 + (Math.random() - 0.5) * spacing * 0.5;
-      beam.width = 100 + Math.random() * 100;
-      beam.speed = 0.5 + Math.random() * 0.4;
+      beam.width = 60 + Math.random() * 50;
+      beam.speed = 0.4 + Math.random() * 0.3;
       beam.hue = hueBase + (index * hueRange) / totalBeams;
-      beam.opacity = 0.2 + Math.random() * 0.1;
+      beam.opacity = 0.16 + Math.random() * 0.08;
       return beam;
     }
 
@@ -178,21 +180,17 @@ function BeamsBackground({
         `hsla(${beam.hue}, ${saturation}, ${lightness}, 0)`
       );
       gradient.addColorStop(
-        0.1,
+        0.15,
         `hsla(${beam.hue}, ${saturation}, ${lightness}, ${
           pulsingOpacity * 0.5
         })`
       );
       gradient.addColorStop(
-        0.4,
+        0.5,
         `hsla(${beam.hue}, ${saturation}, ${lightness}, ${pulsingOpacity})`
       );
       gradient.addColorStop(
-        0.6,
-        `hsla(${beam.hue}, ${saturation}, ${lightness}, ${pulsingOpacity})`
-      );
-      gradient.addColorStop(
-        0.9,
+        0.85,
         `hsla(${beam.hue}, ${saturation}, ${lightness}, ${
           pulsingOpacity * 0.5
         })`
@@ -218,7 +216,7 @@ function BeamsBackground({
         beam.pulse += beam.pulseSpeed;
 
         // Reset beam when it goes off screen
-        if (beam.y + beam.length < -100) {
+        if (beam.y + beam.length < -60) {
           resetBeam(beam, index, totalBeams);
         }
 
@@ -247,9 +245,13 @@ function BeamsBackground({
       )}
     >
       <canvas
-        className="absolute inset-0"
+        className="absolute inset-0 pointer-events-none"
         ref={canvasRef}
-        style={{ filter: "blur(15px)" }}
+        style={{
+          filter: "blur(6px)",
+          willChange: "transform",
+          transform: "translateZ(0)",
+        }}
       />
 
       <div

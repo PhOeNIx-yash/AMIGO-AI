@@ -35,6 +35,14 @@ from amigo.services.screen_vision import (
     capture_screen_image,
 )
 from amigo.services.web_search import search_web
+from amigo.services.content_generator import (
+    generate_content,
+    regenerate_content,
+    insert_content,
+    type_text,
+    build_temporal_and_user_context,
+    route_content_to_destination,
+)
 from amigo.services.weather import get_weather_data
 
 __all__ = [
@@ -66,6 +74,13 @@ __all__ = [
     "capture_screen_image",
     # Web Search
     "search_web",
+    # Content Generator
+    "generate_content",
+    "regenerate_content",
+    "insert_content",
+    "type_text",
+    "build_temporal_and_user_context",
+    "route_content_to_destination",
     # Weather
     "get_weather_data",
 ]
