@@ -1144,6 +1144,13 @@ class Quote:
     previous_close: Optional[float] = None
     exchange: str = ""
     as_of: Optional[datetime] = None
+    day_high: Optional[float] = None
+    day_low: Optional[float] = None
+    volume: Optional[int] = None
+    fifty_two_week_high: Optional[float] = None
+    fifty_two_week_low: Optional[float] = None
+    history: list[float] = field(default_factory=list)
+    timestamps: list[int] = field(default_factory=list)
 
     @property
     def change(self) -> Optional[float]:
@@ -1170,11 +1177,12 @@ def _resolve_symbol(query: str) -> Optional[tuple[str, str]]:
     return None
 
 
-def get_stock_quote(query: str) -> Optional[Quote]:
+def get_stock_quote(query: str, range_val: str = "1d") -> Optional[Quote]:
     q = (query or "").strip()
     if not q:
         return None
-    cached = _QUOTE_CACHE.get(q.lower())
+    cache_key = f"{q.lower()}:{range_val}"
+    cached = _QUOTE_CACHE.get(cache_key)
     if cached:
         return cached
     try:
@@ -1182,12 +1190,36 @@ def get_stock_quote(query: str) -> Optional[Quote]:
         if not resolved:
             return None
         symbol, name = resolved
-        data = _yf_get(_YF_CHART.format(symbol=urllib.parse.quote(symbol, safe="")), {"range": "1d", "interval": "1d"})
+
+        intervals = {"1d": "5m", "5d": "15m", "1mo": "1d", "3mo": "1d", "1y": "1wk"}
+        interval = intervals.get(range_val, "5m")
+        data = _yf_get(_YF_CHART.format(symbol=urllib.parse.quote(symbol, safe="")), {"range": range_val, "interval": interval})
         result = (data.get("chart") or {}).get("result") or []
         meta = (result[0].get("meta") if result else None) or {}
         price = meta.get("regularMarketPrice")
         if price is None:
             return None
+
+        quotes_data = (result[0].get("indicators", {}).get("quote", [{}])[0]) if result else {}
+        closes = quotes_data.get("close", [])
+        history = [round(float(c), 2) for c in closes if c is not None]
+        timestamps = [int(t) for t in (result[0].get("timestamp") or []) if t is not None]
+
+        # If 1d has few points (weekend/after-hours), augment with 5d so the chart is always rich
+        if range_val == "1d" and len(history) < 8:
+            try:
+                data_5d = _yf_get(_YF_CHART.format(symbol=urllib.parse.quote(symbol, safe="")), {"range": "5d", "interval": "15m"})
+                res_5d = (data_5d.get("chart") or {}).get("result") or []
+                if res_5d:
+                    q_5d = (res_5d[0].get("indicators", {}).get("quote", [{}])[0])
+                    closes_5d = q_5d.get("close", [])
+                    h_5d = [round(float(c), 2) for c in closes_5d if c is not None]
+                    if len(h_5d) > len(history):
+                        history = h_5d
+                        timestamps = [int(t) for t in (res_5d[0].get("timestamp") or []) if t is not None]
+            except Exception:
+                pass
+
         as_of = None
         if meta.get("regularMarketTime"):
             try:
@@ -1199,12 +1231,19 @@ def get_stock_quote(query: str) -> Optional[Quote]:
             symbol=symbol,
             name=name,
             price=float(price),
-            currency=meta.get("currency") or "",
+            currency=meta.get("currency") or "USD",
             previous_close=meta.get("previousClose") or meta.get("chartPreviousClose"),
             exchange=meta.get("fullExchangeName") or meta.get("exchangeName") or "",
             as_of=as_of,
+            day_high=meta.get("regularMarketDayHigh"),
+            day_low=meta.get("regularMarketDayLow"),
+            volume=meta.get("regularMarketVolume"),
+            fifty_two_week_high=meta.get("fiftyTwoWeekHigh"),
+            fifty_two_week_low=meta.get("fiftyTwoWeekLow"),
+            history=history,
+            timestamps=timestamps,
         )
-        _QUOTE_CACHE.set(q.lower(), quote, QUOTE_TTL_S)
+        _QUOTE_CACHE.set(cache_key, quote, QUOTE_TTL_S)
         return quote
     except Exception as e:
         logger.warning("[Quote] %r failed: %s", q, e)

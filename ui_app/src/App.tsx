@@ -803,12 +803,28 @@ export default function App() {
                 setActivePrompt(cleanUser);
                 activePromptRef.current = cleanUser;
                 setDisplayText(data.text);
-                setState((current) => {
-                  if (current === "action_card" || current === "contact_picker" || current === "generated_content") {
-                    return current; // Don't aggressively override interactive UI states
-                  }
-                  return "completed";
-                });
+                if (data.actionCards && data.actionCards.length > 0) {
+                  setAssistantData({
+                    speechReply: data.text,
+                    displayTitle: cleanUser,
+                    intent: data.tool || "chat",
+                    requiresDisambiguation: false,
+                    actionCards: data.actionCards,
+                    executionSummary: {
+                      status: "completed",
+                      headline: "Executed with Amigo",
+                      details: data.text,
+                    },
+                  });
+                  setState("action_card");
+                } else {
+                  setState((current) => {
+                    if (current === "action_card" || current === "contact_picker" || current === "generated_content") {
+                      return current; // Don't aggressively override interactive UI states
+                    }
+                    return "completed";
+                  });
+                }
 
                 // Optimistically update History Drawer immediately
                 const optimisticEntry: HistoryEntry = {

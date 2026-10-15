@@ -219,9 +219,19 @@ def _tool_stock_quote(params, query, spoken):
             "name": quote.name,
             "price": quote.price,
             "currency": quote.currency,
+            "change": quote.change,
             "change_pct": quote.change_pct,
+            "previous_close": quote.previous_close,
             "exchange": quote.exchange,
             "url": quote.url,
+            "day_high": quote.day_high,
+            "day_low": quote.day_low,
+            "volume": quote.volume,
+            "fifty_two_week_high": quote.fifty_two_week_high,
+            "fifty_two_week_low": quote.fifty_two_week_low,
+            "history": quote.history,
+            "timestamps": quote.timestamps,
+            "as_of": quote.as_of.strftime("%b %d, %I:%M %p") if quote.as_of else "",
         }
         return formatted, quote.url, meta
 
@@ -2517,13 +2527,16 @@ def build_action_cards(tool: str, params: dict, result_metadata: dict, url: str 
         name = result_metadata.get("name", sym)
         price = result_metadata.get("price", "")
         curr = result_metadata.get("currency", "$")
+        change_pct = result_metadata.get("change_pct")
+        pct_str = f" ({'+' if change_pct >= 0 else ''}{change_pct:.2f}%)" if change_pct is not None else ""
+        price_str = f"{price:,.2f}" if isinstance(price, (int, float)) else str(price)
         cards.append({
             "id": f"act-stock-{sym}",
-            "type": "general",
+            "type": "stock",
             "title": f"{name} ({sym})",
             "subtitle": response_text,
             "selected": True,
-            "badge": f"{curr} {price}",
+            "badge": f"{curr} {price_str}{pct_str}",
             "payload": {"tool": "stock_quote", **result_metadata},
         })
 

@@ -242,7 +242,7 @@ def _handle_wake_action():
                 else:
                     if tool == "web_search":
                         spoken = ""
-                    res_spoken, action_url, _ = execute_tool(
+                    res_spoken, action_url, tool_meta = execute_tool(
                         tool,
                         params,
                         query=query,
@@ -252,6 +252,8 @@ def _handle_wake_action():
                     reply = res_spoken or spoken
                     if action_url:
                         res_url = action_url
+                    last_tool_metadata = tool_meta or {}
+                    last_tool_params = params
 
                 if reply:
                     tool_name = tool
@@ -278,6 +280,21 @@ def _handle_wake_action():
         except Exception as e:
             logger.warning(f"[Hotkey Wake] Memory save note: {e}")
 
+        # Generate action cards if interactive tool ran
+        action_cards = []
+        try:
+            from amigo.utils.tool_registry import build_action_cards
+            action_cards = build_action_cards(
+                tool=tool_name,
+                params=last_tool_params if "last_tool_params" in locals() else {},
+                result_metadata=last_tool_metadata if "last_tool_metadata" in locals() else {},
+                url=res_url,
+                response_text=clean_reply,
+                prompt=query,
+            )
+        except Exception as e:
+            logger.debug(f"[Hotkey Action Cards] {e}")
+
         # Broadcast assistant reply to UI dashboard (triggers live message & fetchBackendHistory)
         _broadcast("chat_message", {
             "sender": "assistant",
@@ -285,6 +302,7 @@ def _handle_wake_action():
             "tool": tool_name,
             "user_query": query,
             "url": res_url,
+            "actionCards": action_cards,
         })
         _broadcast("state_change", {"state": "speaking"})
 

@@ -1239,6 +1239,37 @@ def get_weather_endpoint():
     return jsonify(data)
 
 
+@app.route("/api/stock")
+def get_stock_endpoint():
+    from amigo.services.web_search import get_stock_quote
+    symbol = request.args.get("symbol", "").strip()
+    range_val = request.args.get("range", "1d").strip()
+    if not symbol:
+        return jsonify({"error": "Symbol is required"}), 400
+    quote = get_stock_quote(symbol, range_val=range_val)
+    if not quote:
+        return jsonify({"error": f"Could not fetch quote for {symbol}"}), 404
+    return jsonify({
+        "symbol": quote.symbol,
+        "name": quote.name,
+        "price": quote.price,
+        "currency": quote.currency,
+        "previous_close": quote.previous_close,
+        "change": quote.change,
+        "change_pct": quote.change_pct,
+        "exchange": quote.exchange,
+        "day_high": quote.day_high,
+        "day_low": quote.day_low,
+        "volume": quote.volume,
+        "fifty_two_week_high": quote.fifty_two_week_high,
+        "fifty_two_week_low": quote.fifty_two_week_low,
+        "history": quote.history,
+        "timestamps": quote.timestamps,
+        "as_of": quote.as_of.strftime("%b %d, %I:%M %p") if quote.as_of else "",
+        "url": quote.url,
+    })
+
+
 @app.route("/api/media/status")
 def get_media_status():
     return jsonify(_current_media)

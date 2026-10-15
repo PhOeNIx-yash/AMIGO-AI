@@ -42,6 +42,10 @@ import {
   Cpu,
   X,
   AlertCircle,
+  TrendingUp,
+  TrendingDown,
+  DollarSign,
+  BarChart2,
 } from "lucide-react";
 import { ActionCardItem, ColorTheme } from "../types";
 import { COLOR_THEMES } from "../data/presets";
@@ -111,6 +115,20 @@ export const isFileItem = (item: ActionCardItem): boolean => {
     tool === "open_file" ||
     tool === "find_files" ||
     tool === "search_files"
+  );
+};
+
+export const isStockItem = (item: ActionCardItem): boolean => {
+  const type = (item.type || "").toLowerCase();
+  const tool = (item.payload?.tool || "").toLowerCase();
+  const badge = (item.badge || "").toLowerCase();
+  return (
+    type === "stock" ||
+    tool === "stock_quote" ||
+    tool === "market_quote" ||
+    badge === "stock" ||
+    Boolean(item.payload?.symbol && item.payload?.price !== undefined) ||
+    Boolean(item.payload?.tool === "stock_quote")
   );
 };
 
@@ -524,6 +542,348 @@ const WeatherCardPalette: React.FC<{
 };
 
 /**
+ * Dynamic, Real-Time Interactive Stock & Market Analytics Card Widget
+ */
+const StockCardPalette: React.FC<{
+  item: ActionCardItem;
+  isDark: boolean;
+  theme: any;
+}> = ({ item, isDark, theme }) => {
+  const initialPayload = item.payload || {};
+  const [data, setData] = useState<Record<string, any>>(initialPayload);
+  const [timeframe, setTimeframe] = useState<"1D" | "5D" | "1M" | "1Y">("1D");
+  const [loading, setLoading] = useState<boolean>(false);
+  const [hoveredPoint, setHoveredPoint] = useState<{ x: number; y: number; val: number; index: number } | null>(null);
+
+  const symbol = data.symbol || item.title?.match(/\(([^)]+)\)/)?.[1] || "STOCK";
+  const name = data.name || item.title?.replace(/\s*\([^)]*\)/, "") || symbol;
+  const price = typeof data.price === "number" ? data.price : parseFloat(data.price) || 0;
+  const currency = data.currency === "USD" ? "$" : data.currency === "INR" ? "₹" : data.currency === "EUR" ? "€" : data.currency === "GBP" ? "£" : (data.currency || "$");
+  const changePct = typeof data.change_pct === "number" ? data.change_pct : (data.change && data.previous_close ? (data.change / data.previous_close) * 100 : 0);
+  const change = typeof data.change === "number" ? data.change : (data.previous_close ? price - data.previous_close : 0);
+  const isPositive = changePct >= 0;
+
+  const history: number[] = Array.isArray(data.history) && data.history.length > 0 
+    ? data.history 
+    : [price * 0.985, price * 0.992, price * 0.988, price * 1.002, price * 1.006, price];
+
+  const fetchRange = async (tf: "1D" | "5D" | "1M" | "1Y") => {
+    setTimeframe(tf);
+    const rangeMap = { "1D": "1d", "5D": "5d", "1M": "1mo", "1Y": "1y" };
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/stock?symbol=${encodeURIComponent(symbol)}&range=${rangeMap[tf]}`);
+      if (res.ok) {
+        const json = await res.json();
+        if (json && !json.error) {
+          setData((prev) => ({ ...prev, ...json }));
+        }
+      }
+    } catch (e) {
+      console.error("Failed to load stock timeframe", e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Memoized SVG Chart Geometry & Coordinates for 60/120 FPS Rendering
+  const width = 480;
+  const height = 135;
+  const padding = { top: 16, bottom: 20, left: 12, right: 12 };
+  const chartW = width - padding.left - padding.right;
+  const chartH = height - padding.top - padding.bottom;
+
+  const { minVal, maxVal, valRange, points, pathD, areaD } = React.useMemo(() => {
+    const min = Math.min(...history);
+    const max = Math.max(...history);
+    const range = Math.max(max - min, 0.001);
+    const pts = history.map((val, idx) => {
+      const x = padding.left + (idx / Math.max(history.length - 1, 1)) * chartW;
+      const y = padding.top + chartH - ((val - min) / range) * chartH;
+      return { x, y, val, index: idx };
+    });
+    const pD = pts.length > 0
+      ? pts.reduce((acc, pt, i) => (i === 0 ? `M ${pt.x.toFixed(1)} ${pt.y.toFixed(1)}` : `${acc} L ${pt.x.toFixed(1)} ${pt.y.toFixed(1)}`), "")
+      : "";
+    const aD = pts.length > 0
+      ? `${pD} L ${pts[pts.length - 1].x.toFixed(1)} ${(padding.top + chartH).toFixed(1)} L ${pts[0].x.toFixed(1)} ${(padding.top + chartH).toFixed(1)} Z`
+      : "";
+    return { minVal: min, maxVal: max, valRange: range, points: pts, pathD: pD, areaD: aD };
+  }, [history, chartW, chartH]);
+
+  const prevClose = typeof data.previous_close === "number" ? data.previous_close : null;
+  const prevCloseY = prevClose && prevClose >= minVal && prevClose <= maxVal
+    ? padding.top + chartH - ((prevClose - minVal) / valRange) * chartH
+    : null;
+
+  const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const targetIdx = Math.round(ratio * (points.length - 1));
+    if (points[targetIdx]) {
+      setHoveredPoint(points[targetIdx]);
+    }
+  };
+
+  const currentDisplayPrice = hoveredPoint ? hoveredPoint.val : price;
+  const currentDiff = hoveredPoint && prevClose ? hoveredPoint.val - prevClose : change;
+  const currentDiffPct = hoveredPoint && prevClose ? (currentDiff / prevClose) * 100 : changePct;
+
+  const formatLargeNum = (num?: number | null) => {
+    if (!num) return "--";
+    if (num >= 1e12) return `${(num / 1e12).toFixed(2)}T`;
+    if (num >= 1e9) return `${(num / 1e9).toFixed(2)}B`;
+    if (num >= 1e6) return `${(num / 1e6).toFixed(2)}M`;
+    if (num >= 1e3) return `${(num / 1e3).toFixed(1)}K`;
+    return num.toLocaleString();
+  };
+
+  const strokeColor = isPositive ? "#10b981" : "#f43f5e";
+  const glowShadow = isPositive ? "rgba(16, 185, 129, 0.25)" : "rgba(244, 63, 94, 0.25)";
+
+  return (
+    <div
+      className={`relative rounded-[22px] border p-5 overflow-hidden transform-gpu ${
+        isDark
+          ? "bg-slate-900/60 border-white/10"
+          : "bg-white/80 border-slate-200/80"
+      }`}
+      style={{
+        boxShadow: `0 8px 24px -6px ${glowShadow}`,
+      }}
+    >
+      {/* Top Header Row */}
+      <div className="flex items-start justify-between gap-3 relative z-10">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span
+              className="px-2.5 py-0.5 rounded-lg text-xs font-mono font-black tracking-wider uppercase shadow-sm"
+              style={{
+                backgroundColor: isDark ? "rgba(255, 255, 255, 0.08)" : "rgba(0, 0, 0, 0.06)",
+                color: isDark ? theme.accent : theme.primary,
+                border: `1px solid ${isDark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.08)"}`,
+              }}
+            >
+              {symbol}
+            </span>
+            <span className="text-xs opacity-60 font-semibold tracking-wide uppercase">
+              {data.exchange || "EQUITY"}
+            </span>
+            {data.as_of && (
+              <span className="text-[10px] opacity-45 font-medium ml-auto hidden sm:inline">
+                {data.as_of}
+              </span>
+            )}
+          </div>
+          <h3 className={`text-base sm:text-lg font-bold tracking-tight truncate mt-1 ${isDark ? "text-white" : "text-slate-900"}`}>
+            {name}
+          </h3>
+        </div>
+
+        {/* Timeframe Selector Pills */}
+        <div className="flex items-center gap-1 p-1 rounded-xl bg-black/10 dark:bg-white/5 border border-white/5">
+          {(["1D", "5D", "1M", "1Y"] as const).map((tf) => (
+            <button
+              key={tf}
+              type="button"
+              onClick={() => fetchRange(tf)}
+              className={`px-2 py-1 rounded-lg text-[10px] font-bold tracking-wider transition-all active:scale-95 ${
+                timeframe === tf
+                  ? "bg-white text-slate-900 dark:bg-white/90 dark:text-slate-950 shadow-md scale-105"
+                  : isDark ? "opacity-60 hover:opacity-100 text-slate-300 hover:bg-white/5" : "opacity-60 hover:opacity-100 text-slate-600 hover:bg-black/5"
+              }`}
+            >
+              {tf}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Hero Price & Change Row */}
+      <div className="mt-3 flex items-baseline gap-3 flex-wrap relative z-10">
+        <div className="text-2xl sm:text-3xl font-black tracking-tight font-mono">
+          {currency}{currentDisplayPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+        </div>
+        <div
+          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold font-mono tracking-tight shadow-sm ${
+            isPositive
+              ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
+              : "bg-rose-500/15 text-rose-400 border border-rose-500/30"
+          }`}
+        >
+          {isPositive ? <TrendingUp className="w-3.5 h-3.5 stroke-[2.5]" /> : <TrendingDown className="w-3.5 h-3.5 stroke-[2.5]" />}
+          <span>{isPositive ? "+" : ""}{currentDiffPct.toFixed(2)}%</span>
+          <span className="opacity-75 text-[11px]">({isPositive ? "+" : ""}{currency}{Math.abs(currentDiff).toFixed(2)})</span>
+        </div>
+        {hoveredPoint && (
+          <span className="text-[11px] opacity-60 font-mono ml-auto">
+            Interactive Probe
+          </span>
+        )}
+      </div>
+
+      {/* Interactive SVG Sparkline Chart */}
+      <div className="mt-3 relative w-full h-[135px] select-none">
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          className={`w-full h-full overflow-visible transition-opacity duration-300 ${loading ? "opacity-40 animate-pulse" : "opacity-100"}`}
+          preserveAspectRatio="none"
+          onMouseMove={handleMouseMove}
+          onMouseLeave={() => setHoveredPoint(null)}
+        >
+          <defs>
+            <linearGradient id={`stock-gradient-${item.id}`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={strokeColor} stopOpacity="0.32" />
+              <stop offset="85%" stopColor={strokeColor} stopOpacity="0.02" />
+              <stop offset="100%" stopColor={strokeColor} stopOpacity="0" />
+            </linearGradient>
+          </defs>
+
+          {/* Previous Close Reference Line */}
+          {prevCloseY !== null && (
+            <g>
+              <line
+                x1={padding.left}
+                y1={prevCloseY}
+                x2={width - padding.right}
+                y2={prevCloseY}
+                stroke={isDark ? "rgba(255,255,255,0.2)" : "rgba(0,0,0,0.18)"}
+                strokeDasharray="4 4"
+                strokeWidth="1.2"
+              />
+              <text
+                x={width - padding.right - 2}
+                y={prevCloseY - 4}
+                textAnchor="end"
+                className="text-[9px] font-mono fill-slate-400 opacity-60 select-none"
+              >
+                Prev {currency}{prevClose?.toFixed(2)}
+              </text>
+            </g>
+          )}
+
+          {/* Area Fill */}
+          {areaD && <path d={areaD} fill={`url(#stock-gradient-${item.id})`} />}
+
+          {/* Main Price Line with Hardware Accelerated Neon Glow */}
+          {pathD && (
+            <>
+              <path
+                d={pathD}
+                fill="none"
+                stroke={strokeColor}
+                strokeWidth="6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                opacity="0.22"
+              />
+              <path
+                d={pathD}
+                fill="none"
+                stroke={strokeColor}
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </>
+          )}
+
+          {/* Hover Indicator Crosshair */}
+          {hoveredPoint && (
+            <g>
+              <line
+                x1={hoveredPoint.x}
+                y1={padding.top}
+                x2={hoveredPoint.x}
+                y2={padding.top + chartH}
+                stroke={isDark ? "rgba(255,255,255,0.4)" : "rgba(0,0,0,0.3)"}
+                strokeDasharray="2 2"
+                strokeWidth="1"
+              />
+              <circle
+                cx={hoveredPoint.x}
+                cy={hoveredPoint.y}
+                r="5"
+                fill={strokeColor}
+                stroke="#fff"
+                strokeWidth="2"
+                className="filter drop-shadow-md"
+              />
+            </g>
+          )}
+        </svg>
+
+        {/* Hovered Price Floating Tooltip */}
+        {hoveredPoint && (
+          <div
+            className="absolute pointer-events-none transform -translate-x-1/2 -translate-y-full py-1 px-2.5 rounded-lg bg-slate-900/95 text-white border border-white/20 text-[11px] font-mono font-bold shadow-xl backdrop-blur-md z-20 flex items-center gap-1.5"
+            style={{
+              left: `${(hoveredPoint.x / width) * 100}%`,
+              top: `${Math.max(10, (hoveredPoint.y / height) * 135 - 8)}px`,
+            }}
+          >
+            <span style={{ color: strokeColor }}>●</span>
+            <span>{currency}{hoveredPoint.val.toFixed(2)}</span>
+          </div>
+        )}
+      </div>
+
+      {/* Financial Key Metrics Grid */}
+      <div
+        className="mt-4 pt-3.5 border-t grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs relative z-10"
+        style={{ borderColor: isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)" }}
+      >
+        <div className="p-2 rounded-xl bg-white/[0.03] dark:bg-white/[0.02] border border-white/5">
+          <div className="text-[10px] opacity-50 uppercase tracking-wider font-semibold">Day Range</div>
+          <div className="font-mono font-bold mt-0.5 truncate text-[11px] sm:text-xs">
+            {data.day_low ? `${currency}${data.day_low.toFixed(2)}` : "--"} - {data.day_high ? `${currency}${data.day_high.toFixed(2)}` : "--"}
+          </div>
+        </div>
+
+        <div className="p-2 rounded-xl bg-white/[0.03] dark:bg-white/[0.02] border border-white/5">
+          <div className="text-[10px] opacity-50 uppercase tracking-wider font-semibold">Prev Close</div>
+          <div className="font-mono font-bold mt-0.5 text-[11px] sm:text-xs">
+            {prevClose ? `${currency}${prevClose.toFixed(2)}` : "--"}
+          </div>
+        </div>
+
+        <div className="p-2 rounded-xl bg-white/[0.03] dark:bg-white/[0.02] border border-white/5">
+          <div className="text-[10px] opacity-50 uppercase tracking-wider font-semibold">Volume</div>
+          <div className="font-mono font-bold mt-0.5 text-[11px] sm:text-xs">
+            {formatLargeNum(data.volume)}
+          </div>
+        </div>
+
+        <div className="p-2 rounded-xl bg-white/[0.03] dark:bg-white/[0.02] border border-white/5">
+          <div className="text-[10px] opacity-50 uppercase tracking-wider font-semibold">52W Range</div>
+          <div className="font-mono font-bold mt-0.5 truncate text-[11px] sm:text-xs">
+            {data.fifty_two_week_low ? `${currency}${data.fifty_two_week_low.toFixed(1)}` : "--"} - {data.fifty_two_week_high ? `${currency}${data.fifty_two_week_high.toFixed(1)}` : "--"}
+          </div>
+        </div>
+      </div>
+
+      {/* External Chart Link Footer */}
+      {data.url && (
+        <div className="mt-3.5 pt-2.5 flex items-center justify-between text-[11px] opacity-75">
+          <span className="font-medium">Live market data powered by Yahoo Finance</span>
+          <a
+            href={data.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="flex items-center gap-1 font-bold underline hover:opacity-100 transition-opacity"
+            style={{ color: isDark ? theme.accent : theme.primary }}
+          >
+            <span>Full Chart</span>
+            <ExternalLink className="w-3 h-3" />
+          </a>
+        </div>
+      )}
+    </div>
+  );
+};
+
+/**
  * Live Countdown Timer & Stopwatch Widget with Drift-Free Timestamp Ticks
  */
 const TimerCardPalette: React.FC<{
@@ -837,6 +1197,22 @@ export const ActionCard: React.FC<ActionCardProps> = ({
       );
     }
 
+    // Stocks & Financial Markets
+    if (isStockItem(item)) {
+      const isUp = (item.payload?.change_pct ?? item.payload?.change ?? 0) >= 0;
+      return (
+        <div
+          className={`w-8 h-8 rounded-xl bg-gradient-to-tr ${
+            isUp
+              ? "from-emerald-600 via-teal-500 to-green-400 shadow-emerald-500/25"
+              : "from-rose-600 via-red-500 to-orange-400 shadow-rose-500/25"
+          } flex items-center justify-center shadow-md text-white flex-shrink-0`}
+        >
+          {isUp ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
+        </div>
+      );
+    }
+
     // Weather & Meteorology
     if (isWeatherItem(item)) {
       return (
@@ -968,8 +1344,11 @@ export const ActionCard: React.FC<ActionCardProps> = ({
   const isWeatherCard = items.some(isWeatherItem);
   const isTimerCard = items.some(isTimerItem);
   const isFileCard = items.some(isFileItem);
+  const isStockCard = items.some(isStockItem);
 
-  const cardTitle = isWeatherCard
+  const cardTitle = isStockCard
+    ? "Stock & Market Overview"
+    : isWeatherCard
     ? "Weather Forecast"
     : isTimerCard
     ? "Timer & Stopwatch"
@@ -978,32 +1357,36 @@ export const ActionCard: React.FC<ActionCardProps> = ({
     : "Quick Actions";
 
   // Check if multiple items have checkboxes and are selectable
-  const hasSelectableItems = items.some((i) => i.actionType !== "button" && !i.payload?.file && !isTimerItem(i) && !isWeatherItem(i));
+  const hasSelectableItems = items.some(
+    (i) => i.actionType !== "button" && !i.payload?.file && !isTimerItem(i) && !isWeatherItem(i) && !isStockItem(i)
+  );
   const selectedCount = items.filter((i) => i.selected).length;
+
+  const isWidgetCard = isStockCard || isWeatherCard || isTimerCard;
 
   return (
     <motion.div
       id="fluent-action-card-container"
-      layout
-      initial={{ opacity: 0, y: 20, scale: 0.95 }}
+      initial={{ opacity: 0, y: 14, scale: 0.98 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: 15, scale: 0.95, filter: "blur(8px)" }}
-      transition={{ type: "spring", stiffness: 400, damping: 30 }}
-      className="w-full max-w-xl mx-auto relative px-2 sm:px-4 z-50"
+      exit={{ opacity: 0, y: 8, scale: 0.98 }}
+      transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+      style={{ willChange: "transform, opacity" }}
+      className="w-full max-w-xl mx-auto relative px-2 sm:px-4 z-50 transform-gpu"
     >
-      {/* Deep Ambient Glow behind the card */}
+      {/* Optimized Ambient Glow behind the card */}
       <div
-        className="absolute -inset-4 rounded-full opacity-40 blur-3xl pointer-events-none transition-all duration-700"
+        className="absolute -inset-2 rounded-3xl opacity-25 blur-xl pointer-events-none"
         style={{
-          background: `radial-gradient(ellipse at top, ${theme.primary}88 0%, ${theme.secondary || theme.primary}44 40%, transparent 70%)`,
+          background: `radial-gradient(ellipse at top, ${theme.primary}66 0%, ${theme.secondary || theme.primary}33 45%, transparent 70%)`,
         }}
       />
 
       <div
-        className={`relative rounded-[24px] sm:rounded-[32px] p-5 sm:p-7 shadow-2xl transition-all duration-300 transform-gpu overflow-hidden backdrop-blur-3xl border ${
+        className={`relative rounded-[24px] sm:rounded-[32px] p-5 sm:p-7 shadow-2xl overflow-hidden backdrop-blur-xl border transform-gpu ${
           isDark
-            ? "bg-gradient-to-b from-slate-900/80 to-slate-950/90 text-slate-100 shadow-black/60"
-            : "bg-gradient-to-b from-white/90 to-slate-50/95 text-slate-900 shadow-slate-400/40"
+            ? "bg-slate-900/90 text-slate-100 shadow-black/60"
+            : "bg-white/95 text-slate-900 shadow-slate-400/30"
         }`}
         style={{
           borderColor: isDark ? `${theme.primary}40` : `${theme.primary}25`,
@@ -1036,7 +1419,7 @@ export const ActionCard: React.FC<ActionCardProps> = ({
               sfx.playClick();
               onCancel();
             }}
-            className="w-8 h-8 flex items-center justify-center rounded-full opacity-60 hover:opacity-100 hover:bg-slate-500/20 transition-all active:scale-95"
+            className="w-8 h-8 flex items-center justify-center rounded-full opacity-60 hover:opacity-100 hover:bg-slate-500/20 transition-colors active:scale-95"
             title="Close"
           >
             <X className="w-4 h-4" />
@@ -1044,7 +1427,12 @@ export const ActionCard: React.FC<ActionCardProps> = ({
         </div>
 
         {/* Action Items List */}
-        <motion.div className="space-y-3 mb-6 max-h-[46vh] sm:max-h-[50vh] overflow-y-auto custom-scrollbar pr-1" variants={staggerContainer} initial="hidden" animate="show">
+        <motion.div
+          className="space-y-3 mb-6 max-h-[46vh] sm:max-h-[50vh] overflow-y-auto custom-scrollbar pr-1"
+          variants={isWidgetCard ? undefined : staggerContainer}
+          initial={isWidgetCard ? undefined : "hidden"}
+          animate={isWidgetCard ? undefined : "show"}
+        >
           {items.map((item) => {
             if (item.payload?.file) {
               const file = item.payload.file;
@@ -1054,7 +1442,7 @@ export const ActionCard: React.FC<ActionCardProps> = ({
                 payload: { tool: action === "open" ? "open_file" : action === "reveal" ? "reveal_file" : "copy_file_path", action, path: file.path },
               });
               return (
-                <motion.div key={item.id} variants={staggerItem} className={`rounded-[18px] border p-4 transition-all duration-200 shadow-sm ${isDark ? "border-white/10 bg-white/[0.03] hover:bg-white/[0.06]" : "border-black/5 bg-white hover:bg-slate-50"}`}>
+                <motion.div key={item.id} variants={staggerItem} className={`rounded-[18px] border p-4 transition-colors duration-150 shadow-sm ${isDark ? "border-white/10 bg-white/[0.03] hover:bg-white/[0.06]" : "border-black/5 bg-white hover:bg-slate-50"}`}>
                   <div className="flex min-w-0 items-start gap-3.5">
                     <div className="p-2 rounded-xl bg-slate-500/10">
                       <FileText className="h-5 w-5 flex-shrink-0" style={{ color: theme.accent }} />
@@ -1065,8 +1453,8 @@ export const ActionCard: React.FC<ActionCardProps> = ({
                     </div>
                   </div>
                   <div className="mt-4 flex flex-wrap gap-2">
-                    <button type="button" onClick={() => onExecuteSingleItem?.(actionItem("open"))} className="flex flex-1 justify-center items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold text-white shadow-md active:scale-95 transition-all" style={{ background: theme.gradient }}><FileText className="h-3.5 w-3.5" />Open</button>
-                    <button type="button" onClick={() => onExecuteSingleItem?.(actionItem("reveal"))} className="flex flex-1 justify-center items-center gap-1.5 rounded-xl border border-slate-500/30 px-3 py-2 text-xs font-semibold active:scale-95 transition-all hover:bg-slate-500/10"><FolderOpen className="h-3.5 w-3.5" />Reveal</button>
+                    <button type="button" onClick={() => onExecuteSingleItem?.(actionItem("open"))} className="flex flex-1 justify-center items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold text-white shadow-md active:scale-95 transition-transform" style={{ background: theme.gradient }}><FileText className="h-3.5 w-3.5" />Open</button>
+                    <button type="button" onClick={() => onExecuteSingleItem?.(actionItem("reveal"))} className="flex flex-1 justify-center items-center gap-1.5 rounded-xl border border-slate-500/30 px-3 py-2 text-xs font-semibold active:scale-95 transition-transform hover:bg-slate-500/10"><FolderOpen className="h-3.5 w-3.5" />Reveal</button>
                   </div>
                 </motion.div>
               );
@@ -1074,17 +1462,25 @@ export const ActionCard: React.FC<ActionCardProps> = ({
 
             if (isTimerItem(item)) {
               return (
-                <motion.div key={item.id} variants={staggerItem} className="gpu-accelerated">
+                <div key={item.id} className="transform-gpu">
                   <TimerCardPalette item={item} isDark={isDark} theme={theme} />
-                </motion.div>
+                </div>
               );
             }
 
             if (isWeatherItem(item)) {
               return (
-                <motion.div key={item.id} variants={staggerItem} className="gpu-accelerated">
+                <div key={item.id} className="transform-gpu">
                   <WeatherCardPalette item={item} isDark={isDark} theme={theme} />
-                </motion.div>
+                </div>
+              );
+            }
+
+            if (isStockItem(item)) {
+              return (
+                <div key={item.id} className="transform-gpu">
+                  <StockCardPalette item={item} isDark={isDark} theme={theme} />
+                </div>
               );
             }
 
