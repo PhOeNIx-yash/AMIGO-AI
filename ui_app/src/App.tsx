@@ -37,6 +37,7 @@ import {
   clearAssistantHistory,
 } from "./services/assistantApi";
 import { Sparkles, ChevronUp, Shuffle, Copy, Check, Volume2, X } from "lucide-react";
+import { ErrorState } from "@/components/ui/error-state";
 
 function cn(...classes: (string | undefined | null | false)[]) {
   return classes.filter(Boolean).join(" ");
@@ -181,8 +182,7 @@ function BeamsBackground({
       );
       gradient.addColorStop(
         0.15,
-        `hsla(${beam.hue}, ${saturation}, ${lightness}, ${
-          pulsingOpacity * 0.5
+        `hsla(${beam.hue}, ${saturation}, ${lightness}, ${pulsingOpacity * 0.5
         })`
       );
       gradient.addColorStop(
@@ -191,8 +191,7 @@ function BeamsBackground({
       );
       gradient.addColorStop(
         0.85,
-        `hsla(${beam.hue}, ${saturation}, ${lightness}, ${
-          pulsingOpacity * 0.5
+        `hsla(${beam.hue}, ${saturation}, ${lightness}, ${pulsingOpacity * 0.5
         })`
       );
       gradient.addColorStop(
@@ -330,6 +329,14 @@ export default function App() {
       const saved = localStorage.getItem("windows11_voice_assistant_thinking_orb_style");
       if (saved) return saved as ThinkingOrbStyle;
     }
+    return "orbits";
+  });
+
+  const [webSearchOrbStyle, setWebSearchOrbStyle] = useState<ThinkingOrbStyle>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("windows11_voice_assistant_web_search_orb_style");
+      if (saved) return saved as ThinkingOrbStyle;
+    }
     return "globe";
   });
 
@@ -365,7 +372,7 @@ export default function App() {
   useEffect(() => {
     try {
       localStorage.setItem("amigo_view_mode", viewMode);
-    } catch (e) {}
+    } catch (e) { }
   }, [viewMode]);
 
   const handleSwitchViewMode = useCallback((newMode: ViewMode) => {
@@ -418,7 +425,7 @@ export default function App() {
           const parsed = parseInt(saved, 10);
           if (!isNaN(parsed) && parsed >= 3 && parsed <= 60) return parsed;
         }
-      } catch (e) {}
+      } catch (e) { }
     }
     return 10;
   });
@@ -436,44 +443,48 @@ export default function App() {
         root.style.colorScheme = "light";
       }
     }
-    try { localStorage.setItem("windows11_voice_assistant_dark", String(isDark)); } catch (e) {}
+    try { localStorage.setItem("windows11_voice_assistant_dark", String(isDark)); } catch (e) { }
   }, [isDark]);
 
   useEffect(() => {
-    try { localStorage.setItem("windows11_voice_assistant_sound", String(soundEnabled)); } catch (e) {}
+    try { localStorage.setItem("windows11_voice_assistant_sound", String(soundEnabled)); } catch (e) { }
   }, [soundEnabled]);
 
   useEffect(() => {
-    try { localStorage.setItem("windows11_voice_assistant_color_theme", colorTheme); } catch (e) {}
+    try { localStorage.setItem("windows11_voice_assistant_color_theme", colorTheme); } catch (e) { }
   }, [colorTheme]);
 
   useEffect(() => {
-    try { localStorage.setItem("windows11_voice_assistant_visualizer_mode", visualizerMode); } catch (e) {}
+    try { localStorage.setItem("windows11_voice_assistant_visualizer_mode", visualizerMode); } catch (e) { }
   }, [visualizerMode]);
 
   useEffect(() => {
-    try { localStorage.setItem("windows11_voice_assistant_thinking_orb_style", thinkingOrbStyle); } catch (e) {}
+    try { localStorage.setItem("windows11_voice_assistant_thinking_orb_style", thinkingOrbStyle); } catch (e) { }
   }, [thinkingOrbStyle]);
+
+  useEffect(() => {
+    try { localStorage.setItem("windows11_voice_assistant_web_search_orb_style", webSearchOrbStyle); } catch (e) { }
+  }, [webSearchOrbStyle]);
 
 
   useEffect(() => {
-    try { localStorage.setItem("windows11_voice_assistant_anim_style", textAnimationStyle); } catch (e) {}
+    try { localStorage.setItem("windows11_voice_assistant_anim_style", textAnimationStyle); } catch (e) { }
   }, [textAnimationStyle]);
 
   useEffect(() => {
-    try { localStorage.setItem("windows11_voice_assistant_plugin_mode", pluginMode); } catch (e) {}
+    try { localStorage.setItem("windows11_voice_assistant_plugin_mode", pluginMode); } catch (e) { }
   }, [pluginMode]);
 
   useEffect(() => {
-    try { localStorage.setItem("windows11_voice_assistant_greeting", greetingText); } catch (e) {}
+    try { localStorage.setItem("windows11_voice_assistant_greeting", greetingText); } catch (e) { }
   }, [greetingText]);
 
   useEffect(() => {
-    try { localStorage.setItem("windows11_voice_assistant_autocycle_greeting", String(autoCycleGreetings)); } catch (e) {}
+    try { localStorage.setItem("windows11_voice_assistant_autocycle_greeting", String(autoCycleGreetings)); } catch (e) { }
   }, [autoCycleGreetings]);
 
   useEffect(() => {
-    try { localStorage.setItem("windows11_voice_assistant_autocycle_interval", String(autoCycleInterval)); } catch (e) {}
+    try { localStorage.setItem("windows11_voice_assistant_autocycle_interval", String(autoCycleInterval)); } catch (e) { }
   }, [autoCycleInterval]);
 
   // Dynamic iOS / Mobile Virtual Viewport synchronization
@@ -530,7 +541,7 @@ export default function App() {
             return parsed;
           }
         }
-      } catch (e) {}
+      } catch (e) { }
     }
     return {
       endpointUrl: "/api/assistant/process",
@@ -563,7 +574,7 @@ export default function App() {
         autoSpeech: config.autoSpeech,
         thinkingEnabled: config.thinkingEnabled,
       });
-    } catch (e) {}
+    } catch (e) { }
   };
 
 
@@ -644,7 +655,7 @@ export default function App() {
           }
         }
       }
-    } catch (e) {}
+    } catch (e) { }
   };
 
   // Fetch saved settings from Amigo backend on mount
@@ -672,9 +683,9 @@ export default function App() {
       const name = data?.user_name || data?.user_profile?.identity?.name;
       if (name && typeof name === "string") {
         setUserName(name);
-        try { localStorage.setItem("amigo_user_name", name); } catch (e) {}
+        try { localStorage.setItem("amigo_user_name", name); } catch (e) { }
       }
-    } catch (e) {}
+    } catch (e) { }
   };
 
   useEffect(() => {
@@ -698,7 +709,7 @@ export default function App() {
   const [hudActive, setHudActive] = useState<boolean>(false);
   const [liveIntent, setLiveIntent] = useState<string | null>(null);
   const [liveParams, setLiveParams] = useState<Record<string, any> | null>(null);
-  
+
   // Generated content panel state
   const [generatedContent, setGeneratedContent] = useState<{
     content: string;
@@ -719,12 +730,23 @@ export default function App() {
     }
   };
 
+  // Error state for assistant errors across Amigo
+  const [errorState, setErrorState] = useState<{
+    title: string;
+    detail: string;
+    failedPrompt?: string;
+    failedAttachment?: AttachmentItem;
+  } | null>(null);
+  const [isRetrying, setIsRetrying] = useState<boolean>(false);
+
   const handleDismissResponse = () => {
     sfx.playClick();
     setState("idle");
     setActivePrompt("");
     activePromptRef.current = "";
     setDisplayText(greetingText);
+    setErrorState(null);
+    setIsRetrying(false);
   };
 
   // Real-time bidirectional SSE sync with Amigo Python voice loop & server events
@@ -863,8 +885,15 @@ export default function App() {
               setShowHistory(true);
             } else if (data.type === "close_history" || data.type === "hide_history") {
               setShowHistory(false);
+            } else if (data.type === "error" || (data.type === "chat_message" && data.error)) {
+              const errMsg = data.error || data.message || data.text || "An unexpected error occurred.";
+              setErrorState({
+                title: data.headline || "Amigo Error",
+                detail: String(errMsg),
+                failedPrompt: activePromptRef.current || undefined,
+              });
             }
-          } catch (e) {}
+          } catch (e) { }
         };
         es.onerror = () => {
           window.dispatchEvent(new CustomEvent("amigo_backend_status", { detail: { online: false } }));
@@ -873,7 +902,7 @@ export default function App() {
           clearTimeout(reconnectTimeout);
           reconnectTimeout = setTimeout(connectSSE, 4000);
         };
-      } catch (err) {}
+      } catch (err) { }
     };
 
     connectSSE();
@@ -952,6 +981,8 @@ export default function App() {
     const effectivePrompt = prompt.trim() || (attachment ? `Analyze ${attachment.filename}` : "");
     if (!effectivePrompt) return;
 
+    setErrorState(null);
+    setIsRetrying(false);
     setHudDismissed(false);
     setLiveIntent(null);
     setLiveParams(null);
@@ -969,11 +1000,37 @@ export default function App() {
       setLoading(false);
       loadingRef.current = false;
 
-      const finalIntent = data.intent || liveIntent;
-      if (finalIntent && isActionIntent(effectivePrompt, finalIntent)) {
-        setHudActive(true);
-      } else if (finalIntent && !isActionIntent(effectivePrompt, finalIntent)) {
+      // Check for errors returned by backend logic or execution
+      const isErrorResult =
+        data.intent === "error" ||
+        data.executionSummary?.status === "error" ||
+        data.executionSummary?.status === "failed" ||
+        Boolean(data.metadata?.error);
+
+      if (isErrorResult) {
+        const errorHeadline =
+          data.executionSummary?.headline ||
+          (data.intent === "error" ? "Execution Error" : "Command Error");
+        const errorDetail =
+          data.metadata?.error ||
+          data.executionSummary?.details ||
+          data.speechReply ||
+          "An error occurred while executing this command.";
+        setErrorState({
+          title: errorHeadline,
+          detail: String(errorDetail),
+          failedPrompt: effectivePrompt,
+          failedAttachment: attachment,
+        });
         setHudActive(false);
+      } else {
+        setErrorState(null);
+        const finalIntent = data.intent || liveIntent;
+        if (finalIntent && isActionIntent(effectivePrompt, finalIntent)) {
+          setHudActive(true);
+        } else if (finalIntent && !isActionIntent(effectivePrompt, finalIntent)) {
+          setHudActive(false);
+        }
       }
 
       // Update center stage with the full real assistant response text
@@ -985,6 +1042,7 @@ export default function App() {
         id: `hist-${Date.now()}`,
         timestamp: Date.now(),
         prompt: effectivePrompt,
+        status: isErrorResult ? "error" : "completed",
         response: data,
       };
       setHistory((prev) => [
@@ -1017,13 +1075,61 @@ export default function App() {
         setState("completed");
       }
 
-    } catch (err) {
+    } catch (err: any) {
       console.warn("Assistant processing fallback:", err);
       setLoading(false);
       loadingRef.current = false;
+      setIsRetrying(false);
       setState("completed");
+
+      const errDetail =
+        err?.message ||
+        (typeof err === "string" ? err : "Failed to connect to Amigo backend. Check if the server is running.");
+      setErrorState({
+        title: "Connection / Processing Error",
+        detail: errDetail,
+        failedPrompt: effectivePrompt,
+        failedAttachment: attachment,
+      });
+
+      const errEntry: HistoryEntry = {
+        id: `hist-err-${Date.now()}`,
+        timestamp: Date.now(),
+        prompt: effectivePrompt,
+        status: "error",
+        response: {
+          speechReply: errDetail,
+          displayTitle: "Processing Failed",
+          intent: "error",
+          requiresDisambiguation: false,
+          actionCards: [],
+          metadata: { error: errDetail },
+          executionSummary: {
+            status: "error",
+            headline: "Connection / Processing Error",
+            details: errDetail,
+          },
+        },
+      };
+      setHistory((prev) => [
+        errEntry,
+        ...prev.filter((p) => p.prompt.toLowerCase() !== effectivePrompt.toLowerCase()),
+      ]);
     }
   };
+
+  const handleRetryError = useCallback(async () => {
+    if (!errorState) return;
+    const promptToRetry = errorState.failedPrompt || "";
+    const attachmentToRetry = errorState.failedAttachment;
+    setIsRetrying(true);
+    sfx.playClick?.();
+    try {
+      await handleProcessCommand(promptToRetry, attachmentToRetry);
+    } finally {
+      setIsRetrying(false);
+    }
+  }, [errorState, backendConfig]);
 
   const handleCloseHistory = useCallback(() => {
     setShowHistory(false);
@@ -1049,7 +1155,7 @@ export default function App() {
       responseData.actionCards.length > 0 &&
       responseData.actionCards.some((c: any) => c.type !== "file")
     );
-    
+
     // Check for generated content in history
     if (responseData.showGeneratedPanel && responseData.generatedContent) {
       setGeneratedContent({
@@ -1138,7 +1244,7 @@ export default function App() {
     try {
       localStorage.removeItem("windows11_voice_assistant_history");
       await clearAssistantHistory();
-    } catch (e) {}
+    } catch (e) { }
   }, []);
 
   // Toggle items on the action card
@@ -1169,7 +1275,7 @@ export default function App() {
     if (assistantData?.actionCards) {
       const selectedActions = assistantData.actionCards.filter((a) => a.selected);
       for (const act of selectedActions) {
-        executeBackendAction(act, backendConfig).catch(() => {});
+        executeBackendAction(act, backendConfig).catch(() => { });
       }
     }
 
@@ -1275,9 +1381,8 @@ export default function App() {
             exit={{ opacity: 0, scale: 0.95 }}
             transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
             style={{ willChange: "transform, opacity", transform: "translate3d(0, 0, 0)" }}
-            className={`flex flex-col transition-colors duration-500 bg-transparent ${
-              isDark ? "text-white" : "text-slate-900"
-            } ${getPluginContainerClasses()}`}
+            className={`flex flex-col transition-colors duration-500 bg-transparent ${isDark ? "text-white" : "text-slate-900"
+              } ${getPluginContainerClasses()}`}
           >
             {/* Windows 11 Fluent TitleBar Header */}
             <TitleBar
@@ -1323,6 +1428,8 @@ export default function App() {
                 onChangeVisualizerMode={setVisualizerMode}
                 thinkingOrbStyle={thinkingOrbStyle}
                 onChangeThinkingOrbStyle={setThinkingOrbStyle}
+                webSearchOrbStyle={webSearchOrbStyle}
+                onChangeWebSearchOrbStyle={setWebSearchOrbStyle}
                 textAnimationStyle={textAnimationStyle}
                 onChangeTextAnimationStyle={setTextAnimationStyle}
                 greetingText={greetingText}
@@ -1388,9 +1495,8 @@ export default function App() {
                             <div className="w-full flex flex-col items-center justify-center my-auto transition-opacity duration-200 max-w-2xl">
                               {/* 3D Orb Avatar (Positioned above text, never covered) */}
                               <div
-                                className={`relative flex items-center justify-center transition-all duration-500 ease-out ${
-                                  isCompact ? "h-0 opacity-0 overflow-hidden mb-0" : "h-[15rem] sm:h-[16rem] shrink-0 mb-3 sm:mb-4"
-                                }`}
+                                className={`relative flex items-center justify-center transition-all duration-500 ease-out ${isCompact ? "h-0 opacity-0 overflow-hidden mb-0" : "h-[15rem] sm:h-[16rem] shrink-0 mb-3 sm:mb-4"
+                                  }`}
                               >
                                 <CanvasVisualizer
                                   mode={visualizerMode}
@@ -1400,6 +1506,9 @@ export default function App() {
                                   compact={isCompact}
                                   isPaused={showSettings || showBackendModal}
                                   thinkingOrbStyle={thinkingOrbStyle}
+                                  webSearchOrbStyle={webSearchOrbStyle}
+                                  activeIntent={liveIntent || assistantData?.intent}
+                                  activePrompt={activePrompt}
                                 />
                               </div>
 
@@ -1458,9 +1567,8 @@ export default function App() {
                                     return (
                                       <div className="text-center w-full max-w-2xl mx-auto px-2">
                                         <div
-                                          className={`group relative inline-flex flex-col items-center select-none max-h-[46vh] overflow-y-auto no-scrollbar px-2 ${
-                                            state === "idle" ? "cursor-pointer" : ""
-                                          }`}
+                                          className={`group relative inline-flex flex-col items-center select-none max-h-[46vh] overflow-y-auto no-scrollbar px-2 ${state === "idle" ? "cursor-pointer" : ""
+                                            }`}
                                           onClick={state === "idle" ? handleShuffleGreeting : undefined}
                                           title={state === "idle" ? "Click to cycle greeting phrase" : undefined}
                                         >
@@ -1473,8 +1581,7 @@ export default function App() {
                                             isDark={isDark}
                                             colorTheme={colorTheme}
                                             animationStyle={textAnimationStyle}
-                                            className={`${
-                                              (() => {
+                                            className={`${(() => {
                                                 const raw = displayText || "";
                                                 const len = raw.length;
                                                 const words = raw.trim().split(/\s+/).filter(Boolean).length;
@@ -1486,7 +1593,7 @@ export default function App() {
                                                 }
                                                 return "text-xl sm:text-2xl md:text-3xl font-medium tracking-tight leading-snug";
                                               })()
-                                            } group-hover:opacity-90 transition-opacity`}
+                                              } group-hover:opacity-90 transition-opacity`}
                                           />
                                           {state === "idle" && (
                                             <span className="opacity-0 group-hover:opacity-60 transition-opacity text-[10px] mt-1.5 flex items-center space-x-1 font-medium tracking-wide">
@@ -1534,8 +1641,28 @@ export default function App() {
                               {/* Interactive State Cards Section */}
                               <div className="w-full flex items-center justify-center">
                                 <AnimatePresence mode="wait">
+                                  {/* Assistant UI ErrorState Component */}
+                                  {errorState && (
+                                    <motion.div
+                                      key="error-state-card"
+                                      initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                                      animate={{ opacity: 1, scale: 1, y: 0 }}
+                                      exit={{ opacity: 0, scale: 0.95, y: -10 }}
+                                      transition={{ duration: 0.2 }}
+                                      className="w-full max-w-md mx-auto my-3 pointer-events-auto z-30 flex justify-center"
+                                    >
+                                      <ErrorState
+                                        title={errorState.title}
+                                        detail={errorState.detail}
+                                        retrying={isRetrying}
+                                        onRetry={handleRetryError}
+                                        className="w-full border border-red-500/20 shadow-xl backdrop-blur-md"
+                                      />
+                                    </motion.div>
+                                  )}
+
                                   {/* 1. Action Card Confirmation (if user action requires checkboxes) */}
-                                  {state === "action_card" && assistantData && (
+                                  {state === "action_card" && assistantData && !errorState && (
                                     <ActionCard
                                       key="action-card"
                                       items={assistantData.actionCards}
@@ -1589,29 +1716,29 @@ export default function App() {
                                 state !== "contact_picker" &&
                                 hudActive &&
                                 !hudDismissed && (
-                                <IntentBridgeHUD
-                                  key="intent-bridge-hud"
-                                  prompt={activePrompt}
-                                  isDark={isDark}
-                                  colorTheme={colorTheme}
-                                  intent={liveIntent || assistantData?.intent}
-                                  params={liveParams || assistantData?.params || assistantData?.metadata?.params}
-                                  historyCount={history.length}
-                                  isCompleted={state === "completed" || (!loading && Boolean(assistantData))}
-                                  status={assistantData?.executionSummary?.status}
-                                  onDismiss={() => {
-                                    setHudDismissed(true);
-                                    setHudActive(false);
-                                  }}
-                                  statusText={
-                                    state === "completed"
-                                      ? (assistantData?.executionSummary?.headline || "Completed")
-                                      : state === "working"
-                                      ? "Executing Action..."
-                                      : undefined
-                                  }
-                                />
-                              )}
+                                  <IntentBridgeHUD
+                                    key="intent-bridge-hud"
+                                    prompt={activePrompt}
+                                    isDark={isDark}
+                                    colorTheme={colorTheme}
+                                    intent={liveIntent || assistantData?.intent}
+                                    params={liveParams || assistantData?.params || assistantData?.metadata?.params}
+                                    historyCount={history.length}
+                                    isCompleted={state === "completed" || (!loading && Boolean(assistantData))}
+                                    status={assistantData?.executionSummary?.status}
+                                    onDismiss={() => {
+                                      setHudDismissed(true);
+                                      setHudActive(false);
+                                    }}
+                                    statusText={
+                                      state === "completed"
+                                        ? (assistantData?.executionSummary?.headline || "Completed")
+                                        : state === "working"
+                                          ? "Executing Action..."
+                                          : undefined
+                                    }
+                                  />
+                                )}
                             </AnimatePresence>
                           </div>
                         </div>
@@ -1639,9 +1766,8 @@ export default function App() {
                     animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
                     exit={{ opacity: 0, y: -16, filter: "blur(4px)" }}
                     transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
-                    className={`relative flex-1 w-full min-h-0 flex flex-col overflow-hidden text-slate-100 ${
-                      isDark ? "bg-[#212121]" : "bg-white"
-                    }`}
+                    className={`relative flex-1 w-full min-h-0 flex flex-col overflow-hidden text-slate-100 ${isDark ? "bg-[#212121]" : "bg-white"
+                      }`}
                   >
                     <ChatWorkspace
                       history={history}

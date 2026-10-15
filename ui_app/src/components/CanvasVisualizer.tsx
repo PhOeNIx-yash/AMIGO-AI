@@ -17,21 +17,38 @@ export interface CanvasVisualizerProps {
   compact?: boolean;
   isPaused?: boolean;
   thinkingOrbStyle?: ThinkingOrbStyle;
+  webSearchOrbStyle?: ThinkingOrbStyle;
+  activeIntent?: string | null;
+  activePrompt?: string | null;
 }
 
-export const THINKING_ORB_PRESETS: {
+export const AMIGO_ORB_PRESETS: {
+  id: ThinkingOrbStyle;
+  name: string;
+  orbState: OrbState;
+  desc: string;
+}[] = [
+  { id: "orbits", name: "Cosmic Orbits", orbState: "working", desc: "3D planetary and atomic multi-axis particle orbits" },
+  { id: "rubik", name: "Puzzle Matrix", orbState: "solving", desc: "3D segmented rotating geometric bands" },
+  { id: "morph", name: "Morphing Core", orbState: "shaping", desc: "3D fluid topological shape-shifting geometry" },
+  { id: "ring", name: "Harmonic Rings", orbState: "breathing", desc: "3D quantum concentric breathing rings" },
+  { id: "web", name: "Neural Web", orbState: "connecting", desc: "3D synaptic constellation neural network" },
+  { id: "globe", name: "Radar Globe", orbState: "searching", desc: "3D scanning coordinate sphere with radar sweep" },
+];
+
+export const WEB_SEARCH_ORB_PRESETS: {
   id: ThinkingOrbStyle;
   name: string;
   orbState: OrbState;
   desc: string;
 }[] = [
   { id: "globe", name: "Radar Globe", orbState: "searching", desc: "3D scanning coordinate sphere with radar sweep" },
-  { id: "orbits", name: "Cosmic Orbits", orbState: "working", desc: "3D planetary and atomic multi-axis particle orbits" },
-  { id: "web", name: "Neural Web", orbState: "connecting", desc: "3D synaptic constellation neural network" },
-  { id: "morph", name: "Morphing Core", orbState: "shaping", desc: "3D fluid topological shape-shifting geometry" },
-  { id: "ring", name: "Harmonic Rings", orbState: "breathing", desc: "3D quantum concentric breathing rings" },
-  { id: "rubik", name: "Puzzle Matrix", orbState: "solving", desc: "3D segmented rotating geometric bands" },
+  { id: "web", name: "Neural Web", orbState: "connecting", desc: "3D synaptic constellation with packet routing" },
+  { id: "orbits", name: "Satellite Orbits", orbState: "working", desc: "3D planetary orbital tracking bands" },
+  { id: "rubik", name: "Index Matrix", orbState: "solving", desc: "3D segmented rotating search index bands" },
 ];
+
+export const THINKING_ORB_PRESETS = AMIGO_ORB_PRESETS;
 
 export const STYLE_TO_ORB_STATE: Record<ThinkingOrbStyle, OrbState> = {
   globe: "searching",
@@ -45,8 +62,8 @@ export const STYLE_TO_ORB_STATE: Record<ThinkingOrbStyle, OrbState> = {
 // 3D Spherical state mapping
 const ORB_STATES: Record<AssistantState, OrbState> = {
   idle: "weaving",
-  listening: "weaving",
-  processing: "searching",
+  listening: "listening",
+  processing: "working",
   action_card: "shaping",
   contact_picker: "connecting",
   working: "working",
@@ -305,16 +322,51 @@ export const CanvasVisualizer: React.FC<CanvasVisualizerProps> = React.memo(({
   isDark,
   compact = false,
   isPaused = false,
-  thinkingOrbStyle = "globe",
+  thinkingOrbStyle = "orbits",
+  webSearchOrbStyle = "globe",
+  activeIntent = null,
+  activePrompt = null,
 }) => {
-  const baseOrbState = ORB_STATES[state] || "weaving";
-  const orbState: OrbState =
-    state === "processing"
-      ? (STYLE_TO_ORB_STATE[thinkingOrbStyle] || "searching")
-      : baseOrbState;
+  // Detect if the active action is a Web Search
+  const isWebSearch =
+    activeIntent === "web_search" ||
+    activeIntent === "search_web" ||
+    (Boolean(activePrompt) &&
+      /\b(?:search\s+(?:the\s+)?web|search\s+google|google|look\s+up\s+online|who\s+is\s+the\s+prime\s+minister|who\s+is\s+the\s+president|latest\s+news)\b/i.test(
+        activePrompt || ""
+      ));
 
-  const orbColor = isDark ? (ORB_COLORS_DARK[state] || "#38bdf8") : (ORB_COLORS_LIGHT[state] || "#0284c7");
+  let orbState: OrbState;
+  if (state === "listening") {
+    orbState = "listening";
+  } else if (isWebSearch && (state === "processing" || state === "working")) {
+    // Distinct Web Search Orb: Radar Globe scanning or user webSearchOrbStyle
+    orbState = STYLE_TO_ORB_STATE[webSearchOrbStyle] || "searching";
+  } else if (state === "processing") {
+    // Amigo Assistant Thinking Orb: Cosmic Orbits or user thinkingOrbStyle
+    orbState = STYLE_TO_ORB_STATE[thinkingOrbStyle] || "working";
+  } else {
+    orbState = ORB_STATES[state] || "weaving";
+  }
+
+  // Web search gets distinctive electric cyan/blue radar tint
+  let orbColor = isDark ? (ORB_COLORS_DARK[state] || "#38bdf8") : (ORB_COLORS_LIGHT[state] || "#0284c7");
+  if (isWebSearch && (state === "processing" || state === "working")) {
+    orbColor = isDark ? "#00f0ff" : "#0284c7";
+  }
+
+  const speed = isWebSearch && (state === "processing" || state === "working")
+    ? 1.4
+    : state === "processing" || state === "working"
+    ? 1.2
+    : 0.95;
+
   const coreRef = useRef<HTMLDivElement>(null);
+
+  const ariaLabel =
+    isWebSearch && (state === "processing" || state === "working")
+      ? "Amigo is searching the web"
+      : ORB_LABELS[state] || ORB_LABELS.idle;
 
   return (
     <div
@@ -327,10 +379,10 @@ export const CanvasVisualizer: React.FC<CanvasVisualizerProps> = React.memo(({
           state={state}
           orbState={orbState}
           color={orbColor}
-          speed={state === "processing" || state === "working" ? 1.25 : 0.95}
+          speed={speed}
           paused={isPaused}
           isDark={isDark}
-          ariaLabel={ORB_LABELS[state] || ORB_LABELS.idle}
+          ariaLabel={ariaLabel}
           coreRef={coreRef}
         />
       </div>

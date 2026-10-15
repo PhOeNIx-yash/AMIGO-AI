@@ -1819,9 +1819,9 @@ TOOL_DEFINITIONS = [
     ),
     _tool(
         "insert_content",
-        "Insert, send, copy, or paste the generated content into a destination chosen by the user (e.g. 'put it in Gmail', 'insert into Notepad', 'copy to clipboard', 'paste in Word').",
+        "Insert, send, copy, or paste the generated content into a destination chosen by the user (e.g. 'put it in Gmail', 'insert into Notepad', 'copy to clipboard', 'paste in Word'). Only call this when the user explicitly instructs to copy, insert, paste, or send the content somewhere.",
         {
-            "destination": _p("string", "Where to insert the content (e.g. Gmail, Notepad, Word, Clipboard, VS Code, active window)"),
+            "destination": _p("string", "Target destination explicitly specified by the user (e.g. Gmail, Notepad, Word, Clipboard, VS Code). Never call this tool or invent a destination if the user is just saying thanks or did not specify where to put it."),
             "content": _p("string", "Leave empty to use the last generated content from state"),
         },
         ["destination"],
@@ -1907,7 +1907,7 @@ TOOLS AVAILABLE:
 <<TOOLS>>
 
 ROUTING GUIDELINES:
-1. GREETINGS & CHAT: For casual conversation, greetings, advice, questions, opinions, or explanations: select 'chat' with empty params: {"tool": "chat", "params": {}}. Do not put full generated answers inside params.
+1. GREETINGS, CHAT & APPRECIATION: For casual conversation, greetings, advice, compliments, gratitude, or appreciation (e.g. "thanks", "thanks for the email", "thank you so much", "looks good", "great job", "awesome"): ALWAYS select 'chat' with empty params: {"tool": "chat", "params": {}}. NEVER select 'insert_content', 'generate_content', or 'type_text' when the user is simply saying thanks or complimenting a draft.
 2. MUSIC & VIDEO PLAYBACK: For songs, music, tracks, artists, or videos, select 'play_youtube'.
 - Extract the user's requested song title and artist into params['query'] exactly as stated in the request.
 - Do not substitute, swap, or alter the requested title with different tracks.
@@ -1920,9 +1920,14 @@ ROUTING GUIDELINES:
 - When the user asks to write, draft, or create an email, code, poem, letter, or any text: select 'generate_content'. Extract 'type', 'topic', 'tone', and 'destination' (leave 'destination' empty if the user didn't state where to put it).
 - When the user wants to modify, tweak, or redo the previous draft (e.g. "regenerate", "make it more friendly", "make it shorter", "change the tone"): select 'regenerate_content' with their instructions in 'feedback'.
 - When the user answers where to put/insert the generated content (e.g. "put it in Gmail", "in Notepad", "copy to clipboard", "Word"): select 'insert_content' with 'destination'.
+- DO NOT select 'insert_content' if the user is merely expressing thanks or complimenting the draft (e.g. "thanks for the email" or "looks great" is CHAT, not insert_content).
 
 EXAMPLES:
 - "hello how are you" -> {"actions": [{"tool": "chat", "params": {}}]}
+- "thanks for the email" -> {"actions": [{"tool": "chat", "params": {}}]}
+- "thank you so much" -> {"actions": [{"tool": "chat", "params": {}}]}
+- "looks great, thanks" -> {"actions": [{"tool": "chat", "params": {}}]}
+- "great job" -> {"actions": [{"tool": "chat", "params": {}}]}
 - "help me become more intelligent" -> {"actions": [{"tool": "chat", "params": {}}]}
 - "who is the prime minister of the uk" -> {"actions": [{"tool": "web_search", "params": {"query": "current prime minister of UK"}}]}
 - "what is the capital of france" -> {"actions": [{"tool": "chat", "params": {}}]}

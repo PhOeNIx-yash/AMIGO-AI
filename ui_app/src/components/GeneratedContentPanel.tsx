@@ -3,6 +3,7 @@ import { motion } from "motion/react";
 import { scaleFade } from "../utils/motionConfig";
 import { Copy, Edit, RotateCcw, Download, Send, X, Check, Loader2, AlertCircle } from "lucide-react";
 import { COLOR_THEMES } from "../data/presets";
+import { ErrorState } from "@/components/ui/error-state";
 
 interface GeneratedContentPanelProps {
   content: string;
@@ -221,9 +222,14 @@ export function GeneratedContentPanel({
       {/* Content Area */}
       <div className="p-4 flex-1 overflow-y-auto">
         {actionError && (
-          <div className="mb-3 px-3 py-2 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-400 text-xs flex items-center space-x-2">
-            <AlertCircle className="w-4 h-4 flex-shrink-0" />
-            <span>{actionError}</span>
+          <div className="mb-3">
+            <ErrorState
+              title="Action Error"
+              detail={actionError}
+              retrying={false}
+              onRetry={() => setActionError(null)}
+              className="w-full border border-red-500/20"
+            />
           </div>
         )}
 

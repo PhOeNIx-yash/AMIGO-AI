@@ -19,10 +19,59 @@ from amigo.services.app_opener import open_windows_app
 logger = logging.getLogger("amigo.content_generator")
 
 
-def _get_ai_response(*args, **kwargs) -> str:
-    """Forwarder to llm_agent to avoid circular imports."""
-    from amigo.core.llm_agent import get_ai_response
-    return get_ai_response(*args, **kwargs)
+def _get_ai_response(
+    prompt: str,
+    use_memory: bool = False,
+    is_voice: bool = False,
+    max_tokens: int = 350,
+) -> str:
+    """
+    Direct, fast LLM generation for content drafting and rewriting.
+    Uses query_local_llm directly with thinking=False to avoid multi-minute reasoning loops on CPU.
+    """
+    try:
+        from amigo.core.llm_agent import query_local_llm
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are an expert writer and assistant. Output only the requested content directly "
+                    "without conversational preamble, greetings to the user, or internal thinking."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ]
+        res = query_local_llm(
+            messages,
+            system_prompt="",
+            max_tokens=max_tokens or 350,
+            temperature=0.2,
+            thinking=False,
+            sanitize=False,
+        )
+        if res and not res.startswith("I'm having trouble"):
+            from amigo.core.llm_agent import _strip_reasoning, _RE_SPEAKER_PREFIX
+            clean, _ = _strip_reasoning(res)
+            clean = _RE_SPEAKER_PREFIX.sub("", clean).strip()
+            # Strip outer markdown code fences (```python ... ```) if present
+            clean = re.sub(r"^```[a-zA-Z0-9_-]*\s*\n?", "", clean)
+            clean = re.sub(r"\n?```\s*$", "", clean)
+            return clean.strip()
+    except Exception as e:
+        logger.warning(f"[Content Generator] Fast LLM query failed, falling back: {e}")
+
+    try:
+        from amigo.core.llm_agent import get_ai_response
+        out = get_ai_response(prompt, use_memory=use_memory, is_voice=is_voice, max_tokens=max_tokens or 350)
+        if out:
+            out = re.sub(r"^```[a-zA-Z0-9_-]*\s*\n?", "", out.strip())
+            out = re.sub(r"\n?```\s*$", "", out)
+            return out.strip()
+        return ""
+    except Exception as e:
+        logger.error(f"[Content Generator] LLM generation error: {e}")
+        return ""
+
 
 
 def _is_app_running(app_name: str) -> bool:
@@ -68,15 +117,31 @@ def build_temporal_and_user_context() -> str:
     try:
         profile = rag_engine.load_profile()
         if isinstance(profile, dict) and profile:
-            name = profile.get("name") or profile.get("user_name") or profile.get("preferences", {}).get("name", "")
-            role = profile.get("role") or profile.get("preferences", {}).get("role", "")
-            details = [f"{k}: {v}" for k, v in profile.get("preferences", {}).items() if v]
+            identity = profile.get("identity") if isinstance(profile.get("identity"), dict) else {}
+            name = (
+                identity.get("name")
+                or profile.get("name")
+                or profile.get("user_name")
+                or profile.get("preferences", {}).get("name", "")
+            )
+            role = (
+                identity.get("role")
+                or profile.get("role")
+                or profile.get("preferences", {}).get("role", "")
+            )
+            # Exclude internal assistant/UI settings like TTS voice ("chloe") or theme from being mistaken as the user's name
+            ignored_keys = {"voice", "theme", "colorTheme", "visualizerMode", "autoSpeech", "soundEnabled"}
+            details = [
+                f"{k}: {v}"
+                for k, v in profile.get("preferences", {}).items()
+                if v and k not in ignored_keys
+            ]
             if name:
-                user_ctx += f"User Name: {name}\n"
+                user_ctx += f"Author / Sender Name: {name}\n"
             if role:
-                user_ctx += f"User Role: {role}\n"
+                user_ctx += f"Author Role: {role}\n"
             if details:
-                user_ctx += "User Preferences: " + ", ".join(details[:5])
+                user_ctx += "Author Preferences: " + ", ".join(details[:5]) + "\n"
     except Exception:
         pass
 
@@ -146,6 +211,9 @@ def route_content_to_destination(
         except Exception as e:
             logger.warning(f"[Content Router] Outlook draft fallback: {e}")
 
+        # When Outlook COM is disabled or unavailable, copy draft to clipboard and return cleanly without blind window typing
+        return True, "I copied your email draft to the clipboard. (Set AMIGO_ENABLE_OUTLOOK_MAIL=1 if you'd like drafts created directly inside Outlook.)"
+
     # 4. Current Active Window
     if dest_low in ("here", "current window", "active window", "current app", "active app"):
         time.sleep(0.3)
@@ -195,10 +263,13 @@ def generate_content(params: Any, query: str, spoken: str) -> Tuple[str, Optiona
 
     generated_content = _get_ai_response(
         generation_prompt,
-        use_memory=True,
+        use_memory=False,
         is_voice=False,
-        max_tokens=800,
+        max_tokens=350,
     ).strip()
+
+    if not generated_content:
+        return f"Sorry, I couldn't generate the {content_type} right now. Please try again.", None, {"status": "error"}
 
     state_payload = {
         "content": generated_content,
@@ -281,10 +352,13 @@ def regenerate_content(params: Any, query: str, spoken: str) -> Tuple[str, Optio
 
     updated_content = _get_ai_response(
         regen_prompt,
-        use_memory=True,
+        use_memory=False,
         is_voice=False,
-        max_tokens=800,
+        max_tokens=350,
     ).strip()
+
+    if not updated_content:
+        return f"Sorry, I couldn't regenerate the {content_type} right now. Your previous draft is still preserved.", None, {"status": "error"}
 
     history = gen_state.get("history", [])
     if isinstance(history, list):
@@ -365,7 +439,7 @@ def insert_content(params: Any, query: str, spoken: str) -> Tuple[str, Optional[
     recipient = gen_state.get("recipient", "")
 
     if not destination:
-        destination = "active window"
+        return "Where would you like me to insert the content? You can say Gmail, Notepad, Word, Clipboard, or your active window.", None, None
 
     routed, route_msg = route_content_to_destination(
         content,
@@ -389,7 +463,7 @@ def insert_content(params: Any, query: str, spoken: str) -> Tuple[str, Optional[
     return "Where would you like me to insert the content? You can say Gmail, Notepad, Word, Clipboard, or the current window.", None, None
 
 
-def type_text(params: Any, query: str, spoken: str) -> Tuple[str, Optional[str]]:
+def type_text(params: Any, query: str, spoken: str) -> Tuple[str, Optional[str], Optional[Dict[str, Any]]]:
     """
     Types literal text into an app, or dynamically delegates to generate_content
     if the user is asking to compose/draft something.
@@ -399,19 +473,18 @@ def type_text(params: Any, query: str, spoken: str) -> Tuple[str, Optional[str]]
     text = str(params.get("text", "")).strip()
     app = str(params.get("app", "")).strip()
 
-    # Dynamically detect if 'text' is actually a creative/drafting prompt rather than literal dictation
-    is_draft_request = bool(re.search(
-        r"^(?:an?\s+)?(?:email|e-mail|letter|message|note|essay|application|poem|code|script|function|story|post)\b",
+    # Capture the actual content type (group 1) without 'a' or 'an'
+    m_draft = re.match(
+        r"^(?:an?\s+)?(email|e-mail|letter|message|note|essay|application|poem|code|script|function|story|post)\b",
         text,
         re.IGNORECASE,
-    ))
-    if is_draft_request:
-        result = generate_content(
-            {"type": text.split()[0] if text else "content", "topic": query or text, "destination": app},
+    )
+    if m_draft:
+        return generate_content(
+            {"type": m_draft.group(1).lower(), "topic": query or text, "destination": app},
             query,
             spoken,
         )
-        return result[0], result[1]
 
     if app:
         open_windows_app(app)
@@ -421,4 +494,5 @@ def type_text(params: Any, query: str, spoken: str) -> Tuple[str, Optional[str]]
         os_automation.type_text(text)
 
     app_desc = f" into {app}" if app else ""
-    return (f"Typed content{app_desc}." if text else "Typed text."), None
+    return (f"Typed content{app_desc}." if text else "Typed text."), None, {}
+

@@ -24,6 +24,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { HaloSearchInput } from "@/components/ui/halo-search";
+import { ErrorState } from "@/components/ui/error-state";
 import {
   HistoryEntry,
   ColorTheme,
@@ -331,10 +332,17 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const [isUploading, setIsUploading] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [liveTranscript, setLiveTranscript] = useState("");
+  const [retryingId, setRetryingId] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const speechRecognitionRef = useRef<any>(null);
+
+  useEffect(() => {
+    if (!isLoading) {
+      setRetryingId(null);
+    }
+  }, [isLoading]);
 
   // Auto-scroll to bottom on new messages or loading change
   useEffect(() => {
@@ -619,6 +627,23 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
           {/* Chat Messages */}
           {messages.map((entry) => {
+            const isError =
+              entry.status === "error" ||
+              entry.response.intent === "error" ||
+              entry.response.executionSummary?.status === "error" ||
+              entry.response.executionSummary?.status === "failed" ||
+              Boolean(entry.response.metadata?.error);
+
+            const errorTitle =
+              entry.response.executionSummary?.headline ||
+              (entry.response.intent === "error" ? "Execution Error" : "Command Error");
+
+            const errorDetail =
+              entry.response.metadata?.error ||
+              entry.response.executionSummary?.details ||
+              entry.response.speechReply ||
+              "An error occurred while processing this command.";
+
             const replyText =
               entry.response.speechReply ||
               entry.response.executionSummary?.details ||
@@ -652,8 +677,38 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                   </div>
                 </div>
 
-                {/* Assistant Message - Open flow ChatGPT style, no enclosed card box */}
-                {replyText && (
+                {/* Assistant Message or Error State */}
+                {isError ? (
+                  <div className="flex items-start space-x-3.5 py-1">
+                    <div
+                      className="w-7 h-7 rounded-full flex items-center justify-center text-white shrink-0 mt-1 shadow-sm bg-red-500/80"
+                    >
+                      <Bot className="w-3.5 h-3.5" />
+                    </div>
+
+                    <div className="flex-1 min-w-0 space-y-2">
+                      <ErrorState
+                        title={errorTitle}
+                        detail={errorDetail}
+                        retrying={Boolean(isLoading && retryingId === entry.id)}
+                        onRetry={() => {
+                          setRetryingId(entry.id);
+                          onProcessCommand(entry.prompt);
+                        }}
+                        className="max-w-lg border border-red-500/20 shadow-md backdrop-blur-sm"
+                      />
+                      <div className="flex items-center space-x-1.5 pt-1 text-xs opacity-60">
+                        <span className="text-[10px] font-mono opacity-50 mr-2">
+                          {entry.response.intent || "error"} •{" "}
+                          {new Date(entry.timestamp).toLocaleTimeString([], {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ) : replyText ? (
                   <div className="flex items-start space-x-3.5 py-1">
                     <div
                       className="w-7 h-7 rounded-full flex items-center justify-center text-white shrink-0 mt-1 shadow-sm"
@@ -719,7 +774,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                       </div>
                     </div>
                   </div>
-                )}
+                ) : null}
               </motion.div>
             );
           })}
@@ -752,36 +807,81 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
           {/* Attachment Preview Chip */}
           <AnimatePresence>
             {attachment && (
-              <motion.div
-                initial={{ opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 6 }}
-                className={`inline-flex items-center space-x-2 px-3 py-1 rounded-xl text-xs border ${
-                  isDark
-                    ? "bg-slate-800 border-white/10 text-slate-200"
-                    : "bg-white border-black/10 text-slate-800 shadow-sm"
-                }`}
-              >
-                {attachment.fileType === "image" ? (
-                  <ImageIcon className="w-3.5 h-3.5 text-sky-400" />
-                ) : (
-                  <FileText className="w-3.5 h-3.5 text-rose-400" />
-                )}
-                <span className="truncate max-w-[200px] font-medium">
-                  {attachment.filename}
-                </span>
-                {isUploading ? (
-                  <Loader2 className="w-3 h-3 animate-spin text-indigo-400" />
-                ) : (
+              attachment.uploadStatus === "error" ? (
+                <motion.div
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 6 }}
+                  className="w-full flex items-center justify-between pb-1"
+                >
+                  <ErrorState
+                    title="Upload Failed"
+                    detail={attachment.error || `Could not upload ${attachment.filename}`}
+                    retrying={isUploading}
+                    onRetry={() => {
+                      if (attachment.file) {
+                        const file = attachment.file;
+                        setIsUploading(true);
+                        setAttachment((prev) => (prev ? { ...prev, uploadStatus: "uploading", error: undefined } : null));
+                        uploadFileToBackend(file)
+                          .then((res) => {
+                            if (res.success) {
+                              setAttachment((prev) => (prev ? { ...prev, uploadStatus: "success", filepath: res.filepath } : null));
+                            } else {
+                              setAttachment((prev) => (prev ? { ...prev, uploadStatus: "error", error: res.error } : null));
+                            }
+                          })
+                          .catch((err) => {
+                            setAttachment((prev) => (prev ? { ...prev, uploadStatus: "error", error: String(err) } : null));
+                          })
+                          .finally(() => setIsUploading(false));
+                      } else {
+                        fileInputRef.current?.click();
+                      }
+                    }}
+                    className="max-w-md border border-red-500/20"
+                  />
                   <button
                     type="button"
                     onClick={() => setAttachment(null)}
-                    className="p-0.5 hover:opacity-70"
+                    className="p-1 rounded-full text-slate-400 hover:text-white ml-2"
+                    title="Dismiss"
                   >
-                    <X className="w-3 h-3" />
+                    <X className="w-4 h-4" />
                   </button>
-                )}
-              </motion.div>
+                </motion.div>
+              ) : (
+                <motion.div
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 6 }}
+                  className={`inline-flex items-center space-x-2 px-3 py-1 rounded-xl text-xs border ${
+                    isDark
+                      ? "bg-slate-800 border-white/10 text-slate-200"
+                      : "bg-white border-black/10 text-slate-800 shadow-sm"
+                  }`}
+                >
+                  {attachment.fileType === "image" ? (
+                    <ImageIcon className="w-3.5 h-3.5 text-sky-400" />
+                  ) : (
+                    <FileText className="w-3.5 h-3.5 text-rose-400" />
+                  )}
+                  <span className="truncate max-w-[200px] font-medium">
+                    {attachment.filename}
+                  </span>
+                  {isUploading ? (
+                    <Loader2 className="w-3 h-3 animate-spin text-indigo-400" />
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setAttachment(null)}
+                      className="p-0.5 hover:opacity-70"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  )}
+                </motion.div>
+              )
             )}
           </AnimatePresence>
 

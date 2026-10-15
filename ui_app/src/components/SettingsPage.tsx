@@ -20,6 +20,7 @@ import {
   Maximize2,
   Clock,
   Orbit,
+  Globe,
   Database,
   RefreshCw,
   FileText,
@@ -38,7 +39,7 @@ import { KineticHeading, TextAnimationStyle } from "./KineticText";
 import { COLOR_THEMES, GREETING_PRESETS } from "../data/presets";
 import { testBackendConnection, fetchRagStatus, triggerRagReindex, fetchAssistantSettings, RagStatusData } from "../services/assistantApi";
 import { VoiceSettingsTab } from "./VoiceSettingsTab";
-import { THINKING_ORB_PRESETS } from "./CanvasVisualizer";
+import { AMIGO_ORB_PRESETS, WEB_SEARCH_ORB_PRESETS } from "./CanvasVisualizer";
 import { DeleteButton } from "./HistoryPanel";
 
 interface SettingsPageProps {
@@ -52,6 +53,8 @@ interface SettingsPageProps {
   onChangeVisualizerMode: (mode: VisualizerMode) => void;
   thinkingOrbStyle?: ThinkingOrbStyle;
   onChangeThinkingOrbStyle?: (style: ThinkingOrbStyle) => void;
+  webSearchOrbStyle?: ThinkingOrbStyle;
+  onChangeWebSearchOrbStyle?: (style: ThinkingOrbStyle) => void;
   textAnimationStyle: TextAnimationStyle;
   onChangeTextAnimationStyle: (style: TextAnimationStyle) => void;
   greetingText: string;
@@ -83,8 +86,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   onChangeColorTheme,
   visualizerMode,
   onChangeVisualizerMode,
-  thinkingOrbStyle = "globe",
+  thinkingOrbStyle = "orbits",
   onChangeThinkingOrbStyle,
+  webSearchOrbStyle = "globe",
+  onChangeWebSearchOrbStyle,
   textAnimationStyle,
   onChangeTextAnimationStyle,
   greetingText,
@@ -395,7 +400,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     }
     onChangeColorTheme?.("beams");
     onChangeVisualizerMode("orb");
-    onChangeThinkingOrbStyle?.("globe");
+    onChangeThinkingOrbStyle?.("orbits");
+    onChangeWebSearchOrbStyle?.("globe");
     onChangeTextAnimationStyle("silk_blur");
     onChangePluginMode("fullscreen");
     setTranscriptionEngine("amigo-speech");
@@ -625,7 +631,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 </div>
 
 
-                {/* Thinking Orb Animation Selector */}
+                {/* Amigo Assistant Orb Animation Selector */}
                 <div
                   className={`p-4 rounded-2xl border ${
                     isDark ? "bg-white/[0.03]" : "bg-white"
@@ -640,15 +646,15 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                       <Orbit className="h-4 w-4" />
                     </div>
                     <div>
-                      <div className="text-xs font-semibold uppercase tracking-wider opacity-60">Thinking Orb Animation</div>
+                      <div className="text-xs font-semibold uppercase tracking-wider opacity-60">Amigo Assistant Orb</div>
                       <p className="mt-1 text-[11px] leading-relaxed opacity-60">
-                        Choose the 3D particle motion Amigo displays while processing commands and reasoning.
+                        Choose the 3D particle motion Amigo displays while conversing, reasoning, and executing desktop commands.
                       </p>
                     </div>
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
-                    {THINKING_ORB_PRESETS.map((preset) => {
+                    {AMIGO_ORB_PRESETS.map((preset) => {
                       const isSelected = thinkingOrbStyle === preset.id;
                       return (
                         <button
@@ -684,6 +690,79 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                               <span
                                 className="text-[10px] px-1.5 py-0.5 rounded-full font-medium"
                                 style={{ backgroundColor: `${theme.primary}25`, color: theme.primary }}
+                              >
+                                Active
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-[10px] opacity-60 mt-1 line-clamp-1">
+                            {preset.desc}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Web Search Orb Animation Selector */}
+                <div
+                  className={`p-4 rounded-2xl border ${
+                    isDark ? "bg-white/[0.03]" : "bg-white"
+                  }`}
+                  style={{ borderColor: isDark ? `${theme.primary}18` : `${theme.primary}12` }}
+                >
+                  <div className="flex items-start gap-3 mb-3">
+                    <div
+                      className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl border"
+                      style={{ color: "#38bdf8", borderColor: "#38bdf855", backgroundColor: "#38bdf812" }}
+                    >
+                      <Globe className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <div className="text-xs font-semibold uppercase tracking-wider opacity-60">Web Search Orb Animation</div>
+                      <p className="mt-1 text-[11px] leading-relaxed opacity-60">
+                        Choose the 3D particle motion Amigo displays specifically when performing online web searches and scanning live sources.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
+                    {WEB_SEARCH_ORB_PRESETS.map((preset) => {
+                      const isSelected = webSearchOrbStyle === preset.id;
+                      return (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          onClick={() => onChangeWebSearchOrbStyle?.(preset.id)}
+                          className={`p-2.5 rounded-xl border flex flex-col items-start text-left transition-all relative overflow-hidden ${
+                            isSelected
+                              ? "shadow-sm font-medium"
+                              : isDark
+                              ? "border-white/10 bg-white/[0.02] hover:bg-white/5"
+                              : "border-black/10 bg-white hover:bg-slate-50"
+                          }`}
+                          style={
+                            isSelected
+                              ? {
+                                  borderColor: "#0284c7",
+                                  boxShadow: `0 0 0 1.5px #38bdf850`,
+                                  backgroundColor: "#0284c718",
+                                }
+                              : {}
+                          }
+                        >
+                          <div className="flex items-center justify-between w-full">
+                            <span className="text-xs font-semibold text-slate-900 dark:text-white flex items-center gap-1.5">
+                              <span
+                                className="w-2 h-2 rounded-full inline-block"
+                                style={{ backgroundColor: isSelected ? "#38bdf8" : "rgba(150,150,150,0.5)" }}
+                              />
+                              {preset.name}
+                            </span>
+                            {isSelected && (
+                              <span
+                                className="text-[10px] px-1.5 py-0.5 rounded-full font-medium"
+                                style={{ backgroundColor: "#38bdf825", color: isDark ? "#38bdf8" : "#0284c7" }}
                               >
                                 Active
                               </span>

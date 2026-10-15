@@ -140,16 +140,26 @@ class TestContentGenerator(unittest.TestCase):
 
     @patch("amigo.services.content_generator.generate_content")
     def test_type_text_delegates_draft_request(self, mock_gen):
-        mock_gen.return_value = ("Drafted email", None, {})
-        spoken, link = type_text({"text": "an email to my manager about sick leave"}, "write an email", "")
+        mock_gen.return_value = ("Drafted email", None, {"showGeneratedPanel": True})
+        spoken, link, meta = type_text({"text": "an email to my manager about sick leave"}, "write an email", "")
         mock_gen.assert_called_once()
         self.assertEqual(spoken, "Drafted email")
+        self.assertEqual(mock_gen.call_args[0][0]["type"], "email")
+        self.assertTrue(meta.get("showGeneratedPanel"))
 
     @patch("amigo.services.os_automation.type_text")
     def test_type_text_literal(self, mock_type):
-        spoken, link = type_text({"text": "Hello 123"}, "type hello 123", "")
+        spoken, link, meta = type_text({"text": "Hello 123"}, "type hello 123", "")
         mock_type.assert_called_with("Hello 123")
         self.assertIn("Typed", spoken)
+
+    @patch("amigo.services.content_generator._get_ai_response")
+    def test_generate_content_empty_guard(self, mock_ai):
+        mock_ai.return_value = ""
+        spoken, link, meta = generate_content({"type": "email", "topic": "leave"}, "draft leave", "")
+        self.assertIn("couldn't generate", spoken)
+        self.assertEqual(meta.get("status"), "error")
+
 
     def test_tool_registry_registration(self):
         self.assertIn("generate_content", UI_TOOL_HANDLERS)
