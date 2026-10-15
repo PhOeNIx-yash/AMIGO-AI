@@ -35,6 +35,7 @@ _hotkey_thread = None
 _thread_id = None
 _running = False
 _is_processing = False
+_last_trigger_time = 0.0
 _lock = threading.Lock()
 _broadcast_callback = None
 
@@ -337,6 +338,13 @@ def _hotkey_message_loop():
             if res <= 0:
                 break
             if msg.message == WM_HOTKEY and msg.wParam == HOTKEY_ID:
+                now = time.time()
+                with _lock:
+                    if _is_processing or (now - _last_trigger_time) < 1.2:
+                        logger.debug("[Hotkey Service] Ignoring rapid/duplicate Alt+V trigger.")
+                        continue
+                    _is_processing = True
+                    _last_trigger_time = now
                 logger.info("[Hotkey Service] Alt+V triggered!")
                 threading.Thread(target=_handle_wake_action, daemon=True).start()
             user32.TranslateMessage(ctypes.byref(msg))

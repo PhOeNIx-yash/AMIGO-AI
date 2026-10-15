@@ -409,7 +409,7 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
         if remember:
             last_remember = remember
 
-        if tool == "web_search":
+        if tool in ("chat", "web_search"):
             spoken = ""
 
         logger.info(f"[Query Action] tool={tool!r} params={params}")
@@ -484,6 +484,7 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
         display_prompt or query,
         final_reply,
         tool=primary_tool,
+        params=last_params,
         clipboard_used=clipboard_used,
         remember=last_remember,
     )

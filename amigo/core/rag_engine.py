@@ -1195,6 +1195,7 @@ def add_conversation(
     user_msg: str,
     assistant_msg: str,
     tool: str = "chat",
+    params: dict | None = None,
     clipboard_used: bool = False,
     remember: str = "",
     state_update: dict | None = None,
@@ -1232,6 +1233,7 @@ def add_conversation(
                     "user_msg": user_msg,
                     "assistant_msg": assistant_msg,
                     "tool": tool,
+                    "params": json.dumps(params or {}, ensure_ascii=False)[:200],
                     "timestamp": timestamp,
                     "type": "conversation",
                     "importance": importance,
@@ -1245,6 +1247,7 @@ def add_conversation(
         "user": user_msg,
         "assistant": assistant_msg,
         "tool": tool,
+        "params": params or {},
         "timestamp": timestamp,
         "importance": importance,
     }

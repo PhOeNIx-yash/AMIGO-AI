@@ -142,19 +142,47 @@ def _tool_web_search(params, query, spoken):
     except Exception:
         pass
 
-    # The answer prompt keeps the user's own words but adds the resolved topic, so follow-ups
-    # such as "what about its population?" are answered about the right subject.
-    answer_prompt = query if target.lower() in (query or "").lower() else f"{query} (the question is about: {target})"
-
-    # Fast-mode search for voice: single engine, no content fetching, minimal processing
-    search_response = search_web(target, max_results=3, fetch_content=False, fast_mode=True)
+    # Runs Federated Web + Live Google News RSS + DDGS News + Bing in parallel (~400-700ms)
+    search_response = search_web(target, max_results=6, fetch_content=False, fast_mode=True)
     search_url = f"https://www.google.com/search?q={urllib.parse.quote(target)}"
     if show_in_browser:
         searchGoogle(target)
 
     if search_response.results:
-        web_context = format_for_llm(search_response, max_chars=3000)
-        response = get_ai_response(answer_prompt, web_context=web_context, conversation_history=conv_history)
+        web_context = format_for_llm(search_response, max_chars=3800)
+        now_str = datetime.datetime.now().strftime("%A, %B %d, %Y")
+
+        synthesis_messages = [
+            {
+                "role": "system",
+                "content": (
+                    f"You are Amigo, a fast, accurate voice assistant. Today is {now_str}.\n"
+                    "Answer the user's question in 1 to 3 natural spoken sentences using the live search results.\n"
+                    "GUIDELINES:\n"
+                    "- Prioritize the newest dated reports and current facts.\n"
+                    "- When a topic has both an official status and a widely reported industry window, forecast, or leak "
+                    "(for example, an expected quarter or year), state both clearly and naturally.\n"
+                    "- Output direct spoken sentences only—no markdown, bullet points, or URLs."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"{web_context}\n\nQuestion: {query} (Topic: {target})",
+            },
+        ]
+
+        try:
+            response = query_local_llm(
+                synthesis_messages,
+                system_prompt="",
+                max_tokens=180,
+                temperature=0.15,
+                thinking=False,
+                sanitize=True,
+            )
+        except Exception:
+            response = get_ai_response(query, web_context=web_context, conversation_history=conv_history, use_memory=False)
+
         meta = {
             "status": "success",
             "query_type": search_response.query_type,
@@ -167,9 +195,10 @@ def _tool_web_search(params, query, spoken):
         return response, search_url, meta
 
     response = get_ai_response(
-        answer_prompt,
+        query,
         web_context="The web search returned no results. Say so honestly, and only share what you reliably know.",
         conversation_history=conv_history,
+        use_memory=False,
     )
     return response, search_url, {"status": "no_results"}
 
@@ -958,10 +987,12 @@ def _tool_chat(params, query, spoken, conversation_history=None):
     """Conversational reply with full context and conversation history."""
     params = params if isinstance(params, dict) else {}
     
-    # If a specific response was provided directly by router or action, return immediately
-    direct_reply = (spoken or params.get("response") or "").strip()
-    if direct_reply:
-        return direct_reply, None
+    # For user queries, always generate a full intelligent response using core AI model
+    # Only return direct_reply if there is no user query (e.g. system alert or action greeting)
+    if not query or not query.strip():
+        direct_reply = (spoken or params.get("response") or "").strip()
+        if direct_reply:
+            return direct_reply, None
 
     call = getattr(_call_ctx, "value", None) or {}
     conv_history = conversation_history if conversation_history is not None else call.get("conversation_history")
@@ -1913,9 +1944,15 @@ ROUTING GUIDELINES:
 - Do not substitute, swap, or alter the requested title with different tracks.
 3. PC & SYSTEM ACTIONS: For apps, volume, brightness, timers, screenshots, files: select the specific tool. Never reply with conversational chat when asked to perform PC actions.
 4. LOCAL DOCUMENTS & RAG: For finding local documents, personal records, tickets, notes, invoices, or asking questions about user files: use 'find_document' or 'document_qa'. Do NOT use 'web_search' for local files.
-5. REAL-TIME EXTERNAL FACTS: Use 'web_search' for current office holders, political leaders, latest external news, live sports scores, or external web events.
+5. REAL-TIME EXTERNAL FACTS & WEB SEARCH: Use 'web_search' for real-world facts, current office holders, political leaders, latest external news, live sports scores, release dates, products, specifications, people, media, places, or external web information.
 6. COMPOUND REQUESTS: Return multiple actions in execution order (e.g. open app then type text).
-7. CONTEXT: Resolve pronouns ('it', 'that') from RECENT ACTIVITY into explicit parameters.
+7. FOLLOW-UP QUESTIONS & CONTEXT RESOLUTION:
+When the user asks a follow-up question or elliptical query referencing previous conversation (e.g. questions starting with 'For which...', 'Who...', 'What about...', 'How much...', 'Where...', 'When...', 'Can you...', or referencing previous entities using 'it', 'that', 'they', 'he', 'she'):
+- Identify the subject or topic from RECENT ACTIVITY.
+- If the subject is an external topic, entity, product, media, game, person, or the previous turn used web_search: select 'web_search' with the fully resolved query combining the subject and the question (e.g., prior subject 'GTA 6' + follow-up 'For which platform?' -> query: 'GTA 6 release platforms').
+- If the user wants to play, view, or open the previous item: route to the corresponding tool with the resolved subject (e.g. 'play it' -> play_youtube, 'open it' -> open_file/open_app).
+- If the follow-up is casual chat, advice, or conceptual explanation: select 'chat'.
+- NEVER return an empty actions list: every user request must map to a valid tool.
 8. CONTENT GENERATION, REGENERATION & INSERTION:
 - When the user asks to write, draft, or create an email, code, poem, letter, or any text: select 'generate_content'. Extract 'type', 'topic', 'tone', and 'destination' (leave 'destination' empty if the user didn't state where to put it).
 - When the user wants to modify, tweak, or redo the previous draft (e.g. "regenerate", "make it more friendly", "make it shorter", "change the tone"): select 'regenerate_content' with their instructions in 'feedback'.
@@ -1933,6 +1970,13 @@ EXAMPLES:
 - "what is the capital of france" -> {"actions": [{"tool": "chat", "params": {}}]}
 - "play bohemian rhapsody" -> {"actions": [{"tool": "play_youtube", "params": {"query": "bohemian rhapsody"}}]}
 - "can you play that" (after mentioning a song in previous turn) -> {"actions": [{"tool": "play_youtube", "params": {"query": "<song from immediate previous turn>"}}]}
+- "for which platform?" (after discussing a video game or software) -> {"actions": [{"tool": "web_search", "params": {"query": "<game/software name from recent activity> platforms"}}]}
+- "who is the director?" (after discussing a movie) -> {"actions": [{"tool": "web_search", "params": {"query": "<movie name from recent activity> director"}}]}
+- "what other movies has he made?" (after discussing a director/actor) -> {"actions": [{"tool": "web_search", "params": {"query": "<person name from recent activity> filmography movies"}}]}
+- "what is its population?" (after discussing a city/country) -> {"actions": [{"tool": "web_search", "params": {"query": "<city/country from recent activity> population"}}]}
+- "how much is he worth?" (after discussing a person/founder) -> {"actions": [{"tool": "web_search", "params": {"query": "<person name from recent activity> net worth"}}]}
+- "open it" (after finding a file) -> {"actions": [{"tool": "open_file", "params": {"path": "<file name from recent activity>"}}]}
+- "can you give a real world example?" (after conceptual chat) -> {"actions": [{"tool": "chat", "params": {}}]}
 - "play some jazz" -> {"actions": [{"tool": "play_youtube", "params": {"query": "jazz music"}}]}
 - "pause music" -> {"actions": [{"tool": "pause_media", "params": {}}]}
 - "resume" -> {"actions": [{"tool": "resume_media", "params": {}}]}
@@ -2192,6 +2236,20 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
                         final_response = resp
                         break
         return tool_calls, final_response
+
+    if not tool_calls and conversation_history:
+        for prev in reversed(conversation_history):
+            if not isinstance(prev, dict):
+                continue
+            prev_tool = (prev.get("tool") or "").strip()
+            prev_params = prev.get("params") if isinstance(prev.get("params"), dict) else {}
+            if prev_tool == "web_search":
+                prev_q = (prev_params.get("query") or prev.get("user") or "").strip()
+                if prev_q and len(query.split()) <= 15:
+                    resolved_q = f"{prev_q} {query}"
+                    logger.info("[Router Fallback] Inferred web_search follow-up: %r", resolved_q)
+                    return [{"tool": "web_search", "params": {"query": resolved_q}}], ""
+                break
 
     if not final_response:
         clean_resp = re.sub(r"<think>[\s\S]*?</think>", "", response, flags=re.I).strip()

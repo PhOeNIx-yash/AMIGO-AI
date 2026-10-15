@@ -767,7 +767,9 @@ export default function App() {
             if (data.type === "state_change") {
               const s = data.state;
               if (s === "listening") {
-                setIsListening(true);
+                // Only update assistant visual state (3D Orb & HUD)
+                // Do NOT set isListening to true here, as that starts the browser's MediaRecorder
+                // while the backend hotkey is already listening, causing duplicate command execution!
                 setState("listening");
               } else if (s === "idle") {
                 setIsListening(false);
