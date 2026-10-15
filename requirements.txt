@@ -4,7 +4,7 @@
 # ──────────────────────────────────────────────────────────────
 
 # ── Speech Recognition (STT) ──────────────────────────────────
-sherpa-onnx>=1.10.0            # Next-gen Kaldi ONNX offline streaming STT engine (ultra-fast, low RAM)
+vosk>=0.3.45                   # High-accuracy offline STT engine (Kaldi-based, lightweight, zero hallucinations)
 SpeechRecognition>=3.10.0      # Voice command microphone transcription
 pyaudio>=0.2.14                # Microphone audio capture backend
 av>=11.0.0                     # PyAV offline audio container decoding (WebM, Opus, MP3, WAV)

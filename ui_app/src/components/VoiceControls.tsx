@@ -381,7 +381,7 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
       recognition.onerror = (e: any) => {
         console.warn("Web Speech error:", e);
         webSpeechActiveRef.current = false;
-        // If offline network error or speech recognition fails, fall back to offline Sherpa-ONNX STT
+        // If offline network error or speech recognition fails, fall back to offline Vosk STT
         if (e.error === "network" || e.error === "not-allowed" || e.error === "service-not-allowed") {
           try {
             recognition.stop();
@@ -531,7 +531,7 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
         startWebSpeechRecognition();
       }
 
-      // 2. Capture audio chunks for Sherpa-ONNX offline neural STT
+      // 2. Capture audio chunks for Vosk offline neural STT
       audioChunksRef.current = [];
       const options = { mimeType: "audio/webm" };
       let recorder: MediaRecorder;

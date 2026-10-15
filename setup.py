@@ -83,17 +83,17 @@ def main():
         print("    Supertonic 3 Neural TTS engine is ready (44.1kHz).")
     except Exception as e:
         print(f"    Supertonic 3 check note: {e}")
-    # Sherpa-ONNX Streaming STT Model Check
+    # Vosk Offline STT Model Check
     try:
         from amigo.utils.tts import get_stt_recognizer, is_stt_available
-        print(" -> Checking Sherpa-ONNX Neural STT engine...")
+        print(" -> Checking Vosk Offline STT engine...")
         rec = get_stt_recognizer()
         if is_stt_available():
-            print("    Sherpa-ONNX Streaming STT engine is ready.")
+            print("    Vosk Offline STT engine is ready.")
         else:
-            print("    Sherpa-ONNX model will be automatically fetched on first voice input.")
+            print("    Vosk model will be automatically fetched on first voice input.")
     except Exception as e:
-        print(f"    Sherpa-ONNX model check note: {e}")
+        print(f"    Vosk model check note: {e}")
 
 
     # Local LLM GGUF Model Check (Granite 4.1 3B Q4_K_M — System 2)
@@ -118,7 +118,7 @@ def main():
     print("\nActive Engine Stack:")
     print("  Agent Engine  — Granite 4.1 3B Q4_K_M : reasoning & agentic execution")
     print("  Speech Engine — Supertonic-3  : 44.1kHz studio on-device neural speech synthesis")
-    print("  Voice Input   — Sherpa-ONNX   : streaming neural speech recognition")
+    print("  Voice Input   — Vosk          : offline high-accuracy speech recognition")
     print("\nHow to launch Amigo:")
     print("  1. Web Dashboard (Recommended):")
     print(f'     {sys.executable} ui_server.py')

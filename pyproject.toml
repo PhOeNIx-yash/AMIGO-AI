@@ -25,7 +25,7 @@ classifiers = [
 ]
 dependencies = [
     # Speech Recognition (STT)
-    "sherpa-onnx>=1.10.0",
+    "vosk>=0.3.45",
     "SpeechRecognition>=3.10.0",
     "pyaudio>=0.2.14",
     "av>=11.0.0",

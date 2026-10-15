@@ -1,7 +1,7 @@
 """
 Unified Speech Engine Module for Amigo Voice Assistant.
 Handles both Offline Neural Text-to-Speech (TTS via Supertonic 3)
-and Offline Neural Speech-to-Text (STT via Sherpa-ONNX Zipformer).
+and Offline Neural Speech-to-Text (STT via Vosk Neural Recognizer).
 """
 
 import io
@@ -951,111 +951,108 @@ def stop_speaking() -> None:
 
 
 # ────────────────────────────────────────────────────────────────
-# ── SHERPA-ONNX ULTRA-FAST SPEECH-TO-TEXT (STT) ENGINE ──────────
+# ── VOSK HIGH-ACCURACY OFFLINE SPEECH-TO-TEXT (STT) ENGINE ──────
 # ────────────────────────────────────────────────────────────────
 
-_sherpa_model = None
-_sherpa_model_lock = threading.Lock()
-_SHERPA_INIT_ATTEMPTED = False
-_SHERPA_IS_AVAILABLE = False
-_SHERPA_DIR = os.path.join(
-    _MODELS_ROOT, "sherpa-onnx", "sherpa-onnx-streaming-zipformer-en-2023-06-26"
-)
-if not os.path.exists(_SHERPA_DIR):
-    _SHERPA_DIR = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "models", "sherpa-onnx", "sherpa-onnx-streaming-zipformer-en-2023-06-26"
-    )
+_vosk_model = None
+_vosk_model_lock = threading.Lock()
+_VOSK_INIT_ATTEMPTED = False
+_VOSK_IS_AVAILABLE = False
+_VOSK_DIR = os.path.join(_MODELS_ROOT, "vosk")
 
 
-def _ensure_sherpa_model_downloaded() -> bool:
-    """Ensures Sherpa-ONNX streaming zipformer model is present on disk with download timeout."""
-    if os.path.isdir(_SHERPA_DIR):
-        tokens = os.path.join(_SHERPA_DIR, "tokens.txt")
-        if os.path.exists(tokens):
-            return True
+def _find_vosk_model_path() -> str:
+    """Finds best available Vosk model directory (prefers Indian English, then US English)."""
+    candidates = [
+        os.path.join(_VOSK_DIR, "vosk-model-small-en-in-0.4"),
+        os.path.join(_VOSK_DIR, "vosk-model-small-en-us-0.15"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "vosk", "vosk-model-small-en-in-0.4"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "vosk", "vosk-model-small-en-us-0.15"),
+    ]
+    for path in candidates:
+        if os.path.isdir(path) and (os.path.exists(os.path.join(path, "am")) or os.path.exists(os.path.join(path, "ivector"))):
+            return path
 
-    parent_dir = os.path.dirname(_SHERPA_DIR)
-    os.makedirs(parent_dir, exist_ok=True)
-    archive_path = os.path.join(parent_dir, "model.tar.bz2")
-    url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-2023-06-26.tar.bz2"
+    # Check any subfolder in _VOSK_DIR
+    if os.path.isdir(_VOSK_DIR):
+        for sub in os.listdir(_VOSK_DIR):
+            sub_path = os.path.join(_VOSK_DIR, sub)
+            if os.path.isdir(sub_path) and (os.path.exists(os.path.join(sub_path, "am")) or os.path.exists(os.path.join(sub_path, "ivector"))):
+                return sub_path
+    return ""
+
+
+def _ensure_vosk_model_downloaded() -> str:
+    """Ensures a clean Vosk offline model is present on disk."""
+    existing = _find_vosk_model_path()
+    if existing:
+        return existing
+
+    os.makedirs(_VOSK_DIR, exist_ok=True)
+    zip_path = os.path.join(_VOSK_DIR, "model.zip")
+    url = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
     try:
-        logger.info("[STT] Downloading Sherpa-ONNX streaming Zipformer model...")
-        req = urllib.request.Request(url, headers={"User-Agent": "AmigoVoiceAssistant/2.0"})
-        with urllib.request.urlopen(req, timeout=30.0) as resp, open(archive_path, "wb") as out_f:
+        logger.info("[STT] Downloading lightweight Vosk offline model (~40MB)...")
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+        with urllib.request.urlopen(req, timeout=30.0) as resp, open(zip_path, "wb") as out_f:
             while True:
                 chunk = resp.read(65536)
                 if not chunk:
                     break
                 out_f.write(chunk)
-        with tarfile.open(archive_path, "r:bz2") as tar:
-            tar.extractall(path=parent_dir)
-        if os.path.exists(archive_path):
-            os.remove(archive_path)
-        logger.info("[STT] Sherpa-ONNX model downloaded and extracted successfully.")
-        return True
+        import zipfile
+        with zipfile.ZipFile(zip_path, "r") as z:
+            z.extractall(_VOSK_DIR)
+        if os.path.exists(zip_path):
+            os.remove(zip_path)
+        logger.info("[STT] Vosk offline STT model downloaded and unpacked successfully.")
+        return _find_vosk_model_path()
     except Exception as e:
-        logger.error("[STT] Failed to download Sherpa-ONNX model: %s", e)
-        if os.path.exists(archive_path):
+        logger.error("[STT] Failed to download Vosk model: %s", e)
+        if os.path.exists(zip_path):
             try:
-                os.remove(archive_path)
+                os.remove(zip_path)
             except Exception:
                 pass
-        return False
+        return ""
 
 
 def get_stt_recognizer():
-    """Lazy-loads the Sherpa-ONNX streaming speech recognizer."""
-    global _sherpa_model, _SHERPA_INIT_ATTEMPTED, _SHERPA_IS_AVAILABLE
-    if _sherpa_model is not None:
-        return _sherpa_model
+    """Lazy-loads the Vosk offline speech recognizer."""
+    global _vosk_model, _VOSK_INIT_ATTEMPTED, _VOSK_IS_AVAILABLE
+    if _vosk_model is not None:
+        return _vosk_model
 
-    with _sherpa_model_lock:
-        if _sherpa_model is not None:
-            return _sherpa_model
-        if _SHERPA_INIT_ATTEMPTED and not _SHERPA_IS_AVAILABLE:
+    with _vosk_model_lock:
+        if _vosk_model is not None:
+            return _vosk_model
+        if _VOSK_INIT_ATTEMPTED and not _VOSK_IS_AVAILABLE:
             return None
 
-        _SHERPA_INIT_ATTEMPTED = True
+        _VOSK_INIT_ATTEMPTED = True
         try:
-            import sherpa_onnx
+            from vosk import Model, SetLogLevel
+            SetLogLevel(-1)
         except ImportError:
-            logger.warning("[STT] sherpa-onnx not installed.")
-            _SHERPA_IS_AVAILABLE = False
+            logger.warning("[STT] vosk not installed.")
+            _VOSK_IS_AVAILABLE = False
             return None
 
-        if not _ensure_sherpa_model_downloaded():
-            _SHERPA_IS_AVAILABLE = False
+        model_path = _ensure_vosk_model_downloaded()
+        if not model_path:
+            _VOSK_IS_AVAILABLE = False
             return None
 
         try:
             t0 = time.time()
-            logger.info("[STT] Loading Sherpa-ONNX Zipformer engine...")
-            tokens = os.path.join(_SHERPA_DIR, "tokens.txt")
-            encoder = os.path.join(_SHERPA_DIR, "encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx")
-            if not os.path.exists(encoder):
-                encoder = os.path.join(_SHERPA_DIR, "encoder-epoch-99-avg-1-chunk-16-left-128.onnx")
-            decoder = os.path.join(_SHERPA_DIR, "decoder-epoch-99-avg-1-chunk-16-left-128.onnx")
-            joiner = os.path.join(_SHERPA_DIR, "joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx")
-            if not os.path.exists(joiner):
-                joiner = os.path.join(_SHERPA_DIR, "joiner-epoch-99-avg-1-chunk-16-left-128.onnx")
-
-            _sherpa_model = sherpa_onnx.OnlineRecognizer.from_transducer(
-                tokens=tokens,
-                encoder=encoder,
-                decoder=decoder,
-                joiner=joiner,
-                num_threads=2,
-                sample_rate=16000,
-                feature_dim=80,
-                decoding_method="greedy_search",
-                provider="cpu",
-            )
-            _SHERPA_IS_AVAILABLE = True
-            logger.info("[STT] Sherpa-ONNX Zipformer ready in %.1fms.", (time.time() - t0) * 1000)
-            return _sherpa_model
+            logger.info("[STT] Loading Vosk offline engine from %s...", model_path)
+            _vosk_model = Model(model_path)
+            _VOSK_IS_AVAILABLE = True
+            logger.info("[STT] Vosk offline STT ready in %.1fms.", (time.time() - t0) * 1000)
+            return _vosk_model
         except Exception as e:
-            logger.error("[STT] Failed to initialize Sherpa-ONNX model: %s", e)
-            _SHERPA_IS_AVAILABLE = False
+            logger.error("[STT] Failed to initialize Vosk model: %s", e)
+            _VOSK_IS_AVAILABLE = False
             return None
 
 
@@ -1067,12 +1064,12 @@ def is_stt_available() -> bool:
 def get_stt_engine_name() -> str:
     """Returns descriptive name of active STT engine."""
     if is_stt_available():
-        return "Sherpa-ONNX (Zipformer Streaming)"
+        return "Vosk (Offline Neural STT)"
     return "Unavailable"
 
 
 def transcribe_samples(samples: np.ndarray, sample_rate: int = 16000) -> str:
-    """Transcribes raw float32 audio samples [-1.0, 1.0] completely offline with Sherpa-ONNX."""
+    """Transcribes raw float32 audio samples [-1.0, 1.0] completely offline with Vosk."""
     model = get_stt_recognizer()
     if model is None or samples is None or len(samples) == 0:
         return ""
@@ -1089,55 +1086,28 @@ def transcribe_samples(samples: np.ndarray, sample_rate: int = 16000) -> str:
             except Exception:
                 pass
 
-        frame_size = 320  # 20ms at 16kHz
-        num_frames = len(samples) // frame_size
-        if num_frames == 0:
+        if len(samples) < 1600:  # Less than 100ms
             return ""
 
-        frames = samples[:num_frames * frame_size].reshape(num_frames, frame_size)
-        frame_rms = np.sqrt(np.mean(frames ** 2, axis=1))
-
-        # Dynamic ambient noise floor estimation from lower quartile
-        sorted_rms = np.sort(frame_rms)
-        noise_floor = float(np.mean(sorted_rms[:max(1, int(num_frames * 0.25))]))
-        speech_thresh = max(0.005, noise_floor * 1.3)
-
-        # Count active voice frames exceeding adaptive speech threshold
-        active_speech_frames = int(np.sum(frame_rms > speech_thresh))
         peak = float(np.max(np.abs(samples)))
-        snr = peak / (noise_floor + 1e-5)
-
-        # Gentle voice presence check: requires at least 80ms (4 frames), minimal peak of 0.015, and SNR > 1.2.
-        # This prevents discarding short commands ("stop", "yes", "next") or quiet microphones.
-        if active_speech_frames < 4 or peak < 0.015 or snr < 1.2:
-            logger.debug(
-                "[STT] Audio below vocal energy floor (active_frames=%d/%d, noise_floor=%.4f, peak=%.4f, snr=%.2f)",
-                active_speech_frames, num_frames, noise_floor, peak, snr,
-            )
+        if peak < 0.01:
             return ""
 
-        if peak > 1.0:
-            samples = samples / peak
+        # Normalize gain if too low or high
+        if peak > 0:
+            samples = samples / max(peak, 0.2)
 
-        # Append 400ms of zeros tail padding so the streaming Zipformer lookahead buffer
-        # flushes the final word / phonemes instead of clipping them
-        tail_pad = np.zeros(int(0.40 * 16000), dtype=np.float32)
-        padded_samples = np.concatenate([samples, tail_pad])
+        pcm_bytes = (np.clip(samples, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
 
-        with _sherpa_model_lock:
-            stream = model.create_stream()
-            stream.accept_waveform(16000, padded_samples)
-            stream.input_finished()
-            while model.is_ready(stream):
-                model.decode_stream(stream)
-            res = model.get_result(stream)
-            if hasattr(res, "text"):
-                raw_text = str(res.text or "")
-            else:
-                raw_text = str(res or "")
+        from vosk import KaldiRecognizer
+        with _vosk_model_lock:
+            rec = KaldiRecognizer(model, 16000)
+            rec.AcceptWaveform(pcm_bytes)
+            res = json.loads(rec.FinalResult())
+            raw_text = res.get("text", "")
             return raw_text.strip()
     except Exception as e:
-        logger.error("[STT] Sherpa-ONNX transcription error: %s", e)
+        logger.error("[STT] Vosk transcription error: %s", e)
         return ""
 
 
@@ -1200,7 +1170,7 @@ def transcribe_audio_bytes(audio_bytes: bytes) -> str:
 
 
 def transcribe_b64(audio_b64: str) -> str:
-    """Decodes base64-encoded audio data and transcribes it offline with Sherpa-ONNX."""
+    """Decodes base64-encoded audio data and transcribes it offline with Vosk."""
     if not audio_b64:
         return ""
     try:
@@ -1222,11 +1192,11 @@ def _warmup_stt():
             if model:
                 dummy = np.zeros(16000, dtype=np.float32)
                 transcribe_samples(dummy, 16000)
-                logger.debug("[STT] Sherpa-ONNX STT primed.")
+                logger.debug("[STT] Vosk STT primed.")
         except Exception:
             pass
 
-    threading.Thread(target=_run, daemon=True, name="SherpaSTT-Warmup").start()
+    threading.Thread(target=_run, daemon=True, name="VoskSTT-Warmup").start()
 
 
 _warmup_stt()
