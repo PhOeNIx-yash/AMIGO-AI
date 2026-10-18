@@ -1,6 +1,6 @@
 """
 LLM-Based Agent for Amigo Voice Assistant.
-Provides natural language understanding using Granite 4.1 3B with tool calling for action execution.
+Provides natural language understanding and multi-step formal logic reasoning using TwIL LM3 Pro (3.66B) with tool calling for action execution.
 """
 
 import json
@@ -484,31 +484,31 @@ _PHYSICAL_CORES = None
 _LLM_CONFIG = None
 _CONFIG_LOCK = threading.Lock()
 
-# Model Configuration (Granite 4.1 3B Q4_K_M)
+# Model Configuration (TwIL LM3 Pro)
 MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "models"))
 
-MODEL_NAME = "Granite 4.1 3B"
-MODEL_FILENAME = "granite-4.1-3b-Q4_K_M.gguf"
+MODEL_NAME = "TwIL LM3 Pro"
+MODEL_FILENAME = "TwIL-LM3-Pro-Q4_K_M.gguf"
 MODEL_PATH = os.path.join(MODEL_DIR, MODEL_FILENAME)
 MODEL_TARGETS = [
-    ("ibm-granite/granite-4.1-3b-GGUF", "granite-4.1-3b-Q4_K_M.gguf"),
+    ("webAI-Official/TwIL-LM3-Pro", "TwIL-LM3-Pro-Q4_K_M.gguf"),
 ]
 
 STOP_TOKENS = ["<|end_of_text|>", "<|endoftext|>", "<|end_of_role|>", "<|im_end|>", "\nUser:", "\nHuman:", "\nAssistant:"]
 
 AVAILABLE_MODELS = {
-    "granite-4.1-3b": {
-        "key": "granite-4.1-3b",
+    "twil-lm3-pro": {
+        "key": "twil-lm3-pro",
         "name": MODEL_NAME,
         "filename": MODEL_FILENAME,
         "path": MODEL_PATH,
         "targets": MODEL_TARGETS,
         "downloaded": os.path.exists(MODEL_PATH) and os.path.getsize(MODEL_PATH) > 500_000_000,
-        "size_gb": 2.1,
+        "size_gb": 2.09,
     },
 }
 
-_active_model_key = "granite-4.1-3b"
+_active_model_key = "twil-lm3-pro"
 
 _local_llm_instance = None
 _llm_lock = threading.Lock()
@@ -756,11 +756,11 @@ def init_local_llm(force_reload: bool = False):
 
         try:
             model_file = get_model_path()
-            if not os.path.exists(model_file):
+            if not os.path.exists(model_file) or os.path.getsize(model_file) < 500_000_000:
                 _model_load_failed = True
                 _model_load_failed_at = time.time()
-                _model_load_error = "Model file not found"
-                logger.error(f"[Local AI Engine] {_model_load_error}: {model_file}")
+                _model_load_error = f"Model file not found or incomplete: {model_file}"
+                logger.error(f"[Local AI Engine] {_model_load_error}")
                 return None
 
             from llama_cpp import Llama

@@ -1335,7 +1335,7 @@ def _tool_system_control(params, query, spoken):
     elif action in ("cancel_shutdown",):
         os_automation.cancel_shutdown()
         return "Shutdown cancelled.", None
-    elif action in ("empty_recycle_bin",):
+    elif action in ("empty_recycle_bin", "empty_bin", "recycle_bin"):
         return _tool_empty_recycle_bin(params, query, "Emptying recycle bin")
     else:
         return f"Unknown system control action: {action}", None
@@ -1566,7 +1566,13 @@ def _tool_search_knowledge(params, query, spoken):
 
 
 def _tool_read_emails(params, query, spoken):
-    """Read recent emails from Outlook."""
+    """Read recent or unread emails from Outlook, or search emails."""
+    params = params if isinstance(params, dict) else {}
+    action = str(params.get("action") or "").strip().lower()
+    if action == "unread" or (not action and "unread" in query.lower()):
+        return _tool_unread_emails(params, query, spoken)
+    if action == "search" or (not action and params.get("query")):
+        return _tool_search_emails(params, query, spoken)
     try:
         from amigo.services.mail_integration import get_email_summary_text, is_outlook_available
         if not is_outlook_available():
@@ -1652,7 +1658,10 @@ def _tool_draft_email(params, query, spoken):
 
 
 def _tool_get_calendar(params, query, spoken):
-    """Get today's or upcoming calendar events."""
+    """Get today's or upcoming calendar events, or search schedule."""
+    params = params if isinstance(params, dict) else {}
+    if params.get("query"):
+        return _tool_search_calendar(params, query, spoken)
     try:
         from amigo.services.calendar_integration import get_calendar_summary_text, get_upcoming_summary_text, is_outlook_available
         if not is_outlook_available():
@@ -1758,14 +1767,12 @@ def _tool(name: str, description: str, props: dict | None = None, required: list
 
 
 TOOL_DEFINITIONS = [
-    _tool("chat", "Conversational response: talk with the user, casual conversation, advice, questions, opinions, greetings, jokes, or creative dialogue. Takes NO parameters."),
+    _tool("chat", "Conversational response: talk with the user, casual conversation, advice, math calculations, current date or time inquiries, general questions, opinions, greetings, jokes, or creative dialogue. Takes NO parameters."),
     _tool("web_search", "Search the web for real-time facts, current office holders, political leaders, ministers, presidents, CEOs, news, recent events, live scores, or external knowledge.",
           {"query": _p("string", "Search query resolved from context"),
            "show_in_browser": _p("boolean", "True if user asked to open search results in a browser")}, ["query"]),
     _tool("stock_quote", "Look up real-time stock prices, share prices, market quotes, or cryptocurrency rates.",
           {"symbol": _p("string", "Company name, ticker symbol, or cryptocurrency name")}, ["symbol"]),
-    _tool("open_website", "Open a specific website or URL in the browser.", {"url": _p("string", "Website address or domain")}, ["url"]),
-    _tool("show_images", "Show image search results for a topic in the browser.", {"query": _p("string", "Image search topic")}, ["query"]),
     _tool("play_youtube", "Search and play songs, music, artist tracks, albums, or videos on YouTube.",
           {"query": _p("string", "Exact song title and artist requested by the user without alteration or substitution")}, ["query"]),
     _tool("resume_media", "Resume or unpause paused audio or video playback (e.g. 'resume', 'unpause', 'continue playback')."),
@@ -1787,21 +1794,12 @@ TOOL_DEFINITIONS = [
     _tool("window_mgmt", "Manage desktop windows (minimize_all, maximize, restore, switch_window, close_window).",
           {"action": _p("string", "minimize_all | maximize | restore | switch_window | close_window"),
            "name": _p("string", "Application or window title")}, ["action"]),
-    _tool("lock_pc", "Lock the computer screen."),
-    _tool("sleep_pc", "Put the computer to sleep."),
-    _tool("restart_pc", "Restart the computer."),
-    _tool("system_control", "System power management actions.",
-          {"action": _p("string", "shutdown | cancel_shutdown | lock | sleep | restart")}, ["action"]),
-    _tool("empty_recycle_bin", "Empty the Windows Recycle Bin."),
+    _tool("system_control", "System power and control management (lock screen, sleep, restart, shutdown, empty recycle bin).",
+          {"action": _p("string", "lock | sleep | restart | shutdown | cancel_shutdown | empty_bin")}, ["action"]),
     _tool("system_status", "Check system hardware status (battery, CPU, memory, disk)."),
-    _tool("open_settings", "Open a Windows settings page.", {"setting": _p("string", "Target setting page")}, ["setting"]),
-    _tool("get_time", "Check the current time, optionally for a specific timezone.",
-          {"timezone": _p("string", "IANA timezone or region")}),
-    _tool("get_date", "Check today's date."),
+    _tool("open_settings", "Open a Windows or assistant settings page.", {"setting": _p("string", "Target setting page")}, ["setting"]),
     _tool("get_weather", "Get the weather forecast for a city or local area.",
           {"city": _p("string", "City or location name resolved from context")}),
-    _tool("calculate", "Evaluate a mathematical expression or arithmetic calculation.",
-          {"expression": _p("string", "Math expression to evaluate")}, ["expression"]),
     _tool("set_timer", "Start a countdown timer.", {
         "duration": _p("integer", "The exact duration in seconds (e.g., 60 for 1 minute)."),
         "label": _p("string", "Timer description or label (optional, e.g. 'Pasta timer')")
@@ -1809,32 +1807,20 @@ TOOL_DEFINITIONS = [
     _tool("set_reminder", "Create a task reminder.", {"query": _p("string", "Reminder content and time")}, ["query"]),
     _tool("list_reminders", "List pending reminders."),
     _tool("cancel_reminder", "Cancel one or all reminders.", {"query": _p("string", "'all' or specific reminder title")}, ["query"]),
-    _tool("find_file", "Search for local files or folders on the computer by name.",
+    _tool("find_file", "Search for local files or folders on the computer by name or topic.",
           {"query": _p("string", "File or folder name pattern")}, ["query"]),
-    _tool("find_document", "Search documents by meaning or content (semantic search).",
-          {"query": _p("string", "Document topic or keywords")}, ["query"]),
     _tool("open_file", "Open a local file by path or name.",
           {"path": _p("string", "File path or name resolved from context")}, ["path"]),
-    _tool("reveal_file", "Show a file in File Explorer.",
-          {"path": _p("string", "File path or name")}, ["path"]),
-    _tool("copy_file_path", "Copy a file's full path to clipboard.", {"path": _p("string", "File path")}, ["path"]),
-    _tool("open_folder", "Open a folder in File Explorer.", {"name": _p("string", "Folder name or path")}, ["name"]),
-    _tool("document_qa", "Answer questions from the user's indexed local documents, files, tickets, bookings, flights, PNR numbers, invoices, or personal records.",
-          {"query": _p("string", "Question about document or personal file contents"),
+    _tool("document_qa", "Answer questions, extract facts, or summarize indexed local documents, files, tickets, bookings, flights, PNR numbers, invoices, or personal records.",
+          {"query": _p("string", "Question or summary request about document contents"),
            "filepath": _p("string", "Target document name ONLY if explicitly named by user; otherwise omit")}, ["query"]),
-    _tool("ask_document", "Answer questions about a specific document.",
-          {"question": _p("string", "Question"),
-           "filepath": _p("string", "Target document name ONLY if explicitly named by user; otherwise omit")}, ["question"]),
-    _tool("summarize_document", "Summarize the contents of a local document.",
-          {"filepath": _p("string", "Document path or name")}),
-    _tool("memory_recall", "Store a user fact or recall saved personal information.",
-          {"fact": _p("string", "Fact to remember (leave empty if recalling)"),
-           "query": _p("string", "Recall query")}),
-    _tool("get_calendar", "View calendar events.", {"days": _p("integer", "Number of days ahead (default 1)")}),
-    _tool("search_calendar", "Search calendar events by keyword.", {"query": _p("string", "Search keyword")}, ["query"]),
-    _tool("unread_emails", "Check unread emails in Outlook."),
-    _tool("read_emails", "Read and summarize recent emails.", {"count": _p("integer", "Number of emails to read")}),
-    _tool("search_emails", "Search emails by keyword.", {"query": _p("string", "Search keyword")}, ["query"]),
+    _tool("get_calendar", "View or search calendar schedule.",
+          {"days": _p("integer", "Number of days ahead (default 1)"),
+           "query": _p("string", "Optional search keyword for specific events")}),
+    _tool("read_emails", "Read recent or unread emails, or search emails in Outlook.",
+          {"action": _p("string", "recent | unread | search"),
+           "query": _p("string", "Optional search keyword"),
+           "count": _p("integer", "Number of emails to read (default 5)")}),
     _tool("draft_email", "Draft an email in Outlook.",
           {"to": _p("string", "Recipient email"), "subject": _p("string", "Email subject"), "prompt": _p("string", "Email body content")}, ["prompt"]),
     _tool(
@@ -1870,7 +1856,6 @@ TOOL_DEFINITIONS = [
     _tool("type_text", "Type text into an application.",
           {"text": _p("string", "Text to type"), "app": _p("string", "Target app name")}, ["text"]),
     _tool("press_key", "Send a keyboard key or shortcut combination.", {"keys": _p("string", "Key or shortcut, e.g. ctrl+c")}, ["keys"]),
-    _tool("click_screen", "Click mouse at specific screen coordinates.", {"x": _p("integer"), "y": _p("integer")}),
     _tool("confirm_action", "Confirm and execute a pending action when the user agrees."),
     _tool("cancel_action", "Cancel a pending action when the user declines or cancels."),
     _tool("stop", "Stop active speech, playback, or running operations."),
@@ -1948,18 +1933,18 @@ TOOLS AVAILABLE:
 <<TOOLS>>
 
 ROUTING GUIDELINES:
-1. GREETINGS, CHAT & APPRECIATION: For casual conversation, greetings, advice, compliments, gratitude, or appreciation (e.g. "thanks", "thanks for the email", "thank you so much", "looks good", "great job", "awesome"): ALWAYS select 'chat' with empty params: {"tool": "chat", "params": {}}. NEVER select 'insert_content', 'generate_content', or 'type_text' when the user is simply saying thanks or complimenting a draft.
+1. CHAT, GREETINGS, TIME, DATE & MATH: For casual conversation, greetings, advice, compliments, gratitude, arithmetic calculations, or checking current date, day, or local time (which you already know from the system prompt): ALWAYS select 'chat' with empty params: {"tool": "chat", "params": {}}. You will answer directly in natural voice conversation.
 2. MUSIC & VIDEO PLAYBACK: For songs, music, tracks, artists, or videos, select 'play_youtube'.
 - Extract the user's requested song title and artist into params['query'] exactly as stated in the request.
 - Do not substitute, swap, or alter the requested title with different tracks.
-3. PC & SYSTEM ACTIONS: For apps, volume, brightness, timers, screenshots, files: select the specific tool. Never reply with conversational chat when asked to perform PC actions.
-4. LOCAL DOCUMENTS & RAG: For finding local documents, personal records, tickets, notes, invoices, or asking questions about user files: use 'find_document' or 'document_qa'. Do NOT use 'web_search' for local files.
+3. PC & SYSTEM ACTIONS: For apps, volume, brightness, timers, reminders, screenshots, files, and system power (lock, sleep, restart, shutdown, empty recycle bin): select the specific tool. For system power or emptying recycle bin, use 'system_control' with action.
+4. LOCAL DOCUMENTS & FILES: To search/find/locate files or folders on the PC: use 'find_file'. To read, summarize, or answer questions about indexed local documents, notes, tickets, bookings, or personal records: use 'document_qa'. Do NOT use 'web_search' for local files.
 5. REAL-TIME EXTERNAL FACTS & WEB SEARCH: Use 'web_search' for real-world facts, current office holders, political leaders, latest external news, live sports scores, release dates, products, specifications, people, media, places, or external web information.
 6. COMPOUND REQUESTS: Return multiple actions in execution order (e.g. open app then type text).
 7. FOLLOW-UP QUESTIONS & CONTEXT RESOLUTION:
 When the user asks a follow-up question or elliptical query referencing previous conversation (e.g. questions starting with 'For which...', 'Who...', 'What about...', 'How much...', 'Where...', 'When...', 'Can you...', or referencing previous entities using 'it', 'that', 'they', 'he', 'she'):
 - Identify the subject or topic from RECENT ACTIVITY.
-- If the subject is an external topic, entity, product, media, game, person, or the previous turn used web_search: select 'web_search' with the fully resolved query combining the subject and the question (e.g., prior subject 'GTA 6' + follow-up 'For which platform?' -> query: 'GTA 6 release platforms').
+- If the subject is an external topic, entity, product, media, game, person, or the previous turn used web_search: select 'web_search' with the fully resolved query combining the subject and the question.
 - If the user wants to play, view, or open the previous item: route to the corresponding tool with the resolved subject (e.g. 'play it' -> play_youtube, 'open it' -> open_file/open_app).
 - If the follow-up is casual chat, advice, or conceptual explanation: select 'chat'.
 - NEVER return an empty actions list: every user request must map to a valid tool.
@@ -1971,11 +1956,12 @@ When the user asks a follow-up question or elliptical query referencing previous
 
 EXAMPLES:
 - "hello how are you" -> {"actions": [{"tool": "chat", "params": {}}]}
+- "what time is it" -> {"actions": [{"tool": "chat", "params": {}}]}
+- "what's today's date" -> {"actions": [{"tool": "chat", "params": {}}]}
+- "what is 25 times 4" -> {"actions": [{"tool": "chat", "params": {}}]}
 - "thanks for the email" -> {"actions": [{"tool": "chat", "params": {}}]}
 - "thank you so much" -> {"actions": [{"tool": "chat", "params": {}}]}
 - "looks great, thanks" -> {"actions": [{"tool": "chat", "params": {}}]}
-- "great job" -> {"actions": [{"tool": "chat", "params": {}}]}
-- "help me become more intelligent" -> {"actions": [{"tool": "chat", "params": {}}]}
 - "who is the prime minister of the uk" -> {"actions": [{"tool": "web_search", "params": {"query": "current prime minister of UK"}}]}
 - "what is the capital of france" -> {"actions": [{"tool": "chat", "params": {}}]}
 - "play bohemian rhapsody" -> {"actions": [{"tool": "play_youtube", "params": {"query": "bohemian rhapsody"}}]}
@@ -1983,18 +1969,19 @@ EXAMPLES:
 - "for which platform?" (after discussing a video game or software) -> {"actions": [{"tool": "web_search", "params": {"query": "<game/software name from recent activity> platforms"}}]}
 - "who is the director?" (after discussing a movie) -> {"actions": [{"tool": "web_search", "params": {"query": "<movie name from recent activity> director"}}]}
 - "what other movies has he made?" (after discussing a director/actor) -> {"actions": [{"tool": "web_search", "params": {"query": "<person name from recent activity> filmography movies"}}]}
-- "what is its population?" (after discussing a city/country) -> {"actions": [{"tool": "web_search", "params": {"query": "<city/country from recent activity> population"}}]}
-- "how much is he worth?" (after discussing a person/founder) -> {"actions": [{"tool": "web_search", "params": {"query": "<person name from recent activity> net worth"}}]}
 - "open it" (after finding a file) -> {"actions": [{"tool": "open_file", "params": {"path": "<file name from recent activity>"}}]}
-- "can you give a real world example?" (after conceptual chat) -> {"actions": [{"tool": "chat", "params": {}}]}
-- "play some jazz" -> {"actions": [{"tool": "play_youtube", "params": {"query": "jazz music"}}]}
 - "pause music" -> {"actions": [{"tool": "pause_media", "params": {}}]}
 - "resume" -> {"actions": [{"tool": "resume_media", "params": {}}]}
 - "weather in new york" -> {"actions": [{"tool": "get_weather", "params": {"city": "New York"}}]}
 - "open notepad" -> {"actions": [{"tool": "open_app", "params": {"name": "Notepad"}}]}
-- "find my resume" -> {"actions": [{"tool": "find_document", "params": {"query": "resume"}}]}
-- "search my documents for invoice" -> {"actions": [{"tool": "find_document", "params": {"query": "invoice"}}]}
+- "lock my pc" -> {"actions": [{"tool": "system_control", "params": {"action": "lock"}}]}
+- "put pc to sleep" -> {"actions": [{"tool": "system_control", "params": {"action": "sleep"}}]}
+- "empty recycle bin" -> {"actions": [{"tool": "system_control", "params": {"action": "empty_bin"}}]}
+- "find my resume" -> {"actions": [{"tool": "find_file", "params": {"query": "resume"}}]}
 - "what is in my notes" -> {"actions": [{"tool": "document_qa", "params": {"query": "notes"}}]}
+- "summarize my invoice document" -> {"actions": [{"tool": "document_qa", "params": {"query": "summarize invoice"}}]}
+- "check my unread emails" -> {"actions": [{"tool": "read_emails", "params": {"action": "unread"}}]}
+- "what's on my calendar" -> {"actions": [{"tool": "get_calendar", "params": {"days": 1}}]}
 - "can you write an email for me for taking tomorrow leave" -> {"actions": [{"tool": "generate_content", "params": {"type": "email", "topic": "taking leave tomorrow"}}]}
 - "write a python script for binary search in notepad" -> {"actions": [{"tool": "generate_content", "params": {"type": "python code", "topic": "binary search", "destination": "Notepad"}}]}
 - "regenerate and make it more friendly" -> {"actions": [{"tool": "regenerate_content", "params": {"feedback": "more friendly"}}]}
