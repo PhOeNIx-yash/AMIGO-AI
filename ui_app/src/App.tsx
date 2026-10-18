@@ -204,31 +204,41 @@ function BeamsBackground({
       ctx.restore();
     }
 
+    let isPaused = false;
+
     function animate() {
       if (!(canvas && ctx)) return;
 
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (!isPaused) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      const totalBeams = beamsRef.current.length;
-      beamsRef.current.forEach((beam, index) => {
-        beam.y -= beam.speed;
-        beam.pulse += beam.pulseSpeed;
+        const totalBeams = beamsRef.current.length;
+        beamsRef.current.forEach((beam, index) => {
+          beam.y -= beam.speed;
+          beam.pulse += beam.pulseSpeed;
 
-        // Reset beam when it goes off screen
-        if (beam.y + beam.length < -60) {
-          resetBeam(beam, index, totalBeams);
-        }
+          // Reset beam when it goes off screen
+          if (beam.y + beam.length < -60) {
+            resetBeam(beam, index, totalBeams);
+          }
 
-        drawBeam(ctx, beam);
-      });
+          drawBeam(ctx, beam);
+        });
+      }
 
       animationFrameRef.current = requestAnimationFrame(animate);
     }
 
+    const handleVisibilityChange = () => {
+      isPaused = document.hidden;
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     animate();
 
     return () => {
       window.removeEventListener("resize", updateCanvasSize);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
       }
@@ -247,9 +257,10 @@ function BeamsBackground({
         className="absolute inset-0 pointer-events-none"
         ref={canvasRef}
         style={{
-          filter: "blur(6px)",
+          filter: "blur(2.5px)",
+          contain: "strict",
           willChange: "transform",
-          transform: "translateZ(0)",
+          transform: "translate3d(0, 0, 0)",
         }}
       />
 
@@ -1797,6 +1808,9 @@ export default function App() {
                       backendConfig={backendConfig}
                       onSwitchToAssistant={() => handleSwitchViewMode("assistant")}
                       userName={userName}
+                      assistantState={state}
+                      liveIntent={liveIntent || assistantData?.intent}
+                      activePrompt={activePrompt}
                     />
                   </motion.div>
                 )}

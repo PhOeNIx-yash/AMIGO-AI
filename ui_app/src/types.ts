@@ -27,14 +27,15 @@ export type PluginMode = "floating" | "docked_right" | "docked_bottom" | "fullsc
 
 export interface ActionCardItem {
   id: string;
-  type: "message" | "restaurant" | "map" | "calendar" | "general" | "link" | "device" | "code" | "confirmation" | "weather" | "timer" | "stopwatch" | "media" | "file";
+  type: "message" | "restaurant" | "map" | "calendar" | "general" | "link" | "device" | "code" | "confirmation" | "weather" | "timer" | "stopwatch" | "media" | "file" | "stock" | "reminder" | "task" | (string & {});
   title: string;
   subtitle?: string;
+  description?: string;
   selected: boolean;
   payload?: any;
   url?: string;
   badge?: string;
-  actionType?: "toggle" | "button" | "navigate" | "execute";
+  actionType?: "toggle" | "button" | "navigate" | "execute" | "custom" | (string & {});
   originalPrompt?: string;
 }
 

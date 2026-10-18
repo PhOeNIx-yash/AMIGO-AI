@@ -23,6 +23,7 @@ from amigo.core.reminder_timer import (
     handle_list_reminders,
     handle_cancel_reminder,
     parse_relative_seconds,
+    get_active_data,
 )
 from amigo.services.web_search import (searchGoogle, resolve_youtube_video, 
                            clean_search_query, search_web, format_for_llm,
@@ -1352,10 +1353,47 @@ def _tool_set_timer(params, query, spoken):
     return handle_set_timer(params, query), None
 
 def _tool_set_reminder(params, query, spoken):
-    return handle_set_reminder(params, query), None
+    msg = handle_set_reminder(params, query)
+    data = get_active_data()
+    reminders = data.get("reminders", [])
+    cards = []
+    if reminders:
+        cards.append({
+            "id": f"reminder-{int(time.time())}",
+            "title": "Scheduled Reminders",
+            "type": "reminder",
+            "badge": "reminder",
+            "description": msg,
+            "selected": True,
+            "actionType": "custom",
+            "payload": {
+                "tool": "reminder",
+                "reminders": reminders,
+                "message": msg,
+            },
+        })
+    return msg, cards
 
 def _tool_list_reminders(params, query, spoken):
-    return handle_list_reminders(), None
+    msg = handle_list_reminders()
+    data = get_active_data()
+    reminders = data.get("reminders", [])
+    cards = []
+    if reminders:
+        cards.append({
+            "id": f"reminders-list-{int(time.time())}",
+            "title": "My Active Reminders",
+            "type": "reminder",
+            "badge": "reminder",
+            "description": f"{len(reminders)} active reminder(s)",
+            "selected": True,
+            "actionType": "custom",
+            "payload": {
+                "tool": "reminder",
+                "reminders": reminders,
+            },
+        })
+    return msg, cards
 
 def _tool_cancel_reminder(params, query, spoken):
     return handle_cancel_reminder(params), None

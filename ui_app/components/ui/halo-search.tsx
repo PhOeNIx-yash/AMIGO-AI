@@ -674,6 +674,7 @@ export const HaloSearchInput = forwardRef<
               style={{
                 background: borderGlow.primaryBg,
                 transform: "translateZ(0)",
+                willChange: shouldAnimateGlow ? "transform" : "auto",
               }}
               transition={{
                 duration: borderGlow.durationMain,
@@ -695,6 +696,7 @@ export const HaloSearchInput = forwardRef<
               style={{
                 background: borderGlow.secondaryBg,
                 transform: "translateZ(0)",
+                willChange: shouldAnimateGlow ? "transform" : "auto",
               }}
               transition={{
                 duration: borderGlow.durationSec,
@@ -716,6 +718,7 @@ export const HaloSearchInput = forwardRef<
               style={{
                 background: borderGlow.tertiaryBg,
                 transform: "translateZ(0)",
+                willChange: shouldAnimateGlow ? "transform" : "auto",
               }}
               transition={{
                 duration: borderGlow.durationTer,
@@ -1135,6 +1138,10 @@ export const AiBlobWarpAvatar = React.memo(
           }
           aria-hidden
           className="pointer-events-none absolute inset-0 size-full origin-center rounded-full overflow-hidden [&>div]:size-full [&_canvas]:!block [&_canvas]:!size-full [&_canvas]:!relative [&_canvas]:!z-10 [&_canvas]:rounded-full"
+          style={{
+            willChange: live ? "transform" : "auto",
+            transform: "translate3d(0, 0, 0)",
+          }}
           transition={{
             duration: isLoading ? 2.2 : pulseDurationSec,
             ease: "easeInOut",

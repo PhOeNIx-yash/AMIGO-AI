@@ -1341,8 +1341,9 @@ def manage_reminders():
             res = handle_set_reminder(data, data.get("query", ""))
         return jsonify({"success": True, "message": res})
     elif request.method == "DELETE":
-        res = handle_cancel_reminder()
-        return jsonify({"success": True, "message": res})
+        data = request.get_json(silent=True) or {}
+        res = handle_cancel_reminder(data)
+        return jsonify({"success": True, "message": res, "active": get_active_data()})
     return jsonify(get_active_data())
 
 

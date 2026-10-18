@@ -297,8 +297,16 @@ def handle_list_reminders() -> str:
 
 
 def handle_cancel_reminder(params: dict = None) -> str:
-    """Cancels all active timers and reminders."""
+    """Cancels active timers and reminders (single by id, or all)."""
+    params = params if isinstance(params, dict) else {}
+    target_id = str(params.get("id") or params.get("reminder_id") or "").strip()
     with _reminders_lock:
+        if target_id:
+            initial_count = len(_scheduled_reminders)
+            _scheduled_reminders[:] = [r for r in _scheduled_reminders if str(r.get("id")) != target_id]
+            if len(_scheduled_reminders) < initial_count:
+                save_reminders(_scheduled_reminders)
+                return "Reminder completed and removed."
         count = len(_active_timers) + len(_scheduled_reminders)
         _active_timers.clear()
         _scheduled_reminders.clear()

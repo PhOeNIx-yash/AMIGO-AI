@@ -154,6 +154,14 @@
   animation: shimmer-sweep 3s linear infinite;
 }
 
+/* Universal GPU acceleration & jitter-free rendering */
+.smooth-gpu {
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  perspective: 1000px;
+  will-change: transform, opacity;
+}
+
 /* Custom thin scrollbar */
 ::-webkit-scrollbar {
   width: 6px;

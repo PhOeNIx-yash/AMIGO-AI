@@ -25,11 +25,13 @@ import {
 } from "lucide-react";
 import { HaloSearchInput } from "@/components/ui/halo-search";
 import { ErrorState } from "@/components/ui/error-state";
+import { AiStatus, AiStatusState } from "@/components/ui/ai-status";
 import {
   HistoryEntry,
   ColorTheme,
   AttachmentItem,
   BackendConfig,
+  ActionCardItem,
 } from "../types";
 import { COLOR_THEMES } from "../data/presets";
 import { speakText, sfx } from "../utils/audio";
@@ -38,6 +40,7 @@ import {
   DataVisualizationCard,
   ParsedTableData,
 } from "./DataVisualizationCard";
+import { ReminderCardPalette, isReminderItem } from "./ActionCard";
 
 interface ChatWorkspaceProps {
   history: HistoryEntry[];
@@ -49,6 +52,9 @@ interface ChatWorkspaceProps {
   backendConfig?: BackendConfig;
   onSwitchToAssistant?: () => void;
   userName?: string;
+  assistantState?: string;
+  liveIntent?: string;
+  activePrompt?: string;
 }
 
 // Time-of-day greeting generator with user name
@@ -323,6 +329,9 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   colorTheme = "beams",
   onSwitchToAssistant,
   userName = "",
+  assistantState,
+  liveIntent,
+  activePrompt,
 }) => {
   const theme = COLOR_THEMES[colorTheme] || COLOR_THEMES.beams || COLOR_THEMES.violet;
   const [inputText, setInputText] = useState("");
@@ -337,6 +346,50 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const speechRecognitionRef = useRef<any>(null);
+
+  // Compute live AI status state based on active processing context
+  const currentAiState: AiStatusState = useMemo(() => {
+    if (!isLoading) return "done";
+    const text = `${liveIntent || ""} ${activePrompt || ""} ${inputText || ""} ${assistantState || ""}`.toLowerCase();
+    if (
+      text.includes("search") ||
+      text.includes("web") ||
+      text.includes("google") ||
+      text.includes("find") ||
+      text.includes("browse") ||
+      text.includes("price") ||
+      text.includes("stock") ||
+      text.includes("news") ||
+      text.includes("weather")
+    ) {
+      return "researching";
+    }
+    if (
+      text.includes("calc") ||
+      text.includes("analyz") ||
+      text.includes("rag") ||
+      text.includes("doc") ||
+      text.includes("pdf") ||
+      text.includes("table") ||
+      text.includes("chart") ||
+      text.includes("file") ||
+      text.includes("read")
+    ) {
+      return "analyzing";
+    }
+    if (
+      text.includes("writ") ||
+      text.includes("draft") ||
+      text.includes("code") ||
+      text.includes("compose") ||
+      text.includes("summary") ||
+      text.includes("explain") ||
+      text.includes("create")
+    ) {
+      return "writing";
+    }
+    return "thinking";
+  }, [isLoading, liveIntent, activePrompt, inputText, assistantState]);
 
   useEffect(() => {
     if (!isLoading) {
@@ -522,9 +575,18 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
         className="flex-1 min-h-0 overflow-y-auto px-4 py-6 space-y-6 smooth-scroll-container bg-transparent"
       >
         <div className="max-w-4xl lg:max-w-5xl mx-auto w-full space-y-6">
-          {/* Subtle Clear Conversation Button when messages exist */}
-          {messages.length > 0 && (
-            <div className="flex justify-end pb-1">
+          {/* Top Status Bar: AiStatus Badge & Clear Conversation Button */}
+          <div className="flex items-center justify-between pb-1 px-1">
+            <div className="flex items-center space-x-2">
+              <AiStatus
+                state={isLoading ? currentAiState : "done"}
+                label={isLoading ? undefined : "Amigo Ready"}
+                timer={isLoading}
+                shimmer={isLoading}
+                className="scale-90 origin-left text-xs"
+              />
+            </div>
+            {messages.length > 0 && (
               <button
                 type="button"
                 onClick={() => {
@@ -539,8 +601,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                 <Trash2 className="w-3 h-3" />
                 <span>Clear chat</span>
               </button>
-            </div>
-          )}
+            )}
+          </div>
           {/* Empty State / Welcome Screen */}
           {messages.length === 0 && (
             <div className="py-8 flex flex-col items-center justify-center text-center space-y-6">
@@ -650,6 +712,27 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
               entry.response.displayTitle ||
               "";
 
+            const reminderCard: ActionCardItem | null =
+              entry.response.actionCards?.find(isReminderItem) ||
+              ((entry.response.intent === "set_reminder" || entry.response.intent === "list_reminders")
+                ? {
+                    id: `chat-rem-${entry.id}`,
+                    title: "Reminders & Tasks",
+                    type: "reminder",
+                    badge: "reminder",
+                    description: replyText,
+                    selected: true,
+                    actionType: "custom",
+                    payload: {
+                      tool: "reminder",
+                      message: replyText,
+                      reminders: entry.response.metadata?.reminders || [
+                        { id: `rem-${entry.id}`, message: replyText || entry.prompt },
+                      ],
+                    },
+                  }
+                : null);
+
             return (
               <motion.div
                 key={entry.id}
@@ -726,51 +809,72 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                         />
                       </div>
 
-                      {/* Message Action Toolbar */}
-                      <div className="flex items-center space-x-1.5 pt-1 text-xs opacity-60 hover:opacity-100 transition-opacity">
-                        <span className="text-[10px] font-mono opacity-50 mr-2">
-                          {entry.response.intent || "assistant"} •{" "}
-                          {new Date(entry.timestamp).toLocaleTimeString([], {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
-                        </span>
+                      {/* Interactive TaskList for Reminders & Tasks */}
+                      {reminderCard && (
+                        <div className="pt-2 max-w-lg w-full">
+                          <ReminderCardPalette
+                            item={reminderCard}
+                            isDark={isDark}
+                            theme={theme}
+                          />
+                        </div>
+                      )}
 
-                        <button
-                          type="button"
-                          onClick={() => handleCopyMessage(entry.id, replyText)}
-                          className="p-1.5 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
-                          title="Copy response"
-                        >
-                          {copiedId === entry.id ? (
-                            <Check className="w-3.5 h-3.5 text-emerald-400" />
-                          ) : (
-                            <Copy className="w-3.5 h-3.5" />
-                          )}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleToggleSpeak(entry.id, replyText)}
-                          className="p-1.5 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
-                          title={speakingId === entry.id ? "Stop voice" : "Read aloud"}
-                        >
-                          {speakingId === entry.id ? (
-                            <VolumeX className="w-3.5 h-3.5 text-rose-400 animate-pulse" />
-                          ) : (
-                            <Volume2 className="w-3.5 h-3.5" />
-                          )}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            sfx.playClick?.();
-                            onProcessCommand(entry.prompt);
-                          }}
-                          className="p-1.5 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
-                          title="Re-run query"
-                        >
-                          <RotateCcw className="w-3.5 h-3.5" />
-                        </button>
+                      {/* Message Action Toolbar */}
+                      <div className="flex items-center justify-between pt-1 text-xs opacity-60 hover:opacity-100 transition-opacity">
+                        <div className="flex items-center space-x-2">
+                          <AiStatus
+                            state={isError ? "error" : "done"}
+                            label={isError ? "Failed" : (entry.response.intent ? entry.response.intent.replace(/_/g, " ") : "Done")}
+                            timer={false}
+                            className="scale-90 origin-left text-xs opacity-75"
+                          />
+                          <span className="text-[10px] font-mono opacity-50">
+                            •{" "}
+                            {new Date(entry.timestamp).toLocaleTimeString([], {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center space-x-1.5">
+                          <button
+                            type="button"
+                            onClick={() => handleCopyMessage(entry.id, replyText)}
+                            className="p-1.5 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
+                            title="Copy response"
+                          >
+                            {copiedId === entry.id ? (
+                              <Check className="w-3.5 h-3.5 text-emerald-400" />
+                            ) : (
+                              <Copy className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleToggleSpeak(entry.id, replyText)}
+                            className="p-1.5 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
+                            title={speakingId === entry.id ? "Stop voice" : "Read aloud"}
+                          >
+                            {speakingId === entry.id ? (
+                              <VolumeX className="w-3.5 h-3.5 text-rose-400 animate-pulse" />
+                            ) : (
+                              <Volume2 className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              sfx.playClick?.();
+                              onProcessCommand(entry.prompt);
+                            }}
+                            className="p-1.5 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
+                            title="Re-run query"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -779,22 +883,34 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
             );
           })}
 
-          {/* Thinking / Searching indicator */}
+          {/* Thinking / Searching / AI Status Indicator (Rare UI ai-status) */}
           {isLoading && (
             <motion.div
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
-              className="flex items-center space-x-3 py-2 text-sm text-slate-400"
+              style={{ willChange: "transform, opacity", transform: "translate3d(0, 0, 0)" }}
+              className="flex items-center space-x-3 py-2 text-sm"
             >
               <div
-                className="w-7 h-7 rounded-full flex items-center justify-center text-white shrink-0 shadow-sm animate-pulse"
+                className="w-7 h-7 rounded-full flex items-center justify-center text-white shrink-0 shadow-sm animate-pulse transform-gpu"
                 style={{ background: theme.gradient }}
               >
                 <Sparkles className="w-3.5 h-3.5" />
               </div>
-              <div className="flex items-center space-x-2">
-                <Loader2 className="w-4 h-4 animate-spin text-indigo-400" />
-                <span className="font-medium animate-pulse">Amigo is thinking...</span>
+              <div
+                className={`px-3 py-1.5 rounded-xl border backdrop-blur-md shadow-sm transition-colors duration-200 ${
+                  isDark
+                    ? "bg-slate-900/80 border-slate-800 text-slate-200"
+                    : "bg-white/90 border-slate-200 text-slate-800"
+                }`}
+              >
+                <AiStatus
+                  state={currentAiState}
+                  detail={activePrompt ? (activePrompt.length > 38 ? activePrompt.slice(0, 38) + "..." : activePrompt) : undefined}
+                  timer={true}
+                  shimmer={true}
+                  className="text-xs"
+                />
               </div>
             </motion.div>
           )}

@@ -50,6 +50,7 @@ import {
 import { ActionCardItem, ColorTheme } from "../types";
 import { COLOR_THEMES } from "../data/presets";
 import { sfx } from "../utils/audio";
+import TaskList, { Task } from "@/components/ui/task-list";
 
 interface ActionCardProps {
   items: ActionCardItem[];
@@ -129,6 +130,24 @@ export const isStockItem = (item: ActionCardItem): boolean => {
     badge === "stock" ||
     Boolean(item.payload?.symbol && item.payload?.price !== undefined) ||
     Boolean(item.payload?.tool === "stock_quote")
+  );
+};
+
+export const isReminderItem = (item: ActionCardItem): boolean => {
+  const type = (item.type || "").toLowerCase();
+  const tool = (item.payload?.tool || "").toLowerCase();
+  const badge = (item.badge || "").toLowerCase();
+  return (
+    type === "reminder" ||
+    type === "task" ||
+    type === "task_list" ||
+    tool === "reminder" ||
+    tool === "set_reminder" ||
+    tool === "list_reminders" ||
+    badge === "reminder" ||
+    badge === "task" ||
+    Boolean(item.payload?.reminders) ||
+    /\b(reminder|reminders|task|tasks|todo)\b/i.test(item.title)
   );
 };
 
@@ -726,7 +745,7 @@ const StockCardPalette: React.FC<{
       <div className="mt-3 relative w-full h-[135px] select-none">
         <svg
           viewBox={`0 0 ${width} ${height}`}
-          className={`w-full h-full overflow-visible transition-opacity duration-300 ${loading ? "opacity-40 animate-pulse" : "opacity-100"}`}
+          className={`w-full h-full overflow-visible transition-opacity duration-300 ${loading ? "opacity-40" : "opacity-100"}`}
           preserveAspectRatio="none"
           onMouseMove={handleMouseMove}
           onMouseLeave={() => setHoveredPoint(null)}
@@ -1162,6 +1181,135 @@ const TimerCardPalette: React.FC<{
   );
 };
 
+/**
+ * Modern Interactive Reminders & Task List Widget powered by rare-ui/task-list
+ */
+export const ReminderCardPalette: React.FC<{
+  item: ActionCardItem;
+  isDark: boolean;
+  theme: any;
+  onRefresh?: () => void;
+}> = ({ item, isDark, theme, onRefresh }) => {
+  const rawReminders: Array<{ id?: string; message?: string; target_time?: string }> =
+    item.payload?.reminders || (item.payload?.reminder ? [item.payload.reminder] : []);
+
+  // Format reminders as Tasks for TaskList
+  const buildTasks = (): Task[] => {
+    if (rawReminders.length > 0) {
+      return rawReminders.map((r, idx) => {
+        let label = r.message || "Reminder";
+        if (r.target_time) {
+          try {
+            const dt = new Date(r.target_time);
+            const timeStr = dt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+            const dateStr = dt.toLocaleDateString([], { month: "short", day: "numeric" });
+            label = `${label} • ${dateStr}, ${timeStr}`;
+          } catch {}
+        }
+        return {
+          id: String(r.id || `rem-${idx}`),
+          label,
+          done: false,
+        };
+      });
+    }
+    return [
+      {
+        id: "rem-default",
+        label: item.description || item.title || "Reminder scheduled",
+        done: false,
+      },
+    ];
+  };
+
+  const [tasks, setTasks] = useState<Task[]>(buildTasks);
+  const [clearing, setClearing] = useState(false);
+
+  useEffect(() => {
+    setTasks(buildTasks());
+  }, [item]);
+
+  const handleTaskChange = async (updated: Task[]) => {
+    setTasks(updated);
+    // Find newly checked tasks to complete/remove on backend
+    const newlyDone = updated.filter((t) => t.done && !tasks.find((prev) => prev.id === t.id)?.done);
+    for (const d of newlyDone) {
+      try {
+        await fetch("/api/reminders", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: d.id }),
+        });
+      } catch (err) {
+        console.warn("Failed to complete reminder on backend:", err);
+      }
+    }
+  };
+
+  const handleClearAll = async () => {
+    setClearing(true);
+    try {
+      await fetch("/api/reminders", { method: "DELETE" });
+      setTasks([]);
+      onRefresh?.();
+    } catch {}
+    finally {
+      setClearing(false);
+    }
+  };
+
+  const activeCount = tasks.filter((t) => !t.done).length;
+  const doneCount = tasks.filter((t) => t.done).length;
+
+  return (
+    <div
+      className={`relative overflow-hidden rounded-2xl p-4 sm:p-5 border transition-all shadow-xl ${
+        isDark ? "bg-slate-900/85 border-white/10 text-white" : "bg-white/95 border-black/10 text-slate-900 shadow-slate-300/40"
+      }`}
+    >
+      <div className="flex items-center justify-between pb-3.5 mb-3.5 border-b border-white/10">
+        <div className="flex items-center space-x-2.5">
+          <div
+            className="w-8 h-8 rounded-xl flex items-center justify-center text-white shadow-md shadow-orange-500/25 shrink-0"
+            style={{ background: theme.gradient }}
+          >
+            <AlarmClock className="w-4 h-4" />
+          </div>
+          <div>
+            <h4 className="text-sm font-semibold tracking-tight">
+              {item.title || "Reminders & To-Dos"}
+            </h4>
+            <p className="text-[11px] opacity-60">
+              {activeCount} active{doneCount > 0 ? ` • ${doneCount} completed` : ""}
+            </p>
+          </div>
+        </div>
+
+        {tasks.length > 0 && (
+          <button
+            type="button"
+            onClick={handleClearAll}
+            disabled={clearing}
+            className="text-[11px] font-medium opacity-50 hover:opacity-100 hover:text-rose-400 transition-colors px-2 py-1 rounded"
+          >
+            {clearing ? "Clearing..." : "Clear all"}
+          </button>
+        )}
+      </div>
+
+      <div className="pt-1 w-full overflow-hidden">
+        <TaskList
+          tasks={tasks}
+          accent={theme.accent || "#FF5F2E"}
+          size="md"
+          onTasksChange={handleTaskChange}
+          className="w-full"
+        />
+      </div>
+    </div>
+  );
+};
+
 export const ActionCard: React.FC<ActionCardProps> = ({
   items,
   onToggleItem,
@@ -1345,6 +1493,7 @@ export const ActionCard: React.FC<ActionCardProps> = ({
   const isTimerCard = items.some(isTimerItem);
   const isFileCard = items.some(isFileItem);
   const isStockCard = items.some(isStockItem);
+  const isReminderCard = items.some(isReminderItem);
 
   const cardTitle = isStockCard
     ? "Stock & Market Overview"
@@ -1352,17 +1501,19 @@ export const ActionCard: React.FC<ActionCardProps> = ({
     ? "Weather Forecast"
     : isTimerCard
     ? "Timer & Stopwatch"
+    : isReminderCard
+    ? "Reminders & Tasks"
     : isFileCard
     ? "Matching Files"
     : "Quick Actions";
 
   // Check if multiple items have checkboxes and are selectable
   const hasSelectableItems = items.some(
-    (i) => i.actionType !== "button" && !i.payload?.file && !isTimerItem(i) && !isWeatherItem(i) && !isStockItem(i)
+    (i) => i.actionType !== "button" && !i.payload?.file && !isTimerItem(i) && !isWeatherItem(i) && !isStockItem(i) && !isReminderItem(i)
   );
   const selectedCount = items.filter((i) => i.selected).length;
 
-  const isWidgetCard = isStockCard || isWeatherCard || isTimerCard;
+  const isWidgetCard = isStockCard || isWeatherCard || isTimerCard || isReminderCard;
 
   return (
     <motion.div
@@ -1371,25 +1522,33 @@ export const ActionCard: React.FC<ActionCardProps> = ({
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: 8, scale: 0.98 }}
       transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-      style={{ willChange: "transform, opacity" }}
+      style={{
+        willChange: "transform, opacity",
+        transform: "translate3d(0, 0, 0)",
+        contain: "paint",
+      }}
       className="w-full max-w-xl mx-auto relative px-2 sm:px-4 z-50 transform-gpu"
     >
       {/* Optimized Ambient Glow behind the card */}
       <div
-        className="absolute -inset-2 rounded-3xl opacity-25 blur-xl pointer-events-none"
+        className="absolute -inset-2 rounded-3xl opacity-20 blur-lg pointer-events-none"
         style={{
           background: `radial-gradient(ellipse at top, ${theme.primary}66 0%, ${theme.secondary || theme.primary}33 45%, transparent 70%)`,
+          contain: "strict",
+          transform: "translateZ(0)",
+          willChange: "transform",
         }}
       />
 
       <div
-        className={`relative rounded-[24px] sm:rounded-[32px] p-5 sm:p-7 shadow-2xl overflow-hidden backdrop-blur-xl border transform-gpu ${
+        className={`relative rounded-[24px] sm:rounded-[32px] p-5 sm:p-7 shadow-2xl overflow-hidden backdrop-blur-lg border transform-gpu ${
           isDark
             ? "bg-slate-900/90 text-slate-100 shadow-black/60"
             : "bg-white/95 text-slate-900 shadow-slate-400/30"
         }`}
         style={{
           borderColor: isDark ? `${theme.primary}40` : `${theme.primary}25`,
+          transform: "translateZ(0)",
         }}
       >
         {/* Inner subtle top highlight for depth */}
@@ -1480,6 +1639,14 @@ export const ActionCard: React.FC<ActionCardProps> = ({
               return (
                 <div key={item.id} className="transform-gpu">
                   <StockCardPalette item={item} isDark={isDark} theme={theme} />
+                </div>
+              );
+            }
+
+            if (isReminderItem(item)) {
+              return (
+                <div key={item.id} className="transform-gpu">
+                  <ReminderCardPalette item={item} isDark={isDark} theme={theme} />
                 </div>
               );
             }
