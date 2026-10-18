@@ -34,8 +34,11 @@ for _noisy_logger in (
     "pdfminer", "pdfminer.pdffont", "pdfminer.pdfinterp", "pdfminer.pdfpage",
     "pdfminer.pdfdocument", "pypdf", "pdfplumber",
     "httpx", "httpcore", "sentence_transformers", "transformers", "huggingface_hub",
+    "pocket_tts", "pocket_tts.models.tts_model", "pocket_tts.utils.utils", "pocket_tts.models", "pocket_tts.utils",
 ):
-    logging.getLogger(_noisy_logger).setLevel(logging.ERROR)
+    _l = logging.getLogger(_noisy_logger)
+    _l.setLevel(logging.ERROR)
+    _l.propagate = False
 
 print("[ AMIGO UI SERVER ] Starting up...", flush=True)
 
@@ -369,9 +372,9 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
 
     clipboard_used = bool(get_clipboard_text())
     llm_started = time.perf_counter()
-    logger.info("[Query Processing] request_id=%s query=%r", request_id or "unknown", query)
+    logger.debug("[Query Processing] request_id=%s query=%r", request_id or "unknown", query)
     actions = get_agent_action(query, conversation_history=history)
-    logger.info(
+    logger.debug(
         "[Timing] request_id=%s stage=llm duration_ms=%.1f",
         request_id or "unknown", (time.perf_counter() - llm_started) * 1000,
     )
@@ -412,7 +415,7 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
         if tool in ("chat", "web_search"):
             spoken = ""
 
-        logger.info(f"[Query Action] tool={tool!r} params={params}")
+        logger.debug(f"[Query Action] tool={tool!r} params={params}")
         broadcaster.broadcast("intent_detected", {
             "intent": tool.lower(),
             "tool": tool.lower(),
@@ -445,7 +448,7 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
                     "showGeneratedPanel": True,
                 }
             response_metadata.update(handler_metadata)
-        logger.info(
+        logger.debug(
             "[Timing] request_id=%s stage=tool tool=%s duration_ms=%.1f",
             request_id or "unknown", tool, (time.perf_counter() - tool_started) * 1000,
         )
@@ -509,7 +512,7 @@ def process_query(query: str, is_voice: bool = True, display_prompt: str | None 
     """Safely executes a query with error recovery and request telemetry."""
     request_id = uuid.uuid4().hex[:12]
     request_started = time.perf_counter()
-    logger.info("[Timing] request_id=%s stage=request start", request_id)
+    logger.debug("[Timing] request_id=%s stage=request start", request_id)
 
     try:
         result = _process_query(query, is_voice=is_voice, request_id=request_id, display_prompt=display_prompt)
@@ -847,10 +850,6 @@ def api_assistant_process():
         "showGeneratedPanel": result_metadata.get("showGeneratedPanel", False),
         "url": url,
     }
-    # Debug logging
-    logger.info(f"[DEBUG] result_metadata keys: {list(result_metadata.keys())}")
-    logger.info(f"[DEBUG] generated_content: {result_metadata.get('generated_content')[:50] if result_metadata.get('generated_content') else None}")
-    logger.info(f"[DEBUG] showGeneratedPanel: {result_metadata.get('showGeneratedPanel')}")
     return jsonify(formatted_response)
 
 
@@ -1683,7 +1682,7 @@ _llm_load_error: Optional[Exception] = None
 
 
 def _load_llm_background():
-    """Load LLM model in background thread."""
+    """Load LLM model in background thread and safely pre-warm cache."""
     global _llm_load_error
     try:
         init_local_llm()
@@ -1691,6 +1690,25 @@ def _load_llm_background():
     except Exception as e:
         _llm_load_error = e
         _llm_ready.set()
+        return
+
+    # Non-blocking background pre-warm: never impacts server startup or errors out
+    try:
+        from amigo.utils.tool_registry import get_static_router_prefix, _ROUTER_STOP
+        from amigo.core.llm_agent import query_local_llm
+        sp = get_static_router_prefix()
+        query_local_llm(
+            [{"role": "system", "content": sp}, {"role": "user", "content": "ping"}],
+            max_tokens=10,
+            temperature=0.0,
+            thinking=False,
+            sanitize=False,
+            response_format={"type": "json_object"},
+            stop=_ROUTER_STOP,
+        )
+        logger.info("[Local AI Engine] Router prompt cache pre-warmed successfully.")
+    except Exception as e:
+        logger.debug(f"[Local AI Engine] Prompt cache pre-warm note: {e}")
 
 
 def _start_background_initializations():

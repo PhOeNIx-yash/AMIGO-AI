@@ -69,9 +69,9 @@ PER_ENGINE_FAST = 6
 SNIPPET_CHARS = 480
 
 # Fast, non-blocking budgets (seconds)
-_BUDGETS = {"fast": 2.0, "full": 3.2}
-MERGE_GRACE_S = 0.28          # Wait 280ms after 1st web engine + 1st news engine to fuse remaining providers
-MERGE_GRACE_FAST_S = 0.18
+_BUDGETS = {"fast": 2.5, "full": 3.5}
+MERGE_GRACE_S = 0.40          # Wait 400ms after 1st web engine + 1st news engine to fuse remaining providers
+MERGE_GRACE_FAST_S = 0.35
 HTTP_TIMEOUT = 2.8
 
 FETCH_TIMEOUT = 2.5
@@ -374,11 +374,20 @@ def _get_ddgs():
 def _p_ddgs_web(query: str, limit: int) -> list[SearchResult]:
     clean_q = clean_search_query(query) or query
     reg = SEARCH_REGION if (SEARCH_REGION and SEARCH_REGION != "wt-wt") else "us-en"
+    rows = []
     try:
         rows = list(_get_ddgs().text(clean_q, region=reg, max_results=limit) or [])
-    except Exception:
-        _DDGS_LOCAL.client = None
-        rows = list(_get_ddgs().text(clean_q, region=reg, max_results=limit) or [])
+    except Exception as e:
+        if "no results" in str(e).lower():
+            return []
+        try:
+            _DDGS_LOCAL.client = None
+            rows = list(_get_ddgs().text(clean_q, region=reg, max_results=limit) or [])
+        except Exception as e2:
+            if "no results" in str(e2).lower():
+                return []
+            logger.debug("[DDGS Web] search failed: %s", e2)
+            return []
     out = []
     for r in rows:
         url = (r.get("href") or r.get("url") or "").strip()
@@ -390,11 +399,20 @@ def _p_ddgs_web(query: str, limit: int) -> list[SearchResult]:
 def _p_ddgs_news(query: str, limit: int) -> list[SearchResult]:
     clean_q = clean_search_query(query) or query
     reg = SEARCH_REGION if (SEARCH_REGION and SEARCH_REGION != "wt-wt") else "us-en"
+    rows = []
     try:
         rows = list(_get_ddgs().news(clean_q, region=reg, max_results=limit) or [])
-    except Exception:
-        _DDGS_LOCAL.client = None
-        rows = list(_get_ddgs().news(clean_q, region=reg, max_results=limit) or [])
+    except Exception as e:
+        if "no results" in str(e).lower():
+            return []
+        try:
+            _DDGS_LOCAL.client = None
+            rows = list(_get_ddgs().news(clean_q, region=reg, max_results=limit) or [])
+        except Exception as e2:
+            if "no results" in str(e2).lower():
+                return []
+            logger.debug("[DDGS News] search failed: %s", e2)
+            return []
     out = []
     for r in rows:
         url = (r.get("url") or r.get("href") or "").strip()

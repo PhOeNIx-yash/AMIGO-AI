@@ -223,7 +223,7 @@ def route_content_to_destination(
     # 5. Any Desktop Application (Notepad, Word, VS Code, Slack, Discord, etc.)
     opened = open_windows_app(dest_clean)
     if opened or _is_app_running(dest_clean):
-        time.sleep(1.5)  # Allow application window to focus
+        time.sleep(0.35)  # Quick focus delay
         os_automation.type_text(content)
         return True, f"Opened {dest_clean.title()} and inserted your {content_type}."
 
@@ -257,7 +257,7 @@ def generate_content(params: Any, query: str, spoken: str) -> Tuple[str, Optiona
         f"{f'Additional Context: {extra_context}' if extra_context else ''}\n\n"
         f"INSTRUCTIONS:\n"
         f"1. Resolve all relative dates ('tomorrow', 'next Monday', 'for 3 days starting tomorrow') into exact, explicit calendar dates (including day of the week and full date) using the Real-Time System & Date Context above.\n"
-        f"2. If user name or details are present in the context, use them naturally; if not, use clean bracketed placeholders like [Your Name] instead of inventing fake names.\n"
+        f"2. If user name or details are present in the context, use them naturally. If no recipient is explicitly specified, address it naturally (e.g. 'Dear Manager,' or 'Dear Team,') rather than leaving raw placeholder brackets like [Recipient's Name].\n"
         f"3. Output ONLY the raw {content_type} itself (e.g., include 'Subject: ...' if it's an email, or raw code if code is requested). Do NOT wrap in conversational filler or explanations."
     )
 
@@ -296,13 +296,10 @@ def generate_content(params: Any, query: str, spoken: str) -> Tuple[str, Optiona
     )
 
     if routed:
-        spoken_reply = f"I've written the {content_type} for {topic}. {route_msg} Let me know if you'd like to regenerate it or change the tone."
+        dest_label = (destination or "your application").strip().title()
+        spoken_reply = f"I've drafted the {content_type} and inserted it into {dest_label}."
     else:
-        spoken_reply = (
-            f"I've drafted your {content_type} for {topic}. "
-            f"Where would you like me to insert it—such as Gmail, Notepad, Word, or your clipboard? "
-            f"Or tell me if you'd like me to regenerate it with a different style."
-        )
+        spoken_reply = f"I've drafted your {content_type}. Where would you like me to insert it, like Notepad, Gmail, or your clipboard?"
 
     return spoken_reply, None, {
         "generated_content": generated_content,

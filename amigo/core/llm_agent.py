@@ -221,7 +221,7 @@ def _build_voice_prompt(query: str = "", is_voice: bool = True, has_web_context:
 
     if active_ctx := get_active_context_prompt():
         prompt += f"\n{active_ctx}"
-    if user_prof := get_user_profile_prompt(query, semantic_search=True):
+    if user_prof := get_user_profile_prompt(query, semantic_search=False):
         prompt += f"\n{user_prof}"
 
     # Clipboard and screen text are private and volatile: only read them when the user asks about them.
@@ -798,7 +798,8 @@ def init_local_llm(force_reload: bool = False):
                     raise gpu_exc
             try:
                 from llama_cpp import LlamaRAMCache
-                _local_llm_instance.set_cache(LlamaRAMCache(capacity_bytes=256 * 1024 * 1024))
+                cache_bytes = int(os.getenv("AMIGO_LLM_CACHE_BYTES", str(2 * 1024 * 1024 * 1024)))
+                _local_llm_instance.set_cache(LlamaRAMCache(capacity_bytes=cache_bytes))
             except Exception:
                 pass
             _setup_chat_formatter(_local_llm_instance)

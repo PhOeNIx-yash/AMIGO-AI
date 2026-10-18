@@ -798,6 +798,7 @@ export const HaloSearchInput = forwardRef<
                     "w-full bg-transparent text-sm sm:text-base text-foreground outline-none",
                     "caret-foreground",
                     "placeholder:text-muted-foreground",
+                    "[&::-webkit-search-cancel-button]:!hidden [&::-webkit-search-decoration]:!hidden",
                     (isDeleting || isLoading) &&
                       "text-transparent caret-transparent"
                   )}
@@ -825,7 +826,7 @@ export const HaloSearchInput = forwardRef<
                   readOnly={readOnly || isLoading}
                   ref={setInputRef}
                   role="searchbox"
-                  type="search"
+                  type="text"
                   value={currentValue}
                 />
                 {isLoading && (

@@ -115,9 +115,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const [selectedVoice, setSelectedVoice] = useState<string>(() => {
     try {
       const v = localStorage.getItem("amigo_selected_voice");
-      return v && v !== "nicole" ? v : "nova";
+      return v && v !== "nicole" && v !== "nova" ? v : "alba";
     } catch {
-      return "nova";
+      return "alba";
     }
   });
   const [voiceFilter, setVoiceFilter] = useState<"all" | "female" | "male">("all");
@@ -135,7 +135,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
             v = localStorage.getItem("amigo_selected_voice");
           } catch (_) {}
         }
-        if (v === "nicole") v = "nova";
+        if (v === "nicole" || v === "nova") v = "alba";
         if (v) {
           setSelectedVoice(v);
           try {
@@ -147,7 +147,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
         if (err?.name === "AbortError") return;
         try {
           const saved = localStorage.getItem("amigo_selected_voice");
-          if (saved) setSelectedVoice(saved === "nicole" ? "nova" : saved);
+          if (saved) setSelectedVoice(saved === "nicole" || saved === "nova" ? "alba" : saved);
         } catch (_) {}
       });
 

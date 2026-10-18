@@ -3,10 +3,17 @@ Tool Registry & Action Dispatcher for Amigo Voice Assistant.
 Executes agentic tool calls and generates structured UI action cards.
 """
 
+import os
+import sys
+
+# Ensure parent package directory is in sys.path when invoked directly
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 import datetime
 import json
 import logging
-import os
 import re
 import urllib.parse
 import threading
@@ -1008,14 +1015,7 @@ def _tool_chat(params, query, spoken, conversation_history=None):
     call = getattr(_call_ctx, "value", None) or {}
     conv_history = conversation_history if conversation_history is not None else call.get("conversation_history")
 
-    doc_context = ""
-    try:
-        doc_context = rag_engine.build_rag_context(query, top_k=3, conversation_history=conv_history)
-    except Exception as e:
-        logger.debug(f"[Chat RAG context]: {e}")
-
-    # Always generate a full, intelligent response using Amigo's core AI model (with thinking & persona)
-    # Never return dead 1-line router stubs for questions/conversation!
+    doc_context = str(params.get("context") or params.get("doc_context") or "").strip()
     ai_reply = get_ai_response(query, doc_context=doc_context, conversation_history=conv_history)
     return ai_reply, None
 
@@ -1972,8 +1972,9 @@ TOOLS AVAILABLE:
 
 ROUTING GUIDELINES:
 1. CHAT, GREETINGS, TIME, DATE & MATH: For casual conversation, greetings, advice, compliments, gratitude, arithmetic calculations, or checking current date, day, or local time (which you already know from the system prompt): ALWAYS select 'chat' with empty params: {"tool": "chat", "params": {}}. You will answer directly in natural voice conversation.
-2. MUSIC & VIDEO PLAYBACK: For songs, music, tracks, artists, or videos, select 'play_youtube'.
+2. MUSIC & VIDEO PLAYBACK: For explicit requests to play, listen to, or stream songs, music, tracks, or videos (e.g. "play bohemian rhapsody", "listen to drake", "put on some lofi"), select 'play_youtube'.
 - Extract the user's requested song title and artist into params['query'] exactly as stated in the request.
+- CRITICAL: If the user is asking an informational question about a song, soundtrack, or artist (e.g. "which song is played in...", "what song is in the trailer for...", "who sang the song in...", "what is the background score of..."): DO NOT select 'play_youtube'. Instead, select 'web_search' to find the answer.
 - Do not substitute, swap, or alter the requested title with different tracks.
 3. PC & SYSTEM ACTIONS: For apps, volume, brightness, timers, reminders, screenshots, files, and system power (lock, sleep, restart, shutdown, empty recycle bin): select the specific tool. For system power or emptying recycle bin, use 'system_control' with action.
 4. LOCAL DOCUMENTS & FILES: To search/find/locate files or folders on the PC: use 'find_file'. To read, summarize, or answer questions about indexed local documents, notes, tickets, bookings, or personal records: use 'document_qa'. Do NOT use 'web_search' for local files.
@@ -2002,6 +2003,7 @@ EXAMPLES:
 - "looks great, thanks" -> {"actions": [{"tool": "chat", "params": {}}]}
 - "who is the prime minister of the uk" -> {"actions": [{"tool": "web_search", "params": {"query": "current prime minister of UK"}}]}
 - "what is the capital of france" -> {"actions": [{"tool": "chat", "params": {}}]}
+- "who sang the theme song in titanic" -> {"actions": [{"tool": "web_search", "params": {"query": "Titanic movie theme song singer"}}]}
 - "play bohemian rhapsody" -> {"actions": [{"tool": "play_youtube", "params": {"query": "bohemian rhapsody"}}]}
 - "can you play that" (after mentioning a song in previous turn) -> {"actions": [{"tool": "play_youtube", "params": {"query": "<song from immediate previous turn>"}}]}
 - "for which platform?" (after discussing a video game or software) -> {"actions": [{"tool": "web_search", "params": {"query": "<game/software name from recent activity> platforms"}}]}
@@ -2010,6 +2012,8 @@ EXAMPLES:
 - "open it" (after finding a file) -> {"actions": [{"tool": "open_file", "params": {"path": "<file name from recent activity>"}}]}
 - "pause music" -> {"actions": [{"tool": "pause_media", "params": {}}]}
 - "resume" -> {"actions": [{"tool": "resume_media", "params": {}}]}
+- "what is playing" -> {"actions": [{"tool": "current_media", "params": {}}]}
+- "what song is this" -> {"actions": [{"tool": "current_media", "params": {}}]}
 - "weather in new york" -> {"actions": [{"tool": "get_weather", "params": {"city": "New York"}}]}
 - "open notepad" -> {"actions": [{"tool": "open_app", "params": {"name": "Notepad"}}]}
 - "lock my pc" -> {"actions": [{"tool": "system_control", "params": {"action": "lock"}}]}
@@ -2029,6 +2033,11 @@ EXAMPLES:
 OUTPUT FORMAT:
 Do not include <think> tags or reasoning. Output only valid JSON in this format:
 {"actions": [{"tool": "<tool_name>", "params": {<parameters>}}]}"""
+
+
+def get_static_router_prefix() -> str:
+    """Return the static immutable portion of the router prompt (tools and guidelines) for KV prefix caching."""
+    return _ROUTER_SYSTEM_PROMPT.replace("<<TOOLS>>", _tools_block())
 
 
 def build_agent_system_prompt(query: str = "", conversation_history: list | None = None) -> str:
@@ -2072,7 +2081,7 @@ def build_agent_system_prompt(query: str = "", conversation_history: list | None
             active_context = f"{stripped}\n[Active State: {note}]".strip()
 
     parts = [
-        _ROUTER_SYSTEM_PROMPT.replace("<<TOOLS>>", _tools_block()),
+        get_static_router_prefix(),
         "",
     ]
     pending = _pending_confirmation_line()
@@ -2080,18 +2089,20 @@ def build_agent_system_prompt(query: str = "", conversation_history: list | None
         parts.append(pending)
     parts.append("RECENT ACTIVITY (oldest first):")
     parts.append(_format_recent_activity(conversation_history, query, limit=4))
+    status_parts = []
     if active_context.strip():
-        parts.append(active_context.strip())
+        status_parts.append(active_context.strip())
     try:
         profile = rag_engine.get_user_profile_prompt(query, semantic_search=False)
         if profile:
-            parts.append(profile)
+            status_parts.append(profile.strip())
     except Exception:
         pass
 
     now = datetime.datetime.now()
     net_status, _ = _get_internet_status()
-    parts.append(f"Today is {now.strftime('%A, %B')} {now.day}, {now.year}. Local time: {now.strftime('%I:%M %p').lstrip('0')} ({_day_period(now.hour)}). Internet: {net_status}.")
+    status_parts.append(f"Today is {now.strftime('%A, %B')} {now.day}, {now.year}. Local time: {now.strftime('%I:%M %p').lstrip('0')} ({_day_period(now.hour)}). Internet: {net_status}.")
+    parts.append("SYSTEM STATUS:\n" + "\n".join(status_parts))
     return "\n".join(parts)
 
 
@@ -2245,7 +2256,7 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
         response = query_local_llm(
             messages,
             system_prompt="",
-            max_tokens=256,
+            max_tokens=200,
             temperature=0.05,
             thinking=False,
             sanitize=False,
@@ -2260,7 +2271,7 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
 
     tool_calls = _parse_tool_calls(response)
     final_response = _extract_final_response(response, tool_calls)
-    logger.info("[Router LLM] raw=%r calls=%s", response[:200], tool_calls)
+    logger.debug("[Router LLM] raw=%r calls=%s", response[:200], tool_calls)
 
     if tool_calls:
         if not final_response:
@@ -2704,5 +2715,7 @@ def build_action_cards(tool: str, params: dict, result_metadata: dict, url: str 
     return cards
 
 
-
-
+if __name__ == "__main__":
+    print(f"[ Amigo Tool Registry ] Loaded successfully ({len(UI_TOOL_HANDLERS)} tools registered).")
+    print("To start the full Amigo assistant, run:")
+    print("  python amigo-main/main.py   (or run amigo/ui/server.py)")

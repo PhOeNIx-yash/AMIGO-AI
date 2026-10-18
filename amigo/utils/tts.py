@@ -1,6 +1,6 @@
 """
 Unified Speech Engine Module for Amigo Voice Assistant.
-Handles both Offline Neural Text-to-Speech (TTS via Supertonic 3)
+Handles both Offline Neural Text-to-Speech (TTS via Kyutai Pocket TTS 24kHz)
 and Offline Neural Speech-to-Text (STT via Vosk Neural Recognizer).
 """
 
@@ -16,99 +16,93 @@ import time
 import urllib.request
 import numpy as np
 
-# Limit ONNX Runtime / OpenMP threads to 2 so TTS does not saturate all CPU cores
-# and compete for CPU with llama.cpp LLM generation.
-if "OMP_NUM_THREADS" not in os.environ:
-    os.environ["OMP_NUM_THREADS"] = "2"
-if "ORT_INTRA_OP_NUM_THREADS" not in os.environ:
-    os.environ["ORT_INTRA_OP_NUM_THREADS"] = "2"
-
 try:
     import num2words
 except ImportError:
     num2words = None
 
-logger = logging.getLogger("amigo.speech")
+# Silence verbose third-party pocket_tts generation timers and step logs
+for _pkg in ("pocket_tts", "pocket_tts.models.tts_model", "pocket_tts.utils.utils", "pocket_tts.models", "pocket_tts.utils"):
+    _pl = logging.getLogger(_pkg)
+    _pl.setLevel(logging.ERROR)
+    _pl.propagate = False
 
-_supertonic_instance = None
-_USE_SUPERTONIC = False
+logger = logging.getLogger("amigo.speech")
 
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _MODELS_ROOT = os.path.join(_PROJECT_ROOT, "models")
 
 try:
     import sounddevice as _sd
-    from supertonic import TTS as _SupertonicTTS
+    from pocket_tts import TTSModel
 
-    _USE_SUPERTONIC = True
-    logger.info("[TTS] Supertonic-3 Neural Engine available (44.1kHz).")
+    _USE_POCKET_TTS = True
+    logger.info("[TTS] Kyutai Pocket TTS Engine available (24kHz).")
 except ImportError:
-    _USE_SUPERTONIC = False
-    logger.warning("[TTS] supertonic package not available.")
+    _USE_POCKET_TTS = False
+    logger.warning("[TTS] pocket-tts package not available.")
 
-# ── 10 Curated Best Offline Studio Neural Voices (Supertonic 3 - 44.1kHz Studio) ────────
+# ── 10 Curated Best Offline Studio Neural Voices (Kyutai Pocket TTS - 24kHz Studio) ────────
 CURATED_VOICES = {
-    # 5 Best Female Neural Voices (Supertonic 3)
-    "nova":    {"engine": "supertonic", "id": "F1", "name": "Nova",    "gender": "Female", "accent": "US", "desc": "Smooth, articulate & studio-clean neural female (Recommended)"},
-    "aria":    {"engine": "supertonic", "id": "F2", "name": "Aria",    "gender": "Female", "accent": "US", "desc": "Soft, natural & warm conversational female"},
-    "serena":  {"engine": "supertonic", "id": "F3", "name": "Serena",  "gender": "Female", "accent": "US", "desc": "Warm, expressive and friendly conversational tone"},
-    "chloe":   {"engine": "supertonic", "id": "F4", "name": "Chloe",   "gender": "Female", "accent": "US", "desc": "Bright, friendly & clear female delivery"},
-    "luna":    {"engine": "supertonic", "id": "F5", "name": "Luna",    "gender": "Female", "accent": "US", "desc": "Energetic, crisp and articulate female delivery"},
+    # 5 Best Female Neural Voices (Pocket TTS)
+    "alba":    {"engine": "pocket_tts", "id": "alba",    "name": "Alba",    "gender": "Female", "accent": "US", "desc": "Smooth, articulate & studio-clean neural female (Recommended)"},
+    "cosette": {"engine": "pocket_tts", "id": "cosette", "name": "Cosette", "gender": "Female", "accent": "US", "desc": "Soft, natural & warm conversational female"},
+    "fantine": {"engine": "pocket_tts", "id": "fantine", "name": "Fantine", "gender": "Female", "accent": "US", "desc": "Warm, expressive and friendly conversational tone"},
+    "anna":    {"engine": "pocket_tts", "id": "anna",    "name": "Anna",    "gender": "Female", "accent": "US", "desc": "Bright, friendly & clear female delivery"},
+    "eve":     {"engine": "pocket_tts", "id": "eve",     "name": "Eve",     "gender": "Female", "accent": "US", "desc": "Energetic, crisp and articulate female delivery"},
 
-    # 5 Best Male Neural Voices (Supertonic 3)
-    "orion":   {"engine": "supertonic", "id": "M1", "name": "Orion",   "gender": "Male",   "accent": "US", "desc": "Deep, calm and grounded baritone resonance"},
-    "atlas":   {"engine": "supertonic", "id": "M2", "name": "Atlas",   "gender": "Male",   "accent": "US", "desc": "Professional, crisp and articulate executive tone"},
-    "leo":     {"engine": "supertonic", "id": "M3", "name": "Leo",     "gender": "Male",   "accent": "US", "desc": "Warm, relatable and conversational companion"},
-    "felix":   {"engine": "supertonic", "id": "M4", "name": "Felix",   "gender": "Male",   "accent": "US", "desc": "Young, natural, and modern male delivery"},
-    "ethan":   {"engine": "supertonic", "id": "M5", "name": "Ethan",   "gender": "Male",   "accent": "US", "desc": "Distinguished, articulate gentleman delivery"},
+    # 5 Best Male Neural Voices (Pocket TTS)
+    "marius":  {"engine": "pocket_tts", "id": "marius",  "name": "Marius",  "gender": "Male",   "accent": "US", "desc": "Warm, relatable and conversational companion"},
+    "javert":  {"engine": "pocket_tts", "id": "javert",  "name": "Javert",  "gender": "Male",   "accent": "US", "desc": "Deep, calm and grounded baritone resonance"},
+    "jean":    {"engine": "pocket_tts", "id": "jean",    "name": "Jean",    "gender": "Male",   "accent": "US", "desc": "Professional, crisp and articulate executive tone"},
+    "michael": {"engine": "pocket_tts", "id": "michael", "name": "Michael", "gender": "Male",   "accent": "US", "desc": "Young, natural, and modern male delivery"},
+    "george":  {"engine": "pocket_tts", "id": "george",  "name": "George",  "gender": "Male",   "accent": "US", "desc": "Distinguished, articulate gentleman delivery"},
 
-    # Direct F1-F5 & M1-M5 IDs
-    "f1":      {"engine": "supertonic", "id": "F1", "name": "Nova",    "gender": "Female", "accent": "US", "desc": "Smooth, articulate & studio-clean female"},
-    "f2":      {"engine": "supertonic", "id": "F2", "name": "Aria",    "gender": "Female", "accent": "US", "desc": "Soft, natural & warm female"},
-    "f3":      {"engine": "supertonic", "id": "F3", "name": "Serena",  "gender": "Female", "accent": "US", "desc": "Warm, expressive and natural female"},
-    "f4":      {"engine": "supertonic", "id": "F4", "name": "Chloe",   "gender": "Female", "accent": "US", "desc": "Bright, friendly & clear female"},
-    "f5":      {"engine": "supertonic", "id": "F5", "name": "Luna",    "gender": "Female", "accent": "US", "desc": "Energetic and crisp female"},
-    "m1":      {"engine": "supertonic", "id": "M1", "name": "Orion",   "gender": "Male",   "accent": "US", "desc": "Deep calm baritone male"},
-    "m2":      {"engine": "supertonic", "id": "M2", "name": "Atlas",   "gender": "Male",   "accent": "US", "desc": "Professional executive male"},
-    "m3":      {"engine": "supertonic", "id": "M3", "name": "Leo",     "gender": "Male",   "accent": "US", "desc": "Warm & conversational male"},
-    "m4":      {"engine": "supertonic", "id": "M4", "name": "Felix",   "gender": "Male",   "accent": "US", "desc": "Young & natural modern male"},
-    "m5":      {"engine": "supertonic", "id": "M5", "name": "Ethan",   "gender": "Male",   "accent": "US", "desc": "Distinguished gentleman male"},
+    # Backward compatibility with legacy Supertonic voice names
+    "nova":    {"engine": "pocket_tts", "id": "alba",    "name": "Alba",    "gender": "Female", "accent": "US", "desc": "Smooth, articulate female"},
+    "aria":    {"engine": "pocket_tts", "id": "cosette", "name": "Cosette", "gender": "Female", "accent": "US", "desc": "Soft, natural & warm female"},
+    "serena":  {"engine": "pocket_tts", "id": "fantine", "name": "Fantine", "gender": "Female", "accent": "US", "desc": "Warm, expressive female"},
+    "chloe":   {"engine": "pocket_tts", "id": "alba",    "name": "Alba",    "gender": "Female", "accent": "US", "desc": "Studio-clean conversational female"},
+    "luna":    {"engine": "pocket_tts", "id": "eve",     "name": "Eve",     "gender": "Female", "accent": "US", "desc": "Energetic and crisp female"},
+    "orion":   {"engine": "pocket_tts", "id": "javert",  "name": "Javert",  "gender": "Male",   "accent": "US", "desc": "Deep calm baritone male"},
+    "atlas":   {"engine": "pocket_tts", "id": "jean",    "name": "Jean",    "gender": "Male",   "accent": "US", "desc": "Professional executive male"},
+    "leo":     {"engine": "pocket_tts", "id": "marius",  "name": "Marius",  "gender": "Male",   "accent": "US", "desc": "Warm & conversational male"},
+    "felix":   {"engine": "pocket_tts", "id": "michael", "name": "Michael", "gender": "Male",   "accent": "US", "desc": "Young & natural modern male"},
+    "ethan":   {"engine": "pocket_tts", "id": "george",  "name": "George",  "gender": "Male",   "accent": "US", "desc": "Distinguished gentleman male"},
 
-    # Seamless backward compatibility with legacy voice names
-    "nicole":  {"engine": "supertonic", "id": "F1", "name": "Nova",    "gender": "Female", "accent": "US", "desc": "Studio-clean neural female"},
-    "sarah":   {"engine": "supertonic", "id": "F2", "name": "Aria",    "gender": "Female", "accent": "US", "desc": "Warm conversational female"},
-    "heart":   {"engine": "supertonic", "id": "F3", "name": "Serena",  "gender": "Female", "accent": "US", "desc": "Warm & expressive female"},
-    "sky":     {"engine": "supertonic", "id": "F4", "name": "Chloe",   "gender": "Female", "accent": "US", "desc": "Bright & clear female"},
-    "bella":   {"engine": "supertonic", "id": "F5", "name": "Luna",    "gender": "Female", "accent": "US", "desc": "Energetic & crisp female"},
-    "adam":    {"engine": "supertonic", "id": "M1", "name": "Orion",   "gender": "Male",   "accent": "US", "desc": "Deep calm baritone male"},
-    "michael": {"engine": "supertonic", "id": "M2", "name": "Atlas",   "gender": "Male",   "accent": "US", "desc": "Professional executive male"},
-    "echo":    {"engine": "supertonic", "id": "M3", "name": "Leo",     "gender": "Male",   "accent": "US", "desc": "Warm & conversational male"},
-    "liam":    {"engine": "supertonic", "id": "M4", "name": "Felix",   "gender": "Male",   "accent": "US", "desc": "Young & natural male"},
-    "george":  {"engine": "supertonic", "id": "M5", "name": "Ethan",   "gender": "Male",   "accent": "US", "desc": "Distinguished gentleman"},
+    "f1":      {"engine": "pocket_tts", "id": "alba",    "name": "Alba",    "gender": "Female", "accent": "US", "desc": "Smooth studio female"},
+    "f2":      {"engine": "pocket_tts", "id": "cosette", "name": "Cosette", "gender": "Female", "accent": "US", "desc": "Soft warm female"},
+    "f3":      {"engine": "pocket_tts", "id": "fantine", "name": "Fantine", "gender": "Female", "accent": "US", "desc": "Warm expressive female"},
+    "f4":      {"engine": "pocket_tts", "id": "anna",    "name": "Anna",    "gender": "Female", "accent": "US", "desc": "Bright clear female"},
+    "f5":      {"engine": "pocket_tts", "id": "eve",     "name": "Eve",     "gender": "Female", "accent": "US", "desc": "Energetic crisp female"},
+    "m1":      {"engine": "pocket_tts", "id": "javert",  "name": "Javert",  "gender": "Male",   "accent": "US", "desc": "Deep baritone male"},
+    "m2":      {"engine": "pocket_tts", "id": "jean",    "name": "Jean",    "gender": "Male",   "accent": "US", "desc": "Executive male"},
+    "m3":      {"engine": "pocket_tts", "id": "marius",  "name": "Marius",  "gender": "Male",   "accent": "US", "desc": "Conversational male"},
+    "m4":      {"engine": "pocket_tts", "id": "michael", "name": "Michael", "gender": "Male",   "accent": "US", "desc": "Modern male"},
+    "m5":      {"engine": "pocket_tts", "id": "george",  "name": "George",  "gender": "Male",   "accent": "US", "desc": "Distinguished gentleman"},
 }
 
 _PROFILE_PATH = os.path.join(_PROJECT_ROOT, "amigo_profile.json")
 if not os.path.exists(_PROFILE_PATH):
     _PROFILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "amigo_profile.json")
 
-ACTIVE_VOICE = "chloe"
-SUPERTONIC_VOICE = "F4"
-SUPERTONIC_SPEED = 1.05
-SUPERTONIC_STEPS = 5  # 5 steps gives 35-40% faster latency with identical neural fidelity
-SUPERTONIC_SILENCE_DURATION = 0.04
-SUPERTONIC_LANG = "na"  # "na" enables universal multilingual support (English, Spanish, French, German, Hindi, etc.)
+ACTIVE_VOICE = "alba"
+POCKET_TTS_SAMPLE_RATE = 24000
 
 _tts_lock = threading.Lock()
-_supertonic_init_lock = threading.Lock()
+_pocket_tts_init_lock = threading.Lock()
+_pocket_tts_instance = None
 _active_stream = None
 _active_stream_lock = threading.Lock()
-_style_cache = {}
+_voice_state_cache = {}
+_voice_state_lock = threading.Lock()
+_current_stop_event = threading.Event()
 _profile_mtime_tts = 0.0
 
 
 def sync_voice_from_profile() -> str:
     """Synchronizes active voice selection from amigo_profile.json, caching disk reads by mtime."""
-    global ACTIVE_VOICE, SUPERTONIC_VOICE, SUPERTONIC_LANG, _profile_mtime_tts
+    global ACTIVE_VOICE, _profile_mtime_tts
     try:
         if os.path.exists(_PROFILE_PATH):
             mtime = os.path.getmtime(_PROFILE_PATH)
@@ -125,9 +119,6 @@ def sync_voice_from_profile() -> str:
                     v_key = v.strip().lower()
                     if v_key in CURATED_VOICES:
                         ACTIVE_VOICE = v_key
-                        info = CURATED_VOICES[v_key]
-                        SUPERTONIC_VOICE = info["id"]
-                        SUPERTONIC_LANG = "na"
                         return v_key
     except Exception as e:
         logger.debug(f"[TTS] Voice profile sync note: {e}")
@@ -140,24 +131,17 @@ sync_voice_from_profile()
 
 def set_voice(voice_name: str) -> str:
     """Sets the active voice, updates engine settings, and immediately persists to user profile atomically."""
-    global ACTIVE_VOICE, SUPERTONIC_VOICE, SUPERTONIC_LANG, _profile_mtime_tts
+    global ACTIVE_VOICE, _profile_mtime_tts
     key = voice_name.lower().strip()
     display_name = voice_name
     if key in CURATED_VOICES:
         ACTIVE_VOICE = key
         info = CURATED_VOICES[key]
         display_name = info["name"]
-        SUPERTONIC_VOICE = info["id"]
-        SUPERTONIC_LANG = "na"
-        logger.info(f"[TTS] Active voice switched to: {info['name']} (Supertonic-3 {info['id']})")
-    elif voice_name.upper() in ("F1", "F2", "F3", "F4", "F5", "M1", "M2", "M3", "M4", "M5"):
-        SUPERTONIC_VOICE = voice_name.upper()
-        ACTIVE_VOICE = voice_name.lower()
-        display_name = voice_name.upper()
+        logger.info(f"[TTS] Active voice switched to: {info['name']} (Pocket TTS {info['id']})")
     else:
-        SUPERTONIC_VOICE = "F1"
-        ACTIVE_VOICE = voice_name
-        display_name = voice_name
+        ACTIVE_VOICE = "alba"
+        display_name = "Alba"
 
     # Persist to profile atomically so voice selection is remembered across restarts
     try:
@@ -165,9 +149,9 @@ def set_voice(voice_name: str) -> str:
         if os.path.exists(_PROFILE_PATH):
             with open(_PROFILE_PATH, "r", encoding="utf-8") as f:
                 pdata = json.load(f)
-        pdata.setdefault("preferences", {})["voice"] = key
-        pdata.setdefault("ui_settings", {})["voice"] = key
-        pdata.setdefault("user_profile", {}).setdefault("preferences", {})["voice"] = key
+        pdata.setdefault("preferences", {})["voice"] = ACTIVE_VOICE
+        pdata.setdefault("ui_settings", {})["voice"] = ACTIVE_VOICE
+        pdata.setdefault("user_profile", {}).setdefault("preferences", {})["voice"] = ACTIVE_VOICE
 
         tmp_file = _PROFILE_PATH + ".tmp"
         with open(tmp_file, "w", encoding="utf-8") as f:
@@ -179,9 +163,9 @@ def set_voice(voice_name: str) -> str:
         try:
             from amigo.core import rag_engine
             if hasattr(rag_engine, "_profile_cache") and rag_engine._profile_cache is not None:
-                rag_engine._profile_cache.setdefault("preferences", {})["voice"] = key
-                rag_engine._profile_cache.setdefault("ui_settings", {})["voice"] = key
-                rag_engine._profile_cache.setdefault("user_profile", {}).setdefault("preferences", {})["voice"] = key
+                rag_engine._profile_cache.setdefault("preferences", {})["voice"] = ACTIVE_VOICE
+                rag_engine._profile_cache.setdefault("ui_settings", {})["voice"] = ACTIVE_VOICE
+                rag_engine._profile_cache.setdefault("user_profile", {}).setdefault("preferences", {})["voice"] = ACTIVE_VOICE
         except Exception:
             pass
     except Exception as e:
@@ -216,98 +200,71 @@ def set_tts_callbacks(state_cb=None, broadcast_cb=None):
 
 def get_tts_engine_name() -> str:
     voice_info = CURATED_VOICES.get(ACTIVE_VOICE)
-    vname = voice_info["name"] if voice_info else SUPERTONIC_VOICE
-    if _USE_SUPERTONIC:
-        return f"Supertonic-3 44.1kHz ({vname})"
-    return f"Supertonic-3 ({vname})"
+    vname = voice_info["name"] if voice_info else "Alba"
+    if _USE_POCKET_TTS:
+        return f"Pocket TTS 24kHz ({vname})"
+    return f"Pocket TTS ({vname})"
 
 
-def _get_supertonic():
-    """Lazy-load Supertonic-3 TTS model - thread-safe."""
-    global _supertonic_instance
-    if _supertonic_instance is None:
-        with _supertonic_init_lock:
-            if _supertonic_instance is None:
-                logger.info("[TTS] Initializing Supertonic-3 Neural Engine...")
-                _supertonic_instance = _SupertonicTTS(model="supertonic-3", auto_download=True)
-                logger.info("[TTS] Supertonic-3 ready (44.1kHz).")
-    return _supertonic_instance
+def _get_pocket_tts():
+    """Lazy-load Kyutai Pocket TTS model - thread-safe and 100% offline capable."""
+    global _pocket_tts_instance
+    if _pocket_tts_instance is None:
+        with _pocket_tts_init_lock:
+            if _pocket_tts_instance is None:
+                logger.info("[TTS] Initializing Kyutai Pocket TTS Neural Engine (24kHz)...")
+                from pocket_tts import TTSModel
+                try:
+                    _pocket_tts_instance = TTSModel.load_model()
+                except Exception:
+                    # Fallback to strict offline mode if network is unavailable or blocked
+                    old_offline = os.environ.get("HF_HUB_OFFLINE")
+                    try:
+                        os.environ["HF_HUB_OFFLINE"] = "1"
+                        _pocket_tts_instance = TTSModel.load_model()
+                    finally:
+                        if old_offline is None:
+                            os.environ.pop("HF_HUB_OFFLINE", None)
+                        else:
+                            os.environ["HF_HUB_OFFLINE"] = old_offline
+                logger.info("[TTS] Kyutai Pocket TTS ready.")
+    return _pocket_tts_instance
 
 
-def _get_expressive_voice_style(engine, voice_id: str):
-    """
-    Retrieves and conditions an expressively contoured voice style vector:
-    - Injects subtle prosodic warmth and dynamic pitch inflection into each voice profile.
-    - Caches the resulting Style vectors in memory for instant 0ms reuse.
-    """
-    global _style_cache
-    vid = voice_id.upper().strip()
-    if vid in _style_cache:
-        return _style_cache[vid]
+def _get_voice_state(model, voice_name: str):
+    """Retrieves and caches voice conditioning state vector for instant 0ms reuse."""
+    v_key = voice_name.lower().strip()
+    voice_info = CURATED_VOICES.get(v_key)
+    prompt_id = voice_info["id"] if voice_info else "alba"
 
-    try:
-        from supertonic import Style
-        base_style = engine.get_voice_style(vid)
-        # Prosodic dynamic enhancement:
-        # Female voices (F1, F2, F4, F5) blend with F3 (Serena's rich conversational prosody)
-        # Male voices (M1, M2, M4, M5) blend with M3 (Leo's warm expressive companion tone)
-        if vid in ("F1", "F2", "F4", "F5"):
-            if vid == "F3":
-                styled = base_style
-            else:
-                f3_style = engine.get_voice_style("F3")
-                ratio = 0.28 if vid == "F1" else 0.24
-                blend_ttl = (1.0 - ratio) * base_style.ttl + ratio * f3_style.ttl
-                blend_dp = (1.0 - ratio) * base_style.dp + ratio * f3_style.dp
-                styled = Style(blend_ttl, blend_dp)
-        elif vid in ("M1", "M2", "M4", "M5"):
-            if vid == "M3":
-                styled = base_style
-            else:
-                m3_style = engine.get_voice_style("M3")
-                ratio = 0.28 if vid == "M1" else 0.24
-                blend_ttl = (1.0 - ratio) * base_style.ttl + ratio * m3_style.ttl
-                blend_dp = (1.0 - ratio) * base_style.dp + ratio * m3_style.dp
-                styled = Style(blend_ttl, blend_dp)
-        else:
-            styled = base_style
-
-        _style_cache[vid] = styled
-        return styled
-    except Exception as e:
-        logger.debug(f"[TTS Style note] {e}")
-        return engine.get_voice_style(vid)
-
-
-# Pre-compiled regex patterns for zero overhead text sanitization & splitting
-_RE_URL = re.compile(r'https?://\S+|www\.\S+')
-_RE_SPECIAL_CHARS = re.compile(r'[*#_`~>\[\]()]')
-_RE_CONSECUTIVE_DOTS = re.compile(r'\.{2,}')
-_RE_WHITESPACE = re.compile(r'\s+')
-_RE_SENTENCE_SPLIT = re.compile(r'(?<=[.!?])\s+')
+    with _voice_state_lock:
+        if prompt_id in _voice_state_cache:
+            return _voice_state_cache[prompt_id]
+        try:
+            st = model.get_state_for_audio_prompt(prompt_id)
+            _voice_state_cache[prompt_id] = st
+            return st
+        except Exception as e:
+            logger.warning(f"[TTS] Failed to load voice state for '{prompt_id}': {e}. Falling back to 'alba'.")
+            if "alba" in _voice_state_cache:
+                return _voice_state_cache["alba"]
+            st = model.get_state_for_audio_prompt("alba")
+            _voice_state_cache["alba"] = st
+            return st
 
 
 def _warmup_tts():
-    """Warms up Supertonic-3 ONNX in a background thread so initial speech is instant."""
+    """Warms up Kyutai Pocket TTS in a background thread so initial speech is instant."""
     def _warm():
         try:
-            if _USE_SUPERTONIC:
-                engine = _get_supertonic()
-                style = _get_expressive_voice_style(engine, "F1")
-                with _tts_lock:
-                    engine.synthesize(
-                        "Amigo ready.",
-                        voice_style=style,
-                        total_steps=SUPERTONIC_STEPS,
-                        speed=SUPERTONIC_SPEED,
-                        silence_duration=SUPERTONIC_SILENCE_DURATION,
-                        lang="na",
-                    )
-                logger.info("[TTS] Supertonic-3 inference warmed up.")
+            if _USE_POCKET_TTS:
+                model = _get_pocket_tts()
+                _get_voice_state(model, "alba")
+                logger.info("[TTS] Kyutai Pocket TTS primed and cached.")
         except Exception as e:
             logger.debug(f"[TTS Warmup] {e}")
 
-    threading.Thread(target=_warm, daemon=True, name="TTS-Warmup").start()
+    threading.Thread(target=_warm, daemon=True, name="PocketTTS-Warmup").start()
 
 
 _warmup_tts()
@@ -341,6 +298,12 @@ def _update_state(new_state: str):
                 _is_speaking_state = False
                 if _on_state_change:
                     _on_state_change("idle")
+
+
+_RE_URL = re.compile(r'https?://\S+|www\.\S+', re.IGNORECASE)
+_RE_CONSECUTIVE_DOTS = re.compile(r'\.{2,}')
+_RE_WHITESPACE = re.compile(r'\s+')
+_RE_SPECIAL_CHARS = re.compile(r'[*_~`#<>{}[\]\\]')
 
 
 def normalize_text_for_tts(text: str) -> str:
@@ -555,23 +518,8 @@ def normalize_text_for_tts(text: str) -> str:
 
 
 def _clean_tts_text(text: str) -> str:
-    """Cleans and normalizes text for natural neural TTS prosody without redundant per-char loops."""
-    norm = normalize_text_for_tts(text)
-    if _USE_SUPERTONIC:
-        try:
-            engine = _get_supertonic()
-            valid_set = getattr(engine.model.text_processor, "supported_character_set", None)
-            if valid_set:
-                # Fast single-pass filter only if text contains characters outside valid_set
-                text_chars = set(norm)
-                unsupported = text_chars - valid_set
-                if unsupported:
-                    trans_table = {ord(c): " " for c in unsupported}
-                    norm = norm.translate(trans_table)
-                    norm = _RE_WHITESPACE.sub(" ", norm).strip()
-        except Exception:
-            pass
-    return norm
+    """Cleans and normalizes text for natural neural Pocket TTS prosody."""
+    return normalize_text_for_tts(text)
 
 
 def _compact_tts_text(text: str) -> str:
@@ -708,7 +656,7 @@ def _playback_worker():
     """
     Dedicated audio output worker:
     - Maintains an active sounddevice OutputStream across consecutive chunks and sentences.
-    - Eliminates per-sentence driver opening/closing latency and 120ms dead-air sleep.
+    - Eliminates per-sentence driver opening/closing latency and dead-air sleep.
     - Transitions assistant state to 'idle' only when all queues are genuinely empty and playback finishes.
     """
     global _active_stream
@@ -717,15 +665,15 @@ def _playback_worker():
 
     while True:
         try:
-            item = _playback_queue.get(timeout=0.6)
+            item = _playback_queue.get(timeout=0.4)
         except queue.Empty:
-            # Idle timeout: no audio was queued for 600ms
+            # Idle timeout: no audio was queued for 400ms
             if stream is not None and _speech_queue.empty() and _playback_queue.empty():
                 with _active_stream_lock:
                     if _active_stream is stream:
                         _active_stream = None
                 try:
-                    time.sleep(0.15)  # Allow hardware DAC buffer to drain before stopping stream
+                    time.sleep(0.08)  # Allow hardware DAC buffer to drain before stopping stream
                     stream.stop()
                     stream.close()
                 except Exception:
@@ -769,7 +717,7 @@ def _playback_worker():
 
         # Check if playback is finished and all queues are empty
         if is_last_in_utterance and _speech_queue.empty() and _playback_queue.empty():
-            time.sleep(0.15)
+            time.sleep(0.08)
             if _speech_queue.empty() and _playback_queue.empty():
                 _update_state("idle")
 
@@ -781,9 +729,11 @@ threading.Thread(target=_playback_worker, daemon=True, name="TTS-Playback").star
 def _speech_worker():
     """
     Dedicated synthesis worker:
-    - Synthesizes queued sentences ahead of playback so audio streams seamlessly.
-    - Feeds chunks directly to _playback_queue without blocking on playback completion.
+    - Streams Pocket TTS audio in real-time (24kHz chunks) directly to playback worker.
+    - Yields chunks as they are generated by the Kyutai neural engine (~150ms time-to-first-sound).
+    - Halts immediately without CPU waste on user interruption.
     """
+    global _current_stop_event
     while True:
         item = _speech_queue.get()
         voice_override = None
@@ -806,17 +756,13 @@ def _speech_worker():
             if broadcast_chat and _on_broadcast:
                 _on_broadcast("chat_message", {"sender": "assistant", "text": text})
 
-            if not _USE_SUPERTONIC:
-                logger.warning("[TTS] Supertonic-3 neural TTS engine not available.")
+            if not _USE_POCKET_TTS:
+                logger.warning("[TTS] Pocket TTS neural engine not available.")
                 continue
 
-            engine = _get_supertonic()
+            model = _get_pocket_tts()
             target_voice = voice_override.lower().strip() if voice_override else sync_voice_from_profile()
-            voice_info = CURATED_VOICES.get(target_voice)
-            voice_id = voice_info["id"] if voice_info else SUPERTONIC_VOICE
-            if voice_id not in ("F1", "F2", "F3", "F4", "F5", "M1", "M2", "M3", "M4", "M5"):
-                voice_id = "F1"
-            style = _get_expressive_voice_style(engine, voice_id)
+            voice_state = _get_voice_state(model, target_voice)
 
             clean_text = _compact_tts_text(text)
             if not clean_text:
@@ -827,44 +773,51 @@ def _speech_worker():
                 chunks = [clean_text]
 
             total_chunks = len(chunks)
+            stop_evt = _current_stop_event
+            first_chunk_emitted = False
+
             for idx, chunk in enumerate(chunks):
-                if not chunk or not _speech_is_current(generation):
+                if not chunk or not _speech_is_current(generation) or stop_evt.is_set():
                     break
 
-                is_last_chunk = (idx == total_chunks - 1)
                 spoken_chunk = chunk if chunk.endswith((".", "!", "?", ",", ";", ":")) else chunk + "."
-                silence_dur = 0.05 if is_last_chunk else (0.02 if chunk.endswith((",", ";", ":")) else 0.03)
 
                 try:
                     with _tts_lock:
-                        if not _speech_is_current(generation):
+                        if not _speech_is_current(generation) or stop_evt.is_set():
                             break
-                        wav, dur = engine.synthesize(
-                            spoken_chunk,
-                            voice_style=style,
-                            total_steps=SUPERTONIC_STEPS,
-                            speed=SUPERTONIC_SPEED,
-                            silence_duration=silence_dur,
-                            lang="na",
-                        )
+                        # Stream audio tensor chunks (each 80ms / 1920 samples @ 24kHz)
+                        audio_stream = model.generate_audio_stream(voice_state, spoken_chunk, stop=stop_evt)
 
-                    if wav is not None and wav.size > 0:
-                        samples = wav.squeeze(0) if wav.ndim > 1 else wav
-                        samples, sr = _process_audio_clarity(
-                            samples, sr=engine.sample_rate, is_final_chunk=is_last_chunk
-                        )
-                        # Put in playback queue without deadlock risk on interruption
-                        while _speech_is_current(generation):
-                            try:
-                                _playback_queue.put((samples, sr, generation, is_last_chunk), timeout=0.1)
+                        for chunk_tensor in audio_stream:
+                            if not _speech_is_current(generation) or stop_evt.is_set():
                                 break
-                            except queue.Full:
-                                continue
+
+                            samples = chunk_tensor.cpu().numpy()
+                            if samples is not None and samples.size > 0:
+                                samples = np.ascontiguousarray(samples, dtype=np.float32)
+                                while _speech_is_current(generation) and not stop_evt.is_set():
+                                    try:
+                                        _playback_queue.put((samples, POCKET_TTS_SAMPLE_RATE, generation, False), timeout=0.1)
+                                        first_chunk_emitted = True
+                                        break
+                                    except queue.Full:
+                                        continue
+
                 except Exception as chunk_err:
-                    logger.error(f"[Supertonic TTS Chunk Error] {chunk_err} on chunk: {chunk[:60]}")
+                    logger.error(f"[Pocket TTS Chunk Error] {chunk_err} on chunk: {chunk[:60]}")
                     continue
 
-            logger.info(
+            # Signal utterance completion if still current
+            if _speech_is_current(generation) and not stop_evt.is_set() and first_chunk_emitted:
+                try:
+                    # Trailing silence cushion (60ms) to allow hardware buffer to play out cleanly
+                    tail_silence = np.zeros(int(0.06 * POCKET_TTS_SAMPLE_RATE), dtype=np.float32)
+                    _playback_queue.put((tail_silence, POCKET_TTS_SAMPLE_RATE, generation, True), timeout=0.2)
+                except Exception:
+                    pass
+
+            logger.debug(
                 "[Timing] request_id=%s stage=tts duration_ms=%.1f",
                 request_id or "unknown",
                 (time.perf_counter() - tts_started) * 1000,
@@ -911,10 +864,14 @@ def speak(text: str, block: bool = False, request_id: str | None = None, broadca
 
 
 def stop_speaking() -> None:
-    """Stop current audio immediately, flush queued items, and abort output stream."""
-    global _speech_generation
+    """Stop current audio immediately, signal model to halt generation, flush queues, and abort stream."""
+    global _speech_generation, _current_stop_event, _active_stream
+    _current_stop_event.set()
     with _speech_generation_lock:
         _speech_generation += 1
+
+    # Reset stop event for next utterance
+    _current_stop_event = threading.Event()
 
     # Flush speech queue
     while True:
