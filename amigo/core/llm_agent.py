@@ -1,6 +1,6 @@
 """
 LLM-Based Agent for Amigo Voice Assistant.
-Provides natural language understanding and multi-step formal logic reasoning using TwIL LM3 Pro (3.66B) with tool calling for action execution.
+Provides natural language understanding and multi-step reasoning using Granite 4.2 3B with tool calling for action execution.
 """
 
 import json
@@ -484,31 +484,31 @@ _PHYSICAL_CORES = None
 _LLM_CONFIG = None
 _CONFIG_LOCK = threading.Lock()
 
-# Model Configuration (TwIL LM3 Pro)
+# Model Configuration (Granite 4.2 3B)
 MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "models"))
 
-MODEL_NAME = "TwIL LM3 Pro"
-MODEL_FILENAME = "TwIL-LM3-Pro-Q4_K_M.gguf"
+MODEL_NAME = "Granite 4.2 3B"
+MODEL_FILENAME = "granite-4.2-3b-Q4_K_M.gguf"
 MODEL_PATH = os.path.join(MODEL_DIR, MODEL_FILENAME)
 MODEL_TARGETS = [
-    ("webAI-Official/TwIL-LM3-Pro", "TwIL-LM3-Pro-Q4_K_M.gguf"),
+    ("ibm-granite/granite-3.2-3b-instruct-GGUF", "granite-3.2-3b-instruct-Q4_K_M.gguf"),
 ]
 
-STOP_TOKENS = ["<|end_of_text|>", "<|endoftext|>", "<|end_of_role|>", "<|im_end|>", "\nUser:", "\nHuman:", "\nAssistant:"]
+STOP_TOKENS = ["<|im_start|>", "<|im_end|>", "<|endoftext|>", "<|end_of_text|>", "<|end_of_role|>", "\nUser:", "\nHuman:", "\nAssistant:"]
 
 AVAILABLE_MODELS = {
-    "twil-lm3-pro": {
-        "key": "twil-lm3-pro",
+    "granite-4.2-3b": {
+        "key": "granite-4.2-3b",
         "name": MODEL_NAME,
         "filename": MODEL_FILENAME,
         "path": MODEL_PATH,
         "targets": MODEL_TARGETS,
         "downloaded": os.path.exists(MODEL_PATH) and os.path.getsize(MODEL_PATH) > 500_000_000,
-        "size_gb": 2.09,
+        "size_gb": 2.14,
     },
 }
 
-_active_model_key = "twil-lm3-pro"
+_active_model_key = "granite-4.2-3b"
 
 _local_llm_instance = None
 _llm_lock = threading.Lock()
@@ -1344,7 +1344,7 @@ def get_available_models() -> dict:
     return AVAILABLE_MODELS
 
 
-def set_active_model(model_key: str = "qwen3.8-2b") -> bool:
+def set_active_model(model_key: str = "granite-4.2-3b") -> bool:
     """Switch the active model and reload it. Returns True only if the new model actually loaded."""
     global _active_model_key, _local_llm_instance
     if model_key not in AVAILABLE_MODELS:

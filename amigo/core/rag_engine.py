@@ -855,8 +855,35 @@ def extract_text(filepath: str) -> str:
     return extracted
 
 
+def _format_table_as_markdown(rows: list[list[Any]]) -> str:
+    """Convert a 2D grid of cell values into a clean, standard Markdown table."""
+    if not rows:
+        return ""
+    cleaned_rows: list[list[str]] = []
+    max_cols = 0
+    for r in rows:
+        row_cells = [str(c or "").strip().replace("\n", " ").replace("|", "\\|") for c in r]
+        if any(row_cells):
+            cleaned_rows.append(row_cells)
+            max_cols = max(max_cols, len(row_cells))
+
+    if not cleaned_rows or max_cols == 0:
+        return ""
+
+    for r in cleaned_rows:
+        if len(r) < max_cols:
+            r.extend([""] * (max_cols - len(r)))
+
+    header = "| " + " | ".join(cleaned_rows[0]) + " |"
+    separator = "| " + " | ".join(["---"] * max_cols) + " |"
+    lines = [header, separator]
+    for r in cleaned_rows[1:]:
+        lines.append("| " + " | ".join(r) + " |")
+    return "\n".join(lines)
+
+
 def _extract_pdf_enhanced(filepath: str) -> str:
-    """Enhanced PDF extraction with layout awareness and deduplicated table handling."""
+    """Enhanced PDF extraction with layout awareness, table preservation, and non-table deduplication."""
     try:
         import pdfplumber
     except ImportError:
@@ -866,25 +893,49 @@ def _extract_pdf_enhanced(filepath: str) -> str:
     try:
         with pdfplumber.open(filepath) as pdf:
             for page in pdf.pages:
-                # Extract text with layout preservation
-                text = page.extract_text(x_tolerance=2, y_tolerance=2) or ""
-                if text and len(text.strip()) > 30:
+                table_mds = []
+                table_bboxes = []
+                try:
+                    page_tables = page.find_tables()
+                    for t in page_tables:
+                        table_bboxes.append(t.bbox)
+                        extracted = t.extract()
+                        if extracted:
+                            md = _format_table_as_markdown(extracted)
+                            if md:
+                                table_mds.append(md)
+                except Exception as ex:
+                    logger.debug("[RAG v2] Table extraction skipped for page: %s", ex)
+
+                # Extract text outside table areas to avoid duplication/mangling
+                if table_bboxes:
+                    def not_in_tables(obj):
+                        ox0 = obj.get("x0", 0)
+                        otop = obj.get("top", 0)
+                        ox1 = obj.get("x1", ox0)
+                        obottom = obj.get("bottom", otop)
+                        for bx0, btop, bx1, bbottom in table_bboxes:
+                            if not (ox1 < bx0 or ox0 > bx1 or obottom < btop or otop > bbottom):
+                                return False
+                        return True
+                    try:
+                        filtered_page = page.filter(not_in_tables)
+                        text = filtered_page.extract_text(x_tolerance=2, y_tolerance=2) or ""
+                    except Exception:
+                        text = page.extract_text(x_tolerance=2, y_tolerance=2) or ""
+                else:
+                    text = page.extract_text(x_tolerance=2, y_tolerance=2) or ""
+
+                page_parts = []
+                if text.strip():
                     cleaned = _RE_PDF_NEWLINES.sub(' ', text)
                     cleaned = _RE_PDF_ADJACENT.sub(r"\1 \2", cleaned)
-                    pages.append(cleaned.strip())
-                else:
-                    # Only fallback to extract_tables if text extraction is sparse/empty
-                    tables = page.extract_tables()
-                    table_texts = []
-                    if tables:
-                        for table in tables:
-                            table_text = "\n".join([" | ".join([cell or "" for cell in row if cell]) for row in table])
-                            if table_text.strip():
-                                table_texts.append(table_text)
-                    if table_texts:
-                        pages.append("\n\n".join(table_texts).strip())
-                    elif text.strip():
-                        pages.append(text.strip())
+                    page_parts.append(cleaned.strip())
+                if table_mds:
+                    page_parts.extend(table_mds)
+
+                if page_parts:
+                    pages.append("\n\n".join(page_parts))
     except Exception as e:
         logger.debug("[RAG v2] pdfplumber error for %s: %s", filepath, e)
         return _extract_pdf_fallback(filepath)
@@ -940,16 +991,12 @@ def _extract_docx_enhanced(filepath: str) -> str:
                     parts.append(p.text.strip())
         
         for table in doc.tables:
+            table_data: list[list[str]] = []
             for row in table.rows:
-                row_cells = [c.text.strip().replace("\n", " ") for c in row.cells if c.text.strip()]
-                seen = set()
-                deduped = []
-                for cell_t in row_cells:
-                    if cell_t not in seen:
-                        seen.add(cell_t)
-                        deduped.append(cell_t)
-                if deduped:
-                    parts.append(" | ".join(deduped))
+                table_data.append([c.text for c in row.cells])
+            md_tbl = _format_table_as_markdown(table_data)
+            if md_tbl:
+                parts.append(md_tbl)
         
         return "\n\n".join(parts)
     except Exception as e:
@@ -958,24 +1005,25 @@ def _extract_docx_enhanced(filepath: str) -> str:
 
 
 def _extract_xlsx_enhanced(filepath: str) -> str:
-    """Enhanced XLSX extraction with sheet names and formatting."""
+    """Enhanced XLSX extraction with sheet names and Markdown table formatting."""
     wb = None
     try:
         import openpyxl
         wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
         sheets: list[str] = []
         for sheet in wb.worksheets:
-            rows_text: list[str] = []
+            sheet_rows: list[list[Any]] = []
             row_count = 0
             for row in sheet.iter_rows(values_only=True):
-                non_empty = [str(v).strip() for v in row if v is not None and str(v).strip()]
-                if non_empty:
-                    rows_text.append(" | ".join(non_empty))
-                row_count += 1
-                if row_count >= 2000:  # Increased limit from 500
-                    break
-            if rows_text:
-                sheets.append(f"[Sheet: {sheet.title}]\n" + "\n".join(rows_text))
+                if any(v is not None and str(v).strip() for v in row):
+                    sheet_rows.append([v if v is not None else "" for v in row])
+                    row_count += 1
+                    if row_count >= 2000:  # Increased limit from 500
+                        break
+            if sheet_rows:
+                md_tbl = _format_table_as_markdown(sheet_rows)
+                if md_tbl:
+                    sheets.append(f"## Sheet: {sheet.title}\n\n" + md_tbl)
         return "\n\n".join(sheets)
     except Exception as e:
         logger.debug("[RAG v2] Extraction error for xlsx %s: %s", filepath, e)
@@ -989,19 +1037,26 @@ def _extract_xlsx_enhanced(filepath: str) -> str:
 
 
 def _extract_pptx_enhanced(filepath: str) -> str:
-    """Enhanced PPTX extraction with slide structure."""
+    """Enhanced PPTX extraction with slide structure and table support."""
     try:
         from pptx import Presentation
         prs = Presentation(filepath)
         texts = []
         for i, slide in enumerate(prs.slides):
-            slide_texts = [f"[Slide {i+1}]"]
+            slide_texts = [f"## Slide {i+1}"]
             for shape in slide.shapes:
                 if shape.has_text_frame:
                     for para in shape.text_frame.paragraphs:
                         t = para.text.strip()
                         if t:
                             slide_texts.append(t)
+                elif shape.has_table:
+                    table_data = []
+                    for row in shape.table.rows:
+                        table_data.append([c.text for c in row.cells])
+                    md_t = _format_table_as_markdown(table_data)
+                    if md_t:
+                        slide_texts.append(md_t)
             if len(slide_texts) > 1:
                 texts.append("\n".join(slide_texts))
         return "\n\n".join(texts)
@@ -1019,68 +1074,149 @@ def _extract_plain(filepath: str) -> str:
 #  Semantic Chunking (Recursive with Structure Awareness)
 # ═══════════════════════════════════════════════════════════════
 
-def semantic_chunk(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
+def _is_markdown_table(text: str) -> bool:
+    """Check if a text block represents a Markdown table."""
+    lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
+    return len(lines) >= 2 and lines[0].startswith("|") and lines[0].endswith("|") and ("---" in lines[1] or (lines[1].startswith("|") and lines[1].endswith("|")))
+
+
+def _split_markdown_table(table_text: str, chunk_size: int, breadcrumb: str = "") -> list[str]:
+    """
+    Split a large Markdown table by rows while repeating the header and separator
+    on every continuation chunk so structural context is never lost.
+    """
+    lines = [line.strip() for line in table_text.strip().splitlines() if line.strip()]
+    if len(lines) <= 2:
+        res = (breadcrumb + "\n" + table_text).strip() if breadcrumb else table_text.strip()
+        return [res] if res else []
+
+    header_rows = [lines[0]]
+    if "---" in lines[1]:
+        header_rows.append(lines[1])
+        data_rows = lines[2:]
+    else:
+        col_count = max(1, len(lines[0].split("|")) - 2)
+        header_rows.append("| " + " | ".join(["---"] * col_count) + " |")
+        data_rows = lines[1:]
+
+    header_prefix = "\n".join(header_rows)
+    bc_prefix = (breadcrumb + "\n") if breadcrumb else ""
+    base_prefix = bc_prefix + header_prefix + "\n"
+
+    chunks = []
+    current_rows: list[str] = []
+    for row in data_rows:
+        candidate = base_prefix + "\n".join(current_rows + [row])
+        if len(candidate) > chunk_size and current_rows:
+            chunks.append((base_prefix + "\n".join(current_rows)).strip())
+            current_rows = [row]
+        else:
+            current_rows.append(row)
+
+    if current_rows:
+        chunks.append((base_prefix + "\n".join(current_rows)).strip())
+
+    return chunks
+
+
+def _split_into_sections(text: str) -> list[tuple[str, str]]:
+    """Split text by Markdown headers, preserving header titles for hierarchical breadcrumbs."""
+    matches = list(_RE_MARKDOWN_HEADERS.finditer(text))
+    if not matches:
+        return [("", text)]
+
+    sections: list[tuple[str, str]] = []
+    if matches[0].start() > 0:
+        intro = text[:matches[0].start()].strip()
+        if intro:
+            sections.append(("", intro))
+
+    for i, m in enumerate(matches):
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        header_title = m.group(2).strip()
+        body = text[start:end].strip()
+        sections.append((header_title, body))
+
+    return sections
+
+
+def semantic_chunk(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP, document_title: str = "") -> list[str]:
     """
     Recursive semantic chunking that respects document structure.
-    Splits by headers, then paragraphs, then sentences.
+    Splits by headers, then paragraphs (preserving tables atomically), then sentences.
+    Prepends contextual breadcrumbs ([Document > Section]) so isolated chunks retain parent context.
     """
     if not text or len(text.strip()) < 50:
         return []
 
-    # Split by markdown headers, keeping headers with their content
-    matches = list(_RE_MARKDOWN_HEADERS.finditer(text))
-    sections = []
-    if matches:
-        for i, m in enumerate(matches):
-            start = m.start()
-            end = matches[i+1].start() if i+1 < len(matches) else len(text)
-            header = m.group(0).strip()
-            body = text[start:end].strip()
-            # Combine header and body
-            section_text = header + ("\n\n" + body if body else "")
-            sections.append(section_text)
-    else:
-        sections = [text]
-
+    sections = _split_into_sections(text)
     all_chunks = []
-    for sec in sections:
-        # Preserve paragraph breaks; normalize internal whitespace only
-        paragraphs = sec.split("\n\n")
-        norm_paragraphs = [_RE_CHUNK_WHITESPACE.sub(" ", p).strip() for p in paragraphs if p.strip()]
-        normalized = "\n\n".join(norm_paragraphs)
-        all_chunks.extend(_chunk_by_paragraphs(normalized, chunk_size, overlap))
+
+    for header_title, sec_body in sections:
+        if not sec_body.strip():
+            continue
+
+        if document_title and header_title:
+            breadcrumb = f"[{document_title} > {header_title}]"
+        elif document_title:
+            breadcrumb = f"[{document_title}]"
+        elif header_title:
+            breadcrumb = f"[{header_title}]"
+        else:
+            breadcrumb = ""
+
+        all_chunks.extend(_chunk_by_paragraphs(sec_body, chunk_size, overlap, breadcrumb=breadcrumb))
+
     return [c for c in all_chunks if len(c) > 30]
 
 
-def _chunk_by_paragraphs(text: str, chunk_size: int, overlap: int) -> list[str]:
-    """Split text by paragraphs, then sentences."""
+def _chunk_by_paragraphs(text: str, chunk_size: int, overlap: int, breadcrumb: str = "") -> list[str]:
+    """Split text by paragraphs, preserving Markdown tables and prepending breadcrumb context."""
     paragraphs = text.split("\n\n")
     chunks = []
     current = ""
-    
-    for para in paragraphs:
-        para = para.strip()
-        if not para:
+    bc_prefix = (breadcrumb + "\n") if breadcrumb else ""
+    avail_size = max(50, chunk_size - len(bc_prefix))
+
+    for raw_p in paragraphs:
+        p = raw_p.strip()
+        if not p:
             continue
-            
-        if len(current) + len(para) > chunk_size and current:
-            chunks.append(current.strip())
+
+        # Preserve Markdown tables atomically
+        if _is_markdown_table(p):
+            if current.strip():
+                chunks.append((bc_prefix + current.strip()).strip())
+                current = ""
+            if len(p) + len(bc_prefix) <= chunk_size:
+                chunks.append((bc_prefix + p).strip())
+            else:
+                chunks.extend(_split_markdown_table(p, chunk_size, breadcrumb))
+            continue
+
+        p_norm = _RE_CHUNK_WHITESPACE.sub(" ", p).strip()
+        if len(current) + len(p_norm) > avail_size and current:
+            chunks.append((bc_prefix + current.strip()).strip())
             overlap_text = current[-overlap:] if len(current) > overlap else current
-            current = overlap_text + "\n\n" + para
+            current = overlap_text + "\n\n" + p_norm
         else:
-            current = (current + "\n\n" + para).strip() if current else para
-    
+            current = (current + "\n\n" + p_norm).strip() if current else p_norm
+
     if current.strip():
-        chunks.append(current.strip())
-    
-    # If chunks are still too large, split by sentences
+        chunks.append((bc_prefix + current.strip()).strip())
+
+    # If non-table chunks are still too large, split by sentences
     final_chunks = []
     for chunk in chunks:
-        if len(chunk) <= chunk_size:
+        if len(chunk) <= chunk_size or _is_markdown_table(chunk):
             final_chunks.append(chunk)
         else:
-            final_chunks.extend(_chunk_by_sentences(chunk, chunk_size, overlap))
-    
+            body = chunk[len(bc_prefix):] if (bc_prefix and chunk.startswith(bc_prefix)) else chunk
+            sub = _chunk_by_sentences(body, avail_size, overlap)
+            for s in sub:
+                final_chunks.append((bc_prefix + s).strip())
+
     return final_chunks
 
 
@@ -2209,8 +2345,9 @@ def index_document(filepath: str) -> bool:
         logger.warning("[RAG v2] No text extracted from '%s' (possibly scanned PDF or image without OCR layer)", filepath)
         return False
 
-    # Use semantic chunking
-    chunks = semantic_chunk(text)
+    # Use semantic chunking with contextual breadcrumbs
+    filename = os.path.basename(filepath)
+    chunks = semantic_chunk(text, document_title=filename)
     if not chunks:
         return False
 
@@ -2220,7 +2357,6 @@ def index_document(filepath: str) -> bool:
             return False
 
         modified_time = datetime.datetime.fromtimestamp(os.path.getmtime(filepath)).isoformat()
-        filename = os.path.basename(filepath)
         file_type = ext.lstrip(".")
         normalized_path = os.path.normpath(filepath)
 

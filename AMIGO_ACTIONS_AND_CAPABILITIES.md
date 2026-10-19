@@ -8,11 +8,11 @@ This document provides a comprehensive, transparent inventory of everything **Am
 
 | Area | Rating | Status Details |
 |---|:---:|---|
-| **Local AI Models** | 🟢 **Healthy** | `TwIL LM3 Pro` (3.66B Q4_K_M GGUF), `Supertonic 3` (44.1kHz Studio TTS), and `Vosk` (Offline STT) are configured. |
+| **Local AI Models** | 🟢 **Healthy** | `Granite 4.2 3B` (Q4_K_M GGUF), `Supertonic 3` (44.1kHz Studio TTS), and `Vosk` (Offline STT) are configured. |
 | **Dependencies** | 🟢 **Healthy** | Core packages (`chromadb`, `sentence-transformers`, `CrossEncoder`, `rank_bm25`, `pdfplumber`, `winocr`, `psutil`) are installed and functional on Python 3.12. |
 | **Web Dashboard UI** | 🟢 **Healthy** | React + Vite frontend in `ui_app/dist` is compiled, including live audio visualizers, countdown timers, stopwatches, weather widgets, and settings. |
 | **OS Automation** | 🟢 **Healthy** | Audio volume, screen capture, app launching, brightness, keyboard shortcuts, window minimizing, and ms-settings URIs are fully operational. |
-| **Intent Routing** | 🟢 **Healthy** | Native `llm_agent.py` using TwIL LM3 Pro 3.66B Q4_K_M for formal logic, function calling, and structured tool dispatching. |
+| **Intent Routing** | 🟢 **Healthy** | Native `llm_agent.py` using Granite 4.2 3B Q4_K_M for formal logic, function calling, and structured tool dispatching. |
 | **Test Suite** | 🟢 **Cleaned** | Obsolete `laya_router` tests and invalid dependencies have been cleanly removed. |
 | **Email & Calendar** | 🟡 **Conditional** | Works via local Microsoft Outlook COM (`win32com`). Requires classic Outlook desktop installed; does not sync with Web Outlook/Gmail without Outlook running. |
 
