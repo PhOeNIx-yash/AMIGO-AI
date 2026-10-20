@@ -208,7 +208,7 @@ class RAGIndexer:
                     try:
                         col = self._rag._col(self._rag.DOCUMENTS)
                         if col:
-                            col.delete(where={"filepath": os.path.normpath(df)})
+                            col.delete(where={"filepath": os.path.realpath(os.path.abspath(df))})
                     except Exception:
                         pass
 

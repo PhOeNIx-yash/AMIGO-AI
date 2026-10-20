@@ -137,9 +137,9 @@ def build_temporal_and_user_context() -> str:
                 if v and k not in ignored_keys
             ]
             if name:
-                user_ctx += f"Author / Sender Name: {name}\n"
+                user_ctx += f"User Name: {name}\nAuthor / Sender Name: {name}\n"
             if role:
-                user_ctx += f"Author Role: {role}\n"
+                user_ctx += f"User Role: {role}\nAuthor Role: {role}\n"
             if details:
                 user_ctx += "Author Preferences: " + ", ".join(details[:5]) + "\n"
     except Exception:

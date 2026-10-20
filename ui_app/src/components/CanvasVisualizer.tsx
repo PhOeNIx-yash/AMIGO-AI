@@ -98,22 +98,22 @@ function parseOrbTint(color: string) {
 }
 
 const ORB_COLORS_DARK: Record<AssistantState, string> = {
-  listening: "#00f0ff",
-  processing: "#60a5fa",
-  working: "#818cf8",
-  completed: "#2dd4bf",
-  generated_content: "#2dd4bf",
+  listening: "#00ffff",
+  processing: "#67e8f9",
+  working: "#a5b4fc",
+  completed: "#34d399",
+  generated_content: "#34d399",
   action_card: "#38bdf8",
   contact_picker: "#38bdf8",
   idle: "#38bdf8",
 };
 
 const ORB_COLORS_LIGHT: Record<AssistantState, string> = {
-  listening: "#0891b2",
-  processing: "#2563eb",
-  working: "#4338ca",
-  completed: "#0d9488",
-  generated_content: "#0d9488",
+  listening: "#06b6d4",
+  processing: "#3b82f6",
+  working: "#6366f1",
+  completed: "#10b981",
+  generated_content: "#10b981",
   action_card: "#0284c7",
   contact_picker: "#0284c7",
   idle: "#0284c7",
@@ -374,6 +374,18 @@ export const CanvasVisualizer: React.FC<CanvasVisualizerProps> = React.memo(({
         compact ? "compact opacity-0 scale-75" : "opacity-100 scale-100"
       }`}
     >
+      {/* Ambient Radiant Glow Backdrop - Significantly amplifies orb illumination and presence */}
+      <div
+        className="absolute w-[18rem] h-[18rem] sm:w-[22rem] sm:h-[22rem] rounded-full pointer-events-none transition-all duration-700 ease-out"
+        style={{
+          background: isDark
+            ? `radial-gradient(circle, ${orbColor}55 0%, ${orbColor}28 35%, ${orbColor}0a 60%, transparent 75%)`
+            : `radial-gradient(circle, ${orbColor}38 0%, ${orbColor}18 35%, ${orbColor}05 60%, transparent 75%)`,
+          filter: "blur(36px)",
+          opacity: state === "listening" ? 1.0 : 0.85,
+          transform: "translate3d(0, 0, 0)",
+        }}
+      />
       <div ref={coreRef} className="amigo-orb-core">
         <HighResolutionOrb
           state={state}

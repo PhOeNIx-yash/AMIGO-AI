@@ -326,6 +326,15 @@ _SEARCH_PHRASE = re.compile(
 )
 _SEARCH_BARE_VERB = re.compile(r"^(?:" + _LEAD_IN + r")+(?:search|google|find)\s+", re.I)
 _SEARCH_TRAIL = re.compile(r"\s+(?:on\s+google|on\s+the\s+(?:web|internet))$", re.I)
+_SEARCH_INQUIRY = re.compile(
+    r"^(?:" + _LEAD_IN + r")*"
+    r"(?:(?:can|could|would|will)\s+(?:you|u)\s+(?:please\s+)?(?:tell\s+me|find|search|look\s*up|show\s+me|name)\b(?:\s+(?:the|what|which|about))?"
+    r"|(?:tell\s+me|show\s+me|what\s+is\s+the\s+name\s+of|do\s+you\s+know\s+(?:the\s+name\s+of\s+)?)\b"
+    r")\s*",
+    re.I,
+)
+_SEARCH_INQUIRY_TRAIL = re.compile(r"\s*[,.]?\s*(?:i\s+want\s+to\s+know|can\s+you\s+tell\s+me|please)[.?!,\s]*$", re.I)
+
 
 
 def clean_search_query(raw_query: str) -> str:
@@ -335,7 +344,9 @@ def clean_search_query(raw_query: str) -> str:
     q = raw_query.strip()
     q = _SEARCH_PHRASE.sub("", q)
     q = _SEARCH_BARE_VERB.sub("", q)
-    q = _SEARCH_TRAIL.sub("", q).strip()
+    q = _SEARCH_INQUIRY.sub("", q)
+    q = _SEARCH_TRAIL.sub("", q)
+    q = _SEARCH_INQUIRY_TRAIL.sub("", q).strip()
     return q if len(q) >= 2 else raw_query.strip()
 
 

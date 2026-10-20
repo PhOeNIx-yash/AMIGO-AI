@@ -228,13 +228,13 @@ const FluidOrb = ({
       style={{
         width: size,
         height: size,
-        boxShadow: isSpeaking ? `0 0 24px ${color}90` : `0 0 12px ${color}40`,
+        boxShadow: isSpeaking ? `0 0 32px ${color}bb, 0 0 16px ${color}80` : `0 0 18px ${color}60`,
         transform: isSpeaking ? "scale(1.05) translateZ(0)" : "scale(1) translateZ(0)",
         ...style,
       }}
       {...props}
     >
-      <canvas ref={canvasRef} className="h-full w-full rounded-full" />
+      <canvas ref={canvasRef} className="h-full w-full rounded-full" style={{ filter: "brightness(1.3) contrast(1.1)" }} />
     </div>
   );
 };

@@ -1,196 +1,183 @@
 """
 Tool Registry & Action Dispatcher for Amigo Voice Assistant.
-Executes agentic tool calls and generates structured UI action cards.
+Features:
+- Multi-turn conversational routing with 100% static system prompt prefix (instant KV cache hit in llama.cpp).
+- Eliminates redundant vector searches inside router prompt assembly.
+- Context-aware follow-up resolution across web_search, document_qa, weather, and chat.
+- Consolidated duplicate document/file handlers and debounced Windows media inspection.
+- Backward-compatible forwarders and structured UI action card builders.
 """
-
-import os
-import sys
-
-# Ensure parent package directory is in sys.path when invoked directly
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
 
 import datetime
 import json
 import logging
+import os
 import re
-import urllib.parse
+import sys
 import threading
 import time
-from typing import Any, Callable, Optional
+import urllib.parse
 import webbrowser
+from typing import Any
 
-# Non-circular imports (safe at module level)
-import amigo.services.os_automation as os_automation
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 import amigo.core.rag_engine as rag_engine
+import amigo.services.os_automation as os_automation
 from amigo.core.reminder_timer import (
-    handle_set_timer,
-    handle_set_reminder,
-    handle_list_reminders,
-    handle_cancel_reminder,
-    parse_relative_seconds,
     get_active_data,
+    handle_cancel_reminder,
+    handle_list_reminders,
+    handle_set_reminder,
+    handle_set_timer,
+    parse_relative_seconds,
 )
-from amigo.services.web_search import (searchGoogle, resolve_youtube_video, 
-                           clean_search_query, search_web, format_for_llm,
-                           get_stock_quote, format_quote)
-from amigo.utils.settings_resolver import open_setting
-from amigo.services.weather import weather_command, get_weather_data
-from amigo.utils.network_utils import is_internet_connected
-from amigo.services.app_opener import find_files, open_folder, open_windows_app, execute_file_action
-from amigo.utils.calculate import Calc
+from amigo.services.app_opener import execute_file_action, find_files, open_folder, open_windows_app
 from amigo.services.content_generator import (
     generate_content as _tool_generate_content,
-    regenerate_content as _tool_regenerate_content,
     insert_content as _tool_insert_content,
+    regenerate_content as _tool_regenerate_content,
     type_text as _tool_type_text,
-    build_temporal_and_user_context as _build_temporal_and_user_context,
-    route_content_to_destination as _route_content_to_destination,
 )
+from amigo.services.weather import get_weather_data, weather_command
+from amigo.services.web_search import (
+    clean_search_query,
+    format_for_llm,
+    format_quote,
+    get_stock_quote,
+    resolve_youtube_video,
+    search_web,
+    searchGoogle,
+)
+from amigo.utils.calculate import Calc
+from amigo.utils.network_utils import is_internet_connected
+from amigo.utils.settings_resolver import open_setting
 
-# Forwarders to llm_agent and rag_engine
+logger = logging.getLogger("amigo.tool_registry")
+
+
+# ── Safe Lazy Forwarders (Prevents Circular Imports with llm_agent) ──────────
+
 def get_ai_response(*args, **kwargs):
     from amigo.core.llm_agent import get_ai_response as _impl
     return _impl(*args, **kwargs)
+
 
 def get_quick_feedback(*args, **kwargs):
     from amigo.core.llm_agent import get_quick_feedback as _impl
     return _impl(*args, **kwargs)
 
+
 def query_local_llm(*args, **kwargs):
     from amigo.core.llm_agent import query_local_llm as _impl
     return _impl(*args, **kwargs)
+
 
 def sanitize_for_tts(*args, **kwargs):
     from amigo.core.llm_agent import sanitize_for_tts as _impl
     return _impl(*args, **kwargs)
 
-def _day_period(*args, **kwargs):
-    from amigo.core.llm_agent import _day_period as _impl
-    return _impl(*args, **kwargs)
-
-def _get_internet_status(*args, **kwargs):
-    from amigo.core.llm_agent import _get_internet_status as _impl
-    return _impl(*args, **kwargs)
 
 def set_last_screen_text(*args, **kwargs):
     from amigo.core.llm_agent import set_last_screen_text as _impl
     return _impl(*args, **kwargs)
 
-def update_active_state(*args, **kwargs):
-    from amigo.core.rag_engine import update_active_state as _impl
-    return _impl(*args, **kwargs)
 
-def get_active_state(*args, **kwargs):
-    from amigo.core.rag_engine import get_active_state as _impl
-    return _impl(*args, **kwargs)
+def update_active_state(slot: str, data: Any) -> None:
+    rag_engine.update_active_state(slot, data)
 
-# Pre-compiled regex patterns for fast matching
+
+def get_active_state(clean_expired: bool = True) -> dict:
+    return rag_engine.get_active_state(clean_expired=clean_expired)
+
+
+# ── Pre-compiled Regex Patterns ────────────────────────────────
+
 _RE_URLS = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]*[^\s<>"{}|\\^`\[\].,;:!?]')
 _RE_APP_STRIP = re.compile(r"^(?:please\s+)?(?:open|launch|start|run|show)\s+(?:the\s+|my\s+|an?\s+)?", re.IGNORECASE)
 _RE_APP_ARTICLE = re.compile(r"^(?:the|that|my|an?)\s+", re.IGNORECASE)
 _RE_MEDIA_CLEAN_TITLE = re.compile(r"^(?:play|playing)\s*:\s*", re.IGNORECASE)
-_RE_DOC_STRIP_ACTION = re.compile(r"^(?:please\s+)?(?:can you\s+|can u\s+|could you\s+|could u\s+|will you\s+|would you\s+)?(?:tell me\s+|give me\s+|show me\s+)?(?:open|show|read|summarize|tell me about|what is in|what does|find|locate|check|view|inspect)\s+", re.IGNORECASE)
+_RE_DOC_STRIP_ACTION = re.compile(
+    r"^(?:please\s+)?(?:can you\s+|can u\s+|could you\s+|could u\s+|will you\s+|would you\s+)?"
+    r"(?:tell me\s+|give me\s+|show me\s+)?"
+    r"(?:open|show|read|summarize|tell me about|what is in|what does|find|locate|check|view|inspect)\s+",
+    re.IGNORECASE,
+)
 _RE_DOC_STOPWORDS = re.compile(r"\b(?:the|that|those|these|my|a|an|file|files|document|documents|doc|pdf)\b", re.IGNORECASE)
+_RE_WAKE_WORD = re.compile(r"^(?:(?:hey|hi|hello|ok|okay)\s+)?amigo\b[\s,.:;!-]*", re.IGNORECASE)
 
-logger = logging.getLogger("amigo.tool_registry")
-
-# Callback to broadcast media state updates to UI
 _media_update_cb = None
 _ui_broadcast_cb = None
+_call_ctx = threading.local()
+_PENDING_CONFIRMATION = None
+_PENDING_TTL_SECONDS = 90.0
 
 
 def set_media_update_callback(cb):
-    """Set callback to broadcast media updates to UI."""
     global _media_update_cb
     _media_update_cb = cb
 
 
 def set_ui_broadcast_callback(cb):
-    """Set callback to broadcast custom UI events (e.g. open_settings, open_history)."""
     global _ui_broadcast_cb
     _ui_broadcast_cb = cb
 
 
 def extract_and_open_urls(text: str) -> bool:
-    """Finds URLs in text. Auto-opening disabled for security - URLs are returned for manual clicking."""
-    urls = _RE_URLS.findall(text)
-    # Security: Auto-opening URLs from LLM responses is a prompt-injection risk.
-    # URLs are now only returned for display; user must manually click.
-    return bool(urls)
+    return bool(_RE_URLS.findall(text))
 
 
-# ---------------------------------------------------------------------------
-# Individual Tool Handlers
-# ---------------------------------------------------------------------------
+def _get_conv_history(explicit_history: list | None = None) -> list[dict]:
+    if explicit_history is not None:
+        return explicit_history
+    call = getattr(_call_ctx, "value", None) or {}
+    if call.get("conversation_history") is not None:
+        return call["conversation_history"]
+    return rag_engine.get_recent_conversations(count=5)
 
-def _offline_reply(query, what):
+
+def _offline_reply(query: str, what: str) -> str:
     return get_ai_response(
         query,
-        web_context=f"Error: The PC is currently offline with no internet connection. Explain to the user that {what}.",
+        web_context=f"Error: The PC is currently offline. Explain to the user that {what}.",
     )
 
 
+# ═══════════════════════════════════════════════════════════════
+#  Tool Handlers (With Automatic Context & Follow-Up Resolution)
+# ═══════════════════════════════════════════════════════════════
+
 def _tool_web_search(params, query, spoken):
     params = params if isinstance(params, dict) else {}
-    call = getattr(_call_ctx, "value", None) or {}
-    conv_history = call.get("conversation_history")
+    conv_history = _get_conv_history()
 
     if not is_internet_connected():
-        reply = _offline_reply(query, "you cannot search the web right now because you are not connected to the internet")
-        return reply, None, {"status": "offline", "error": "No internet connection"}
+        return _offline_reply(query, "you cannot search the web right now because you are offline"), None, {"status": "offline"}
 
-    q = str(params.get("query") or query or "").strip() or query
-    target = clean_search_query(q) or q
+    raw_q = str(params.get("query") or query or "").strip() or query
+    resolved_q = rag_engine.resolve_contextual_query(raw_q, conv_history)
+    target = clean_search_query(resolved_q.replace("(", "").replace(")", "")) or raw_q
     show_in_browser = bool(params.get("show_in_browser"))
 
-    try:
-        update_active_state("last_search", {"query": target})
-    except Exception:
-        pass
+    update_active_state("last_search", {"query": target})
+    update_active_state("active_subject", {"name": target, "category": "web_search"})
 
-    # Runs Federated Web + Live Google News RSS + DDGS News + Bing in parallel (~400-700ms)
     search_response = search_web(target, max_results=6, fetch_content=False, fast_mode=True)
     search_url = f"https://www.google.com/search?q={urllib.parse.quote(target)}"
     if show_in_browser:
         searchGoogle(target)
 
     if search_response.results:
-        web_context = format_for_llm(search_response, max_chars=3800)
-        now_str = datetime.datetime.now().strftime("%A, %B %d, %Y")
-
-        synthesis_messages = [
-            {
-                "role": "system",
-                "content": (
-                    f"You are Amigo, a fast, accurate voice assistant. Today is {now_str}.\n"
-                    "Answer the user's question in 1 to 3 natural spoken sentences using the live search results.\n"
-                    "GUIDELINES:\n"
-                    "- Prioritize the newest dated reports and current facts.\n"
-                    "- When a topic has both an official status and a widely reported industry window, forecast, or leak "
-                    "(for example, an expected quarter or year), state both clearly and naturally.\n"
-                    "- Output direct spoken sentences only—no markdown, bullet points, or URLs."
-                ),
-            },
-            {
-                "role": "user",
-                "content": f"{web_context}\n\nQuestion: {query} (Topic: {target})",
-            },
-        ]
-
-        try:
-            response = query_local_llm(
-                synthesis_messages,
-                system_prompt="",
-                max_tokens=180,
-                temperature=0.15,
-                thinking=False,
-                sanitize=True,
-            )
-        except Exception:
-            response = get_ai_response(query, web_context=web_context, conversation_history=conv_history, use_memory=False)
-
+        web_context = format_for_llm(search_response, max_chars=3500)
+        response = get_ai_response(
+            query,
+            web_context=web_context,
+            conversation_history=conv_history,
+            use_memory=True,
+            max_tokens=180,
+        )
         meta = {
             "status": "success",
             "query_type": search_response.query_type,
@@ -206,7 +193,6 @@ def _tool_web_search(params, query, spoken):
         query,
         web_context="The web search returned no results. Say so honestly, and only share what you reliably know.",
         conversation_history=conv_history,
-        use_memory=False,
     )
     return response, search_url, {"status": "no_results"}
 
@@ -215,12 +201,11 @@ def _tool_stock_quote(params, query, spoken):
     params = params if isinstance(params, dict) else {}
     target = str(params.get("symbol") or params.get("query") or query or "").strip()
     if not is_internet_connected():
-        reply = _offline_reply(query, "you cannot check market or stock quotes without an internet connection")
-        return reply, None, {"status": "offline", "error": "No internet connection"}
+        return _offline_reply(query, "you cannot check market quotes offline"), None, {"status": "offline"}
 
     quote = get_stock_quote(target)
     if quote:
-        formatted = format_quote(quote)
+        update_active_state("active_subject", {"name": f"{quote.name} ({quote.symbol})", "category": "stock"})
         meta = {
             "status": "success",
             "symbol": quote.symbol,
@@ -241,17 +226,15 @@ def _tool_stock_quote(params, query, spoken):
             "timestamps": quote.timestamps,
             "as_of": quote.as_of.strftime("%b %d, %I:%M %p") if quote.as_of else "",
         }
-        return formatted, quote.url, meta
+        return format_quote(quote), quote.url, meta
 
-    return f"I couldn't find a live stock or market quote for '{target}'.", None, {"status": "not_found"}
-
+    return f"I couldn't find a live stock quote for '{target}'.", None, {"status": "not_found"}
 
 
 def _tool_open_website(params, query, spoken):
     params = params if isinstance(params, dict) else {}
     if not is_internet_connected():
-        reply = _offline_reply(query, "websites cannot be opened or loaded without an internet connection")
-        return reply, None, {"status": "offline", "error": "No internet connection"}
+        return _offline_reply(query, "websites cannot be opened offline"), None, {"status": "offline"}
     raw_url = str(params.get("url") or "").strip()
     if raw_url:
         if re.match(r"^https?://", raw_url, re.I):
@@ -261,10 +244,7 @@ def _tool_open_website(params, query, spoken):
         else:
             url = f"https://{raw_url}"
         webbrowser.open(url)
-        try:
-            update_active_state("active_subject", {"name": url, "category": "website"})
-        except Exception:
-            pass
+        update_active_state("active_subject", {"name": url, "category": "website"})
         return f"Opened {url}.", url
     searchGoogle(query)
     return "Searched the web.", None
@@ -272,13 +252,11 @@ def _tool_open_website(params, query, spoken):
 
 def _tool_play_youtube(params, query, spoken):
     if not is_internet_connected():
-        response = get_ai_response(query, web_context="Error: The PC is currently offline with no internet connection. Explain to the user that you cannot search or stream YouTube videos without an internet connection.")
-        return response, None, {"status": "offline", "error": "No internet connection"}
-    q = params.get("query", query) or query
+        return _offline_reply(query, "you cannot stream YouTube videos offline"), None, {"status": "offline"}
+    q = (params or {}).get("query", query) or query
     media_info = resolve_youtube_video(q)
     clean_q = media_info.get("query") or q
 
-    # Only set status to "playing" and report success if a URL was actually found
     if not media_info.get("url"):
         return f"I couldn't find a YouTube video for '{clean_q}'.", None
 
@@ -293,42 +271,30 @@ def _tool_play_youtube(params, query, spoken):
     if _media_update_cb:
         _media_update_cb(media_payload)
 
-    try:
-        update_active_state("current_media", {
-            "title": media_payload["title"],
-            "artist": media_payload["artist"],
-            "platform": "YouTube",
-            "query": clean_q,
-            "url": media_payload["url"],
-            "status": "playing",
-            "stale": False,
-        })
-    except Exception:
-        pass
-
-    if media_info.get("url"):
-        webbrowser.open(media_info["url"])
+    update_active_state("current_media", {
+        "title": media_payload["title"],
+        "artist": media_payload["artist"],
+        "platform": "YouTube",
+        "query": clean_q,
+        "url": media_payload["url"],
+        "status": "playing",
+        "stale": False,
+    })
+    webbrowser.open(media_info["url"])
 
     title = media_info.get("title")
     channel = media_info.get("channel")
+    by_ch = f" by {channel}" if channel and channel not in ("YouTube", "YouTube Music", "") else ""
     if media_info.get("is_live"):
-        speak_text = f"Playing live stream: '{title}'"
-        if channel and channel not in ("YouTube", "YouTube Music", ""):
-            speak_text += f" by {channel}"
-        return speak_text + " on YouTube.", media_info.get("url"), media_payload
-    elif media_info.get("not_live_fallback"):
-        return f"{clean_q} is not currently live. Playing their latest stream: '{title}' on YouTube.", media_info.get("url"), media_payload
-    elif title and title.strip().lower() != clean_q.strip().lower():
-        speak_text = f"Playing '{title}'"
-        if channel and channel not in ("YouTube", "YouTube Music", ""):
-            speak_text += f" by {channel}"
-        return speak_text + " on YouTube.", media_info.get("url"), media_payload
-
-    return spoken or f"Playing {clean_q} on YouTube.", media_info.get("url"), media_payload
+        return f"Playing live stream: '{title}'{by_ch} on YouTube.", media_info["url"], media_payload
+    if media_info.get("not_live_fallback"):
+        return f"{clean_q} is not currently live. Playing their latest stream: '{title}' on YouTube.", media_info["url"], media_payload
+    if title and title.strip().lower() != clean_q.strip().lower():
+        return f"Playing '{title}'{by_ch} on YouTube.", media_info["url"], media_payload
+    return spoken or f"Playing {clean_q} on YouTube.", media_info["url"], media_payload
 
 
 def _tool_get_current_media(params, query, spoken):
-    # 1. Live system media session (Windows GSMTC or active window)
     live_media = _get_live_media_title_from_windows()
     is_playing = _is_system_audio_playing()
 
@@ -336,24 +302,14 @@ def _tool_get_current_media(params, query, spoken):
         raw_title, raw_artist, status = live_media
         clean_title = _RE_MEDIA_CLEAN_TITLE.sub("", raw_title).strip() if raw_title else ""
         by_artist = f" by {raw_artist}" if raw_artist and raw_artist not in ("YouTube Music", "YouTube", "") and raw_artist.lower() not in clean_title.lower() else ""
-        
-        try:
-            update_active_state("current_media", {
-                "title": clean_title,
-                "artist": raw_artist,
-                "status": status.lower(),
-            })
-        except Exception:
-            pass
-
+        update_active_state("current_media", {"title": clean_title, "artist": raw_artist, "status": status.lower()})
         if status.lower() == "paused":
             return f"'{clean_title}'{by_artist} is paused.", None
         return f"Currently playing '{clean_title}'{by_artist}.", None
 
-    # 2. Audio hardware is active, check active state if valid
     if is_playing:
-        state = get_active_state(clean_expired=True) if callable(get_active_state) else {}
-        media_state = state.get("current_media") or {} if isinstance(state, dict) else {}
+        state = get_active_state(clean_expired=True) or {}
+        media_state = state.get("current_media") or {}
         if media_state.get("status") == "playing" and not media_state.get("stale"):
             title = media_state.get("title") or media_state.get("query") or ""
             artist = media_state.get("artist") or ""
@@ -366,7 +322,6 @@ def _tool_get_current_media(params, query, spoken):
     return "No song or video is currently playing.", None
 
 
-
 def _tool_get_time(params, query, spoken):
     tz_name = str((params or {}).get("timezone") or "").strip() if isinstance(params, dict) else ""
     now = datetime.datetime.now()
@@ -377,29 +332,25 @@ def _tool_get_time(params, query, spoken):
             now = datetime.datetime.now(ZoneInfo(tz_name))
             where = f" in {tz_name.split('/')[-1].replace('_', ' ')}"
         except Exception:
-            return (f"I couldn't look up the time zone '{tz_name}', so here is your local time: "
-                    f"{now.strftime('%I:%M %p').lstrip('0')}."), None
+            return f"I couldn't look up the time zone '{tz_name}', so here is your local time: {now.strftime('%I:%M %p').lstrip('0')}.", None
     return f"It is currently {now.strftime('%I:%M %p').lstrip('0')}{where}.", None
 
 
 def _tool_get_date(params, query, spoken):
     now = datetime.datetime.now()
-    day = str(now.day)  # No leading zero
-    return f"Today is {now.strftime('%A, %B')} {day}, {now.year}.", None
+    return f"Today is {now.strftime('%A, %B')} {now.day}, {now.year}.", None
 
 
 def _tool_time_date(params, query, spoken):
     now = datetime.datetime.now()
-    day = str(now.day)  # No leading zero
-    return f"It is {now.strftime('%I:%M %p').lstrip('0')} on {now.strftime('%A, %B')} {day}, {now.year}.", None
+    return f"It is {now.strftime('%I:%M %p').lstrip('0')} on {now.strftime('%A, %B')} {now.day}, {now.year}.", None
 
 
-_WEATHER_CACHE: dict = {}
+_WEATHER_CACHE: dict[str, tuple[float, dict]] = {}
 _WEATHER_TTL_SECONDS = 300.0
 
 
 def _cached_weather_data(city: str) -> dict:
-    """get_weather_data with a short cache, so the handler and the UI card share one network call."""
     key = (city or "").strip().lower()
     hit = _WEATHER_CACHE.get(key)
     if hit and (time.time() - hit[0]) < _WEATHER_TTL_SECONDS:
@@ -414,13 +365,18 @@ def _cached_weather_data(city: str) -> dict:
 def _tool_get_weather(params, query, spoken):
     params = params if isinstance(params, dict) else {}
     if not is_internet_connected():
-        reply = _offline_reply(query, "live weather reports cannot be fetched without an internet connection")
-        return reply, None, {"status": "offline", "error": "No internet connection"}
+        return _offline_reply(query, "live weather reports cannot be fetched offline"), None, {"status": "offline"}
+
     city = str(params.get("city") or "").strip()
+    if not city:
+        state = get_active_state(clean_expired=True) or {}
+        subj = state.get("active_subject") or {}
+        if subj.get("category") == "weather" and subj.get("name"):
+            city = subj["name"]
+
     w_data = _cached_weather_data(city)
     temp = w_data.get("temp_c") or w_data.get("temperature") if isinstance(w_data, dict) else None
     if w_data and w_data.get("success", True) and temp and temp not in ("--", "unknown"):
-        # Format a response from the cached data
         city_name = w_data.get("city", city or "your area")
         condition = w_data.get("condition", "Clear")
         humidity = w_data.get("humidity")
@@ -428,19 +384,13 @@ def _tool_get_weather(params, query, spoken):
             result = f"Weather in {city_name}: {temp}°C, {condition} with {humidity}% humidity."
         else:
             result = f"Weather in {city_name}: {temp}°C, {condition}."
+        update_active_state("active_subject", {"name": city_name, "category": "weather"})
     else:
         result = weather_command(city if city else query) or spoken
-    try:  # remember the place so a follow-up like "and tomorrow?" can reuse it
-        resolved = (w_data.get("city") if isinstance(w_data, dict) else None) or city
-        if resolved:
-            update_active_state("last_weather", {"city": resolved})
-    except Exception:
-        pass
     return result, None
 
 
 def is_app_already_running(app_name: str) -> bool:
-    """Checks if an app is already open and running on the PC."""
     target = (app_name or "").lower().strip()
     if not target or target in ("app", "window", "folder", "file"):
         return False
@@ -456,63 +406,42 @@ def is_app_already_running(app_name: str) -> bool:
 
 
 def _tool_open_app(params, query, spoken):
-    app_name = (
-        params.get("name")
-        or params.get("app")
-        or params.get("app_name")
-        or params.get("target")
-        or params.get("query")
-        or ""
-    ).strip()
+    params = params if isinstance(params, dict) else {}
+    app_name = (params.get("name") or params.get("app") or params.get("app_name") or params.get("target") or params.get("query") or "").strip()
     if not app_name:
         app_name = _RE_APP_STRIP.sub("", query).strip()
     if not app_name:
         return spoken or "Which application would you like to open?", None
 
     clean_target = _RE_APP_ARTICLE.sub("", app_name).strip()
-
-    # 1. Is it an installed Windows application / System tool?
-
     if open_windows_app(clean_target):
-        try:
-            update_active_state("active_app", {"name": clean_target})
-        except Exception:
-            pass
+        update_active_state("active_app", {"name": clean_target})
         return spoken or f"Opened {clean_target.title()}.", None
 
-    # 2. Is it an already running application?
     if is_app_already_running(clean_target):
-        try:
-            update_active_state("active_app", {"name": clean_target})
-        except Exception:
-            pass
+        update_active_state("active_app", {"name": clean_target})
         return f"{clean_target.title()} is already open.", None
 
-    # App not found â€” return clear status without aggressive disambiguation modal lockup
-    not_found_msg = f"I couldn't find an app called '{clean_target.title()}' installed on your PC."
-    return not_found_msg, None, {
-        "status": "completed",
-        "query": clean_target,
-    }
-
-
-
-
+    return f"I couldn't find an app called '{clean_target.title()}' installed on your PC.", None, {"status": "completed", "query": clean_target}
 
 
 def _tool_open_folder(params, query, spoken):
-    folder_name = params.get("name", "downloads")
-    ok, msg = open_folder(folder_name)
+    folder_name = (params or {}).get("name", "downloads")
+    _, msg = open_folder(folder_name)
     return msg or spoken, None
 
 
 def _tool_find_file(params, query, spoken):
-    q = params.get("query", query)
+    """Unified fast filename + semantic file finder."""
+    q = str((params or {}).get("query") or query or "").strip()
     matches, summary = find_files(q)
     file_results = []
+    seen_paths = set()
+
     for path in matches:
         try:
             stat = os.stat(path)
+            seen_paths.add(path)
             file_results.append({
                 "path": path,
                 "name": os.path.basename(path),
@@ -522,22 +451,39 @@ def _tool_find_file(params, query, spoken):
             })
         except (OSError, TypeError):
             continue
+
+    if len(file_results) < 3:
+        for r in rag_engine.search_files_by_context(q, top_k=5):
+            fp = r.get("filepath", "")
+            if fp and fp not in seen_paths and os.path.exists(fp):
+                try:
+                    stat = os.stat(fp)
+                    seen_paths.add(fp)
+                    file_results.append({
+                        "path": fp,
+                        "name": r.get("filename", os.path.basename(fp)),
+                        "extension": os.path.splitext(fp)[1].lower() or "file",
+                        "folder": os.path.dirname(fp),
+                        "modified": datetime.datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                        "score": r.get("score", 0.0),
+                    })
+                except OSError:
+                    continue
+
     if file_results:
-        try:
-            update_active_state("active_file", {"path": file_results[0]["path"], "name": file_results[0]["name"]})
-            update_active_state("found_files", [f["path"] for f in file_results[:5]])
-        except Exception:
-            pass
+        update_active_state("active_file", {"path": file_results[0]["path"], "name": file_results[0]["name"]})
+        update_active_state("found_files", [f["path"] for f in file_results[:5]])
         lines = [f"I found {len(file_results)} matching file{'s' if len(file_results) != 1 else ''}:"]
         for i, f in enumerate(file_results[:5], 1):
             clean_t = os.path.splitext(f["name"])[0].replace("_", " ").replace("-", " ").title()
             lines.append(f"{i}. {clean_t} ({f['extension']})")
-        lines.append("Say 'Open number 1' or 'Open [name]' to choose.")
-        summary = "\n".join(lines)
-    return summary or spoken, None, {"file_results": file_results}
+        lines.append("Say 'Open number 1' or ask a question about it.")
+        return "\n".join(lines), None, {"file_results": file_results}
+
+    return summary or f"No files found matching '{q}'.", None, {"file_results": []}
 
 
-
+_tool_find_document = _tool_find_file
 
 
 def _tool_take_screenshot(params, query, spoken):
@@ -546,7 +492,6 @@ def _tool_take_screenshot(params, query, spoken):
         capture_screen_image("amigo_screenshot.png")
         return "Screenshot saved.", None
     except Exception as e:
-        logger.error(f"[Screenshot] Error: {e}")
         return f"Failed to take screenshot: {e}", None
 
 
@@ -558,16 +503,13 @@ def _tool_read_screen(params, query, spoken):
         screen_text = res.get("screen_text", "")
         if screen_text:
             set_last_screen_text(screen_text)
-        reply = res.get("reply", "I inspected your screen.")
-        meta = {
+        return res.get("reply", "I inspected your screen."), None, {
             "window_title": res.get("window_title", "Active Window"),
             "screenshot": res.get("screenshot_path", "amigo_screenshot.png"),
             "text_snippet": screen_text[:300],
             "screen_text": screen_text,
         }
-        return reply, None, meta
-    except Exception as e:
-        logger.error(f"[Screen Vision] Error: {e}")
+    except Exception:
         return "Could not inspect the screen right now.", None
 
 
@@ -580,86 +522,142 @@ _REMEMBER_PATTERNS = [
 ]
 
 
-def _legacy_extract_fact(q: str) -> str:
-    """Fallback when the router did not supply an explicit fact."""
-    q_low = q.lower()
-    if not any(re.search(p, q_low) for p in _REMEMBER_PATTERNS):
-        return ""
-    fact = q
-    for pattern in _REMEMBER_PATTERNS:
-        fact = re.sub(pattern, "", fact, flags=re.I)
-    return re.sub(r"^(?:please\s+|hey\s+amigo\s+|amigo\s+)", "", fact, flags=re.I).strip()
-
-
 def _tool_memory_recall(params, query, spoken):
     params = params if isinstance(params, dict) else {}
+    conv_history = _get_conv_history()
     q = str(params.get("query") or query or "").strip()
     q_low = q.lower()
 
-    # 1. Store a new fact (the router passes it in `fact`; regexes are only a fallback for store operations)
     fact = str(params.get("fact") or "").strip()
-    # Only run _legacy_extract_fact for store operations (when user explicitly wants to remember something),
-    # not for recall questions. The router sets `fact` for store, leaves it empty for recall.
-    is_store = bool(fact) or any(re.search(p, q_low) for p in _REMEMBER_PATTERNS)
-    if not fact and is_store:
-        fact = _legacy_extract_fact(q)
+    if not fact and any(re.search(p, q_low) for p in _REMEMBER_PATTERNS):
+        fact = q
+        for pat in _REMEMBER_PATTERNS:
+            fact = re.sub(pat, "", fact, flags=re.I)
+        fact = re.sub(r"^(?:please\s+|hey\s+amigo\s+|amigo\s+)", "", fact, flags=re.I).strip()
+
     if fact:
-        try:
-            rag_engine.add_user_fact(fact, category="user_memory")
-            return f"I've remembered that: {fact}.", None
-        except Exception as e:
-            logger.error("[Memory] save failed: %s", e)
-            return "I couldn't save that to memory.", None
+        rag_engine.add_user_fact(fact, category="user_memory")
+        return f"I've remembered that: {fact}.", None
 
-    # 2. Recall facts or past conversations
     recalled_facts = []
-    try:
-        recalled = rag_engine.search(q, target_collections=[rag_engine.USER_FACTS, rag_engine.CONVERSATIONS],
-                                     top_k=5, query_type="conversation_recall")
-        for r in recalled:
-            if r.get("score", 0) >= 0.45 and r.get("text"):
-                recalled_facts.append(r["text"])
-    except Exception as e:
-        logger.debug(f"[Memory Recall]: {e}")
+    recalled = rag_engine.search(
+        q,
+        target_collections=[rag_engine.USER_FACTS, rag_engine.CONVERSATIONS],
+        top_k=5,
+        query_type="conversation_recall",
+        conversation_history=conv_history,
+    )
+    for r in recalled:
+        if r.get("score", 0) >= 0.40 and r.get("text"):
+            recalled_facts.append(r["text"])
 
-    try:
-        prefs = rag_engine.load_profile().get("preferences", {})
-        for k, v in prefs.items():
-            # match on the preference name or its exact value, never on common words like "the" or "what"
-            if str(k).lower() in q_low or (str(v).strip() and str(v).lower() in q_low):
-                recalled_facts.append(f"{k}: {v}")
-    except Exception:
-        pass
+    prefs = rag_engine.load_profile().get("preferences", {})
+    for k, v in prefs.items():
+        if str(k).lower() in q_low or (str(v).strip() and str(v).lower() in q_low):
+            recalled_facts.append(f"{k}: {v}")
 
     if recalled_facts:
         mem_context = "Remembered User Facts & Conversations:\n" + "\n".join(f"- {f}" for f in recalled_facts)
-        prompt = f"The user is asking: '{q}'\nUse the remembered information above to answer directly, naturally, and factually."
-        return get_ai_response(prompt, doc_context=mem_context), None, {"recalled_facts": recalled_facts[:3]}
+        return get_ai_response(q, doc_context=mem_context, conversation_history=conv_history), None, {"recalled_facts": recalled_facts[:3]}
 
     return "I don't have anything saved about that yet.", None
 
 
-def _tool_document_qa(params, query, spoken, conversation_history=None):
+def _tool_ask_document(params, query, spoken, conversation_history=None):
+    """Unified RAG Q&A handler with full follow-up context and active_file awareness."""
     params = params if isinstance(params, dict) else {}
-    q = str(params.get("query") or query or "").strip() or query
-    call = getattr(_call_ctx, "value", None) or {}
-    conv_history = conversation_history if conversation_history is not None else call.get("conversation_history")
-    try:
-        doc_context = rag_engine.build_rag_context(q, top_k=5, conversation_history=conv_history)
-        if doc_context:
-            return get_ai_response(q, doc_context=doc_context, conversation_history=conv_history), None, {"doc_context_used": True}
-    except Exception as e:
-        logger.debug(f"[Document QA]: {e}")
-    # Answering from general model knowledge here would invent details about the user's own files.
-    return "I couldn't find anything about that in your indexed documents.", None
+    conv_history = _get_conv_history(conversation_history)
+    filepath = str(params.get("filepath") or "").strip()
+    question = str(params.get("question") or params.get("query") or query or "").strip() or query
+
+    resolved_question = rag_engine.resolve_contextual_query(question, conv_history)
+    target_path = resolve_document_path(filepath) if filepath else resolve_document_path(question)
+
+    ctx = ""
+    if target_path and os.path.exists(target_path):
+        update_active_state("active_file", {"path": target_path, "name": os.path.basename(target_path)})
+        ctx = rag_engine.build_file_context(target_path, resolved_question)
+
+    if not ctx or len(ctx.strip()) < 60:
+        broader_ctx = rag_engine.build_rag_context(resolved_question, top_k=5, conversation_history=conv_history, for_voice=False)
+        if broader_ctx:
+            ctx = broader_ctx
+            if not target_path:
+                act_f = (get_active_state(clean_expired=False) or {}).get("active_file")
+                if isinstance(act_f, dict) and act_f.get("path") and os.path.exists(act_f["path"]):
+                    target_path = act_f["path"]
+
+    if ctx:
+        meta = {"matched_docs": [target_path]} if target_path else {"doc_context_used": True}
+        response = get_ai_response(question, doc_context=ctx, conversation_history=conv_history)
+        return response, None, meta
+
+    return "I couldn't find anything relevant in your indexed documents.", None
 
 
+_tool_document_qa = _tool_ask_document
 
 
+def _tool_summarize_document(params, query, spoken):
+    params = params if isinstance(params, dict) else {}
+    conv_history = _get_conv_history()
+    filepath = params.get("filepath", "")
+    target_path = resolve_document_path(filepath) if filepath else resolve_document_path(query)
 
+    if target_path:
+        update_active_state("active_file", {"path": target_path, "name": os.path.basename(target_path)})
+        ctx = rag_engine.get_file_summary_context(target_path)
+    else:
+        ctx = rag_engine.build_rag_context(query, top_k=6, conversation_history=conv_history)
+
+    if ctx:
+        target_prompt = query.strip() or "Summarize this document concisely."
+        return get_ai_response(target_prompt, doc_context=ctx, conversation_history=conv_history), None
+    return "I couldn't find that document to summarize.", None
+
+
+def _tool_search_knowledge(params, query, spoken):
+    conv_history = _get_conv_history()
+    q = (params or {}).get("query", query).strip()
+    ctx = rag_engine.build_rag_context(q, top_k=5, conversation_history=conv_history)
+    return get_ai_response(q, doc_context=ctx, conversation_history=conv_history), None
+
+
+def _tool_chat(params, query, spoken, conversation_history=None):
+    """Conversational reply with full multi-turn memory and automatic RAG context."""
+    params = params if isinstance(params, dict) else {}
+    if not query or not query.strip():
+        direct_reply = (spoken or params.get("response") or "").strip()
+        if direct_reply:
+            return direct_reply, None
+
+    conv_history = _get_conv_history(conversation_history)
+    doc_context = str(params.get("context") or params.get("doc_context") or "").strip()
+    doc_used = bool(doc_context)
+
+    if not doc_context and query and not rag_engine._is_conversational_filler(query):
+        try:
+            rag_ctx = rag_engine.build_rag_context(
+                query,
+                top_k=4,
+                conversation_history=conv_history,
+                for_voice=True,
+                min_score=0.46,
+            )
+            if rag_ctx:
+                doc_context = rag_ctx
+                doc_used = True
+        except Exception as e:
+            logger.debug("[Chat RAG Lookup]: %s", e)
+
+    ai_reply = get_ai_response(query, doc_context=doc_context, conversation_history=conv_history)
+    return ai_reply, None, ({"doc_context_used": True} if doc_used else {})
+
+
+# ── OS & Media Controls ────────────────────────────────────────
 
 def _tool_press_key(params, query, spoken):
-    keys = params.get("keys", "") if isinstance(params, dict) else ""
+    keys = (params or {}).get("keys", "")
     if keys:
         os_automation.press_shortcut(keys)
     return (f"Pressed {keys}." if keys else "Done."), None
@@ -668,33 +666,24 @@ def _tool_press_key(params, query, spoken):
 def _tool_click_screen(params, query, spoken):
     import pyautogui
     params = params if isinstance(params, dict) else {}
-    x = params.get("x")
-    y = params.get("y")
-    button = params.get("button", "left")
-
-    if x is not None and y is not None:
-        try:
+    x, y, button = params.get("x"), params.get("y"), params.get("button", "left")
+    try:
+        if x is not None and y is not None:
             pyautogui.click(int(x), int(y), button=button)
             return f"Clicked at ({x}, {y}).", None
-        except Exception as e:
-            return f"Click error: {e}", None
-    else:
-        try:
-            pyautogui.click(button=button)
-            return "Clicked.", None
-        except Exception as e:
-            return f"Click error: {e}", None
+        pyautogui.click(button=button)
+        return "Clicked.", None
+    except Exception as e:
+        return f"Click error: {e}", None
 
 
 _audio_playing_cache = {"status": False, "time": 0.0}
 
-def _is_system_audio_playing() -> bool:
-    """Checks if any application on the PC is actively outputting sound."""
-    import time
-    now = time.time()
-    if now - _audio_playing_cache["time"] < 1.0:
-        return _audio_playing_cache["status"]
 
+def _is_system_audio_playing() -> bool:
+    now = time.time()
+    if now - _audio_playing_cache["time"] < 1.5:
+        return _audio_playing_cache["status"]
     status = False
     try:
         import pythoncom
@@ -704,8 +693,7 @@ def _is_system_audio_playing() -> bool:
             for s in AudioUtilities.GetAllSessions():
                 if s.Process:
                     try:
-                        meter = s._ctl.QueryInterface(IAudioMeterInformation)
-                        if meter.GetPeakValue() > 0.0005:
+                        if s._ctl.QueryInterface(IAudioMeterInformation).GetPeakValue() > 0.0005:
                             status = True
                             break
                     except Exception:
@@ -714,7 +702,6 @@ def _is_system_audio_playing() -> bool:
             pythoncom.CoUninitialize()
     except Exception:
         pass
-        
     _audio_playing_cache["status"] = status
     _audio_playing_cache["time"] = now
     return status
@@ -738,62 +725,30 @@ def _fetch_live_media_worker() -> None:
                     res = (sys_media["title"], sys_media.get("artist", ""), status)
         except Exception:
             pass
-
-        if not res:
-            try:
-                import win32gui
-                titles = []
-
-                def _enum(hwnd, _):
-                    if win32gui.IsWindowVisible(hwnd):
-                        txt = win32gui.GetWindowText(hwnd).strip()
-                        if txt and (" - YouTube" in txt or "Spotify" in txt):
-                            titles.append(txt)
-
-                win32gui.EnumWindows(_enum, None)
-                for t in titles:
-                    if " - YouTube" in t:
-                        clean = t.split(" - YouTube")[0].strip()
-                        if clean:
-                            res = (clean, "", "playing")
-                            break
-                    if "Spotify" in t and " - " in t:
-                        clean = t.replace("Spotify Premium", "").replace("Spotify Free", "").strip(" -")
-                        if clean and clean.lower() != "spotify":
-                            res = (clean, "", "playing")
-                            break
-            except Exception:
-                pass
-
         _live_media_cache = res
         _live_media_cache_time = time.time()
     finally:
         _live_media_refreshing = False
 
 
-def _get_live_media_title_from_windows(wait_if_cold: bool = True) -> tuple[str, str, str] | None:
-    """Queries real-time live media from Windows GSMTC with async background refresh (0ms latency on query thread)."""
+def _get_live_media_title_from_windows(wait_if_cold: bool = False) -> tuple[str, str, str] | None:
+    """Non-blocking cached media lookup (never stalls the router thread)."""
     global _live_media_cache, _live_media_cache_time, _live_media_refreshing
     now = time.time()
     if (now - _live_media_cache_time) < 15.0 and _live_media_cache is not None:
         return _live_media_cache
-
     with _live_media_lock:
         if not _live_media_refreshing:
             _live_media_refreshing = True
-            threading.Thread(target=_fetch_live_media_worker, daemon=True, name="LiveMediaWorker").start()
-
-    if _live_media_cache is None and wait_if_cold and _live_media_refreshing:
-        # Wait briefly (up to 1.5 seconds) on cold start for worker to populate cache
-        end_time = time.time() + 1.5
-        while _live_media_refreshing and time.time() < end_time:
-            time.sleep(0.05)
-
+            threading.Thread(target=_fetch_live_media_worker, daemon=True).start()
+    if _live_media_cache is None and wait_if_cold:
+        end = time.time() + 0.5
+        while _live_media_refreshing and time.time() < end:
+            time.sleep(0.02)
     return _live_media_cache
 
 
 def _tool_stop(params, query, spoken):
-    """General stop handler: halts active speech and pauses background playback."""
     try:
         from amigo.utils.tts import stop_speaking
         stop_speaking()
@@ -806,8 +761,8 @@ def _tool_stop(params, query, spoken):
             pass
     return "", None
 
+
 def _tool_stop_speaking(params, query, spoken):
-    """Only stops TTS playback, without pausing system media."""
     try:
         from amigo.utils.tts import stop_speaking
         stop_speaking()
@@ -817,7 +772,6 @@ def _tool_stop_speaking(params, query, spoken):
 
 
 def _tool_blocked(params, query, spoken):
-    """Handler for blocked/probe queries - returns empty response without calling LLM."""
     return "", None
 
 
@@ -827,58 +781,41 @@ def _tool_pause_media(params, query, spoken):
         stop_speaking()
     except Exception:
         pass
-
     live_media = _get_live_media_title_from_windows()
-    if live_media:
-        _, _, status = live_media
-        if status.lower() == "paused":
-            return "Media is already paused.", None
-
-    state = get_active_state(clean_expired=True)
-    media = state.get("current_media") if isinstance(state, dict) else None
-    has_tracked_media = isinstance(media, dict)
-
+    if live_media and live_media[2].lower() == "paused":
+        return "Media is already paused.", None
     try:
         os_automation.play_pause_media()
     except Exception:
         pass
     if _media_update_cb:
         _media_update_cb({"status": "paused"})
-    if has_tracked_media and isinstance(media, dict):
+    media = (get_active_state(clean_expired=True) or {}).get("current_media")
+    if isinstance(media, dict):
         update_active_state("current_media", {**media, "status": "paused"})
     return "Media paused.", None
 
 
 def _tool_play_media(params, query, spoken):
     live_media = _get_live_media_title_from_windows()
-    if live_media:
-        _, _, status = live_media
-        if status.lower() == "playing":
-            return "Media is already playing.", None
-
-    state = get_active_state(clean_expired=False)
-    media = state.get("current_media") if isinstance(state, dict) else None
-    has_tracked_media = isinstance(media, dict)
-
+    if live_media and live_media[2].lower() == "playing":
+        return "Media is already playing.", None
     try:
         os_automation.play_pause_media()
     except Exception:
         pass
     if _media_update_cb:
         _media_update_cb({"status": "playing"})
-    if has_tracked_media and isinstance(media, dict):
+    media = (get_active_state(clean_expired=False) or {}).get("current_media")
+    if isinstance(media, dict):
         update_active_state("current_media", {**media, "status": "playing"})
     return "Media resumed.", None
 
 
 def _mark_media_stale():
-    """After skipping tracks the stored title is no longer reliable; say so instead of repeating it."""
-    try:
-        media = get_active_state(clean_expired=False).get("current_media")
-        if isinstance(media, dict) and media:
-            update_active_state("current_media", {**media, "stale": True, "status": "playing"})
-    except Exception:
-        pass
+    media = (get_active_state(clean_expired=False) or {}).get("current_media")
+    if isinstance(media, dict) and media:
+        update_active_state("current_media", {**media, "stale": True, "status": "playing"})
 
 
 def _tool_next_track(params, query, spoken):
@@ -893,92 +830,25 @@ def _tool_prev_track(params, query, spoken):
     return "Previous track.", None
 
 
-def _tool_close_app(params, query, spoken):
-    # Require confirmation for potentially disruptive action
-    confirm_result = _require_confirmation("Close app", params, query, spoken or "Closing app")
-    if confirm_result[2].get("requires_confirmation"):
-        return confirm_result
-    name = params.get("app_name") or params.get("name") or params.get("app") or ""
-    closed = os_automation.close_app(name)
-    if not name or name.lower() in ("current", "active", "this", "window", "app", "application", "it"):
-        return "Window closed.", None
-    if closed:
-        return f"Closed {name.title()}.", None
-    return f"{name.title()} is not currently running.", None
-
-
-def _tool_window_management(params, query, spoken):
-    action = params.get("action", "")
-    app_name = params.get("app_name", "") or params.get("name", "")
-    # Only close if action is explicitly close_window or close_app
-    if action in ("close_window", "close_app"):
-        return _tool_close_app({"app_name": app_name}, query, spoken)
-    elif action:
-        os_automation.window_action(action)
-    return "Done.", None
-
-
-def _tool_calculate(params, query, spoken):
-    params = params if isinstance(params, dict) else {}
-    expr = str(params.get("expression") or query or "").strip()
-    if expr:
-        try:
-            res = Calc(expr)
-        except Exception:
-            res = None
-        if res is not None:
-            return f"The answer is {res}.", None
-    # Calc could not evaluate it (e.g. a word problem): let the model work it out instead of faking an answer.
-    return get_ai_response(f"Solve this and give the answer with a one-line explanation: {expr or query}", use_memory=False), None
-
-
-def _tool_clarification(params, query, spoken):
-    """Handles clarifying questions when intent or parameters are ambiguous."""
-    candidates = params.get("candidate_tools", []) if isinstance(params, dict) else []
-    q = params.get("query", query) if isinstance(params, dict) else query
-    msg = f"I'm not completely sure what you'd like to do with '{q}'. Please choose an option below or clarify."
-    return msg, None, {
-        "status": "requires_clarification",
-        "requires_clarification": True,
-        "candidates": candidates,
-        "query": q,
-    }
-
-
-_call_ctx = threading.local()
-_PENDING_CONFIRMATION = None
-_PENDING_TTL_SECONDS = 90.0
-
-
 def get_pending_confirmation():
-    """The action Amigo is waiting for a yes/no on, or None (expires after a short time)."""
     global _PENDING_CONFIRMATION
-    pending = _PENDING_CONFIRMATION
-    if pending and (time.time() - pending["created"]) > _PENDING_TTL_SECONDS:
+    if _PENDING_CONFIRMATION and (time.time() - _PENDING_CONFIRMATION["created"]) > _PENDING_TTL_SECONDS:
         _PENDING_CONFIRMATION = None
-        return None
-    return pending
+    return _PENDING_CONFIRMATION
 
 
 def _pending_confirmation_line() -> str:
-    """Format prompt hint when an action is awaiting user confirmation."""
     pending = get_pending_confirmation()
     if not pending:
         return ""
-    action_name = pending.get("action") or pending.get("action_name") or pending.get("tool") or "action"
+    action_name = pending.get("action") or pending.get("tool") or "action"
     return f"[Awaiting user confirmation: user was asked to confirm '{action_name}']"
 
 
 def _require_confirmation(action_name: str, params: dict, query: str, spoken: str, tool: str | None = None) -> tuple[str, None, dict]:
-    """Ask the user to confirm a risky action. Returns a 3-tuple whose metadata marks it as pending.
-
-    `confirmed` only counts when it is the boolean True and arrives through confirm_action or the UI;
-    the agent strips it from model output so the model cannot approve its own actions.
-    """
     global _PENDING_CONFIRMATION
     if isinstance(params, dict) and params.get("confirmed") is True:
         return "", None, {}
-
     call = getattr(_call_ctx, "value", None) or {}
     tool_name = tool or call.get("tool")
     clean_params = {k: v for k, v in params.items() if k != "confirmed"} if isinstance(params, dict) else {}
@@ -1001,45 +871,62 @@ def _require_confirmation(action_name: str, params: dict, query: str, spoken: st
     }
 
 
-def _tool_chat(params, query, spoken, conversation_history=None):
-    """Conversational reply with full context and conversation history."""
+def _tool_close_app(params, query, spoken):
+    confirm_result = _require_confirmation("Close app", params, query, spoken or "Closing app")
+    if confirm_result[2].get("requires_confirmation"):
+        return confirm_result
+    name = (params or {}).get("app_name") or (params or {}).get("name") or (params or {}).get("app") or ""
+    closed = os_automation.close_app(name)
+    if not name or name.lower() in ("current", "active", "this", "window", "app", "application", "it"):
+        return "Window closed.", None
+    return (f"Closed {name.title()}." if closed else f"{name.title()} is not currently running."), None
+
+
+def _tool_window_management(params, query, spoken):
     params = params if isinstance(params, dict) else {}
-    
-    # For user queries, always generate a full intelligent response using core AI model
-    # Only return direct_reply if there is no user query (e.g. system alert or action greeting)
-    if not query or not query.strip():
-        direct_reply = (spoken or params.get("response") or "").strip()
-        if direct_reply:
-            return direct_reply, None
-
-    call = getattr(_call_ctx, "value", None) or {}
-    conv_history = conversation_history if conversation_history is not None else call.get("conversation_history")
-
-    doc_context = str(params.get("context") or params.get("doc_context") or "").strip()
-    ai_reply = get_ai_response(query, doc_context=doc_context, conversation_history=conv_history)
-    return ai_reply, None
+    action = params.get("action", "")
+    app_name = params.get("app_name", "") or params.get("name", "")
+    if action in ("close_window", "close_app"):
+        return _tool_close_app({"app_name": app_name}, query, spoken)
+    if action:
+        os_automation.window_action(action)
+    return "Done.", None
 
 
+def _tool_calculate(params, query, spoken):
+    expr = str((params or {}).get("expression") or query or "").strip()
+    if expr:
+        try:
+            res = Calc(expr)
+            if res is not None:
+                return f"The answer is {res}.", None
+        except Exception:
+            pass
+    return get_ai_response(f"Solve this concisely: {expr or query}", use_memory=False), None
 
 
+def _tool_clarification(params, query, spoken):
+    params = params if isinstance(params, dict) else {}
+    candidates = params.get("candidate_tools", [])
+    q = params.get("query", query)
+    return f"I'm not completely sure what you'd like to do with '{q}'. Please choose an option below or clarify.", None, {
+        "status": "requires_clarification",
+        "requires_clarification": True,
+        "candidates": candidates,
+        "query": q,
+    }
 
 
-# ---------------------------------------------------------------------------
-# Simple Automation Action Map
-# (Function to call, default spoken message)
-# ---------------------------------------------------------------------------
 _SIMPLE_OS_ACTIONS = {
-    "scroll_down":        (os_automation.scroll_down, ""),
-    "scroll_up":          (os_automation.scroll_up, ""),
-    "close_tab":          (os_automation.close_tab, "Closing tab."),
-    "next_tab":           (os_automation.next_tab, ""),
-    "prev_tab":           (os_automation.prev_tab, ""),
-    "volume_up":          (os_automation.volume_up, "Volume increased."),
-    "volume_down":        (os_automation.volume_down, "Volume decreased."),
-    "mute":               (os_automation.mute, "Audio muted."),
-    "lock_pc":            (os_automation.lock_pc, "Locking your PC."),
-    "sleep_pc":           (os_automation.sleep_pc, "Putting system to sleep."),
-    "cancel_shutdown":    (os_automation.cancel_shutdown, "Shutdown cancelled."),
+    "scroll_down":     (os_automation.scroll_down, ""),
+    "scroll_up":       (os_automation.scroll_up, ""),
+    "close_tab":       (os_automation.close_tab, "Closing tab."),
+    "next_tab":        (os_automation.next_tab, ""),
+    "prev_tab":        (os_automation.prev_tab, ""),
+    "volume_up":       (os_automation.volume_up, "Volume increased."),
+    "volume_down":     (os_automation.volume_down, "Volume decreased."),
+    "mute":            (os_automation.mute, "Audio muted."),
+    "cancel_shutdown": (os_automation.cancel_shutdown, "Shutdown cancelled."),
 }
 
 
@@ -1051,35 +938,64 @@ def _make_simple_handler(func, default_msg):
 
 
 def _tool_empty_recycle_bin(params, query, spoken):
-    # Require confirmation for destructive action
-    confirm_result = _require_confirmation("Empty recycle bin", params, query, "Emptying recycle bin")
-    if confirm_result[2].get("requires_confirmation"):
-        return confirm_result
+    confirm = _require_confirmation("Empty recycle bin", params, query, "Emptying recycle bin")
+    if confirm[2].get("requires_confirmation"):
+        return confirm
     os_automation.empty_recycle_bin()
     return "Recycle bin emptied.", None
 
 
 def _tool_lock_pc(params, query, spoken):
-    # Require confirmation for potentially disruptive action
-    confirm_result = _require_confirmation("Lock PC", params, query, "Locking PC")
-    if confirm_result[2].get("requires_confirmation"):
-        return confirm_result
+    confirm = _require_confirmation("Lock PC", params, query, "Locking PC")
+    if confirm[2].get("requires_confirmation"):
+        return confirm
     os_automation.lock_pc()
     return "Locking your PC.", None
 
 
 def _tool_sleep_pc(params, query, spoken):
-    # Require confirmation for potentially disruptive action
-    confirm_result = _require_confirmation("Sleep PC", params, query, "Putting system to sleep")
-    if confirm_result[2].get("requires_confirmation"):
-        return confirm_result
+    confirm = _require_confirmation("Sleep PC", params, query, "Putting system to sleep")
+    if confirm[2].get("requires_confirmation"):
+        return confirm
     os_automation.sleep_pc()
     return "Putting system to sleep.", None
 
 
-# ---------------------------------------------------------------------------
-# Dynamic Document Resolver & File Actions
-# ---------------------------------------------------------------------------
+def _tool_restart_pc(params, query, spoken):
+    confirm = _require_confirmation("Restart PC", params, query, "Restarting PC in 30 seconds")
+    if confirm[2].get("requires_confirmation"):
+        return confirm
+    os_automation.restart_pc(30)
+    return "Restarting in 30 seconds.", None
+
+
+def _tool_system_control(params, query, spoken):
+    action = (params.get("action", "") if isinstance(params, dict) else "").lower()
+    if action in ("lock", "lock_pc"):
+        return _tool_lock_pc(params, query, "Locking PC")
+    if action in ("sleep", "sleep_pc"):
+        return _tool_sleep_pc(params, query, "Putting system to sleep")
+    if action in ("restart", "restart_pc"):
+        return _tool_restart_pc(params, query, "Restarting PC in 30 seconds")
+    if action in ("shutdown", "shutdown_pc"):
+        confirm = _require_confirmation("Shutdown PC", params, query, "Shutting down PC")
+        if confirm[2].get("requires_confirmation"):
+            return confirm
+        shutdown_fn = getattr(os_automation, "shutdown_pc", None)
+        if callable(shutdown_fn):
+            shutdown_fn(30)
+        else:
+            os.system("shutdown /s /t 30")
+        return "Shutting down in 30 seconds.", None
+    if action == "cancel_shutdown":
+        os_automation.cancel_shutdown()
+        return "Shutdown cancelled.", None
+    if action in ("empty_recycle_bin", "empty_bin", "recycle_bin"):
+        return _tool_empty_recycle_bin(params, query, "Emptying recycle bin")
+    return f"Unknown system control action: {action}", None
+
+
+# ── Document Path Resolution ───────────────────────────────────
 
 _ORDINAL_WORDS = {
     "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
@@ -1089,14 +1005,13 @@ _REFERENT_WORDS = frozenset({"that", "it", "this", "those", "them", "these", "on
 
 
 def _ordinal_index(text: str, count: int):
-    """Index into the last found-files list for 'number 3', '2nd', 'the first one', 'the last one'."""
     low = text.lower()
     if re.search(r"\blast\s+one\b", low):
         return count - 1
     m = re.search(r"\b(?:number|no\.?|#)\s*(\d+)\b", low) or re.search(r"\b(\d+)(?:st|nd|rd|th)\b", low)
     if m:
         n = int(m.group(1))
-        return n - 1 if 1 <= n <= count else -1  # -1 = the user named a position that does not exist
+        return n - 1 if 1 <= n <= count else -1
     for word, n in _ORDINAL_WORDS.items():
         if re.search(rf"\b{word}\b", low):
             return n - 1 if n <= count else -1
@@ -1104,11 +1019,6 @@ def _ordinal_index(text: str, count: int):
 
 
 def resolve_document_path(query_or_target: str) -> str | None:
-    """
-    Resolve a local file path from a name, a pronoun ("it", "that"), or an ordinal ("the second one").
-    Order: direct path -> ordinal from the last search -> pronoun -> filename search -> semantic search.
-    Returns None when nothing matches; it never silently falls back to an unrelated earlier file.
-    """
     state = get_active_state(clean_expired=False) or {}
     active_f = state.get("active_file")
     active_path = active_f.get("path") if isinstance(active_f, dict) else None
@@ -1125,10 +1035,12 @@ def resolve_document_path(query_or_target: str) -> str | None:
     clean = re.sub(r"\s+", " ", _RE_DOC_STOPWORDS.sub("", clean)).strip()
 
     found_list = state.get("found_files", [])
+    if isinstance(found_list, dict):
+        found_list = found_list.get("items", [])
     if isinstance(found_list, list) and found_list:
         idx = _ordinal_index(raw, len(found_list))
         if idx == -1:
-            return None  # e.g. 'number 10' when only 3 files were found: don't guess another file
+            return None
         if idx is not None and os.path.exists(found_list[idx]):
             return found_list[idx]
 
@@ -1137,41 +1049,24 @@ def resolve_document_path(query_or_target: str) -> str | None:
         return active_path if active_ok else None
 
     search_terms = []
-    # 1. Match explicit file extension (e.g. eticket.pdf, invoice.xlsx)
-    m_ext = re.search(r'\b([\w\-.]+\.(?:pdf|docx?|txt|xlsx?|csv|json|py|pptx?|html))\b', raw, re.I)
-    if m_ext:
+    if m_ext := re.search(r"\b([\w\-.]+\.(?:pdf|docx?|txt|xlsx?|csv|json|py|pptx?|html))\b", raw, re.I):
         search_terms.append(m_ext.group(1))
-
-    # 2. Match prepositional file reference (e.g. in invoice, from eticket) - run on clean, not raw
-    m_doc = re.search(r"\b(?:file|document|doc|ticket|sheet|in|from|of)\s+([a-zA-Z0-9_\-]{2,25})", clean, re.I)
-    if m_doc:
-        candidate = m_doc.group(1).strip()
-        # Skip ordinal words and referent words
-        if candidate and candidate not in search_terms and candidate.lower() not in _REFERENT_WORDS and candidate.lower() not in _ORDINAL_WORDS:
-            search_terms.append(candidate)
-
-    # 3. Search clean string if it has substance
+    if m_doc := re.search(r"\b(?:file|document|doc|ticket|sheet|in|from|of)\s+([a-zA-Z0-9_\-]{2,25})", clean, re.I):
+        cand = m_doc.group(1).strip()
+        if cand and cand.lower() not in _REFERENT_WORDS and cand.lower() not in _ORDINAL_WORDS:
+            search_terms.append(cand)
     if not search_terms and len(clean) >= 3:
         search_terms.append(clean)
 
-    # 1. Fast filename lookup ONLY for explicit names / extensions / short keywords (<= 2 words)
-    filename_candidates = [t for t in search_terms if len(t.split()) <= 2]
-    for term in filename_candidates:
+    for term in [t for t in search_terms if len(t.split()) <= 2]:
         if len(term) >= 2:
             matches, _ = find_files(term)
             if matches:
                 update_active_state("active_file", {"path": matches[0], "name": os.path.basename(matches[0])})
                 return matches[0]
 
-    # 2. Semantic lookup on extracted search terms, clean query, or raw query
-    semantic_candidates = list(search_terms)
-    if clean and len(clean) >= 3 and clean not in semantic_candidates:
-        semantic_candidates.append(clean)
-    if raw and len(raw) >= 3 and raw not in semantic_candidates:
-        semantic_candidates.append(raw)
-
-    for term in semantic_candidates:
-        if len(term) >= 3 and term.lower() not in _REFERENT_WORDS:
+    for term in [*search_terms, clean, raw]:
+        if term and len(term) >= 3 and term.lower() not in _REFERENT_WORDS:
             results = rag_engine.search_files_by_context(term, top_k=1)
             if results and results[0].get("score", 0) > 0.35:
                 fpath = results[0].get("filepath")
@@ -1179,11 +1074,10 @@ def resolve_document_path(query_or_target: str) -> str | None:
                     update_active_state("active_file", {"path": fpath, "name": os.path.basename(fpath)})
                     return fpath
 
-    return None
+    return active_path if active_ok else None
 
 
 def _tool_file_action(params, query, spoken, default_action="open"):
-    """Run an action (open / reveal / copy_path) on a local file and report the real outcome."""
     params = params if isinstance(params, dict) else {}
     target = params.get("path") or params.get("name") or query
     action = params.get("action") or default_action
@@ -1192,17 +1086,12 @@ def _tool_file_action(params, query, spoken, default_action="open"):
     if not (target_path and os.path.exists(target_path)):
         return "I couldn't find that file on this computer.", None
 
-    try:
-        update_active_state("active_file", {"path": target_path, "name": os.path.basename(target_path)})
-    except Exception:
-        pass
+    update_active_state("active_file", {"path": target_path, "name": os.path.basename(target_path)})
     ok, msg = execute_file_action(target_path, action)
     if not ok:
         return msg or f"I couldn't {str(action).replace('_', ' ')} that file.", None
     clean_name = os.path.splitext(os.path.basename(target_path))[0].replace("_", " ").replace("-", " ").title()
-    if action == "open":
-        return spoken or f"Opened {clean_name}.", None
-    return msg or f"Done with {clean_name}.", None
+    return (spoken or f"Opened {clean_name}." if action == "open" else msg or f"Done with {clean_name}."), None
 
 
 def _make_file_handler(default_action):
@@ -1212,34 +1101,33 @@ def _make_file_handler(default_action):
 
 
 def _tool_show_images(params, query, spoken):
-    return spoken or "Showing image results.", "https://www.google.com/search?q=" + urllib.parse.quote(params.get("query", query))
+    target = (params or {}).get("query", query)
+    return spoken or "Showing image results.", f"https://www.google.com/search?q={urllib.parse.quote(target)}"
+
 
 def _tool_search_and_type(params, query, spoken):
-    # Require confirmation for potentially disruptive action
-    confirm_result = _require_confirmation("Search and type", params, query, spoken or "Searching and typing")
-    if confirm_result[2].get("requires_confirmation"):
-        return confirm_result
-    os_automation.search_and_type(params.get("text", ""))
+    confirm = _require_confirmation("Search and type", params, query, spoken or "Searching and typing")
+    if confirm[2].get("requires_confirmation"):
+        return confirm
+    os_automation.search_and_type((params or {}).get("text", ""))
     return spoken, None
 
+
 def _tool_new_tab(params, query, spoken):
-    os_automation.new_tab(params.get("url", ""))
+    os_automation.new_tab((params or {}).get("url", ""))
     return spoken, None
 
 
 def _level_result(res, default_msg):
     if isinstance(res, (tuple, list)):
         return res[-1]
-    if isinstance(res, str):
-        return res
-    return default_msg
+    return res if isinstance(res, str) else default_msg
 
 
 def _tool_set_volume(params, query, spoken):
     params = params if isinstance(params, dict) else {}
     action = str(params.get("action") or "").strip().lower()
     level = params.get("level")
-    has_level = level not in (None, "")
 
     if action == "mute":
         os_automation.mute()
@@ -1257,44 +1145,35 @@ def _tool_set_volume(params, query, spoken):
     if action == "volume_down":
         os_automation.volume_down()
         return "Volume decreased.", None
-
-    if not has_level:
+    if level in (None, ""):
         return "What volume level would you like, from 0 to 100?", None
-    res = os_automation.set_volume(level)
-    return _level_result(res, f"Volume set to {level} percent."), None
+    return _level_result(os_automation.set_volume(level), f"Volume set to {level} percent."), None
 
 
 def _tool_set_brightness(params, query, spoken):
-    params = params if isinstance(params, dict) else {}
-    level = params.get("level")
+    level = (params or {}).get("level")
     if level in (None, ""):
         return "What brightness level would you like, from 0 to 100?", None
-    res = os_automation.set_brightness(level)
-    return _level_result(res, f"Brightness set to {level} percent."), None
+    return _level_result(os_automation.set_brightness(level), f"Brightness set to {level} percent."), None
 
 
 def _tool_open_settings(params, query, spoken):
-    params = params if isinstance(params, dict) else {}
-    s = str(params.get("setting", "")).strip().lower()
-
-    # Broadcast to Amigo UI (React frontend)
+    s = str((params or {}).get("setting", "")).strip().lower()
     if _ui_broadcast_cb:
         try:
             if s in ("close", "hide", "dismiss"):
                 _ui_broadcast_cb("close_settings", {})
                 return "Closed settings.", None
-            else:
-                _ui_broadcast_cb("open_settings", {"setting": s})
+            _ui_broadcast_cb("open_settings", {"setting": s})
         except Exception:
             pass
-
-    # If user asks for a specific Windows system setting (like wifi, sound, display), also trigger Windows Settings URI
     if s and s not in ("settings", "setting", "setting tab", "settings tab", "tab", "app settings", "ui", "close"):
         return open_setting(s), None
     return "Opened settings.", None
 
 
 def _tool_open_history(params, query, spoken):
+    """Broadcast open/close history drawer events to the React UI."""
     params = params if isinstance(params, dict) else {}
     action = str(params.get("action", "open")).strip().lower()
     if _ui_broadcast_cb:
@@ -1302,309 +1181,63 @@ def _tool_open_history(params, query, spoken):
             if action in ("close", "hide"):
                 _ui_broadcast_cb("close_history", {})
                 return "Closed history.", None
-            else:
-                _ui_broadcast_cb("open_history", {})
+            _ui_broadcast_cb("open_history", {})
         except Exception:
             pass
     return "Opened history.", None
+
 
 def _tool_system_status(params, query, spoken):
     return os_automation.get_system_status().get("summary", "System status checked."), None
 
 
-def _tool_system_control(params, query, spoken):
-    """Handle various system control actions."""
-    action = params.get("action", "").lower() if isinstance(params, dict) else ""
-    
-    if action in ("lock", "lock_pc"):
-        return _tool_lock_pc(params, query, "Locking PC")
-    elif action in ("sleep", "sleep_pc"):
-        return _tool_sleep_pc(params, query, "Putting system to sleep")
-    elif action in ("restart", "restart_pc"):
-        return _tool_restart_pc(params, query, "Restarting PC in 30 seconds")
-    elif action in ("shutdown", "shutdown_pc"):
-        # Shutdown would be very destructive - require explicit confirmation
-        confirm_result = _require_confirmation("Shutdown PC", params, query, "Shutting down PC")
-        if confirm_result[2].get("requires_confirmation"):
-            return confirm_result
-        shutdown_fn = getattr(os_automation, "shutdown_pc", None)
-        if callable(shutdown_fn):
-            shutdown_fn(30)
-        else:
-            os.system("shutdown /s /t 30")
-        return "Shutting down in 30 seconds.", None
-    elif action in ("cancel_shutdown",):
-        os_automation.cancel_shutdown()
-        return "Shutdown cancelled.", None
-    elif action in ("empty_recycle_bin", "empty_bin", "recycle_bin"):
-        return _tool_empty_recycle_bin(params, query, "Emptying recycle bin")
-    else:
-        return f"Unknown system control action: {action}", None
-
-def _tool_restart_pc(params, query, spoken):
-    # Require confirmation for destructive action
-    confirm_result = _require_confirmation("Restart PC", params, query, "Restarting PC in 30 seconds")
-    if confirm_result[2].get("requires_confirmation"):
-        return confirm_result
-    os_automation.restart_pc(30)
-    return "Restarting in 30 seconds.", None
-
 def _tool_set_timer(params, query, spoken):
     return handle_set_timer(params, query), None
 
+
 def _tool_set_reminder(params, query, spoken):
     msg = handle_set_reminder(params, query)
-    data = get_active_data()
-    reminders = data.get("reminders", [])
-    cards = []
-    if reminders:
-        cards.append({
-            "id": f"reminder-{int(time.time())}",
-            "title": "Scheduled Reminders",
-            "type": "reminder",
-            "badge": "reminder",
-            "description": msg,
-            "selected": True,
-            "actionType": "custom",
-            "payload": {
-                "tool": "reminder",
-                "reminders": reminders,
-                "message": msg,
-            },
-        })
-    return msg, cards
+    reminders = get_active_data().get("reminders", [])
+    cards = [{
+        "id": f"reminder-{int(time.time())}",
+        "title": "Scheduled Reminders",
+        "type": "reminder",
+        "badge": "reminder",
+        "description": msg,
+        "selected": True,
+        "actionType": "custom",
+        "payload": {"tool": "reminder", "reminders": reminders, "message": msg},
+    }] if reminders else []
+    return msg, None, {"cards": cards, "reminders": reminders}
+
 
 def _tool_list_reminders(params, query, spoken):
     msg = handle_list_reminders()
-    data = get_active_data()
-    reminders = data.get("reminders", [])
-    cards = []
-    if reminders:
-        cards.append({
-            "id": f"reminders-list-{int(time.time())}",
-            "title": "My Active Reminders",
-            "type": "reminder",
-            "badge": "reminder",
-            "description": f"{len(reminders)} active reminder(s)",
-            "selected": True,
-            "actionType": "custom",
-            "payload": {
-                "tool": "reminder",
-                "reminders": reminders,
-            },
-        })
-    return msg, cards
+    reminders = get_active_data().get("reminders", [])
+    cards = [{
+        "id": f"reminders-list-{int(time.time())}",
+        "title": "My Active Reminders",
+        "type": "reminder",
+        "badge": "reminder",
+        "description": f"{len(reminders)} active reminder(s)",
+        "selected": True,
+        "actionType": "custom",
+        "payload": {"tool": "reminder", "reminders": reminders},
+    }] if reminders else []
+    return msg, None, {"cards": cards, "reminders": reminders}
+
 
 def _tool_cancel_reminder(params, query, spoken):
     return handle_cancel_reminder(params), None
+
 
 def _tool_exit(params, query, spoken):
     return "Goodbye!", None
 
 
-# ---------------------------------------------------------------------------
-# Unified Tool Handlers Dictionary
-# ---------------------------------------------------------------------------
-UI_TOOL_HANDLERS = {
-    "web_search":        _tool_web_search,
-    "open_website":      _tool_open_website,
-    "show_images":       _tool_show_images,
-    "play_youtube":      _tool_play_youtube,
-    "get_time":          _tool_get_time,
-    "get_date":          _tool_get_date,
-    "get_weather":       _tool_get_weather,
-    "open_app":          _tool_open_app,
-    "take_screenshot":   _tool_take_screenshot,
-    "read_screen":       _tool_read_screen,
-    "ask_about_screen":  _tool_read_screen,
-    "type_text":         _tool_type_text,
-    "search_and_type":   _tool_search_and_type,
-    "press_key":         _tool_press_key,
-    "click_screen":      _tool_click_screen,
-    "new_tab":           _tool_new_tab,
-    "close_app":         _tool_close_app,
-    "window_management": _tool_window_management,
-    "window_mgmt": _tool_window_management,
-    "calculate":         _tool_calculate,
-    "set_volume":        _tool_set_volume,
-    "set_brightness":    _tool_set_brightness,
-    "open_settings":     _tool_open_settings,
-    "system_status":     _tool_system_status,
-    "hardware_metrics":  _tool_system_status,
-    "system_control":    _tool_system_control,
-    "restart_pc":        _tool_restart_pc,
-    "pause_media":       _tool_pause_media,
-    "play_media":        _tool_play_media,
-    "resume_media":      _tool_play_media,
-    "resume_playback":   _tool_play_media,
-    "stock_quote":       _tool_stock_quote,
-    "get_stock_quote":   _tool_stock_quote,
-    "market_quote":      _tool_stock_quote,
-    "stock_price":       _tool_stock_quote,
-    "stop":              _tool_stop,
-    "stop_speaking":     _tool_stop_speaking,
-    "next_track":        _tool_next_track,
-    "prev_track":        _tool_prev_track,
-    "set_timer":         _tool_set_timer,
-    "stopwatch":         _tool_set_timer,
-    "set_reminder":      _tool_set_reminder,
-    "list_reminders":    _tool_list_reminders,
-    "cancel_reminder":   _tool_cancel_reminder,
-    "open_folder":       _tool_open_folder,
-    "find_file":         _tool_find_file,
-    "open_file":         _tool_file_action,
-    "screen_vision":     _tool_read_screen,
-    "memory_recall":     _tool_memory_recall,
-    "current_media":     _tool_get_current_media,
-    "get_current_media": _tool_get_current_media,
-    "clarification":     _tool_clarification,
-    "exit":              _tool_exit,
-    "chat":              _tool_chat,
-    "generate_content":   _tool_generate_content,
-    "regenerate_content": _tool_regenerate_content,
-    "insert_content":     _tool_insert_content,
-    "empty_recycle_bin": _tool_empty_recycle_bin,
-    "lock_pc":           _tool_lock_pc,
-    "sleep_pc":          _tool_sleep_pc,
-    "blocked":           _tool_blocked,
-}
-
-
-# ---------------------------------------------------------------------------
-# Dynamic Document Resolver & RAG Handlers
-# ---------------------------------------------------------------------------
-
-
-def _tool_ask_document(params, query, spoken):
-    """RAG Q&A on a specific document (when the router names one) or on the whole knowledge base."""
-    params = params if isinstance(params, dict) else {}
-    filepath = str(params.get("filepath") or "").strip()
-    question = str(params.get("question") or query or "").strip() or query
-
-    target_path = None
-    if filepath:
-        candidate_path = resolve_document_path(filepath)
-        if candidate_path and os.path.exists(candidate_path):
-            fname = os.path.basename(candidate_path).lower()
-            fname_stem = os.path.splitext(fname)[0].replace(" ", "").replace("_", "")
-            q_clean = (query or "").lower().replace(" ", "").replace("_", "")
-            # If the user actually mentioned this file in their query
-            if fname_stem in q_clean or fname in q_clean:
-                target_path = candidate_path
-            else:
-                # Filepath may be a hallucination from prior conversation history;
-                # check if the actual question resolves to a more relevant file
-                semantic_path = resolve_document_path(question)
-                target_path = semantic_path if semantic_path else candidate_path
-
-    if not target_path:
-        target_path = resolve_document_path(question)
-
-    if target_path:
-        try:
-            update_active_state("active_file", {"path": target_path, "name": os.path.basename(target_path)})
-        except Exception:
-            pass
-        ctx = rag_engine.build_file_context(target_path, question)
-    else:
-        ctx = rag_engine.build_rag_context(question, top_k=8)
-        # Check if RAG resolved an active document
-        if not target_path:
-            state = get_active_state(clean_expired=False) or {}
-            act_f = state.get("active_file")
-            if isinstance(act_f, dict) and act_f.get("path") and os.path.exists(act_f["path"]):
-                target_path = act_f["path"]
-
-    if ctx:
-        meta = {"matched_docs": [target_path]} if target_path else {"doc_context_used": True}
-        response = get_ai_response(question, doc_context=ctx)
-
-        # Natural fallback if model outputs generic cloud AI disclaimer claiming lack of access
-        refusal_patterns = (
-            "don't have access to",
-            "do not have access to",
-            "cannot access your personal",
-            "can't access your personal",
-            "as an ai, i do not have access",
-            "as an ai, i don't have access",
-        )
-        if any(pat in response.lower() for pat in refusal_patterns):
-            response = "I checked your saved documents, but I couldn't find that information."
-
-        return response, None, meta
-    return "I couldn't find anything relevant in your documents.", None
-
-
-def _tool_summarize_document(params, query, spoken):
-    """Summarize a document using RAG + LLM."""
-    filepath = params.get("filepath", "") if isinstance(params, dict) else ""
-    target_path = resolve_document_path(filepath) if filepath else resolve_document_path(query)
-
-    if target_path:
-        try:
-            update_active_state("active_file", {"path": target_path, "name": os.path.basename(target_path)})
-        except Exception:
-            pass
-        ctx = rag_engine.get_file_summary_context(target_path)
-    else:
-        ctx = rag_engine.build_rag_context(query, top_k=6)
-
-    if ctx:
-        target_prompt = query.strip() if query.strip() else "Summarize this document concisely."
-        return get_ai_response(target_prompt, doc_context=ctx), None
-    return "I couldn't find that document to summarize.", None
-
-
-def _tool_find_document(params, query, spoken):
-    """Semantic file discovery â€” find files by meaning, not just name."""
-    q = params.get("query", query).strip()
-    results = rag_engine.search_files_by_context(q, top_k=10)
-    if results:
-        file_results = []
-        for r in results:
-            try:
-                stat = os.stat(r["filepath"])
-                file_results.append({
-                    "path": r["filepath"],
-                    "name": r["filename"],
-                    "extension": os.path.splitext(r["filepath"])[1].lower() or "file",
-                    "folder": os.path.dirname(r["filepath"]),
-                    "modified": datetime.datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                    "score": r["score"],
-                    "preview": r["preview"][:100],
-                })
-            except (OSError, TypeError):
-                continue
-        if file_results:
-            try:
-                update_active_state("active_file", {"path": file_results[0]["path"], "name": file_results[0]["name"]})
-                update_active_state("found_files", [f["path"] for f in file_results[:5]])
-            except Exception:
-                pass
-            count = len(file_results)
-            lines = [f"I found {count} matching file{'s' if count != 1 else ''}:"]
-            for i, f in enumerate(file_results[:5], 1):
-                clean_t = os.path.splitext(f["name"])[0].replace("_", " ").replace("-", " ").title()
-                lines.append(f"{i}. {clean_t} ({f['extension']})")
-            lines.append("Say 'Open number 1' or 'Open [name]' to choose.")
-            summary = "\n".join(lines)
-            return summary, None, {"file_results": file_results}
-
-    return f"No files found matching '{q}'. You can re-index your documents in Settings.", None
-
-
-
-def _tool_search_knowledge(params, query, spoken):
-    """Search across ALL indexed knowledge (docs, memory, email, calendar)."""
-    q = params.get("query", query).strip()
-    ctx = rag_engine.build_rag_context(q, top_k=5)
-    if ctx:
-        return get_ai_response(q, doc_context=ctx), None
-    return get_ai_response(q), None
-
+# ── Email & Calendar Handlers ──────────────────────────────────
 
 def _tool_read_emails(params, query, spoken):
-    """Read recent or unread emails from Outlook, or search emails."""
     params = params if isinstance(params, dict) else {}
     action = str(params.get("action") or "").strip().lower()
     if action == "unread" or (not action and "unread" in query.lower()):
@@ -1614,49 +1247,31 @@ def _tool_read_emails(params, query, spoken):
     try:
         from amigo.services.mail_integration import get_email_summary_text, is_outlook_available
         if not is_outlook_available():
-            return "Outlook is not available. Please make sure Microsoft Outlook is installed and running.", None
-        count = int(params.get("count", 5))
-        summary = get_email_summary_text(count)
+            return "Outlook is not available.", None
+        summary = get_email_summary_text(int(params.get("count", 5)))
         return get_ai_response(f"Summarize these emails naturally:\n{summary}", use_memory=False), None
-    except Exception as e:
-        logger.error("[Email] %s", e)
-        return "Could not read emails. Make sure Outlook is running.", None
+    except Exception:
+        return "Could not read emails.", None
 
 
 def _tool_search_emails(params, query, spoken):
-    """Search emails by keyword, with fallback to RAG indexed knowledge."""
+    conv_history = _get_conv_history()
+    q = (params or {}).get("query", query).strip()
     try:
-        from amigo.services.mail_integration import search_emails, is_outlook_available
-        q = params.get("query", query).strip()
-        results = []
+        from amigo.services.mail_integration import is_outlook_available, search_emails
         if is_outlook_available():
             results = search_emails(q, max_results=5)
-
-        if results:
-            lines = []
-            for i, e in enumerate(results, 1):
-                lines.append(f"{i}. From: {e['sender']} | Subject: {e['subject']}")
-            return f"Found {len(results)} email{'s' if len(results)>1 else ''} matching '{q}':\n" + "\n".join(lines), None
-
-        # Fallback: search indexed RAG documents / files / knowledge
-        rag_ctx = rag_engine.build_rag_context(query or q, top_k=5)
-        if rag_ctx:
-            return get_ai_response(query or q, doc_context=rag_ctx), None
-
-        return f"No emails or documents found matching '{q}'.", None
-    except Exception as e:
-        logger.error("[Email Search] %s", e)
-        try:
-            rag_ctx = rag_engine.build_rag_context(query or params.get("query", ""), top_k=5)
-            if rag_ctx:
-                return get_ai_response(query or params.get("query", ""), doc_context=rag_ctx), None
-        except Exception:
-            pass
-        return "Could not search emails.", None
+            if results:
+                lines = [f"{i}. From: {e['sender']} | Subject: {e['subject']}" for i, e in enumerate(results, 1)]
+                return f"Found {len(results)} email(s) matching '{q}':\n" + "\n".join(lines), None
+    except Exception:
+        pass
+    if rag_ctx := rag_engine.build_rag_context(query or q, top_k=5, conversation_history=conv_history):
+        return get_ai_response(query or q, doc_context=rag_ctx, conversation_history=conv_history), None
+    return f"No emails found matching '{q}'.", None
 
 
 def _tool_unread_emails(params, query, spoken):
-    """Get unread email count and previews."""
     try:
         from amigo.services.mail_integration import get_unread_count, get_unread_emails, is_outlook_available
         if not is_outlook_available():
@@ -1666,37 +1281,27 @@ def _tool_unread_emails(params, query, spoken):
             return "You have no unread emails.", None
         emails = get_unread_emails(min(count, 5))
         lines = [f"You have {count} unread email{'s' if count > 1 else ''}."]
-        for i, e in enumerate(emails, 1):
-            lines.append(f"  {i}. From {e['sender']}: {e['subject']}")
+        lines.extend(f"  {i}. From {e['sender']}: {e['subject']}" for i, e in enumerate(emails, 1))
         return "\n".join(lines), None
-    except Exception as e:
-        logger.error("[Unread] %s", e)
+    except Exception:
         return "Could not check unread emails.", None
 
 
 def _tool_draft_email(params, query, spoken):
-    """Draft an email using LLM to generate content."""
     try:
         from amigo.services.mail_integration import draft_email
-        to = params.get("to", "").strip()
-        subject = params.get("subject", "").strip()
-        prompt = params.get("prompt", query).strip()
-        # Generate email body using LLM
+        params = params if isinstance(params, dict) else {}
+        to, subject, prompt = params.get("to", "").strip(), params.get("subject", "").strip(), params.get("prompt", query).strip()
         body = get_ai_response(
-            f"Write a professional email. Context: {prompt}. "
-            f"To: {to or 'recipient'}. Subject: {subject or 'as appropriate'}. "
-            f"Write ONLY the email body, no subject line or greeting prefix.",
+            f"Write a professional email. Context: {prompt}. To: {to or 'recipient'}. Subject: {subject or 'as appropriate'}. Write ONLY the email body.",
             use_memory=False,
         )
-        result = draft_email(to=to, subject=subject, body=body)
-        return result, None
-    except Exception as e:
-        logger.error("[Draft] %s", e)
+        return draft_email(to=to, subject=subject, body=body), None
+    except Exception:
         return "Could not create email draft.", None
 
 
 def _tool_get_calendar(params, query, spoken):
-    """Get today's or upcoming calendar events, or search schedule."""
     params = params if isinstance(params, dict) else {}
     if params.get("query"):
         return _tool_search_calendar(params, query, spoken)
@@ -1705,58 +1310,30 @@ def _tool_get_calendar(params, query, spoken):
         if not is_outlook_available():
             return "Outlook Calendar is not available.", None
         days = int(params.get("days", 1))
-        if days <= 1:
-            summary = get_calendar_summary_text()
-        else:
-            summary = get_upcoming_summary_text(days=days)
-        return summary, None
-    except Exception as e:
-        logger.error("[Calendar] %s", e)
+        return (get_calendar_summary_text() if days <= 1 else get_upcoming_summary_text(days=days)), None
+    except Exception:
         return "Could not read calendar.", None
 
 
 def _tool_search_calendar(params, query, spoken):
-    """Search calendar events by keyword."""
     try:
-        from amigo.services.calendar_integration import search_events, is_outlook_available
+        from amigo.services.calendar_integration import is_outlook_available, search_events
         if not is_outlook_available():
             return "Outlook Calendar is not available.", None
-        q = params.get("query", query).strip()
+        q = (params or {}).get("query", query).strip()
         results = search_events(q, days=30)
         if results:
-            lines = [f"Found {len(results)} event{'s' if len(results)>1 else ''} matching '{q}':"]
+            lines = [f"Found {len(results)} event(s) matching '{q}':"]
             for i, e in enumerate(results, 1):
-                loc = f" at {e['location']}" if e.get('location') else ""
-                lines.append(f"  {i}. {e['subject']}{loc} â€” {e['start']}")
+                loc = f" at {e['location']}" if e.get("location") else ""
+                lines.append(f"  {i}. {e['subject']}{loc} - {e['start']}")
             return "\n".join(lines), None
         return f"No calendar events found matching '{q}'.", None
-    except Exception as e:
-        logger.error("[Calendar Search] %s", e)
+    except Exception:
         return "Could not search calendar.", None
 
 
-# Register RAG/Email/Calendar tools
-UI_TOOL_HANDLERS.update({
-    "ask_document":       _tool_ask_document,
-    "document_qa":        _tool_ask_document,
-    "summarize_document": _tool_summarize_document,
-    "find_document":      _tool_find_document,
-    "search_knowledge":   _tool_search_knowledge,
-    "read_emails":        _tool_read_emails,
-    "search_emails":      _tool_search_emails,
-    "unread_emails":      _tool_unread_emails,
-    "draft_email":        _tool_draft_email,
-    "get_calendar":       _tool_get_calendar,
-    "search_calendar":    _tool_search_calendar,
-})
-
-# Bind simple OS automation actions
-for _key, (_func, _msg) in _SIMPLE_OS_ACTIONS.items():
-    UI_TOOL_HANDLERS.setdefault(_key, _make_simple_handler(_func, _msg))  # keep confirmation handlers for lock/sleep
-
-
 def _tool_confirm_action(params, query, spoken):
-    """Run the action the user just agreed to."""
     global _PENDING_CONFIRMATION
     pending = get_pending_confirmation()
     if not pending:
@@ -1772,25 +1349,94 @@ def _tool_cancel_action(params, query, spoken):
     return ("Okay, I won't do that." if had_pending else "Nothing to cancel."), None
 
 
-UI_TOOL_HANDLERS.update({
-    "confirm_action":   _tool_confirm_action,
-    "cancel_action":    _tool_cancel_action,
-    "time_date":        _tool_time_date,
-    "reveal_file":      _make_file_handler("reveal"),
-    "copy_file_path":   _make_file_handler("copy_path"),
-})
-
-UI_TOOL_HANDLERS.update({
+UI_TOOL_HANDLERS = {
+    "web_search":         _tool_web_search,
+    "open_website":       _tool_open_website,
+    "show_images":        _tool_show_images,
+    "play_youtube":       _tool_play_youtube,
+    "get_time":           _tool_get_time,
+    "get_date":           _tool_get_date,
+    "time_date":          _tool_time_date,
+    "get_weather":        _tool_get_weather,
+    "open_app":           _tool_open_app,
+    "take_screenshot":    _tool_take_screenshot,
+    "read_screen":        _tool_read_screen,
+    "ask_about_screen":   _tool_read_screen,
+    "screen_vision":      _tool_read_screen,
+    "type_text":          _tool_type_text,
+    "search_and_type":    _tool_search_and_type,
+    "press_key":          _tool_press_key,
+    "click_screen":       _tool_click_screen,
+    "new_tab":            _tool_new_tab,
+    "close_app":          _tool_close_app,
+    "window_management":  _tool_window_management,
+    "window_mgmt":        _tool_window_management,
+    "calculate":          _tool_calculate,
+    "set_volume":         _tool_set_volume,
+    "set_brightness":     _tool_set_brightness,
+    "open_settings":      _tool_open_settings,
+    "open_history":       _tool_open_history,
+    "system_status":      _tool_system_status,
+    "hardware_metrics":   _tool_system_status,
+    "system_control":     _tool_system_control,
+    "restart_pc":         _tool_restart_pc,
+    "pause_media":        _tool_pause_media,
+    "play_media":         _tool_play_media,
+    "resume_media":       _tool_play_media,
+    "resume_playback":    _tool_play_media,
+    "stock_quote":        _tool_stock_quote,
+    "get_stock_quote":    _tool_stock_quote,
+    "market_quote":       _tool_stock_quote,
+    "stock_price":        _tool_stock_quote,
+    "stop":               _tool_stop,
+    "stop_speaking":      _tool_stop_speaking,
+    "next_track":         _tool_next_track,
+    "prev_track":         _tool_prev_track,
+    "set_timer":          _tool_set_timer,
+    "stopwatch":          _tool_set_timer,
+    "set_reminder":       _tool_set_reminder,
+    "list_reminders":     _tool_list_reminders,
+    "cancel_reminder":    _tool_cancel_reminder,
+    "open_folder":        _tool_open_folder,
+    "find_file":          _tool_find_file,
+    "find_document":      _tool_find_file,
+    "open_file":          _tool_file_action,
+    "reveal_file":        _make_file_handler("reveal"),
+    "copy_file_path":     _make_file_handler("copy_path"),
+    "memory_recall":      _tool_memory_recall,
+    "current_media":      _tool_get_current_media,
+    "get_current_media":  _tool_get_current_media,
+    "clarification":      _tool_clarification,
+    "exit":               _tool_exit,
+    "chat":               _tool_chat,
     "generate_content":   _tool_generate_content,
     "regenerate_content": _tool_regenerate_content,
     "insert_content":     _tool_insert_content,
-})
+    "empty_recycle_bin":  _tool_empty_recycle_bin,
+    "lock_pc":            _tool_lock_pc,
+    "sleep_pc":           _tool_sleep_pc,
+    "blocked":            _tool_blocked,
+    "ask_document":       _tool_ask_document,
+    "document_qa":        _tool_ask_document,
+    "summarize_document": _tool_summarize_document,
+    "search_knowledge":   _tool_search_knowledge,
+    "read_emails":        _tool_read_emails,
+    "search_emails":      _tool_search_emails,
+    "unread_emails":      _tool_unread_emails,
+    "draft_email":        _tool_draft_email,
+    "get_calendar":       _tool_get_calendar,
+    "search_calendar":    _tool_search_calendar,
+    "confirm_action":     _tool_confirm_action,
+    "cancel_action":      _tool_cancel_action,
+}
+
+for _key, (_func, _msg) in _SIMPLE_OS_ACTIONS.items():
+    UI_TOOL_HANDLERS.setdefault(_key, _make_simple_handler(_func, _msg))
 
 
-# ---------------------------------------------------------------------------
-# Tool schema shown to the router LLM. This is the single place that tells the model what each
-# tool is for, so routing knowledge lives here rather than in prompt examples.
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════
+#  Tool Definitions & Multi-Turn Context-Aware Router
+# ═══════════════════════════════════════════════════════════════
 
 def _p(type_: str, description: str = "") -> dict:
     return {"type": type_, "description": description}
@@ -1805,305 +1451,159 @@ def _tool(name: str, description: str, props: dict | None = None, required: list
 
 
 TOOL_DEFINITIONS = [
-    _tool("chat", "Conversational response: talk with the user, casual conversation, advice, math calculations, current date or time inquiries, general questions, opinions, greetings, jokes, or creative dialogue. Takes NO parameters."),
-    _tool("web_search", "Search the web for real-time facts, current office holders, political leaders, ministers, presidents, CEOs, news, recent events, live scores, or external knowledge.",
-          {"query": _p("string", "Search query resolved from context"),
+    _tool("chat", "Conversational response: casual talk, advice, math, current date/time, general knowledge, or follow-up discussion. Takes NO parameters."),
+    _tool("web_search", "Search the web for real-time facts, news, people, movies, music trivia, release dates, or external knowledge.",
+          {"query": _p("string", "Self-contained search query with pronouns resolved from conversation history"),
            "show_in_browser": _p("boolean", "True if user asked to open search results in a browser")}, ["query"]),
-    _tool("stock_quote", "Look up real-time stock prices, share prices, market quotes, or cryptocurrency rates.",
-          {"symbol": _p("string", "Company name, ticker symbol, or cryptocurrency name")}, ["symbol"]),
-    _tool("play_youtube", "Search and play songs, music, artist tracks, albums, or videos on YouTube.",
-          {"query": _p("string", "Exact song title and artist requested by the user without alteration or substitution")}, ["query"]),
-    _tool("resume_media", "Resume or unpause paused audio or video playback (e.g. 'resume', 'unpause', 'continue playback')."),
-    _tool("pause_media", "Pause currently playing music or video playback."),
-    _tool("next_track", "Skip to the next music track."),
-    _tool("prev_track", "Go back to the previous track."),
+    _tool("stock_quote", "Look up real-time stock or crypto prices.", {"symbol": _p("string", "Ticker or asset name")}, ["symbol"]),
+    _tool("play_youtube", "Play songs, music, or videos on YouTube.", {"query": _p("string", "Exact song/video title and artist")}, ["query"]),
+    _tool("resume_media", "Resume paused audio/video playback."),
+    _tool("pause_media", "Pause currently playing audio/video."),
+    _tool("next_track", "Skip to next track."),
+    _tool("prev_track", "Go to previous track."),
     _tool("current_media", "Check which song or video is currently playing."),
-    _tool("set_volume", "Control system audio volume (mute, unmute, volume_up, volume_down, or set_volume with level).",
-          {"action": _p("string", "mute | unmute | volume_up | volume_down | set_volume"),
-           "level": _p("integer", "Volume level 0-100 when action is set_volume")}),
-    _tool("set_brightness", "Adjust screen brightness.", {"level": _p("integer", "Brightness level 0-100")}, ["level"]),
-    _tool("take_screenshot", "Capture a screenshot of the computer screen to an image file."),
-    _tool("read_screen", "Inspect the current screen content or active window and answer questions about it.",
-          {"question": _p("string", "Question about the screen content")}),
-    _tool("open_app", "Launch or open an installed desktop application.",
-          {"name": _p("string", "Application name to open")}, ["name"]),
-    _tool("close_app", "Close an application or active window.",
-          {"name": _p("string", "Application name to close, or empty for active window")}),
-    _tool("window_mgmt", "Manage desktop windows (minimize_all, maximize, restore, switch_window, close_window).",
-          {"action": _p("string", "minimize_all | maximize | restore | switch_window | close_window"),
-           "name": _p("string", "Application or window title")}, ["action"]),
-    _tool("system_control", "System power and control management (lock screen, sleep, restart, shutdown, empty recycle bin).",
-          {"action": _p("string", "lock | sleep | restart | shutdown | cancel_shutdown | empty_bin")}, ["action"]),
-    _tool("system_status", "Check system hardware status (battery, CPU, memory, disk)."),
-    _tool("open_settings", "Open a Windows or assistant settings page.", {"setting": _p("string", "Target setting page")}, ["setting"]),
-    _tool("get_weather", "Get the weather forecast for a city or local area.",
-          {"city": _p("string", "City or location name resolved from context")}),
-    _tool("set_timer", "Start a countdown timer.", {
-        "duration": _p("integer", "The exact duration in seconds (e.g., 60 for 1 minute)."),
-        "label": _p("string", "Timer description or label (optional, e.g. 'Pasta timer')")
-    }, ["duration"]),
-    _tool("set_reminder", "Create a task reminder.", {"query": _p("string", "Reminder content and time")}, ["query"]),
+    _tool("set_volume", "Control system audio volume (mute, unmute, volume_up, volume_down, set_volume).",
+          {"action": _p("string", "mute | unmute | volume_up | volume_down | set_volume"), "level": _p("integer", "0-100")}),
+    _tool("set_brightness", "Adjust screen brightness.", {"level": _p("integer", "0-100")}, ["level"]),
+    _tool("take_screenshot", "Capture a screenshot of the screen."),
+    _tool("read_screen", "Inspect current screen content and answer questions about it.", {"question": _p("string", "Question about screen")}),
+    _tool("open_app", "Launch an installed desktop app.", {"name": _p("string", "App name")}, ["name"]),
+    _tool("close_app", "Close an application or active window.", {"name": _p("string", "App name")}),
+    _tool("window_mgmt", "Manage windows (minimize_all, maximize, restore, switch_window, close_window).",
+          {"action": _p("string", "Action"), "name": _p("string", "Window title")}, ["action"]),
+    _tool("system_control", "System power/control (lock, sleep, restart, shutdown, cancel_shutdown, empty_bin).",
+          {"action": _p("string", "Action")}, ["action"]),
+    _tool("lock_pc", "Lock the Windows PC immediately."),
+    _tool("sleep_pc", "Put the PC into sleep mode."),
+    _tool("restart_pc", "Restart the Windows computer."),
+    _tool("empty_recycle_bin", "Empty the Windows recycle bin."),
+    _tool("system_status", "Check battery, CPU, RAM, and disk status."),
+    _tool("open_settings", "Open a Windows or assistant settings page.", {"setting": _p("string", "Setting name")}, ["setting"]),
+    _tool("open_history", "Open or view conversational memory and interaction history."),
+    _tool("get_weather", "Get weather forecast for a city.", {"city": _p("string", "City name resolved from context")}),
+    _tool("set_timer", "Start a countdown timer.", {"duration": _p("integer", "Seconds"), "label": _p("string", "Label")}, ["duration"]),
+    _tool("set_reminder", "Create a task reminder.", {"query": _p("string", "Reminder text and time")}, ["query"]),
     _tool("list_reminders", "List pending reminders."),
-    _tool("cancel_reminder", "Cancel one or all reminders.", {"query": _p("string", "'all' or specific reminder title")}, ["query"]),
-    _tool("find_file", "Search for local files or folders on the computer by name or topic.",
-          {"query": _p("string", "File or folder name pattern")}, ["query"]),
-    _tool("open_file", "Open a local file by path or name.",
-          {"path": _p("string", "File path or name resolved from context")}, ["path"]),
-    _tool("document_qa", "Answer questions, extract facts, or summarize indexed local documents, files, tickets, bookings, flights, PNR numbers, invoices, or personal records.",
-          {"query": _p("string", "Question or summary request about document contents"),
-           "filepath": _p("string", "Target document name ONLY if explicitly named by user; otherwise omit")}, ["query"]),
-    _tool("get_calendar", "View or search calendar schedule.",
-          {"days": _p("integer", "Number of days ahead (default 1)"),
-           "query": _p("string", "Optional search keyword for specific events")}),
-    _tool("read_emails", "Read recent or unread emails, or search emails in Outlook.",
-          {"action": _p("string", "recent | unread | search"),
-           "query": _p("string", "Optional search keyword"),
-           "count": _p("integer", "Number of emails to read (default 5)")}),
-    _tool("draft_email", "Draft an email in Outlook.",
-          {"to": _p("string", "Recipient email"), "subject": _p("string", "Email subject"), "prompt": _p("string", "Email body content")}, ["prompt"]),
-    _tool(
-        "generate_content",
-        "Write, draft, or generate any content (email, leave application, code, poem, letter, essay, message) with full date awareness. Optionally specify where to insert it.",
-        {
-            "type": _p("string", "Type of content to generate (e.g. email, python code, poem, letter, leave application)"),
-            "topic": _p("string", "Detailed topic or purpose including any time/date references mentioned by user"),
-            "tone": _p("string", "Desired tone or style (e.g. professional, friendly, casual, concise, poetic)"),
-            "destination": _p("string", "Target destination if mentioned (e.g. Gmail, Notepad, Word, VS Code, Clipboard, Outlook), or empty if not specified yet"),
-            "recipient": _p("string", "Recipient name or email if applicable"),
-        },
-        ["type", "topic"],
-    ),
-    _tool(
-        "regenerate_content",
-        "Regenerate, rewrite, or modify the last generated content (email, code, poem, text) when the user asks to change tone, length, style, or details (e.g. 'regenerate it', 'make it more friendly', 'make it shorter').",
-        {
-            "feedback": _p("string", "How the user wants to modify or improve the current draft (e.g. 'more friendly', 'shorter', 'add a thank you')"),
-            "destination": _p("string", "Optional destination if the user also says where to put the new version"),
-        },
-        ["feedback"],
-    ),
-    _tool(
-        "insert_content",
-        "Insert, send, copy, or paste the generated content into a destination chosen by the user (e.g. 'put it in Gmail', 'insert into Notepad', 'copy to clipboard', 'paste in Word'). Only call this when the user explicitly instructs to copy, insert, paste, or send the content somewhere.",
-        {
-            "destination": _p("string", "Target destination explicitly specified by the user (e.g. Gmail, Notepad, Word, Clipboard, VS Code). Never call this tool or invent a destination if the user is just saying thanks or did not specify where to put it."),
-            "content": _p("string", "Leave empty to use the last generated content from state"),
-        },
-        ["destination"],
-    ),
-    _tool("type_text", "Type text into an application.",
-          {"text": _p("string", "Text to type"), "app": _p("string", "Target app name")}, ["text"]),
-    _tool("press_key", "Send a keyboard key or shortcut combination.", {"keys": _p("string", "Key or shortcut, e.g. ctrl+c")}, ["keys"]),
-    _tool("confirm_action", "Confirm and execute a pending action when the user agrees."),
-    _tool("cancel_action", "Cancel a pending action when the user declines or cancels."),
-    _tool("stop", "Stop active speech, playback, or running operations."),
-    _tool("exit", "Close and terminate the Amigo application."),
+    _tool("cancel_reminder", "Cancel one or all reminders.", {"query": _p("string", "'all' or reminder title")}, ["query"]),
+    _tool("find_file", "Find local files or folders by name or topic.", {"query": _p("string", "Search pattern")}, ["query"]),
+    _tool("open_file", "Open a local file by path, name, or ordinal ('number 1', 'it').", {"path": _p("string", "File reference")}, ["path"]),
+    _tool("document_qa", "Answer questions or summarize indexed local documents, files, bills, tickets, or personal records.",
+          {"query": _p("string", "Self-contained question about document contents"), "filepath": _p("string", "Optional filename")}, ["query"]),
+    _tool("memory_recall", "Save a new personal fact ('remember that...') or recall saved user facts/preferences.",
+          {"query": _p("string", "Question about saved memory"), "fact": _p("string", "Fact to save if user asked to remember")}),
+    _tool("get_calendar", "View or search calendar schedule.", {"days": _p("integer", "Days ahead"), "query": _p("string", "Search keyword")}),
+    _tool("read_emails", "Read recent/unread emails or search Outlook.", {"action": _p("string", "recent | unread | search"), "query": _p("string", "Keyword")}),
+    _tool("unread_emails", "Check and read unread emails in Outlook."),
+    _tool("draft_email", "Draft an email in Outlook.", {"to": _p("string", "Recipient"), "subject": _p("string", "Subject"), "prompt": _p("string", "Body")}, ["prompt"]),
+    _tool("generate_content", "Write/draft content (email, code, letter, essay).",
+          {"type": _p("string", "Content type"), "topic": _p("string", "Topic"), "tone": _p("string", "Tone"), "destination": _p("string", "App")}, ["type", "topic"]),
+    _tool("regenerate_content", "Modify or rewrite the last generated draft.", {"feedback": _p("string", "Modification instructions")}, ["feedback"]),
+    _tool("insert_content", "Insert/paste last generated content into a destination app.", {"destination": _p("string", "Target app")}, ["destination"]),
+    _tool("type_text", "Type text into an app.", {"text": _p("string", "Text"), "app": _p("string", "App")}, ["text"]),
+    _tool("press_key", "Send a keyboard shortcut.", {"keys": _p("string", "Shortcut e.g. ctrl+c")}, ["keys"]),
+    _tool("confirm_action", "Confirm a pending action when user says yes/go ahead."),
+    _tool("cancel_action", "Cancel a pending action when user says no/cancel."),
+    _tool("stop", "Stop active speech or playback."),
+    _tool("exit", "Close Amigo."),
 ]
 
-# Build a set of valid tool names from TOOL_DEFINITIONS for validation
 VALID_TOOL_NAMES = {tool["name"] for tool in TOOL_DEFINITIONS} | set(UI_TOOL_HANDLERS.keys())
-
-
 _TOOLS_BLOCK_CACHE: str | None = None
 
 
 def _tools_block() -> str:
-    """Render the tool list dynamically and concisely from TOOL_DEFINITIONS."""
     global _TOOLS_BLOCK_CACHE
     if _TOOLS_BLOCK_CACHE is None:
         rows = []
-        for tool in TOOL_DEFINITIONS:
-            params = tool.get("parameters", {}) or {}
-            props = params.get("properties", {}) or {}
-            required = set(params.get("required", []) or [])
-            if props:
-                parts = [f"{key}*" if key in required else key for key in props]
-                rows.append(f"- {tool['name']}({', '.join(parts)}): {tool['description']}")
-            else:
-                rows.append(f"- {tool['name']}(): {tool['description']}")
+        for t in TOOL_DEFINITIONS:
+            props = (t.get("parameters") or {}).get("properties") or {}
+            req = set((t.get("parameters") or {}).get("required") or [])
+            sig = ", ".join(f"{k}*" if k in req else k for k in props)
+            rows.append(f"- {t['name']}({sig}): {t['description']}")
         _TOOLS_BLOCK_CACHE = "\n".join(rows)
     return _TOOLS_BLOCK_CACHE
 
 
-def _format_recent_activity(conversation_history: list | None, current_query: str = "", limit: int = 15) -> str:
-    """Format recent turns with user queries, tools used, and assistant responses."""
-    if conversation_history:
-        turns = [t for t in conversation_history if isinstance(t, dict)]
-    else:
-        try:
-            turns = [t for t in (rag_engine.get_recent_conversations(limit) or []) if isinstance(t, dict)]
-        except Exception:
-            turns = []
-    turns = turns[-limit:]
-
-    cur = (current_query or "").strip().lower()
-    if turns and cur and (turns[-1].get("user") or turns[-1].get("query") or "").strip().lower() == cur and not (turns[-1].get("assistant") or turns[-1].get("response") or "").strip():
-        turns = turns[:-1]
-
-    lines = []
-    for turn in turns:
-        user_text = (turn.get("user") or turn.get("query") or "").strip()
-        if not user_text:
-            continue
-        lines.append(f"User: {user_text[:250]}")
-        tool = (turn.get("tool") or "").strip()
-        params = turn.get("params") if isinstance(turn.get("params"), dict) else {}
-        reply = (turn.get("assistant") or turn.get("response") or "").strip()
-        if tool or reply:
-            entry = "Amigo"
-            if tool and tool != "chat":
-                entry += f" used {tool}"
-                if params:
-                    clean_p = {k: v for k, v in params.items() if v}
-                    if clean_p:
-                        entry += f" {json.dumps(clean_p, ensure_ascii=False)[:150]}"
-            if reply:
-                clean_reply = reply[:200].replace("\n", " ").strip()
-                entry += f" and replied: {clean_reply}" if (tool and tool != "chat") else f" replied: {clean_reply}"
-            lines.append(entry)
-    return "\n".join(lines) if lines else "No recent conversation."
-
-
-_ROUTER_SYSTEM_PROMPT = """You are Amigo, an intelligent Windows voice assistant.
-Understand user intent and select the appropriate tool action(s).
+_ROUTER_SYSTEM_PROMPT = """You are Amigo's intent router. Select the best tool action(s) for the user's latest message.
 
 TOOLS AVAILABLE:
 <<TOOLS>>
 
-ROUTING GUIDELINES:
-1. CHAT, GREETINGS, TIME, DATE & MATH: For casual conversation, greetings, advice, compliments, gratitude, arithmetic calculations, or checking current date, day, or local time (which you already know from the system prompt): ALWAYS select 'chat' with empty params: {"tool": "chat", "params": {}}. You will answer directly in natural voice conversation.
-2. MUSIC & VIDEO PLAYBACK: For explicit requests to play, listen to, or stream songs, music, tracks, or videos (e.g. "play bohemian rhapsody", "listen to drake", "put on some lofi"), select 'play_youtube'.
-- Extract the user's requested song title and artist into params['query'] exactly as stated in the request.
-- CRITICAL: If the user is asking an informational question about a song, soundtrack, or artist (e.g. "which song is played in...", "what song is in the trailer for...", "who sang the song in...", "what is the background score of..."): DO NOT select 'play_youtube'. Instead, select 'web_search' to find the answer.
-- Do not substitute, swap, or alter the requested title with different tracks.
-3. PC & SYSTEM ACTIONS: For apps, volume, brightness, timers, reminders, screenshots, files, and system power (lock, sleep, restart, shutdown, empty recycle bin): select the specific tool. For system power or emptying recycle bin, use 'system_control' with action.
-4. LOCAL DOCUMENTS & FILES: To search/find/locate files or folders on the PC: use 'find_file'. To read, summarize, or answer questions about indexed local documents, notes, tickets, bookings, or personal records: use 'document_qa'. Do NOT use 'web_search' for local files.
-5. REAL-TIME EXTERNAL FACTS & WEB SEARCH: Use 'web_search' for real-world facts, current office holders, political leaders, latest external news, live sports scores, release dates, products, specifications, people, media, places, or external web information.
-6. COMPOUND REQUESTS: Return multiple actions in execution order (e.g. open app then type text).
-7. FOLLOW-UP QUESTIONS & CONTEXT RESOLUTION:
-When the user asks a follow-up question or elliptical query referencing previous conversation (e.g. questions starting with 'For which...', 'Who...', 'What about...', 'How much...', 'Where...', 'When...', 'Can you...', or referencing previous entities using 'it', 'that', 'they', 'he', 'she'):
-- Identify the subject or topic from RECENT ACTIVITY.
-- If the subject is an external topic, entity, product, media, game, person, or the previous turn used web_search: select 'web_search' with the fully resolved query combining the subject and the question.
-- If the user wants to play, view, or open the previous item: route to the corresponding tool with the resolved subject (e.g. 'play it' -> play_youtube, 'open it' -> open_file/open_app).
-- If the follow-up is casual chat, advice, or conceptual explanation: select 'chat'.
-- NEVER return an empty actions list: every user request must map to a valid tool.
-8. CONTENT GENERATION, REGENERATION & INSERTION:
-- When the user asks to write, draft, or create an email, code, poem, letter, or any text: select 'generate_content'. Extract 'type', 'topic', 'tone', and 'destination' (leave 'destination' empty if the user didn't state where to put it).
-- When the user wants to modify, tweak, or redo the previous draft (e.g. "regenerate", "make it more friendly", "make it shorter", "change the tone"): select 'regenerate_content' with their instructions in 'feedback'.
-- When the user answers where to put/insert the generated content (e.g. "put it in Gmail", "in Notepad", "copy to clipboard", "Word"): select 'insert_content' with 'destination'.
-- DO NOT select 'insert_content' if the user is merely expressing thanks or complimenting the draft (e.g. "thanks for the email" or "looks great" is CHAT, not insert_content).
+ROUTING RULES:
+1. FOLLOW-UP RESOLUTION: Always inspect the prior conversation turns and ACTIVE STATE. If the user asks a follow-up ("what about tomorrow?", "who directed it?", "summarize it", "open the second one", "and its price?"), resolve pronouns into explicit entities in the tool parameters and pick the tool matching the active topic.
+2. DIALOGUE, MATH & GENERAL KNOWLEDGE ('chat'): Use for greetings, casual conversation, math, date/time questions, or general explanations.
+3. WEB SEARCH ('web_search'): Use for current events, real-world facts, people, movies, prices, or follow-ups to a previous web_search. Always write a complete, self-contained search query in params['query'].
+4. LOCAL DOCUMENTS & PERSONAL FILES ('document_qa'): Use when asking about the user's saved files, bills, tickets, notes, or follow-ups about an Active File.
+5. CONFIRMATIONS: If '[Awaiting user confirmation]' is present and user agrees ('yes', 'sure', 'do it'), call 'confirm_action'. If user declines ('no', 'cancel'), call 'cancel_action'.
 
-EXAMPLES:
-- "hello how are you" -> {"actions": [{"tool": "chat", "params": {}}]}
-- "what time is it" -> {"actions": [{"tool": "chat", "params": {}}]}
-- "what's today's date" -> {"actions": [{"tool": "chat", "params": {}}]}
-- "what is 25 times 4" -> {"actions": [{"tool": "chat", "params": {}}]}
-- "thanks for the email" -> {"actions": [{"tool": "chat", "params": {}}]}
-- "thank you so much" -> {"actions": [{"tool": "chat", "params": {}}]}
-- "looks great, thanks" -> {"actions": [{"tool": "chat", "params": {}}]}
-- "who is the prime minister of the uk" -> {"actions": [{"tool": "web_search", "params": {"query": "current prime minister of UK"}}]}
-- "what is the capital of france" -> {"actions": [{"tool": "chat", "params": {}}]}
-- "who sang the theme song in titanic" -> {"actions": [{"tool": "web_search", "params": {"query": "Titanic movie theme song singer"}}]}
-- "play bohemian rhapsody" -> {"actions": [{"tool": "play_youtube", "params": {"query": "bohemian rhapsody"}}]}
-- "can you play that" (after mentioning a song in previous turn) -> {"actions": [{"tool": "play_youtube", "params": {"query": "<song from immediate previous turn>"}}]}
-- "for which platform?" (after discussing a video game or software) -> {"actions": [{"tool": "web_search", "params": {"query": "<game/software name from recent activity> platforms"}}]}
-- "who is the director?" (after discussing a movie) -> {"actions": [{"tool": "web_search", "params": {"query": "<movie name from recent activity> director"}}]}
-- "what other movies has he made?" (after discussing a director/actor) -> {"actions": [{"tool": "web_search", "params": {"query": "<person name from recent activity> filmography movies"}}]}
-- "open it" (after finding a file) -> {"actions": [{"tool": "open_file", "params": {"path": "<file name from recent activity>"}}]}
-- "pause music" -> {"actions": [{"tool": "pause_media", "params": {}}]}
-- "resume" -> {"actions": [{"tool": "resume_media", "params": {}}]}
-- "what is playing" -> {"actions": [{"tool": "current_media", "params": {}}]}
-- "what song is this" -> {"actions": [{"tool": "current_media", "params": {}}]}
-- "weather in new york" -> {"actions": [{"tool": "get_weather", "params": {"city": "New York"}}]}
-- "open notepad" -> {"actions": [{"tool": "open_app", "params": {"name": "Notepad"}}]}
-- "lock my pc" -> {"actions": [{"tool": "system_control", "params": {"action": "lock"}}]}
-- "put pc to sleep" -> {"actions": [{"tool": "system_control", "params": {"action": "sleep"}}]}
-- "empty recycle bin" -> {"actions": [{"tool": "system_control", "params": {"action": "empty_bin"}}]}
-- "find my resume" -> {"actions": [{"tool": "find_file", "params": {"query": "resume"}}]}
-- "what is in my notes" -> {"actions": [{"tool": "document_qa", "params": {"query": "notes"}}]}
-- "summarize my invoice document" -> {"actions": [{"tool": "document_qa", "params": {"query": "summarize invoice"}}]}
-- "check my unread emails" -> {"actions": [{"tool": "read_emails", "params": {"action": "unread"}}]}
-- "what's on my calendar" -> {"actions": [{"tool": "get_calendar", "params": {"days": 1}}]}
-- "can you write an email for me for taking tomorrow leave" -> {"actions": [{"tool": "generate_content", "params": {"type": "email", "topic": "taking leave tomorrow"}}]}
-- "write a python script for binary search in notepad" -> {"actions": [{"tool": "generate_content", "params": {"type": "python code", "topic": "binary search", "destination": "Notepad"}}]}
-- "regenerate and make it more friendly" -> {"actions": [{"tool": "regenerate_content", "params": {"feedback": "more friendly"}}]}
-- "put it in gmail" -> {"actions": [{"tool": "insert_content", "params": {"destination": "Gmail"}}]}
-- "copy that to clipboard" -> {"actions": [{"tool": "insert_content", "params": {"destination": "Clipboard"}}]}
-
-OUTPUT FORMAT:
-Do not include <think> tags or reasoning. Output only valid JSON in this format:
+Output ONLY valid JSON:
 {"actions": [{"tool": "<tool_name>", "params": {<parameters>}}]}"""
 
 
 def get_static_router_prefix() -> str:
-    """Return the static immutable portion of the router prompt (tools and guidelines) for KV prefix caching."""
     return _ROUTER_SYSTEM_PROMPT.replace("<<TOOLS>>", _tools_block())
 
 
 def build_agent_system_prompt(query: str = "", conversation_history: list | None = None) -> str:
-    try:
-        import win32gui
-        hwnd = win32gui.GetForegroundWindow()
-        if hwnd:
-            fg_title = win32gui.GetWindowText(hwnd).strip()
-            if fg_title and "amigo" not in fg_title.lower():
-                update_active_state("active_app", {"name": fg_title})
-    except Exception:
-        pass
-
-    active_context = ""
-    try:
-        active_context = rag_engine.get_active_context_prompt() or ""
-    except Exception:
-        pass
-
-    try:
-        state = get_active_state(clean_expired=True) or {}
-        gen_info = state.get("generated_content")
+    """Backward-compatible helper returning router prompt with active draft/state lines."""
+    prefix = get_static_router_prefix()
+    state_lines = []
+    if pending := _pending_confirmation_line():
+        state_lines.append(pending)
+    state = rag_engine.get_active_state(clean_expired=True) or {}
+    if gen_info := state.get("generated_content"):
         if isinstance(gen_info, dict) and gen_info.get("content"):
-            g_type = gen_info.get("type", "content")
-            g_topic = gen_info.get("topic", "")
-            g_dest = gen_info.get("destination") or "awaiting user destination choice"
-            gen_note = f"Active Generated Draft: {g_type} about '{g_topic}' (Destination: {g_dest})"
-            active_context = f"{active_context}\n[{gen_note}]".strip()
-    except Exception:
-        pass
+            state_lines.append(f"Active Generated Draft: {gen_info.get('type', 'content')} about '{gen_info.get('topic', '')}'")
+    if active_ctx := rag_engine.get_active_context_prompt():
+        state_lines.append(active_ctx)
+    if state_lines:
+        return prefix + "\n\nACTIVE STATE:\n" + "\n".join(state_lines)
+    return prefix
 
-    live_media = _get_live_media_title_from_windows()
-    if live_media:
-        m_title, m_artist, m_status = live_media
-        art_str = f" by {m_artist}" if m_artist and m_artist.lower() not in m_title.lower() else ""
-        note = f"Active Media: '{m_title}'{art_str} ({m_status.title()})"
-        stripped = active_context.rstrip()
-        if stripped.endswith("]"):
-            active_context = f"{stripped[:-1]} | {note}]"
-        else:
-            active_context = f"{stripped}\n[Active State: {note}]".strip()
 
-    parts = [
-        get_static_router_prefix(),
-        "",
-    ]
-    pending = _pending_confirmation_line()
-    if pending:
-        parts.append(pending)
-    parts.append("RECENT ACTIVITY (oldest first):")
-    parts.append(_format_recent_activity(conversation_history, query, limit=4))
-    status_parts = []
-    if active_context.strip():
-        status_parts.append(active_context.strip())
-    try:
-        profile = rag_engine.get_user_profile_prompt(query, semantic_search=False)
-        if profile:
-            status_parts.append(profile.strip())
-    except Exception:
-        pass
+def _build_router_messages(query: str, conversation_history: list | None = None) -> list[dict]:
+    """
+    Build multi-turn chat messages for the router:
+    - Message 0 (`system`): 100% static tool schema so llama.cpp reuses the KV cache instantly.
+    - Messages 1..N (`user`/`assistant`): Last 3 conversation turns with tool metadata so local models understand follow-ups.
+    - Final Message (`user`): Active environment state + current user query.
+    """
+    messages: list[dict] = [{"role": "system", "content": get_static_router_prefix()}]
 
-    now = datetime.datetime.now()
-    net_status, _ = _get_internet_status()
-    status_parts.append(f"Today is {now.strftime('%A, %B')} {now.day}, {now.year}. Local time: {now.strftime('%I:%M %p').lstrip('0')} ({_day_period(now.hour)}). Internet: {net_status}.")
-    parts.append("SYSTEM STATUS:\n" + "\n".join(status_parts))
-    return "\n".join(parts)
+    turns = (
+        [t for t in conversation_history if isinstance(t, dict)]
+        if conversation_history
+        else (rag_engine.get_recent_conversations(count=4) or [])
+    )
+    cur = (query or "").strip().lower()
+    if turns and cur and (turns[-1].get("user") or "").strip().lower() == cur and not (turns[-1].get("assistant") or "").strip():
+        turns = turns[:-1]
+
+    for t in turns[-3:]:
+        u = (t.get("user") or t.get("query") or "").strip()
+        a = (t.get("assistant") or t.get("response") or "").strip()
+        tool = (t.get("tool") or "chat").strip()
+        params = t.get("params") if isinstance(t.get("params"), dict) else {}
+        if u:
+            messages.append({"role": "user", "content": u[:250]})
+            assistant_summary = json.dumps({"actions": [{"tool": tool, "params": params}]}, ensure_ascii=False)
+            if a:
+                assistant_summary += f"\n(Reply: {a[:160]})"
+            messages.append({"role": "assistant", "content": assistant_summary})
+
+    state_lines = []
+    if pending := _pending_confirmation_line():
+        state_lines.append(pending)
+    if active_ctx := rag_engine.get_active_context_prompt():
+        state_lines.append(active_ctx)
+    state = rag_engine.get_active_state(clean_expired=True) or {}
+    if gen_info := state.get("generated_content"):
+        if isinstance(gen_info, dict) and gen_info.get("content"):
+            state_lines.append(f"[Active Draft: {gen_info.get('type', 'content')} about '{gen_info.get('topic', '')}']")
+
+    user_payload = "\n".join(state_lines) + f"\nUser: {query}" if state_lines else query
+    messages.append({"role": "user", "content": user_payload})
+    return messages
 
 
 _JSON_DECODER = json.JSONDecoder()
@@ -2132,106 +1632,55 @@ def _coerce_params(raw) -> dict:
             raw = json.loads(raw)
         except Exception:
             return {}
-    if not isinstance(raw, dict):
-        return {}
-    return {k: v for k, v in raw.items() if k != "confirmed"}
+    return {k: v for k, v in raw.items() if k != "confirmed"} if isinstance(raw, dict) else {}
 
 
 def _call_from_obj(obj) -> list[dict]:
     if not isinstance(obj, dict):
         return []
     if isinstance(obj.get("actions"), list):
-        calls: list[dict] = []
+        calls = []
         for item in obj["actions"]:
             calls.extend(_call_from_obj(item))
         return calls
-    # Determine tool name: check 'tool' or 'action' first, or 'name' if matching a registered tool
-    tool_candidate = obj.get("tool") or obj.get("action")
-    if not tool_candidate and isinstance(obj.get("name"), str) and obj["name"].strip().lower() in VALID_TOOL_NAMES:
-        tool_candidate = obj["name"]
-    if not isinstance(tool_candidate, str) or not tool_candidate.strip():
+    tool_cand = obj.get("tool") or obj.get("action") or (obj.get("name") if obj.get("name") in VALID_TOOL_NAMES else None)
+    if not isinstance(tool_cand, str) or tool_cand.strip().lower() not in VALID_TOOL_NAMES:
         return []
-    tool_name = tool_candidate.strip().lower()
-    if tool_name not in VALID_TOOL_NAMES:
-        return []
-    params = _coerce_params(obj["params"] if "params" in obj else obj.get("arguments"))
-    speak = obj.get("speak") or (params.get("response") if tool_name == "chat" else "")
-    return [{
-        "tool": tool_name,
-        "params": params,
-        "speak": speak if isinstance(speak, str) else "",
-    }]
-
-
-def _parse_xml_calls(text: str) -> list[dict]:
-    calls = []
-    for match in re.finditer(r'<function\s+name="([^"]+)">([\s\S]*?)</function>', text):
-        params = {}
-        for pm in re.finditer(r'<param\s+name="([^"]+)">([\s\S]*?)</param>', match.group(2)):
-            value = pm.group(2).strip()
-            if value.startswith("<![CDATA[") and value.endswith("]]>"):
-                value = value[9:-3]
-            params[pm.group(1).strip()] = value
-        calls.append({"tool": match.group(1).strip(), "params": _coerce_params(params), "speak": ""})
-    return calls
+    t_name = tool_cand.strip().lower()
+    params = _coerce_params(obj.get("params") if "params" in obj else obj.get("arguments"))
+    speak = obj.get("speak") or (params.get("response") if t_name == "chat" else "")
+    if t_name == "chat" and not params.get("response") and speak:
+        params["response"] = speak
+    return [{"tool": t_name, "params": params, "speak": speak if isinstance(speak, str) else ""}]
 
 
 def _parse_tool_calls(response: str) -> list[dict]:
     clean = re.sub(r"<think>[\s\S]*?</think>", "", response, flags=re.I).strip()
     clean = re.sub(r"<think>[\s\S]*$", "", clean, flags=re.I).strip()
-    clean = re.sub(r'```(?:json)?\s*', '', clean).replace('```', '').strip()
-    clean = re.sub(r',\s*([\]}])', r'\1', clean)  # Fix trailing commas common in LLM JSON
+    clean = re.sub(r"```(?:json)?\s*", "", clean).replace("```", "").strip()
+    clean = re.sub(r",\s*([\]}])", r"\1", clean)
     calls: list[dict] = []
-    for _start, _end, obj in _iter_json_objects(clean):
+    for _, _, obj in _iter_json_objects(clean):
         calls.extend(_call_from_obj(obj))
-    if not calls:
-        calls = _parse_xml_calls(clean)
-
-    valid = []
-    for call in calls:
-        if call["tool"] in VALID_TOOL_NAMES:
-            valid.append(call)
-        else:
-            logger.warning("[Tool Registry] Ignoring unknown tool %r", call["tool"])
-    return valid
+    return [c for c in calls if c["tool"] in VALID_TOOL_NAMES]
 
 
 def _extract_final_response(response: str, tool_calls: list) -> str:
     clean = re.sub(r"<think>[\s\S]*?</think>", "", response, flags=re.I).strip()
-    clean = re.sub(r"<think>[\s\S]*$", "", clean, flags=re.I).strip()
-    clean = re.sub(r',\s*([\]}])', r'\1', clean)  # Fix trailing commas
-    clean = clean.replace("```json", "").replace("```", "").strip()
-
-    # If the response is raw JSON syntax, never leak JSON keys or structure as spoken text!
+    clean = re.sub(r",\s*([\]}])", r"\1", clean).replace("```json", "").replace("```", "").strip()
     if clean.startswith("{") or clean.startswith("["):
-        # If there's an embedded response or speak value, extract just that string
         m = re.search(r'"(?:response|speak|reply)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"?', clean)
         if m:
             try:
-                extracted = json.loads(f'"{m.group(1)}"')
-                return sanitize_for_tts(extracted)
+                return sanitize_for_tts(json.loads(f'"{m.group(1)}"'))
             except Exception:
                 return sanitize_for_tts(m.group(1))
         return ""
-
-    parts = []
-    pos = 0
-    for start, end, obj in _iter_json_objects(clean):
-        if _call_from_obj(obj) or (isinstance(obj, dict) and "actions" in obj):
-            parts.append(clean[pos:start])
-            pos = end
-    parts.append(clean[pos:])
-    cleaned = _RE_XML_CALL.sub("", "".join(parts))
-    cleaned = re.sub(r"```[\s\S]*?```", "", cleaned).replace("```", "")
-    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,\t\n")
-    return sanitize_for_tts(cleaned)
+    return ""
 
 
 def _chat_action(text: str = "") -> dict:
     return {"tool": "chat", "params": {"response": text} if text else {}, "speak": text}
-
-
-_RE_WAKE_WORD = re.compile(r"^(?:(?:hey|hi|hello|ok|okay)\s+)?amigo\b[\s,.:;!-]*", re.IGNORECASE)
 
 
 def _strip_wake_word(query: str) -> str:
@@ -2239,24 +1688,25 @@ def _strip_wake_word(query: str) -> str:
 
 
 def parse_user_intent_fast(query: str) -> dict[str, Any] | None:
-    """Fast-check for blank/empty inputs."""
+    """Zero-latency fast path for empty queries and pending confirmation replies."""
     if not query or not query.strip():
-        return {"tool": "chat", "params": {}, "speak": ""}
+        return {"tool": "chat", "params": {"response": ""}, "speak": ""}
+    if get_pending_confirmation() is not None:
+        q_low = _strip_wake_word(query).lower().strip(" .,!?")
+        if q_low in ("yes", "yeah", "yep", "sure", "go ahead", "do it", "confirm", "proceed", "ok", "okay"):
+            return {"tool": "confirm_action", "params": {}, "speak": ""}
+        if q_low in ("no", "nope", "cancel", "stop", "don't", "do not", "abort", "never mind"):
+            return {"tool": "cancel_action", "params": {}, "speak": ""}
     return None
 
 
 def _route_with_llm(query: str, conversation_history: list | None = None) -> tuple[list[dict], str]:
-    """Ask local LLM which tool(s) to run using system prompt and conversation history."""
-    messages = [
-        {"role": "system", "content": build_agent_system_prompt(query, conversation_history=conversation_history)},
-        {"role": "user", "content": query},
-    ]
-    response = ""
+    messages = _build_router_messages(query, conversation_history=conversation_history)
     try:
         response = query_local_llm(
             messages,
             system_prompt="",
-            max_tokens=200,
+            max_tokens=120,
             temperature=0.05,
             thinking=False,
             sanitize=False,
@@ -2271,54 +1721,42 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
 
     tool_calls = _parse_tool_calls(response)
     final_response = _extract_final_response(response, tool_calls)
-    logger.debug("[Router LLM] raw=%r calls=%s", response[:200], tool_calls)
+
+    # Smart Follow-Up Recovery: if router falls back to 'chat' on a follow-up right after
+    # specialized tools (document_qa, web_search), inherit the active tool!
+    if len(tool_calls) == 1 and tool_calls[0]["tool"] == "chat":
+        history = _get_conv_history(conversation_history)
+        resolved = rag_engine.resolve_contextual_query(query, history)
+        if resolved != query.strip() and history:
+            last_turn = history[-1]
+            last_tool = (last_turn.get("tool") or "").strip()
+            if last_tool in ("document_qa", "ask_document"):
+                tool_calls = [{"tool": "document_qa", "params": {"query": resolved}, "speak": ""}]
+            elif last_tool == "web_search" and is_internet_connected():
+                tool_calls = [{"tool": "web_search", "params": {"query": resolved}, "speak": ""}]
+
+    # Ensure chat tool has response parameter
+    for call in tool_calls:
+        if call["tool"] == "chat" and not call["params"].get("response"):
+            call["params"]["response"] = call.get("speak") or final_response
 
     if tool_calls:
-        if not final_response:
-            for call in tool_calls:
-                if call.get("tool") == "chat":
-                    resp = (call.get("speak") or call.get("params", {}).get("response") or "").strip()
-                    if resp:
-                        final_response = resp
-                        break
         return tool_calls, final_response
-
-    if not tool_calls and conversation_history:
-        for prev in reversed(conversation_history):
-            if not isinstance(prev, dict):
-                continue
-            prev_tool = (prev.get("tool") or "").strip()
-            prev_params = prev.get("params") if isinstance(prev.get("params"), dict) else {}
-            if prev_tool == "web_search":
-                prev_q = (prev_params.get("query") or prev.get("user") or "").strip()
-                if prev_q and len(query.split()) <= 15:
-                    resolved_q = f"{prev_q} {query}"
-                    logger.info("[Router Fallback] Inferred web_search follow-up: %r", resolved_q)
-                    return [{"tool": "web_search", "params": {"query": resolved_q}}], ""
-                break
-
-    if not final_response:
-        clean_resp = re.sub(r"<think>[\s\S]*?</think>", "", response, flags=re.I).strip()
-        clean_resp = re.sub(r"<think>[\s\S]*$", "", clean_resp, flags=re.I).strip()
-        clean_resp = clean_resp.replace("```json", "").replace("```", "").strip()
-        if clean_resp and not clean_resp.startswith("{"):
-            final_response = clean_resp
 
     return [_chat_action(final_response)], final_response
 
 
 def get_agent_actions(query: str, conversation_history: list | None = None) -> tuple[list[dict], str]:
-    """Primary router entry point. Returns (actions_list, spoken_response)."""
     if not query or not query.strip():
         return [{"tool": "chat", "params": {}, "speak": ""}], ""
-    fast = parse_user_intent_fast(query)
+    cleaned = _strip_wake_word(query) or query.strip()
+    fast = parse_user_intent_fast(cleaned)
     if fast is not None:
         return [fast], fast.get("speak", "")
-    return _route_with_llm(_strip_wake_word(query) or query.strip(), conversation_history)
+    return _route_with_llm(cleaned, conversation_history)
 
 
-def get_agent_actions_with_response(query: str, conversation_history: list | None = None) -> tuple[list[dict], str]:
-    return get_agent_actions(query, conversation_history)
+get_agent_actions_with_response = get_agent_actions
 
 
 def get_agent_action(query: str, conversation_history: list | None = None) -> list[dict]:
@@ -2326,51 +1764,20 @@ def get_agent_action(query: str, conversation_history: list | None = None) -> li
 
 
 def get_last_played_song(conversation_history: list | None = None) -> dict | None:
-    """Most recently played media from active state, UI server, or play_youtube turns."""
-    try:
-        active_state = get_active_state(clean_expired=False)
-        if isinstance(active_state, dict):
-            media = active_state.get("current_media")
-            if isinstance(media, dict):
-                title = media.get("title") or media.get("query")
-                if title and title != "No music playing":
-                    return {"title": title, "query": media.get("query") or title, "url": media.get("url", "")}
-    except Exception:
-        pass
+    if conversation_history:
+        for turn in reversed(conversation_history):
+            if isinstance(turn, dict) and turn.get("tool") == "play_youtube":
+                q = str((turn.get("params") or {}).get("query") or turn.get("user") or "").strip()
+                if q:
+                    return {"title": q, "query": q, "url": ""}
+        return None
 
-    try:
-        from amigo.ui import server as ui_server
-        media = getattr(ui_server, "_current_media", None)
-        if isinstance(media, dict):
-            title = media.get("title")
-            if title and title != "No music playing":
-                return {"title": title, "query": title, "url": media.get("url", "")}
-    except Exception:
-        pass
-
-    hist = conversation_history
-    if not hist:
-        try:
-            hist = rag_engine.get_recent_conversations(count=4)
-        except Exception:
-            hist = []
-    for turn in reversed(hist or []):
-        if not isinstance(turn, dict) or turn.get("tool") != "play_youtube":
-            continue
-        params = turn.get("params")
-        if not isinstance(params, dict):
-            params = {}
-        query = str(params.get("query") or "").strip()
-        if query:
-            return {"title": query, "query": query, "url": ""}
-        reply = turn.get("assistant") or turn.get("response") or ""
-        m = re.search(r"Playing\s+['\"](.+?)['\"]", reply, re.I) or re.search(r"Playing\s+(.+?)(?:\s+on\s+YouTube|\.|$)", reply, re.I)
-        if m and m.group(1).strip():
-            t = m.group(1).strip().strip("'\"")
-            return {"title": t, "query": t, "url": ""}
-        said = turn.get("user") or turn.get("query") or ""
-        if said:
-            return {"title": said, "query": said, "url": ""}
+    active_state = get_active_state(clean_expired=True) or {}
+    media = active_state.get("current_media")
+    if isinstance(media, dict) and media.get("status") == "playing":
+        title = media.get("title") or media.get("query")
+        if title and title != "No music playing":
+            return {"title": title, "query": media.get("query") or title, "url": media.get("url", "")}
     return None
 
 
@@ -2381,8 +1788,6 @@ TOOL_ACTION_PROMPTS = {
     "open_app": "open an application on your PC",
     "close_app": "close an application",
     "window_mgmt": "manage open windows",
-    "desktop_input": "type or interact with your screen",
-    "media_control": "control media playback",
     "current_media": "check what song is currently playing",
     "pause_media": "pause media playback",
     "play_media": "resume media playback",
@@ -2392,7 +1797,6 @@ TOOL_ACTION_PROMPTS = {
     "get_time": "check the current time",
     "get_date": "check the current date",
     "get_weather": "check the weather forecast",
-    "weather": "check the weather forecast",
     "stock_quote": "check the live stock or market price",
     "system_control": "perform a system control action",
     "take_screenshot": "take a screenshot of your screen",
@@ -2404,7 +1808,6 @@ TOOL_ACTION_PROMPTS = {
     "screen_vision": "inspect your screen",
     "memory_recall": "check your saved memory",
     "document_qa": "search your documents",
-    "workspace": "check email or calendar",
     "get_calendar": "check your calendar schedule",
     "unread_emails": "check your unread emails",
     "set_timer": "set a timer",
@@ -2413,15 +1816,13 @@ TOOL_ACTION_PROMPTS = {
     "type_text": "type text into an application",
     "press_key": "press a keyboard key or shortcut",
     "click_screen": "click on the screen",
-    "window_management": "manage window state",
 }
 
 
 def format_clarification_prompt(tool_a: str, tool_b: str, query: str) -> str:
-    """Format a clarification prompt when the agent is unsure between two tools."""
     desc_a = TOOL_ACTION_PROMPTS.get(tool_a, f"use {tool_a.replace('_', ' ')}")
     desc_b = TOOL_ACTION_PROMPTS.get(tool_b, f"use {tool_b.replace('_', ' ')}")
-    return f"I'm not completely sure â€” did you want to {desc_a}, or {desc_b}?"
+    return f"I'm not completely sure — did you want to {desc_a}, or {desc_b}?"
 
 
 def execute_tool(
@@ -2431,14 +1832,7 @@ def execute_tool(
     spoken: str = "",
     conversation_history: list | None = None,
 ) -> tuple[str, str | None, dict]:
-    """
-    Unified entry point to execute any assistant tool.
-    Returns: (spoken_text, optional_url, optional_metadata)
-    """
-    handler = UI_TOOL_HANDLERS.get(tool)
-    if handler is None:
-        logger.warning("Unknown tool %r - answering as chat", tool)
-        handler = _tool_chat
+    handler = UI_TOOL_HANDLERS.get(tool, _tool_chat)
     params = params if isinstance(params, dict) else {}
     _call_ctx.value = {
         "tool": tool,
@@ -2452,9 +1846,9 @@ def execute_tool(
         if isinstance(result, tuple):
             if len(result) == 3:
                 return result[0] or "", result[1], result[2] if isinstance(result[2], dict) else {}
-            elif len(result) == 2:
+            if len(result) == 2:
                 return result[0] or "", result[1], {}
-            elif len(result) >= 1:
+            if len(result) >= 1:
                 return result[0] or "", None, {}
         return result or "", None, {}
     except Exception as e:
@@ -2469,22 +1863,15 @@ def execute_actions(
     query: str = "",
     conversation_history: list | None = None,
 ) -> list[tuple[str, str | None, dict]]:
-    """
-    Execute a sequence of actions with automatic chaining:
-    passes text output from preceding tools into blank text/context/prompt params.
-    """
     results = []
     last_tool_output = ""
     for action in actions:
         if not isinstance(action, dict):
             continue
         tool = action.get("tool", "chat")
-        params = action.get("params", {})
-        if not isinstance(params, dict):
-            params = {}
+        params = action.get("params", {}) if isinstance(action.get("params"), dict) else {}
         spoken = action.get("speak", "") or params.get("speak", "") or params.get("response", "")
 
-        # Action Chaining: pass text output from prior tool into text, context, or prompt if blank
         if last_tool_output:
             for key in ("text", "context", "prompt"):
                 if not params.get(key):
@@ -2492,41 +1879,29 @@ def execute_actions(
                         params[key] = last_tool_output
                         break
 
-        step_query = action.get("step_text") or query
         res_spoken, res_url, meta = execute_tool(
             tool,
             params,
-            query=step_query,
+            query=action.get("step_text") or query,
             spoken=spoken,
             conversation_history=conversation_history,
         )
         results.append((res_spoken, res_url, meta))
 
-        # Halt subsequent actions if current step requires confirmation or clarification
         if isinstance(meta, dict) and (meta.get("requires_confirmation") or meta.get("requires_clarification")):
             break
 
-        # Capture output from this tool for chaining
-        out_text = ""
-        if isinstance(meta, dict):
-            out_text = meta.get("generated_content") or meta.get("screen_text") or meta.get("text_snippet") or meta.get("text")
-        if not out_text and res_spoken:
-            out_text = res_spoken
-        if out_text:
-            last_tool_output = str(out_text).strip()
+        out_text = (meta.get("generated_content") or meta.get("screen_text") or meta.get("text_snippet") or meta.get("text")) if isinstance(meta, dict) else ""
+        last_tool_output = str(out_text or res_spoken or "").strip()
 
     return results
 
 
-# ---------------------------------------------------------------------------
-# Action Card Generator for React UI
-# ---------------------------------------------------------------------------
-
 def build_action_cards(tool: str, params: dict, result_metadata: dict, url: str | None, response_text: str, prompt: str) -> list[dict]:
-    """Generates structured Action Cards ONLY for tools that require interactive visual widgets."""
     cards = []
+    params = params if isinstance(params, dict) else {}
+    result_metadata = result_metadata if isinstance(result_metadata, dict) else {}
 
-    # 1. Multi-file Disambiguation / Selection
     if tool in ("find_file", "find_document"):
         for index, file_item in enumerate(result_metadata.get("file_results", [])):
             cards.append({
@@ -2539,13 +1914,9 @@ def build_action_cards(tool: str, params: dict, result_metadata: dict, url: str 
                 "payload": {"tool": "open_file", "path": file_item.get("path", ""), "file": file_item},
             })
 
-    # 2. Weather Visual Widget
     elif tool == "get_weather":
         city = str(params.get("city") or "").strip()
-        try:
-            w_data = _cached_weather_data(city)
-        except Exception:
-            w_data = {}
+        w_data = _cached_weather_data(city)
         resolved_city = w_data.get("city") or (city.title() if city else "Local Area")
         cards.append({
             "id": "act-weather",
@@ -2557,7 +1928,6 @@ def build_action_cards(tool: str, params: dict, result_metadata: dict, url: str 
             "payload": {"tool": "get_weather", "city": resolved_city, **w_data},
         })
 
-    # 2b. Live Stock / Market Quote Visual Card
     elif tool in ("stock_quote", "market_quote", "stock_price", "get_stock_quote") and result_metadata.get("price") is not None:
         sym = result_metadata.get("symbol", "")
         name = result_metadata.get("name", sym)
@@ -2576,16 +1946,14 @@ def build_action_cards(tool: str, params: dict, result_metadata: dict, url: str 
             "payload": {"tool": "stock_quote", **result_metadata},
         })
 
-    # 3. Live Countdown Timer & Stopwatch Widget (only when a timer/stopwatch tool actually ran)
     elif tool in ("set_timer", "timer", "stopwatch"):
-        def _secs(text):
-            try:
-                return parse_relative_seconds(text) or 0
-            except Exception:
-                return 0
-
         is_stopwatch = tool == "stopwatch"
-        parsed_secs = _secs(str(params.get("query") or "")) or _secs(prompt) or _secs(str(params.get("duration") or params.get("seconds") or ""))
+        parsed_secs = (
+            parse_relative_seconds(str(params.get("query") or ""))
+            or parse_relative_seconds(prompt)
+            or parse_relative_seconds(str(params.get("duration") or params.get("seconds") or ""))
+            or 0
+        )
         if parsed_secs or is_stopwatch:
             label = params.get("label") or ("Stopwatch" if is_stopwatch else "Timer")
             mins, secs = int(parsed_secs // 60), int(parsed_secs % 60)
@@ -2605,7 +1973,6 @@ def build_action_cards(tool: str, params: dict, result_metadata: dict, url: str 
                 },
             })
 
-    # 4. Screen Vision Perception Card
     elif tool in ("screen_vision", "read_screen", "ask_about_screen"):
         win_title = result_metadata.get("window_title", "Desktop")
         cards.append({
@@ -2623,7 +1990,6 @@ def build_action_cards(tool: str, params: dict, result_metadata: dict, url: str 
             },
         })
 
-    # 5. Neural Memory Recall Card
     elif tool == "memory_recall" and result_metadata.get("recalled_facts"):
         facts = result_metadata.get("recalled_facts", [])
         cards.append({
@@ -2633,13 +1999,9 @@ def build_action_cards(tool: str, params: dict, result_metadata: dict, url: str 
             "subtitle": facts[0] if facts else response_text[:120],
             "selected": True,
             "badge": "Memory",
-            "payload": {
-                "tool": "memory_recall",
-                "facts": facts,
-            },
+            "payload": {"tool": "memory_recall", "facts": facts},
         })
 
-    # 6. Document Knowledge QA Card
     elif tool in ("document_qa", "ask_document") and (result_metadata.get("matched_docs") or result_metadata.get("doc_context_used")):
         docs = result_metadata.get("matched_docs", [])
         first_doc = os.path.basename(docs[0]) if docs else "Your documents"
@@ -2650,72 +2012,23 @@ def build_action_cards(tool: str, params: dict, result_metadata: dict, url: str 
             "subtitle": response_text[:140] + ("..." if len(response_text) > 140 else ""),
             "selected": True,
             "badge": "Document",
-            "payload": {
-                "tool": "document_qa",
-                "matched_docs": docs,
-            },
+            "payload": {"tool": "document_qa", "matched_docs": docs},
         })
 
-    # 7. Clarification & Disambiguation Action Cards (User Self-Correction / Choice)
-    elif tool == "clarification" or result_metadata.get("requires_clarification") or result_metadata.get("status") == "requires_clarification":
+    elif tool == "clarification" or result_metadata.get("requires_clarification"):
         candidates = result_metadata.get("candidates") or params.get("candidate_tools") or ["chat", "web_search"]
         query_text = result_metadata.get("query") or params.get("query") or prompt
-
-        tool_labels = {
-            "play_youtube": ("Play on YouTube", "Play audio or video stream"),
-            "web_search": ("Search Google Web", "Look up info on the internet"),
-            "chat": ("Explain / Answer Questions", "Get AI explanation and chat"),
-            "open_app": ("Open Application", "Launch desktop application"),
-            "close_app": ("Close Application", "Exit or terminate program"),
-            "window_mgmt": ("Manage Windows", "Minimize, maximize, or switch"),
-            "weather": ("Weather Forecast", "Check current weather"),
-            "get_weather": ("Weather Forecast", "Check current weather"),
-            "time_date": ("Time & Date", "Check current time or date"),
-            "get_time": ("Current Time", "Check the system clock"),
-            "get_date": ("Current Date", "Check today's date"),
-            "system_control": ("System Control", "Perform PC action"),
-            "screen_vision": ("Inspect Screen", "Analyze screen view"),
-            "memory_recall": ("Check Memory", "Recall saved facts"),
-            "document_qa": ("Search Documents", "Ask about local files"),
-            "find_file": ("Find Files", "Locate files or folders on PC"),
-            "current_media": ("Current Song", "Tell which song is currently playing"),
-            "pause_media": ("Pause Media", "Pause audio or video playback"),
-            "play_media": ("Resume Playback", "Resume playing media"),
-            "next_track": ("Next Track", "Skip to next music track"),
-            "prev_track": ("Previous Track", "Go back to previous track"),
-            "get_calendar": ("Calendar Schedule", "Check upcoming calendar events"),
-            "unread_emails": ("Unread Emails", "Check unread Outlook emails"),
-        }
-
         for idx, cand in enumerate(candidates):
-            title, desc = tool_labels.get(cand, (cand.replace("_", " ").title(), f"Execute {cand.replace('_', ' ')}"))
+            title = cand.replace("_", " ").title()
             cards.append({
                 "id": f"act-clarify-{idx}",
                 "type": "general",
                 "title": title,
-                "subtitle": f"{desc} for '{query_text}'",
+                "subtitle": f"Execute {title} for '{query_text}'",
                 "selected": idx == 0,
-                "badge": cand.replace("_", " ").title(),
+                "badge": title,
                 "actionType": "button",
                 "payload": {"tool": cand, "query": query_text, "original_prompt": prompt},
             })
 
-        if "web_search" not in candidates:
-            cards.append({
-                "id": "act-clarify-web",
-                "type": "general",
-                "title": "Search Google Web",
-                "subtitle": f"Search online for '{query_text}'",
-                "selected": False,
-                "badge": "Web Search",
-                "actionType": "button",
-                "payload": {"tool": "web_search", "query": query_text, "original_prompt": prompt},
-            })
-
     return cards
-
-
-if __name__ == "__main__":
-    print(f"[ Amigo Tool Registry ] Loaded successfully ({len(UI_TOOL_HANDLERS)} tools registered).")
-    print("To start the full Amigo assistant, run:")
-    print("  python amigo-main/main.py   (or run amigo/ui/server.py)")

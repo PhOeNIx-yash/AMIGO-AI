@@ -1,18 +1,31 @@
 """
 UI Web Dashboard Server & Background Voice Engine for Amigo Assistant.
-Clean architectural controller: routes, event streaming, and voice loop.
+Fixes:
+- Separates attachment document context from router query so 3B router & vector search stay fast and accurate.
+- Records `/api/action/execute` turns into conversation memory so follow-up questions work after clicking UI cards.
+- Eliminates the duplicate 65-line action-chaining loop by delegating to `tool_registry.execute_actions`.
+- Non-blocking system stats & clipboard checks for instant API response times.
 """
 
-import os
-import sys
+import atexit
+import base64
+import json
 import logging
+import os
+import queue
+import re
+import signal
+import sys
+import threading
+import time
+import uuid
+import webbrowser
+from typing import Optional
 
-# Ensure parent package directory is in sys.path when invoked directly
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-# Enforce UTF-8 stream output on Windows terminals to prevent charmap errors on emojis
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -20,7 +33,6 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
-# Configure logging FIRST so messages from all imports are visible
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] %(levelname)s %(name)s - %(message)s",
@@ -28,7 +40,7 @@ logging.basicConfig(
     stream=sys.stdout,
     force=True,
 )
-# Silence noisy third-party dependency spam in terminal
+
 for _noisy_logger in (
     "werkzeug", "primp", "phonemizer", "urllib3", "chromadb",
     "pdfminer", "pdfminer.pdffont", "pdfminer.pdfinterp", "pdfminer.pdfpage",
@@ -42,121 +54,111 @@ for _noisy_logger in (
 
 print("[ AMIGO UI SERVER ] Starting up...", flush=True)
 
-import atexit
-import base64
-import json
-import os
-import queue
-import re
-import signal
-import sys
-import threading
-import time
-import uuid
-from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
-
 import psutil
 from flask import Flask, Response, jsonify, request, send_from_directory
 
+import amigo.core.rag_engine as rag_engine
 from amigo.core.llm_agent import (
+    _CLIPBOARD_KEYWORDS,
+    _get_internet_status,
     add_to_memory,
-    get_active_state,
-    load_memory,
-    save_memory,
     clear_conversations_memory,
-    get_last_thought,
-    get_quick_feedback,
-    set_thinking_enabled,
-    is_thinking_enabled,
     get_active_model_info as get_llm_model_info,
+    get_active_state,
     get_available_models as get_llm_available_models,
     get_clipboard_text,
+    get_last_thought,
+    get_quick_feedback,
     init_local_llm,
+    is_thinking_enabled,
     is_vision_ready,
+    load_memory,
+    query_local_llm,
+    save_memory,
     set_active_model,
+    set_thinking_enabled,
 )
-from amigo.services.os_automation import (
-    play_pause_media,
-    next_track,
-    prev_track,
-    set_volume,
+from amigo.core.proactive_intelligence import (
+    get_proactive_intelligence,
+    init_proactive_intelligence,
+    shutdown_proactive_intelligence,
 )
+from amigo.core.rag_indexer import get_indexer, start_background_indexer
 from amigo.core.reminder_timer import (
     get_active_data,
-    init_reminders,
-    handle_set_timer,
-    handle_set_reminder,
     handle_cancel_reminder,
+    handle_set_reminder,
+    handle_set_timer,
+    init_reminders,
 )
+from amigo.services.os_automation import next_track, play_pause_media, prev_track, set_volume
+from amigo.services.weather import get_weather_data
+from amigo.utils.network_utils import is_internet_connected
 from amigo.utils.tool_registry import (
+    _ROUTER_STOP,
     UI_TOOL_HANDLERS,
     build_action_cards,
+    execute_actions,
+    execute_tool,
+    get_agent_action,
+    get_static_router_prefix,
     set_media_update_callback,
     set_ui_broadcast_callback,
-    get_agent_action,
-    execute_tool,
-    _tool_chat,
 )
 from amigo.utils.tts import (
+    get_active_voice,
+    get_tts_engine_name,
+    get_voice_catalog,
+    set_tts_callbacks,
+    set_voice,
     speak,
     stop_speaking,
-    set_tts_callbacks,
-    get_tts_engine_name,
     transcribe_b64,
-    set_voice,
-    get_active_voice,
-    get_voice_catalog,
 )
-from amigo.services.weather import get_weather_data
-import amigo.core.rag_engine as rag_engine
-from amigo.core.rag_indexer import start_background_indexer
-from amigo.utils.network_utils import is_internet_connected
-from amigo.core.proactive_intelligence import init_proactive_intelligence, shutdown_proactive_intelligence, get_proactive_intelligence
 
 print("[ AMIGO UI SERVER ] All imports loaded.", flush=True)
 
 try:
     _init_settings = rag_engine.load_profile().get("ui_settings", {})
-    
     set_thinking_enabled(_init_settings.get("thinkingEnabled", False))
 except Exception:
-    
+    pass
+
+# Prime psutil CPU counter so subsequent calls with interval=None are 0ms non-blocking
+try:
+    psutil.cpu_percent(interval=None)
+except Exception:
     pass
 
 logger = logging.getLogger("amigo.ui_server")
-
 _RE_FILE_MATCH_COUNT = re.compile(r"I found (\d+) matching file")
+_SILENT_TOOLS = {"chat", "stop", "stop_speaking", "pause_media", "resume_media", "next_track", "prev_track", "blocked"}
 
-# ---------------------------------------------------------------------------
-# Flask App
-# ---------------------------------------------------------------------------
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
 
-# ---------------------------------------------------------------------------
-# SSE Event Broadcaster
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════
+#  SSE Event Broadcaster & State Management
+# ═══════════════════════════════════════════════════════════════
+
 class EventBroadcaster:
     def __init__(self):
-        self.listeners = []
+        self.listeners: list[queue.Queue] = []
         self.lock = threading.Lock()
 
-    def subscribe(self):
-        q = queue.Queue(maxsize=50)
+    def subscribe(self) -> queue.Queue:
+        q: queue.Queue = queue.Queue(maxsize=50)
         with self.lock:
             self.listeners.append(q)
         return q
 
-    def unsubscribe(self, q):
+    def unsubscribe(self, q: queue.Queue) -> None:
         with self.lock:
             if q in self.listeners:
                 self.listeners.remove(q)
 
-    def broadcast(self, event_type, data=None):
-        payload = {"type": event_type}
-        if data:
-            payload.update(data)
+    def broadcast(self, event_type: str, data: dict | None = None) -> None:
+        payload = {"type": event_type, **(data or {})}
         msg = "data: " + json.dumps(payload) + "\n\n"
         with self.lock:
             for q in list(self.listeners):
@@ -185,7 +187,6 @@ def set_assistant_state(state_name: str) -> None:
     broadcaster.broadcast("state_change", {"state": state_name})
 
 
-# Wire TTS, Tool Registry, and Hotkey Service to broadcaster
 set_tts_callbacks(state_cb=set_assistant_state, broadcast_cb=broadcaster.broadcast)
 try:
     from amigo.ui import hotkey_service
@@ -194,8 +195,7 @@ except Exception:
     pass
 
 
-def _on_media_update(media_data: dict):
-    global _current_media
+def _on_media_update(media_data: dict) -> None:
     _current_media.update(media_data)
     broadcaster.broadcast("media_update", _current_media)
 
@@ -204,42 +204,26 @@ set_media_update_callback(_on_media_update)
 set_ui_broadcast_callback(broadcaster.broadcast)
 
 
-# ---------------------------------------------------------------------------
-# Active Model Info Helpers
-# ---------------------------------------------------------------------------
-def get_active_model_info():
-    try:
-        info = get_llm_model_info()
-    except Exception:
-        try:
-            models = get_llm_available_models()
-            if models:
-                first_key = list(models.keys())[0]
-                info = models[first_key]
-            else:
-                info = {}
-        except Exception:
-            info = {}
+# ═══════════════════════════════════════════════════════════════
+#  Model, Voice & Speech Formatting Helpers
+# ═══════════════════════════════════════════════════════════════
 
-    name = info.get("name", "Default LLM Model")
-    key = info.get("key", "default-model")
-    
+def get_active_model_info() -> dict:
     try:
-        vision_ok = is_vision_ready()
+        info = get_llm_model_info() or {}
     except Exception:
-        vision_ok = False
-        
-    try:
-        tts = get_tts_engine_name()
-    except Exception:
-        tts = "Unknown"
+        models = get_llm_available_models() or {}
+        info = next(iter(models.values()), {})
 
+    name = info.get("name", "Granite 4.2 3B")
+    key = info.get("key", "granite-4.2-3b")
+    vision_ok = is_vision_ready()
     return {
         "key": key,
         "name": name,
         "type": "local_gguf",
-        "context_length": 8192,
-        "tts_engine": tts,
+        "context_length": 4096,
+        "tts_engine": get_tts_engine_name(),
         "system1_router": f"LLM Agent ({name})",
         "vision_ready": vision_ok,
         "vision_mode": f"Native Multimodal ({name})" if vision_ok else "OCR Fallback (Windows Media OCR)",
@@ -247,11 +231,9 @@ def get_active_model_info():
     }
 
 
-
-def get_available_models():
+def get_available_models() -> list[dict]:
     try:
-        active_key = get_active_model_info().get("key", "default-model")
-        models_dict = get_llm_available_models()
+        active_key = get_active_model_info().get("key", "granite-4.2-3b")
         return [
             {
                 "key": k,
@@ -259,83 +241,71 @@ def get_available_models():
                 "status": "active" if k == active_key else ("downloaded" if v.get("downloaded") else "available"),
                 "type": "local",
             }
-            for k, v in models_dict.items()
+            for k, v in (get_llm_available_models() or {}).items()
         ]
     except Exception:
-        return [
-            {"key": "default-model", "name": "Default Model", "status": "active", "type": "local"},
-        ]
+        return [{"key": "granite-4.2-3b", "name": "Granite 4.2 3B", "status": "active", "type": "local"}]
+
+
+def _apply_voice_preference(memory: dict, target_voice: str) -> str:
+    """Single helper to update voice across TTS engine and memory dicts without repetition."""
+    v_clean = target_voice.strip().lower()
+    v_name = set_voice(v_clean)
+    memory.setdefault("ui_settings", {})["voice"] = v_clean
+    memory.setdefault("user_profile", {}).setdefault("preferences", {})["voice"] = v_clean
+    memory.setdefault("preferences", {})["voice"] = v_clean
+    return v_name
+
+
+_CONTRACTIONS = [
+    (re.compile(r"\bI have\b", re.I), "I've"),
+    (re.compile(r"\bIt is\b", re.I), "It's"),
+    (re.compile(r"\bThat is\b", re.I), "That's"),
+    (re.compile(r"\bHere is\b", re.I), "Here's"),
+    (re.compile(r"\bThere is\b", re.I), "There's"),
+    (re.compile(r"\bDo not\b", re.I), "Don't"),
+    (re.compile(r"\bCannot\b", re.I), "Can't"),
+    (re.compile(r"\bWill not\b", re.I), "Won't"),
+    (re.compile(r"\bYou will\b", re.I), "You'll"),
+    (re.compile(r"\bWe have\b", re.I), "We've"),
+]
 
 
 def format_conversational_speech(text: str) -> str:
-    """Transforms raw structured or multi-item output into warm, natural spoken assistant speech."""
+    """Transforms structured/table/list output into natural spoken speech."""
     if not text or len(text.strip()) < 35:
         return text
 
     spoken = text
+    for pat, rep in _CONTRACTIONS:
+        spoken = pat.sub(rep, spoken)
 
-    # 1. Natural contractions to eliminate stiff, robotic phrasing
-    contractions = [
-        (r'\bI have\b', "I've"),
-        (r'\bIt is\b', "It's"),
-        (r'\bThat is\b', "That's"),
-        (r'\bHere is\b', "Here's"),
-        (r'\bThere is\b', "There's"),
-        (r'\bDo not\b', "Don't"),
-        (r'\bCannot\b', "Can't"),
-        (r'\bWill not\b', "Won't"),
-        (r'\bYou will\b', "You'll"),
-        (r'\bWe have\b', "We've"),
-    ]
-    for pat, rep in contractions:
-        spoken = re.sub(pat, rep, spoken, flags=re.IGNORECASE)
-
-    # 2. Markdown tables: summarize conversational takeaway rather than reciting table syntax
-    if '|' in spoken and ('|---' in spoken or spoken.count('|') >= 4):
-        table_raw = re.sub(r'\|\s*\|+', '|\n|', spoken)
-        lines = [l.strip() for l in table_raw.split('\n') if l.strip()]
-        title = ""
-        entities = []
+    if "|" in spoken and ("|---" in spoken or spoken.count("|") >= 4):
+        table_raw = re.sub(r"\|\s*\|+", "|\n|", spoken)
+        lines = [ln.strip() for ln in table_raw.split("\n") if ln.strip()]
+        title, entities, found_sep = "", [], False
         for line in lines:
-            if not '|' in line:
-                clean_l = re.sub(r'#{1,6}\s*', '', line).strip()
+            if "|" not in line:
+                clean_l = re.sub(r"#{1,6}\s*", "", line).strip()
                 if clean_l and not title:
                     title = clean_l
-            else:
-                if re.search(r'[\-:]\s*\|', line):
-                    continue
-                cells = [c.strip() for c in line.split('|') if c.strip()]
+            elif re.search(r"[\-:]\s*\|", line):
+                found_sep = True
+            elif found_sep:
+                cells = [c.strip() for c in line.split("|") if c.strip()]
                 if cells:
-                    first_cell = cells[0]
-                    if any(w in first_cell.lower() for w in ['airline', 'name', 'item', 'option', 'product', 'flight', 'col', 'header']):
-                        continue
-                    entities.append(first_cell)
+                    entities.append(cells[0])
 
-        if not title and lines and '|' in lines[0]:
-            pre = lines[0].split('|')[0].strip()
-            if pre:
-                title = pre
+        clean_title = re.sub(r"(\(.*?\)|##.*|:$)", "", title).replace("->", "to").strip() or "details"
+        if entities:
+            return f"Here are the {clean_title.lower()} for {', '.join(entities[:4])}. I've displayed the full comparison on your screen."
+        return f"Here are the {clean_title.lower()}. I've displayed the full breakdown on your screen."
 
-        if title or entities:
-            clean_title = re.sub(r'\(.*?\)', '', title)
-            clean_title = re.sub(r'->', 'to', clean_title).strip()
-            clean_title = re.sub(r'##.*', '', clean_title).strip()
-            clean_title = re.sub(r':$', '', clean_title).strip()
-            if not clean_title:
-                clean_title = "details"
-
-            if entities:
-                ent_str = ", ".join(entities[:4])
-                return f"Here are the {clean_title.lower()} for {ent_str}. I've displayed the full comparison on your screen."
-            return f"Here are the {clean_title.lower()}. I've displayed the full breakdown on your screen."
-
-    # 3. Long numbered lists (3+ items): summarize titles rather than reciting long paragraphs
-    raw_items = re.findall(r'(?:^|\n|\s)\d+\.\s+["\'*]*([^"\'\n\–\-:]{3,40})["\'*]*\s*[\–\-:]', spoken)
-    clean_items = [it.strip().strip('"\'') for it in raw_items if it.strip()]
+    raw_items = re.findall(r"(?:^|\n|\s)\d+\.\s+[\"'*]*([^\"'\n\–\-:]{3,40})[\"'*]*\s*[\–\-:]", spoken)
+    clean_items = [it.strip().strip("\"'") for it in raw_items if it.strip()]
     if len(clean_items) >= 3:
-        intro_match = re.match(r'^(.*?)(?=\s*\d+\.|\n\d+\.)', spoken, re.DOTALL)
-        intro = intro_match.group(1).strip() if intro_match else "Here are a few options"
-        intro = re.sub(r'[:.]+$', '', intro).strip()
+        intro_m = re.match(r"^(.*?)(?=\s*\d+\.|\n\d+\.)", spoken, re.DOTALL)
+        intro = re.sub(r"[:.]+$", "", intro_m.group(1).strip() if intro_m else "Here are a few options").strip()
         items_str = ", ".join(clean_items[:-1]) + f", and {clean_items[-1]}"
         return f"{intro}: {items_str}. Take a look at the cards on screen to see each one!"
 
@@ -343,148 +313,102 @@ def format_conversational_speech(text: str) -> str:
 
 
 def _normalize_llm_markdown(t: str) -> str:
-    """Restores collapsed newlines in LLM markdown tables, headers, and bullet points."""
     if not t or ("|" not in t and " - " not in t and " #" not in t):
         return t
     t = t.replace("\r\n", "\n")
-    # Expand collapsed table rows: '| |' or '||' -> '|\n|'
-    t = re.sub(r'\|\s*\|+', '|\n|', t)
-    # If table header starts on the same line after intro text:
-    t = re.sub(r'^([^|\n]+?)\s*(\|\s*[^|\n]+\|)', r'\1\n\n\2', t, flags=re.MULTILINE)
-    # If a closing pipe is followed by markdown headers:
-    t = re.sub(r'(\|\s*)(#{1,6}\s+)', r'\1\n\n\2', t)
-    # If a closing pipe is followed by trailing non-pipe commentary:
-    t = re.sub(r'(\|)\s*([A-Za-z*#][^|\n]*)$', r'\1\n\n\2', t, flags=re.MULTILINE)
-    # Expand collapsed inline bullet points:
-    t = re.sub(r'([^\n])\s+-\s+([A-Za-z0-9*])', r'\1\n- \2', t)
-    # Expand collapsed inline numbered lists:
-    t = re.sub(r'([^\n])\s+(\d+\.)\s+([A-Za-z0-9*])', r'\1\n\2 \3', t)
+    t = re.sub(r"\|\s*\|+", "|\n|", t)
+    t = re.sub(r"^([^|\n]+?)\s*(\|\s*[^|\n]+\|)", r"\1\n\n\2", t, flags=re.MULTILINE)
+    t = re.sub(r"(\|\s*)(#{1,6}\s+)", r"\1\n\n\2", t)
+    t = re.sub(r"(\|)\s*([A-Za-z*#][^|\n]*)$", r"\1\n\n\2", t, flags=re.MULTILINE)
+    t = re.sub(r"([^\n])\s+-\s+([A-Za-z0-9*])", r"\1\n- \2", t)
+    t = re.sub(r"([^\n])\s+(\d+\.)\s+([A-Za-z0-9*])", r"\1\n\2 \3", t)
     return t
 
 
-# ---------------------------------------------------------------------------
-# Core Query Processor (Agentic)
-# ---------------------------------------------------------------------------
-def _process_query(query: str, is_voice: bool = True, request_id: str | None = None, display_prompt: str | None = None) -> dict:
-    """Fully agentic query processor powered by local LLM."""
+# ═══════════════════════════════════════════════════════════════
+#  Unified Agentic Query Processor (Zero Duplicate Loops)
+# ═══════════════════════════════════════════════════════════════
+
+def _process_query(
+    query: str,
+    is_voice: bool = True,
+    request_id: str | None = None,
+    display_prompt: str | None = None,
+    attached_context: str = "",
+) -> dict:
+    """
+    Core query processor:
+    1. Routes using the clean user query + multi-turn conversation history.
+    2. Injects any attached file/image context cleanly into tool execution without polluting router JSON.
+    3. Delegates execution and chaining to `tool_registry.execute_actions`.
+    """
     set_assistant_state("processing")
-    history = rag_engine.get_recent_conversations(4 if is_voice else 10)
+    clean_user_query = (display_prompt or query).strip()
+    history = rag_engine.get_recent_conversations(6 if is_voice else 10)
 
-    clipboard_used = bool(get_clipboard_text())
-    llm_started = time.perf_counter()
-    logger.debug("[Query Processing] request_id=%s query=%r", request_id or "unknown", query)
-    actions = get_agent_action(query, conversation_history=history)
-    logger.debug(
-        "[Timing] request_id=%s stage=llm duration_ms=%.1f",
-        request_id or "unknown", (time.perf_counter() - llm_started) * 1000,
-    )
+    # Only check clipboard when the user's query actually mentions clipboard keywords
+    q_low = clean_user_query.lower()
+    clipboard_used = any(kw in q_low for kw in _CLIPBOARD_KEYWORDS) and bool(get_clipboard_text())
 
-    combined_spoken = []
-    last_tool = "chat"
-    last_params = {}
+    t0 = time.perf_counter()
+    if attached_context:
+        # When user explicitly attaches a file in the UI, route directly to chat with that context
+        actions = [{"tool": "chat", "params": {"doc_context": attached_context}, "speak": ""}]
+    else:
+        actions = get_agent_action(clean_user_query, conversation_history=history)
+
+    logger.debug("[Timing] request_id=%s stage=route duration_ms=%.1f", request_id, (time.perf_counter() - t0) * 1000)
+
+    # Broadcast primary detected intent
+    first_tool = actions[0].get("tool", "chat") if actions else "chat"
+    first_params = actions[0].get("params", {}) if actions else {}
+    broadcaster.broadcast("intent_detected", {
+        "intent": first_tool.lower(),
+        "tool": first_tool.lower(),
+        "params": first_params,
+    })
+
+    # Delegate execution & tool chaining to tool_registry.execute_actions
+    exec_results = execute_actions(actions, query=clean_user_query, conversation_history=history)
+
+    combined_spoken: list[str] = []
+    last_tool = first_tool
+    last_params = first_params
     last_remember = ""
     last_url = None
     response_metadata: dict[str, object] = {}
-    last_tool_output = ""
 
-    for action in actions:
+    for action, (res_spoken, res_url, meta) in zip(actions, exec_results):
         tool = action.get("tool", "chat")
-        params = action.get("params", {})
-        spoken = action.get("speak", "") or (params.get("speak", "") if isinstance(params, dict) else "") or (params.get("response", "") if isinstance(params, dict) else "")
+        params = action.get("params", {}) if isinstance(action.get("params"), dict) else {}
         speak_prefix = action.get("speak_prefix", "")
-        remember = action.get("remember", "")
+        if action.get("remember"):
+            last_remember = action["remember"]
+        last_tool, last_params = tool, params
 
-        if not isinstance(tool, str) or tool not in UI_TOOL_HANDLERS:
-            tool = "chat"
-        if not isinstance(params, dict):
-            params = {}
-
-        # Action Chaining: pass text output from prior tool into text, context, or prompt if left blank
-        if last_tool_output:
-            for key in ("text", "context", "prompt"):
-                if not params.get(key):
-                    if key in params or (key == "text" and tool in ("type_text", "search_and_type", "insert_content")) or (key in ("context", "prompt") and tool in ("draft_email", "generate_content")):
-                        params[key] = last_tool_output
-                        break
-
-        last_tool = tool
-        last_params = params
-        if remember:
-            last_remember = remember
-
-        if tool in ("chat", "web_search"):
-            spoken = ""
-
-        logger.debug(f"[Query Action] tool={tool!r} params={params}")
-        broadcaster.broadcast("intent_detected", {
-            "intent": tool.lower(),
-            "tool": tool.lower(),
-            "params": params,
-        })
-
-        tool_started = time.perf_counter()
-        step_query = action.get("step_text") or query
-        res_spoken, res_url, handler_metadata = execute_tool(
-            tool,
-            params,
-            query=step_query,
-            spoken=spoken,
-            conversation_history=history,
-        )
-
-        # Capture output from this tool for chaining into next action
-        out_text = ""
-        if isinstance(handler_metadata, dict):
-            out_text = handler_metadata.get("generated_content") or handler_metadata.get("screen_text") or handler_metadata.get("text_snippet") or handler_metadata.get("text")
-        if not out_text and res_spoken:
-            out_text = res_spoken
-        if out_text:
-            last_tool_output = str(out_text).strip()
-        if handler_metadata:
-            # Preserve showGeneratedPanel if already set to True by a previous tool
+        if meta:
             if response_metadata.get("showGeneratedPanel") is True:
-                handler_metadata = {
-                    **handler_metadata,
-                    "showGeneratedPanel": True,
-                }
-            response_metadata.update(handler_metadata)
-        logger.debug(
-            "[Timing] request_id=%s stage=tool tool=%s duration_ms=%.1f",
-            request_id or "unknown", tool, (time.perf_counter() - tool_started) * 1000,
-        )
-
-        raw_to_speak = res_spoken if res_spoken else spoken
-        final_to_speak = (speak_prefix + raw_to_speak) if raw_to_speak else speak_prefix
-        if final_to_speak:
-            speech_to_voice = format_conversational_speech(final_to_speak)
-            if "matching file" in speech_to_voice and "\n" in speech_to_voice:
-                m_count = _RE_FILE_MATCH_COUNT.search(speech_to_voice)
-                c_num = m_count.group(1) if m_count else "some"
-                speech_to_voice = f"I found {c_num} matching files. Choose one on your screen or say 'Open number 1'."
-            if speech_to_voice not in combined_spoken:
-                speak(speech_to_voice, request_id=request_id)
-                combined_spoken.append(final_to_speak)
+                meta = {**meta, "showGeneratedPanel": True}
+            response_metadata.update(meta)
 
         if res_url:
             last_url = res_url
 
-        # Halt subsequent actions if current step requires confirmation or clarification
-        if isinstance(handler_metadata, dict) and (handler_metadata.get("requires_confirmation") or handler_metadata.get("requires_clarification")):
-            break
+        raw_to_speak = res_spoken or action.get("speak", "")
+        final_to_speak = (speak_prefix + raw_to_speak) if raw_to_speak else speak_prefix
+        if final_to_speak and final_to_speak not in combined_spoken:
+            combined_spoken.append(final_to_speak)
 
     primary_tool = "multi_command" if len(actions) > 1 else last_tool
-    final_reply = "\n\n".join(combined_spoken).strip() if len(combined_spoken) > 1 else (combined_spoken[0] if combined_spoken else "")
+    final_reply = "\n\n".join(combined_spoken).strip()
     if final_reply:
         final_reply = _normalize_llm_markdown(final_reply)
-    silent_tools = {"chat", "stop", "stop_speaking", "pause_media", "resume_media", "next_track", "prev_track", "blocked"}
-    if not final_reply and primary_tool not in silent_tools:
-        from amigo.core.llm_agent import get_quick_feedback
+    elif primary_tool not in _SILENT_TOOLS:
         final_reply = get_quick_feedback(f"finished {primary_tool.replace('_', ' ')}")
-    elif not final_reply:
-        final_reply = ""
 
+    # Persist turn to memory BEFORE speaking so rapid follow-up questions always see the latest turn!
     add_to_memory(
-        display_prompt or query,
+        clean_user_query,
         final_reply,
         tool=primary_tool,
         params=last_params,
@@ -502,51 +426,64 @@ def _process_query(query: str, is_voice: bool = True, request_id: str | None = N
         "tool": primary_tool,
         "url": last_url,
         "thought": last_thought,
-        "user_query": display_prompt or query,
+        "user_query": clean_user_query,
     })
 
-    return {"tool": primary_tool, "params": last_params, "response": final_reply, "url": last_url, "metadata": response_metadata, "thought": last_thought}
+    # Trigger TTS speech
+    if final_reply:
+        speech_to_voice = format_conversational_speech(final_reply)
+        if "matching file" in speech_to_voice and "\n" in speech_to_voice:
+            m_count = _RE_FILE_MATCH_COUNT.search(speech_to_voice)
+            c_num = m_count.group(1) if m_count else "some"
+            speech_to_voice = f"I found {c_num} matching files. Choose one on your screen or say 'Open number 1'."
+        speak(speech_to_voice, request_id=request_id)
+
+    return {
+        "tool": primary_tool,
+        "params": last_params,
+        "response": final_reply,
+        "url": last_url,
+        "metadata": response_metadata,
+        "thought": last_thought,
+    }
 
 
-def process_query(query: str, is_voice: bool = True, display_prompt: str | None = None) -> dict:
-    """Safely executes a query with error recovery and request telemetry."""
+def process_query(
+    query: str,
+    is_voice: bool = True,
+    display_prompt: str | None = None,
+    attached_context: str = "",
+) -> dict:
     request_id = uuid.uuid4().hex[:12]
     request_started = time.perf_counter()
-    logger.debug("[Timing] request_id=%s stage=request start", request_id)
-
     try:
-        result = _process_query(query, is_voice=is_voice, request_id=request_id, display_prompt=display_prompt)
-
-        result.setdefault("metadata", {})["request_id"] = request_id
-        result["metadata"]["duration_ms"] = round((time.perf_counter() - request_started) * 1000, 1)
-        if result.get("tool") == "clarification" or result["metadata"].get("requires_clarification"):
-            result["metadata"]["status"] = "requires_clarification"
-        elif not result["metadata"].get("status"):
-            result["metadata"]["status"] = "completed"
+        result = _process_query(
+            query,
+            is_voice=is_voice,
+            request_id=request_id,
+            display_prompt=display_prompt,
+            attached_context=attached_context,
+        )
+        meta = result.setdefault("metadata", {})
+        meta["request_id"] = request_id
+        meta["duration_ms"] = round((time.perf_counter() - request_started) * 1000, 1)
+        if result.get("tool") == "clarification" or meta.get("requires_clarification"):
+            meta["status"] = "requires_clarification"
+        elif not meta.get("status"):
+            meta["status"] = "completed"
         return result
     except Exception as exc:
         logger.exception("[Query Error] %s", exc)
         error_reply = "I couldn't complete that request. Please try again."
-        try:
-            add_to_memory(query, error_reply, tool="error")
-            broadcaster.broadcast("chat_message", {
-                "sender": "assistant",
-                "text": error_reply,
-                "tool": "error",
-            })
-        except Exception:
-            pass
-        return {"tool": "error", "params": {}, "response": error_reply, "url": None}
+        broadcaster.broadcast("chat_message", {"sender": "assistant", "text": error_reply, "tool": "error"})
+        return {"tool": "error", "params": {}, "response": error_reply, "url": None, "metadata": {"status": "failed"}}
     finally:
         set_assistant_state("idle")
 
 
-_running = True
-
-
-# ---------------------------------------------------------------------------
-# Flask HTTP Routes & API
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════
+#  Flask HTTP Routes & API
+# ═══════════════════════════════════════════════════════════════
 
 @app.after_request
 def add_cors_headers(response):
@@ -571,67 +508,42 @@ def index():
     return jsonify({
         "status": "online",
         "service": "Amigo AI Engine & Windows 11 Voice Assistant Backend",
-        "model": info.get("name", "Qwen 3.8 2B"),
-        "endpoints": {
-            "assistant_process": "/api/assistant/process",
-            "action_execute": "/api/action/execute",
-            "status": "/api/status",
-            "system_stats": "/api/system-stats",
-            "history": "/api/history",
-        },
+        "model": info.get("name", "Granite 4.2 3B"),
     })
 
 
 @app.route("/assets/<path:path>")
 def serve_assets(path):
-    dist_assets = os.path.join(_UI_DIST_DIR, "assets")
-    return send_from_directory(dist_assets, path)
+    return send_from_directory(os.path.join(_UI_DIST_DIR, "assets"), path)
 
 
 @app.route("/favicon.ico")
 def favicon():
     fav = os.path.join(_UI_DIST_DIR, "favicon.ico")
-    if os.path.exists(fav):
-        return send_from_directory(_UI_DIST_DIR, "favicon.ico")
-    return Response(status=204)
+    return send_from_directory(_UI_DIST_DIR, "favicon.ico") if os.path.exists(fav) else Response(status=204)
 
 
-UPLOAD_DIR = os.environ.get(
-    "AMIGO_UPLOAD_DIR",
-    os.path.join(_PROJECT_ROOT, "rag_data", "uploads")
-)
+UPLOAD_DIR = os.environ.get("AMIGO_UPLOAD_DIR", os.path.join(_PROJECT_ROOT, "rag_data", "uploads"))
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".svg", ".ico"}
 
 
 @app.route("/api/upload", methods=["POST", "OPTIONS"])
 def api_upload():
-    """Upload and index documents, PDFs, or images for assistant analysis."""
     if request.method == "OPTIONS":
         return jsonify({"status": "ok"})
 
     os.makedirs(UPLOAD_DIR, exist_ok=True)
-    filename = None
-    saved_path = None
-    file_bytes = None
+    filename, saved_path = None, None
 
-    # 1. Multipart/form-data
-    if "file" in request.files:
+    if "file" in request.files and request.files["file"].filename:
         f = request.files["file"]
-        if f.filename:
-            raw_filename = os.path.basename(f.filename)
-            safe_name = f"{int(time.time())}_{re.sub(r'[^a-zA-Z0-9_.-]', '_', raw_filename)}"
-            saved_path = os.path.join(UPLOAD_DIR, safe_name)
-            f.save(saved_path)
-            filename = raw_filename
-            try:
-                with open(saved_path, "rb") as rf:
-                    file_bytes = rf.read()
-            except Exception:
-                pass
-
-    # 2. JSON Base64 payload
-    if not saved_path and request.is_json:
+        raw_filename = os.path.basename(f.filename)
+        safe_name = f"{int(time.time())}_{re.sub(r'[^a-zA-Z0-9_.-]', '_', raw_filename)}"
+        saved_path = os.path.join(UPLOAD_DIR, safe_name)
+        f.save(saved_path)
+        filename = raw_filename
+    elif request.is_json:
         data = request.get_json(silent=True) or {}
         raw_filename = os.path.basename(data.get("filename", "upload.bin"))
         b64_data = data.get("fileData", "")
@@ -639,11 +551,10 @@ def api_upload():
             if "," in b64_data:
                 b64_data = b64_data.split(",", 1)[1]
             try:
-                file_bytes = base64.b64decode(b64_data)
                 safe_name = f"{int(time.time())}_{re.sub(r'[^a-zA-Z0-9_.-]', '_', raw_filename)}"
                 saved_path = os.path.join(UPLOAD_DIR, safe_name)
                 with open(saved_path, "wb") as wf:
-                    wf.write(file_bytes)
+                    wf.write(base64.b64decode(b64_data))
                 filename = raw_filename
             except Exception as be:
                 logger.error("[Upload] Base64 decode error: %s", be)
@@ -653,58 +564,31 @@ def api_upload():
 
     ext = os.path.splitext(filename or saved_path)[1].lower()
     file_size = os.path.getsize(saved_path)
-
-    # Classify file type dynamically
-    if ext == ".pdf":
-        file_type = "pdf"
-    elif ext in IMAGE_EXTENSIONS:
-        file_type = "image"
-    elif ext in rag_engine.SUPPORTED_EXTENSIONS:
-        file_type = "document"
-    else:
-        test_txt = rag_engine.extract_text(saved_path)
-        file_type = "document" if (test_txt and len(test_txt.strip()) > 0) else "generic"
+    file_type = "pdf" if ext == ".pdf" else ("image" if ext in IMAGE_EXTENSIONS else ("document" if ext in rag_engine.SUPPORTED_EXTENSIONS else "generic"))
 
     extracted_preview = ""
-    ocr_text = ""
-
-    # Process and Index according to type
     if file_type in ("pdf", "document"):
         try:
             extracted_text = rag_engine.extract_text(saved_path)
             extracted_preview = (extracted_text or "").strip()[:800]
-            # Index document into ChromaDB vector store
-            indexed = rag_engine.index_document(saved_path)
-            # Update active_file state
-            rag_engine.update_active_state("active_file", {
-                "path": saved_path,
-                "name": filename,
-                "type": file_type,
-            })
-            logger.info("[Upload] Document '%s' indexed successfully (size: %d, indexed: %s)", filename, file_size, indexed)
+            rag_engine.index_document(saved_path)
+            rag_engine.update_active_state("active_file", {"path": saved_path, "name": filename, "type": file_type})
         except Exception as e:
-            logger.error("[Upload] Error indexing document %s: %s", saved_path, e)
-
+            logger.error("[Upload] Error indexing %s: %s", saved_path, e)
     elif file_type == "image":
         try:
             from PIL import Image
-            from amigo.services.screen_vision import read_text_from_image, analyze_image
-            ocr_text = ""
+            from amigo.services.screen_vision import analyze_image, read_text_from_image
             with Image.open(saved_path) as img:
                 ocr_text = read_text_from_image(img) or ""
-            # Visual comprehension with image description and OCR
             visual_desc = analyze_image(saved_path, question="Summarize and describe what is visible in this image.")
             extracted_preview = visual_desc or ocr_text.strip()[:800]
             rag_engine.update_active_state("active_file", {
-                "path": saved_path,
-                "name": filename,
-                "type": "image",
-                "description": visual_desc,
-                "ocr_text": ocr_text.strip()[:1000],
+                "path": saved_path, "name": filename, "type": "image",
+                "description": visual_desc, "ocr_text": ocr_text.strip()[:1000],
             })
-            logger.info("[Upload] Image '%s' processed (OCR chars: %d, vision: %s)", filename, len(ocr_text), bool(visual_desc))
-        except Exception as e:
-            logger.debug("[Upload] Image analysis note for %s: %s", saved_path, e)
+        except Exception:
+            pass
 
     return jsonify({
         "success": True,
@@ -712,14 +596,13 @@ def api_upload():
         "filepath": saved_path,
         "fileType": file_type,
         "size": file_size,
-        "extractedPreview": extracted_preview or ocr_text,
+        "extractedPreview": extracted_preview,
         "message": f"Successfully uploaded and indexed {filename}",
     })
 
 
 @app.route("/api/assistant/process", methods=["POST", "OPTIONS"])
 def api_assistant_process():
-    """Universal bridge for the React Windows 11 Voice Assistant UI."""
     if request.method == "OPTIONS":
         return jsonify({"status": "ok"})
 
@@ -732,22 +615,20 @@ def api_assistant_process():
         return jsonify({
             "status": "online",
             "message": "Amigo AI Engine online",
-            "model": info.get("name", "Qwen 3.8 2B"),
+            "model": info.get("name", "Granite 4.2 3B"),
             "version": "Windows 11 Voice Assistant",
         })
 
-    prompt_value = data.get("prompt", "")
-    prompt = str(prompt_value).strip() if prompt_value is not None else ""
+    prompt = str(data.get("prompt") or "").strip()
     attachment = data.get("attachment")
+    is_voice_req = bool(data.get("isVoice", True))
 
-    # If prompt is empty but attachment is supplied, default to summarizing the attachment
     if not prompt:
         if isinstance(attachment, dict) and attachment.get("filename"):
-            prompt = f"Analyze {attachment.get('filename')}"
+            prompt = f"Summarize and analyze {attachment.get('filename')}"
         else:
             return jsonify({"error": "Empty prompt"}), 400
 
-    # Enrich query with attached file / image context
     attached_file_context = ""
     if isinstance(attachment, dict):
         att_filename = attachment.get("filename", "")
@@ -755,80 +636,57 @@ def api_assistant_process():
         att_type = attachment.get("fileType", "")
         att_preview = attachment.get("extractedPreview", "")
         if att_path and os.path.exists(att_path):
+            rag_engine.update_active_state("active_file", {"path": att_path, "name": att_filename})
             if att_type in ("pdf", "document"):
-                doc_ctx = rag_engine.build_file_context(att_path, prompt)
-                if not doc_ctx:
-                    doc_ctx = rag_engine.extract_text(att_path)[:3000]
+                doc_ctx = rag_engine.build_file_context(att_path, prompt) or rag_engine.extract_text(att_path)[:3000]
                 attached_file_context = f"[Attached Document: {att_filename}]\n{doc_ctx}"
             elif att_type == "image":
                 attached_file_context = f"[Attached Image: {att_filename}]\nExtracted Visual OCR Text:\n{att_preview}"
         elif att_preview:
             attached_file_context = f"[Attached File: {att_filename}]\nContent:\n{att_preview}"
 
-    effective_query = prompt
-    if attached_file_context:
-        effective_query = f"{attached_file_context}\n\nUser Question / Task: {prompt}"
-
     broadcaster.broadcast("chat_message", {"sender": "user", "text": prompt})
 
-    result = process_query(effective_query, is_voice=False, display_prompt=prompt)
+    result = process_query(
+        prompt,
+        is_voice=is_voice_req,
+        display_prompt=prompt,
+        attached_context=attached_file_context,
+    )
     tool = result.get("tool", "chat")
     params = result.get("params", {})
     response_text = result.get("response", "")
     url = result.get("url", "")
     result_metadata = result.get("metadata", {})
 
-    # Action cards are only for interactive tools (timer, weather, file picker), not for document Q&A/analysis
-    action_cards = []
-    if not attachment:
-        action_cards = build_action_cards(
-            tool=tool,
-            params=params,
-            result_metadata=result_metadata,
-            url=url,
-            response_text=response_text,
-            prompt=prompt,
-        )
+    action_cards = [] if attachment else build_action_cards(
+        tool=tool, params=params, result_metadata=result_metadata,
+        url=url, response_text=response_text, prompt=prompt,
+    )
 
     has_multiple_cards = bool(
-        action_cards
-        and (
+        action_cards and (
             tool == "clarification"
             or result_metadata.get("requires_clarification")
-            or result_metadata.get("status") == "requires_clarification"
             or (len(action_cards) > 1 and any(not c.get("selected") for c in action_cards))
         )
     )
 
-    silent_tools = {"chat", "stop", "stop_speaking", "pause_media", "resume_media", "next_track", "prev_track", "blocked"}
-    speech_reply = response_text or (get_quick_feedback(f"starting {tool.replace('_', ' ')}") if tool not in silent_tools else "")
+    speech_reply = response_text or (get_quick_feedback(f"starting {tool.replace('_', ' ')}") if tool not in _SILENT_TOOLS else "")
     if "matching file" in speech_reply and "\n" in speech_reply:
         m_count = _RE_FILE_MATCH_COUNT.search(speech_reply)
         c_num = m_count.group(1) if m_count else "some"
         speech_reply = f"I found {c_num} matching files. Choose one on your screen or say 'Open number 1'."
 
-    if tool == "clarification" or result_metadata.get("requires_clarification") or result_metadata.get("status") == "requires_clarification":
-        status = "requires_clarification"
-    else:
-        status = result_metadata.get("status")
-        if not status:
-            if not is_internet_connected() and ("not connected to the internet" in speech_reply.lower() or "offline" in speech_reply.lower()):
-                status = "offline"
-            elif result_metadata.get("error") or "error" in result_metadata:
-                status = "failed"
-            else:
-                status = "completed"
+    status = result_metadata.get("status") or "completed"
+    headlines = {
+        "requires_clarification": "Clarification Needed",
+        "offline": "Offline",
+        "failed": "Action Failed",
+    }
+    headline = headlines.get(status, "Action Completed")
 
-    if status == "requires_clarification":
-        headline = "Clarification Needed"
-    elif status == "offline":
-        headline = "Offline"
-    elif status == "failed":
-        headline = "Action Failed"
-    else:
-        headline = "Action Completed"
-
-    formatted_response = {
+    return jsonify({
         "speechReply": speech_reply,
         "displayTitle": prompt,
         "intent": tool,
@@ -840,25 +698,21 @@ def api_assistant_process():
             "status": status,
             "headline": headline,
             "details": response_text or f"{headline}: {tool.replace('_', ' ')}.",
-            "secondaryDetails": url if url else "",
+            "secondaryDetails": url or "",
         },
         "metadata": {**result_metadata, "params": params},
-        # Generated content fields for panel display
         "generatedContent": result_metadata.get("generated_content"),
         "contentType": result_metadata.get("content_type"),
         "contentTopic": result_metadata.get("topic"),
         "showGeneratedPanel": result_metadata.get("showGeneratedPanel", False),
         "url": url,
-    }
-    return jsonify(formatted_response)
-
-
+    })
 
 
 @app.route("/api/assistant/process/action", methods=["POST", "OPTIONS"])
 @app.route("/api/action/execute", methods=["POST", "OPTIONS"])
 def api_action_execute():
-    """Execute action callback from the React UI."""
+    """Execute action card callback AND record it in conversation memory for follow-ups."""
     if request.method == "OPTIONS":
         return jsonify({"status": "ok"})
     data = request.get_json() or {}
@@ -866,22 +720,24 @@ def api_action_execute():
     tool = payload.get("tool") or data.get("type", "chat")
     if tool in UI_TOOL_HANDLERS:
         try:
+            history = rag_engine.get_recent_conversations(6)
+            query_text = data.get("title") or payload.get("query") or payload.get("path") or tool
             spoken, url, metadata = execute_tool(
                 tool,
                 payload,
-                query=data.get("title", ""),
+                query=str(query_text),
+                conversation_history=history,
             )
 
-            # Record user clarification selection in RAG neural memory
             orig_prompt = payload.get("original_prompt") or payload.get("query")
             if orig_prompt:
-                try:
-                    rag_engine.add_user_fact(
-                        f"User clarification: For request '{orig_prompt}', user explicitly chose tool '{tool}'",
-                        category="user_correction",
-                    )
-                except Exception:
-                    pass
+                rag_engine.add_user_fact(
+                    f"User clarification: For request '{orig_prompt}', user chose tool '{tool}'",
+                    category="user_correction",
+                )
+
+            # Record action in conversation history so follow-up questions know what was opened/run
+            add_to_memory(str(query_text), spoken or f"Executed {tool}", tool=tool, params=payload)
 
             if spoken:
                 speak(spoken)
@@ -892,11 +748,8 @@ def api_action_execute():
                     "url": url,
                 })
 
-            success = metadata.get("status") not in {"blocked", "failed"}
-            result = {"success": success, "message": spoken or "Executed", "url": url}
-            if metadata:
-                result["metadata"] = metadata
-            return jsonify(result), (403 if not success else 200)
+            success = (metadata or {}).get("status") not in {"blocked", "failed"}
+            return jsonify({"success": success, "message": spoken or "Executed", "url": url, "metadata": metadata or {}}), (403 if not success else 200)
         except Exception as err:
             logger.exception("[Action Execute Error]: %s", err)
             return jsonify({"success": False, "error": str(err)}), 500
@@ -911,31 +764,26 @@ def api_transcribe():
     audio_b64 = data.get("audioData") or data.get("audio") or ""
     if audio_b64:
         try:
-            text = transcribe_b64(audio_b64)
-            return jsonify({"transcription": text})
+            return jsonify({"transcription": transcribe_b64(audio_b64)})
         except Exception as e:
-            logger.error("[STT API] Transcription error: %s", e)
             return jsonify({"transcription": "", "error": str(e)}), 500
     return jsonify({"transcription": data.get("text", "")})
 
 
 @app.route("/api/speak", methods=["POST", "OPTIONS"])
 def api_speak():
-    """Text-to-speech bridge for the React UI voice assistant."""
     if request.method == "OPTIONS":
         return jsonify({"status": "ok"})
     data = request.get_json(silent=True) or {}
     text = (data.get("text") or "").strip()
     if not text:
         return jsonify({"success": False, "error": "Empty text"}), 400
-    voice = data.get("voice")
-    speak(text, voice=voice)
+    speak(text, voice=data.get("voice"))
     return jsonify({"success": True})
 
 
 @app.route("/api/stop-speaking", methods=["POST", "OPTIONS"])
 def api_stop_speaking():
-    """Interrupt and stop current speech playback immediately."""
     if request.method == "OPTIONS":
         return jsonify({"status": "ok"})
     stop_speaking()
@@ -947,15 +795,11 @@ def events():
     def stream():
         q = broadcaster.subscribe()
         try:
-            yield "data: " + json.dumps(
-                {"type": "state_change", "state": current_state}
-            ) + "\n\n"
+            yield "data: " + json.dumps({"type": "state_change", "state": current_state}) + "\n\n"
             while True:
                 try:
-                    msg = q.get(timeout=15.0)
-                    yield msg
+                    yield q.get(timeout=15.0)
                 except queue.Empty:
-                    # Keep-alive heartbeat so WSGI detects disconnected clients
                     yield ": ping\n\n"
         except GeneratorExit:
             pass
@@ -972,38 +816,35 @@ def get_status():
 
 @app.route("/api/system-stats")
 def get_system_stats():
-    """Live system stats for the UI header widget (CPU, RAM, Battery)."""
+    """0ms non-blocking system stats using cached network check and interval=None."""
     try:
-        cpu = psutil.cpu_percent(interval=0.1)
+        cpu = psutil.cpu_percent(interval=None)
         mem = psutil.virtual_memory()
         battery = psutil.sensors_battery()
+        _, online = _get_internet_status()
         return jsonify({
-            "cpu":     round(cpu, 1),
-            "ram":     round(mem.percent, 1),
+            "cpu": round(cpu, 1),
+            "ram": round(mem.percent, 1),
             "battery": round(battery.percent, 1) if battery else None,
             "plugged": battery.power_plugged if battery else None,
-            "online":  is_internet_connected(),
+            "online": online,
         })
-    except Exception as e:
-        logger.error(f"[System Stats] {e}")
+    except Exception:
         return jsonify({"cpu": 0, "ram": 0, "battery": None, "plugged": None, "online": False})
 
 
 @app.route("/api/internal/broadcast", methods=["POST", "OPTIONS"])
 def api_internal_broadcast():
-    """Cross-process SSE broadcast bridge for hotkey and external assistant triggers."""
     if request.method == "OPTIONS":
         return jsonify({"status": "ok"})
     payload = request.get_json(silent=True) or {}
     event_type = payload.get("type", "chat_message")
-    data = payload.get("data", {})
-    broadcaster.broadcast(event_type, data)
+    broadcaster.broadcast(event_type, payload.get("data", {}))
     return jsonify({"status": "ok", "broadcasted": event_type})
 
 
 @app.route("/api/history")
 def get_history():
-    """Fetch all conversation history from RAG engine with fresh cache check."""
     return jsonify(rag_engine.load_memory())
 
 
@@ -1016,85 +857,60 @@ def handle_query():
     if not user_query:
         return jsonify({"error": "Empty query"}), 400
     broadcaster.broadcast("chat_message", {"sender": "user", "text": user_query})
-    result = process_query(user_query, is_voice=False)
-    return jsonify(result)
+    return jsonify(process_query(user_query, is_voice=bool(data.get("is_voice", False))))
 
 
 @app.route("/api/quick-action", methods=["POST"])
 def handle_quick_action():
     data = request.get_json() or {}
     mapping = {
-        "time":       "what time is it",
+        "time": "what time is it",
         "screenshot": "take a screenshot",
-        "weather":    "check current weather",
-        "favorites":  "play my favorite songs",
-        "mute":       "mute audio",
-        "photo":      "take my photo",
-        "lock":       "lock my pc",
-        "sleep":      "put pc to sleep",
-        "empty_bin":  "empty recycle bin",
-        "status":     "check system status",
+        "weather": "check current weather",
+        "favorites": "play my favorite songs",
+        "mute": "mute audio",
+        "lock": "lock my pc",
+        "sleep": "put pc to sleep",
+        "empty_bin": "empty recycle bin",
+        "status": "check system status",
     }
     query = mapping.get(data.get("action", ""), "what time is it")
-    result = process_query(query, is_voice=False)
-    return jsonify(result)
+    return jsonify(process_query(query, is_voice=False))
 
 
 @app.route("/api/clear-memory", methods=["POST", "OPTIONS"])
 @app.route("/api/history/clear", methods=["POST", "OPTIONS"])
 @app.route("/api/memory/clear", methods=["POST", "OPTIONS"])
 def clear_memory():
-    """Clear conversation history & RAG vector memory â€” resets conversations & active state."""
     if request.method == "OPTIONS":
         return jsonify({"status": "ok"})
     try:
         data = request.get_json(silent=True) or {}
         clear_profile = bool(data.get("clear_profile", False))
         clear_facts = bool(data.get("clear_facts", False))
-
         clear_conversations_memory(clear_profile=clear_profile)
         if clear_facts and not clear_profile:
             rag_engine.clear_user_facts()
-
-        logger.info("[Clear Memory] Cleared RAG conversation memory and active state successfully.")
+        broadcaster.broadcast("history_cleared", {})
+        return jsonify({"success": True, "message": "Memory cleared"})
     except Exception as e:
-        logger.error(f"[Clear Memory] Error clearing conversations: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
-    broadcaster.broadcast("history_cleared", {})
-    return jsonify({"success": True, "message": "Memory cleared"})
 
 
 def get_current_user_name() -> str:
-    """Retrieve user name dynamically from profile or system environment without hardcoding."""
     try:
         memory = load_memory()
-        name = (
-            memory.get("user_profile", {}).get("identity", {}).get("name")
-            or memory.get("identity", {}).get("name")
-        )
+        name = memory.get("user_profile", {}).get("identity", {}).get("name") or memory.get("identity", {}).get("name")
         if name and str(name).strip():
             return str(name).strip()
     except Exception:
         pass
-    try:
-        import getpass
-        uname = getpass.getuser()
-        if uname and uname.strip():
-            return uname.strip().capitalize()
-    except Exception:
-        pass
-    try:
-        uname = os.getenv("USERNAME") or os.getenv("USER")
-        if uname and uname.strip():
-            return uname.strip().capitalize()
-    except Exception:
-        pass
-    return ""
+    uname = os.getenv("USERNAME") or os.getenv("USER") or ""
+    return uname.strip().capitalize()
 
 
 @app.route("/api/settings", methods=["GET", "POST", "OPTIONS"])
 def handle_settings():
-    """Read and persist assistant settings and user preferences."""
     if request.method == "OPTIONS":
         return jsonify({"status": "ok"})
     memory = load_memory()
@@ -1105,36 +921,37 @@ def handle_settings():
             "isDark", "soundEnabled", "colorTheme", "visualizerMode",
             "textAnimationStyle", "pluginMode", "greetingText",
             "autoCycleGreetings", "autoCycleInterval", "backendConfig",
-            "theme", "autoSpeech", "model", "thinkingEnabled", "voice"
+            "theme", "autoSpeech", "model", "thinkingEnabled", "voice",
         ):
             if k in data:
                 ui_settings[k] = data[k]
-        if "thinkingEnabled" in data:
-            set_thinking_enabled(bool(data["thinkingEnabled"]))
-            ui_settings["thinkingEnabled"] = bool(data["thinkingEnabled"])
-        elif "backendConfig" in data and isinstance(data["backendConfig"], dict) and "thinkingEnabled" in data["backendConfig"]:
-            set_thinking_enabled(bool(data["backendConfig"]["thinkingEnabled"]))
-            ui_settings["thinkingEnabled"] = bool(data["backendConfig"]["thinkingEnabled"])
 
-        # Process voice update
-        target_voice = data.get("voice") or data.get("user_profile", {}).get("preferences", {}).get("voice") or data.get("ui_settings", {}).get("voice")
-        if target_voice and isinstance(target_voice, str):
-            v_name = set_voice(target_voice)
-            ui_settings["voice"] = target_voice.lower()
-            memory.setdefault("user_profile", {}).setdefault("preferences", {})["voice"] = target_voice.lower()
-            memory.setdefault("preferences", {})["voice"] = target_voice.lower()
+        thinking_val = data.get("thinkingEnabled")
+        if thinking_val is None and isinstance(data.get("backendConfig"), dict):
+            thinking_val = data["backendConfig"].get("thinkingEnabled")
+        if thinking_val is not None:
+            set_thinking_enabled(bool(thinking_val))
+            ui_settings["thinkingEnabled"] = bool(thinking_val)
 
-        if "user_profile" in data and isinstance(data["user_profile"], dict):
+        if isinstance(data.get("user_profile"), dict):
             memory["user_profile"] = data["user_profile"]
-            if target_voice and isinstance(target_voice, str):
-                memory["user_profile"].setdefault("preferences", {})["voice"] = target_voice.lower()
+
+        target_voice = (
+            data.get("voice")
+            or data.get("user_profile", {}).get("preferences", {}).get("voice")
+            or data.get("ui_settings", {}).get("voice")
+        )
+        if target_voice and isinstance(target_voice, str):
+            _apply_voice_preference(memory, target_voice)
+
         if "theme" in data:
             memory.setdefault("user_profile", {}).setdefault("preferences", {})["theme"] = data["theme"]
         if "model" in data:
             set_active_model(data["model"])
+
         save_memory(memory)
         broadcaster.broadcast("settings_updated", data)
-        return jsonify({"success": True, "message": "Settings saved to Amigo memory", "ui_settings": ui_settings, "active_voice": get_active_voice()})
+        return jsonify({"success": True, "ui_settings": ui_settings, "active_voice": get_active_voice()})
 
     info = get_active_model_info()
     curr_voice = get_active_voice()
@@ -1147,13 +964,12 @@ def handle_settings():
         "user_profile": u_prof,
         "user_name": get_current_user_name(),
         "voice": curr_voice,
-        "model": info.get("key", "qwen3.8-2b"),
-        "model_name": info.get("name", "Qwen 3.8 2B Distill"),
+        "model": info.get("key", "granite-4.2-3b"),
+        "model_name": info.get("name", "Granite 4.2 3B"),
         "thinking_enabled": is_thinking_enabled(),
         "available_models": get_available_models(),
         "available_voices": get_voice_catalog(),
     })
-
 
 
 @app.route("/api/user-profile", methods=["GET", "POST", "OPTIONS"])
@@ -1164,22 +980,18 @@ def handle_user_profile():
     if request.method == "POST":
         data = request.get_json() or {}
         user_prof = memory.setdefault("user_profile", {})
-        if "identity" in data and isinstance(data["identity"], dict):
+        if isinstance(data.get("identity"), dict):
             user_prof.setdefault("identity", {}).update(data["identity"])
-        if "custom_facts" in data and isinstance(data["custom_facts"], list):
+        if isinstance(data.get("custom_facts"), list):
             user_prof["custom_facts"] = data["custom_facts"]
         if "name" in data:
             user_prof.setdefault("identity", {})["name"] = data["name"]
         if "role" in data:
             user_prof.setdefault("identity", {})["role"] = data["role"]
-        if "preferences" in data and isinstance(data["preferences"], dict):
+        if isinstance(data.get("preferences"), dict):
             user_prof.setdefault("preferences", {}).update(data["preferences"])
-            if "voice" in data["preferences"]:
-                v_target = data["preferences"]["voice"]
-                if v_target and isinstance(v_target, str):
-                    set_voice(v_target)
-                    memory.setdefault("ui_settings", {})["voice"] = v_target.lower()
-                    memory.setdefault("preferences", {})["voice"] = v_target.lower()
+            if v_target := data["preferences"].get("voice"):
+                _apply_voice_preference(memory, str(v_target))
         save_memory(memory)
         return jsonify({"success": True, "user_profile": memory.get("user_profile", {})})
 
@@ -1188,54 +1000,36 @@ def handle_user_profile():
 
 @app.route("/api/voices", methods=["GET", "POST", "OPTIONS"])
 def manage_voices():
-    """Get active/available voices or switch the active voice dynamically."""
     if request.method == "OPTIONS":
         return jsonify({"status": "ok"})
     if request.method == "POST":
         data = request.get_json() or {}
         v_key = data.get("voice") or data.get("id") or data.get("voice_id")
         if v_key and isinstance(v_key, str):
-            v_name = set_voice(v_key)
             memory = load_memory()
-            memory.setdefault("ui_settings", {})["voice"] = v_key.lower()
-            memory.setdefault("user_profile", {}).setdefault("preferences", {})["voice"] = v_key.lower()
-            memory.setdefault("preferences", {})["voice"] = v_key.lower()
+            v_name = _apply_voice_preference(memory, v_key)
             save_memory(memory)
             broadcaster.broadcast("voice_change", {"voice": v_key.lower(), "name": v_name})
             return jsonify({"success": True, "active_voice": v_key.lower(), "name": v_name})
         return jsonify({"error": "No voice specified"}), 400
 
-    return jsonify({
-        "active_voice": get_active_voice(),
-        "catalog": get_voice_catalog(),
-    })
+    return jsonify({"active_voice": get_active_voice(), "catalog": get_voice_catalog()})
 
 
 @app.route("/api/health", methods=["GET"])
 def handle_health():
-    return jsonify({
-        "status": "healthy",
-        "engine": "Amigo AI",
-        "tts": get_tts_engine_name(),
-        "timestamp": time.time(),
-    })
-
+    return jsonify({"status": "healthy", "engine": "Amigo AI", "tts": get_tts_engine_name(), "timestamp": time.time()})
 
 
 @app.route("/api/shutdown", methods=["POST"])
 def shutdown_server():
-    def kill():
-        time.sleep(0.5)
-        os._exit(0)
-    threading.Thread(target=kill).start()
+    threading.Thread(target=lambda: (time.sleep(0.5), os._exit(0)), daemon=True).start()
     return jsonify({"status": "shutting_down"})
 
 
 @app.route("/api/weather")
 def get_weather_endpoint():
-    city = request.args.get("city", "").strip()
-    data = get_weather_data(city)
-    return jsonify(data)
+    return jsonify(get_weather_data(request.args.get("city", "").strip()))
 
 
 @app.route("/api/stock")
@@ -1249,23 +1043,13 @@ def get_stock_endpoint():
     if not quote:
         return jsonify({"error": f"Could not fetch quote for {symbol}"}), 404
     return jsonify({
-        "symbol": quote.symbol,
-        "name": quote.name,
-        "price": quote.price,
-        "currency": quote.currency,
-        "previous_close": quote.previous_close,
-        "change": quote.change,
-        "change_pct": quote.change_pct,
-        "exchange": quote.exchange,
-        "day_high": quote.day_high,
-        "day_low": quote.day_low,
-        "volume": quote.volume,
-        "fifty_two_week_high": quote.fifty_two_week_high,
-        "fifty_two_week_low": quote.fifty_two_week_low,
-        "history": quote.history,
-        "timestamps": quote.timestamps,
-        "as_of": quote.as_of.strftime("%b %d, %I:%M %p") if quote.as_of else "",
-        "url": quote.url,
+        "symbol": quote.symbol, "name": quote.name, "price": quote.price,
+        "currency": quote.currency, "previous_close": quote.previous_close,
+        "change": quote.change, "change_pct": quote.change_pct, "exchange": quote.exchange,
+        "day_high": quote.day_high, "day_low": quote.day_low, "volume": quote.volume,
+        "fifty_two_week_high": quote.fifty_two_week_high, "fifty_two_week_low": quote.fifty_two_week_low,
+        "history": quote.history, "timestamps": quote.timestamps,
+        "as_of": quote.as_of.strftime("%b %d, %I:%M %p") if quote.as_of else "", "url": quote.url,
     })
 
 
@@ -1276,31 +1060,27 @@ def get_media_status():
 
 @app.route("/api/media/control", methods=["POST"])
 def handle_media_control():
-    global _current_media
     data = request.get_json() or {}
     action = data.get("action", "")
-
     if action == "play_pause":
         play_pause_media()
-        new_status = "paused" if _current_media.get("status") == "playing" else "playing"
-        _current_media["status"] = new_status
+        _current_media["status"] = "paused" if _current_media.get("status") == "playing" else "playing"
         broadcaster.broadcast("media_update", _current_media)
-        return jsonify({"success": True, "status": new_status})
-    elif action == "next":
+        return jsonify({"success": True, "status": _current_media["status"]})
+    if action == "next":
         next_track()
         return jsonify({"success": True})
-    elif action == "prev":
+    if action == "prev":
         prev_track()
         return jsonify({"success": True})
-    elif action == "volume":
+    if action == "volume":
         vol = int(data.get("level", 50))
         set_volume(vol)
         _current_media["volume"] = vol
         broadcaster.broadcast("media_update", _current_media)
         return jsonify({"success": True, "volume": vol})
-    elif action == "play_query":
-        q = data.get("query", "").strip()
-        if q:
+    if action == "play_query":
+        if q := data.get("query", "").strip():
             execute_tool("play_youtube", {"query": q}, query=q, spoken=f"Playing {q}")
         return jsonify({"success": True})
     return jsonify({"error": "Unknown action"}), 400
@@ -1309,19 +1089,14 @@ def handle_media_control():
 @app.route("/api/models", methods=["GET", "POST"])
 def manage_models():
     if request.method == "POST":
-        data = request.get_json() or {}
-        model_key = data.get("model", "")
+        model_key = (request.get_json() or {}).get("model", "")
         if model_key:
             set_active_model(model_key)
             info = get_active_model_info()
             broadcaster.broadcast("model_change", info)
             return jsonify({"success": True, "active_model": info})
         return jsonify({"error": "No model specified"}), 400
-
-    return jsonify({
-        "active": get_active_model_info(),
-        "available": get_available_models(),
-    })
+    return jsonify({"active": get_active_model_info(), "available": get_available_models()})
 
 
 @app.route("/api/listen", methods=["POST"])
@@ -1334,14 +1109,10 @@ def trigger_listen():
 def manage_reminders():
     if request.method == "POST":
         data = request.get_json() or {}
-        if "duration" in data:
-            res = handle_set_timer(data, data.get("query", ""))
-        else:
-            res = handle_set_reminder(data, data.get("query", ""))
+        res = handle_set_timer(data, data.get("query", "")) if "duration" in data else handle_set_reminder(data, data.get("query", ""))
         return jsonify({"success": True, "message": res})
-    elif request.method == "DELETE":
-        data = request.get_json(silent=True) or {}
-        res = handle_cancel_reminder(data)
+    if request.method == "DELETE":
+        res = handle_cancel_reminder(request.get_json(silent=True) or {})
         return jsonify({"success": True, "message": res, "active": get_active_data()})
     return jsonify(get_active_data())
 
@@ -1351,79 +1122,13 @@ def get_state_endpoint():
     return jsonify(get_active_state(clean_expired=True))
 
 
-# ---------------------------------------------------------------------------
-# Server Launch & Graceful Shutdown Binding
-# ---------------------------------------------------------------------------
-def _cleanup_all():
-    global _running
-    _running = False
-    try:
-        closed = any(
-            getattr(getattr(h, "stream", None), "closed", False)
-            for h in list(logging.root.handlers) + list(logger.handlers)
-        )
-        if not closed and hasattr(sys, "is_finalizing") and not sys.is_finalizing():
-            logger.info("[ Amigo ] UI Server stopped. Amigo voice assistant stopped.")
-    except Exception:
-        pass
-    # Shutdown proactive intelligence
-    try:
-        shutdown_proactive_intelligence()
-    except Exception as e:
-        logger.warning(f"[Cleanup] Proactive intelligence shutdown error: {e}")
-
-
-atexit.register(_cleanup_all)
-
-
-def launch_server(port: int = 5000, open_browser: bool = True) -> None:
-    def sig_handler(_signum, _frame):
-        print("\n[ AMIGO ] Shutting down UI server and voice assistant...", flush=True)
-        _cleanup_all()
-        os._exit(0)
-
-    try:
-        signal.signal(signal.SIGINT, sig_handler)
-        signal.signal(signal.SIGTERM, sig_handler)
-    except Exception:
-        pass
-
-    if open_browser:
-        import webbrowser
-        threading.Timer(
-            1.5, lambda: webbrowser.open("http://127.0.0.1:" + str(port))
-        ).start()
-
-    init_reminders(speak_callback=speak, broadcast_callback=broadcaster.broadcast)
-
-    try:
-        import flask.cli
-        flask.cli.show_server_banner = lambda *args, **kwargs: None
-    except Exception:
-        pass
-
-    try:
-        from werkzeug.serving import run_simple
-        run_simple("0.0.0.0", port, app, use_reloader=False, threaded=True)
-    except Exception as e:
-        logger.warning(f"[Server] run_simple fallback: {e}")
-        app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
-    finally:
-        _cleanup_all()
-
-
-# ---------------------------------------------------------------------------
-# RAG, Email & Calendar API Endpoints
-# ---------------------------------------------------------------------------
+# ── RAG, Email, Calendar & Proactive Endpoints ─────────────────
 
 @app.route("/api/rag/status")
 def rag_status_endpoint():
-    """RAG index statistics."""
     stats = rag_engine.get_index_stats()
     try:
-        from amigo.core.rag_indexer import get_indexer
-        indexer = get_indexer(rag_engine)
-        idx_status = indexer.get_status()
+        idx_status = get_indexer(rag_engine).get_status()
         stats["indexer"] = idx_status
         stats["is_indexing"] = idx_status.get("is_indexing", False)
     except Exception:
@@ -1433,88 +1138,61 @@ def rag_status_endpoint():
 
 @app.route("/api/rag/search", methods=["POST"])
 def rag_search_endpoint():
-    """Semantic search across all RAG collections."""
     data = request.get_json() or {}
     query = data.get("query", "").strip()
-    collections = data.get("collections")  # optional filter
-    top_k = int(data.get("top_k", 5))
-    query_type = data.get("query_type", "auto")  # auto, general, fact_lookup, document_qa, conversation_recall
-    metadata_filter = data.get("metadata_filter")  # optional metadata filter
     if not query:
         return jsonify({"error": "Empty query"}), 400
-    results = rag_engine.search(query, target_collections=collections, top_k=top_k, query_type=query_type, metadata_filter=metadata_filter)
-    return jsonify({"query": query, "query_type": query_type, "results": results})
+    results = rag_engine.search(
+        query,
+        target_collections=data.get("collections"),
+        top_k=int(data.get("top_k", 5)),
+        query_type=data.get("query_type", "auto"),
+        metadata_filter=data.get("metadata_filter"),
+    )
+    return jsonify({"query": query, "results": results})
 
 
 @app.route("/api/rag/debug-search", methods=["POST"])
 def rag_debug_search_endpoint():
-    """Debug search with detailed scoring information."""
     data = request.get_json() or {}
     query = data.get("query", "").strip()
-    collections = data.get("collections")
-    top_k = int(data.get("top_k", 10))
     if not query:
         return jsonify({"error": "Empty query"}), 400
-    debug_info = rag_engine.debug_search(query, target_collections=collections, top_k=top_k)
-    return jsonify(debug_info)
+    return jsonify(rag_engine.debug_search(query, target_collections=data.get("collections"), top_k=int(data.get("top_k", 10))))
 
 
 @app.route("/api/rag/reinitialize-reranker", methods=["POST"])
 def rag_reinitialize_reranker():
-    """Attempt to reinitialize the cross-encoder reranker."""
     success = rag_engine.reinitialize_reranker()
-    return jsonify({"success": success, "message": "Reranker reinitialized" if success else "Reranker reinit failed"})
+    return jsonify({"success": success})
 
 
 @app.route("/api/rag/reindex", methods=["POST"])
 def rag_reindex_endpoint():
-    """Trigger manual re-indexing with live SSE progress broadcasting."""
     try:
-        data = request.get_json(silent=True) or {}
-        force = data.get("force", True)
-        from amigo.core.rag_indexer import get_indexer
+        force = (request.get_json(silent=True) or {}).get("force", True)
         indexer = get_indexer(rag_engine)
 
         def _progress_cb(processed, total, indexed, skipped, fname):
-            pct = round((processed / max(total, 1)) * 100, 1)
             broadcaster.broadcast("rag_indexing_progress", {
-                "is_indexing": True,
-                "files_total": total,
-                "files_processed": processed,
-                "files_indexed": indexed,
-                "files_skipped": skipped,
-                "progress_percent": pct,
-                "current_file": fname,
-                "status_message": f"Processing ({processed}/{total}): {fname}",
+                "is_indexing": True, "files_total": total, "files_processed": processed,
+                "files_indexed": indexed, "files_skipped": skipped,
+                "progress_percent": round((processed / max(total, 1)) * 100, 1),
+                "current_file": fname, "status_message": f"Processing ({processed}/{total}): {fname}",
             })
 
         def _run():
-            # Initial announcement
             broadcaster.broadcast("rag_indexing_progress", {
-                "is_indexing": True,
-                "files_total": 0,
-                "files_processed": 0,
-                "files_indexed": 0,
-                "files_skipped": 0,
-                "progress_percent": 0.0,
-                "current_file": "Scanning directories...",
-                "status_message": "Scanning directories...",
+                "is_indexing": True, "files_total": 0, "files_processed": 0,
+                "progress_percent": 0.0, "current_file": "Scanning...", "status_message": "Scanning directories...",
             })
             indexer.full_index(force=force, progress_cb=_progress_cb)
             st = indexer.get_status()
             broadcaster.broadcast("rag_indexing_progress", {
-                "is_indexing": False,
-                "files_total": st.get("files_total", 0),
-                "files_processed": st.get("files_processed", 0),
-                "files_indexed": st.get("files_indexed", 0),
-                "files_skipped": st.get("files_skipped", 0),
-                "progress_percent": 100.0,
-                "current_file": "",
-                "status_message": st.get("status_message", "Complete"),
+                "is_indexing": False, **st, "progress_percent": 100.0, "current_file": "",
             })
 
-        import threading as _th
-        _th.Thread(target=_run, daemon=True, name="rag-manual-reindex").start()
+        threading.Thread(target=_run, daemon=True, name="rag-manual-reindex").start()
         return jsonify({"success": True, "message": "Re-indexing started in background."})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1522,108 +1200,84 @@ def rag_reindex_endpoint():
 
 @app.route("/api/emails")
 def emails_endpoint():
-    """Fetch recent emails."""
     try:
         from amigo.services.mail_integration import get_recent_emails, is_outlook_available
         if not is_outlook_available():
             return jsonify({"error": "Outlook not available"}), 503
-        count = int(request.args.get("count", 5))
-        return jsonify({"emails": get_recent_emails(count)})
+        return jsonify({"emails": get_recent_emails(int(request.args.get("count", 5)))})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/emails/unread")
 def emails_unread_endpoint():
-    """Unread email count + previews."""
     try:
         from amigo.services.mail_integration import get_unread_count, get_unread_emails, is_outlook_available
         if not is_outlook_available():
             return jsonify({"error": "Outlook not available"}), 503
         count = get_unread_count()
-        emails = get_unread_emails(min(count, 10)) if count > 0 else []
-        return jsonify({"unread_count": count, "emails": emails})
+        return jsonify({"unread_count": count, "emails": get_unread_emails(min(count, 10)) if count > 0 else []})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/emails/search", methods=["POST"])
 def emails_search_endpoint():
-    """Search emails by keyword."""
     try:
-        from amigo.services.mail_integration import search_emails, is_outlook_available
+        from amigo.services.mail_integration import is_outlook_available, search_emails
         if not is_outlook_available():
             return jsonify({"error": "Outlook not available"}), 503
-        data = request.get_json() or {}
-        q = data.get("query", "").strip()
-        if not q:
-            return jsonify({"error": "Empty query"}), 400
-        return jsonify({"query": q, "results": search_emails(q)})
+        q = (request.get_json() or {}).get("query", "").strip()
+        return (jsonify({"query": q, "results": search_emails(q)}) if q else (jsonify({"error": "Empty query"}), 400))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/calendar")
 def calendar_endpoint():
-    """Today's calendar events."""
     try:
         from amigo.services.calendar_integration import get_todays_events, is_outlook_available
-        if not is_outlook_available():
-            return jsonify({"error": "Outlook Calendar not available"}), 503
-        return jsonify({"events": get_todays_events()})
+        return (jsonify({"events": get_todays_events()}) if is_outlook_available() else (jsonify({"error": "Outlook Calendar not available"}), 503))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/calendar/upcoming")
 def calendar_upcoming_endpoint():
-    """Upcoming calendar events."""
     try:
         from amigo.services.calendar_integration import get_upcoming_events, is_outlook_available
-        if not is_outlook_available():
-            return jsonify({"error": "Outlook Calendar not available"}), 503
-        days = int(request.args.get("days", 7))
-        return jsonify({"events": get_upcoming_events(days=days)})
+        return (jsonify({"events": get_upcoming_events(days=int(request.args.get("days", 7)))}) if is_outlook_available() else (jsonify({"error": "Outlook Calendar not available"}), 503))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-# Proactive Intelligence API Endpoints
 @app.route("/api/proactive/status")
 def api_proactive_status():
-    """Get proactive intelligence status."""
     try:
-        proactive = get_proactive_intelligence()
-        return jsonify(proactive.get_status())
+        return jsonify(get_proactive_intelligence().get_status())
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/proactive/config", methods=["GET", "POST"])
 def api_proactive_config():
-    """Get or update proactive intelligence configuration."""
     try:
         proactive = get_proactive_intelligence()
-        if request.method == "GET":
-            return jsonify(proactive.config)
-        else:
-            data = request.get_json() or {}
-            proactive.update_config(data)
+        if request.method == "POST":
+            proactive.update_config(request.get_json() or {})
             return jsonify({"success": True, "config": proactive.config})
+        return jsonify(proactive.config)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/proactive/dismiss", methods=["POST"])
 def api_proactive_dismiss():
-    """Dismiss a proactive suggestion."""
     try:
-        data = request.get_json() or {}
-        suggestion_id = data.get("suggestion_id")
-        if not suggestion_id:
+        sid = (request.get_json() or {}).get("suggestion_id")
+        if not sid:
             return jsonify({"error": "Missing suggestion_id"}), 400
-        proactive = get_proactive_intelligence()
-        proactive.dismiss_suggestion(suggestion_id)
+        get_proactive_intelligence().dismiss_suggestion(sid)
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1631,14 +1285,11 @@ def api_proactive_dismiss():
 
 @app.route("/api/proactive/acknowledge", methods=["POST"])
 def api_proactive_acknowledge():
-    """Acknowledge a proactive suggestion was helpful."""
     try:
-        data = request.get_json() or {}
-        suggestion_id = data.get("suggestion_id")
-        if not suggestion_id:
+        sid = (request.get_json() or {}).get("suggestion_id")
+        if not sid:
             return jsonify({"error": "Missing suggestion_id"}), 400
-        proactive = get_proactive_intelligence()
-        proactive.acknowledge_suggestion(suggestion_id)
+        get_proactive_intelligence().acknowledge_suggestion(sid)
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1646,43 +1297,43 @@ def api_proactive_acknowledge():
 
 @app.route("/api/proactive/trigger", methods=["POST"])
 def api_proactive_trigger():
-    """Trigger a proactive notification manually for testing/feedback."""
     try:
         data = request.get_json(silent=True) or {}
-        msg = data.get("message")
         level = data.get("level") or "info"
-        proactive = get_proactive_intelligence()
-        sent_msg = proactive.trigger_notification(msg, level)
-        return jsonify({"success": True, "message": sent_msg, "level": level})
+        sent = get_proactive_intelligence().trigger_notification(data.get("message"), level)
+        return jsonify({"success": True, "message": sent, "level": level})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-
 @app.route("/api/hotkey/status")
 def api_hotkey_status():
-    """Status of global Alt+V vision hotkey service."""
     try:
         from amigo.ui.hotkey_service import is_hotkey_service_running
-        return jsonify({
-            "hotkey": "Alt+V",
-            "running": is_hotkey_service_running(),
-            "description": "Press Alt+V anywhere across Windows to wake Amigo without opening browser",
-        })
+        return jsonify({"hotkey": "Alt+V", "running": is_hotkey_service_running()})
     except Exception as e:
         return jsonify({"running": False, "error": str(e)})
 
 
+# ═══════════════════════════════════════════════════════════════
+#  Server Lifecycle & Async Initialization
+# ═══════════════════════════════════════════════════════════════
 
-
-
-# Async initialization state
 _llm_ready = threading.Event()
 _llm_load_error: Optional[Exception] = None
 
 
+def _cleanup_all():
+    try:
+        shutdown_proactive_intelligence()
+    except Exception:
+        pass
+
+
+atexit.register(_cleanup_all)
+
+
 def _load_llm_background():
-    """Load LLM model in background thread and safely pre-warm cache."""
     global _llm_load_error
     try:
         init_local_llm()
@@ -1692,127 +1343,87 @@ def _load_llm_background():
         _llm_ready.set()
         return
 
-    # Non-blocking background pre-warm: never impacts server startup or errors out
+    # Pre-warm both the Router KV prefix and the Voice Assistant KV prefix
     try:
-        from amigo.utils.tool_registry import get_static_router_prefix, _ROUTER_STOP
-        from amigo.core.llm_agent import query_local_llm
-        sp = get_static_router_prefix()
         query_local_llm(
-            [{"role": "system", "content": sp}, {"role": "user", "content": "ping"}],
-            max_tokens=10,
+            [{"role": "system", "content": get_static_router_prefix()}, {"role": "user", "content": "hi"}],
+            system_prompt="",
+            max_tokens=8,
             temperature=0.0,
             thinking=False,
             sanitize=False,
             response_format={"type": "json_object"},
             stop=_ROUTER_STOP,
         )
-        logger.info("[Local AI Engine] Router prompt cache pre-warmed successfully.")
-    except Exception as e:
-        logger.debug(f"[Local AI Engine] Prompt cache pre-warm note: {e}")
+        logger.info("[Local AI Engine] Router KV prefix cache pre-warmed.")
+    except Exception:
+        pass
 
 
-def _start_background_initializations():
-    """Start all background initializations in parallel."""
-    # Start RAG engine (async internally, non-blocking)
+def initialize_amigo_async():
+    print("[ AMIGO ] Starting async initialization...")
     rag_engine.init_rag(background=True)
-
-    # Warm up RAG user facts & reranker in background thread so user queries have zero cold-start delay
-    def _warmup_rag():
-        try:
-            rag_engine.get_user_profile_prompt("warmup", semantic_search=True)
-            logger.info("[RAG Warmup] Semantic facts and reranker warmed up.")
-        except Exception as e:
-            logger.debug(f"[RAG Warmup] Note: {e}")
-
-    threading.Thread(target=_warmup_rag, daemon=True, name="RAGWarmup").start()
-    
-    # Start background file indexer
+    threading.Thread(
+        target=lambda: rag_engine.get_user_profile_prompt("warmup", semantic_search=True),
+        daemon=True,
+        name="RAGWarmup",
+    ).start()
     start_background_indexer(rag_engine, interval_minutes=30)
 
-    # Warm up web search & YouTube connections
     try:
         from amigo.services.web_search import warmup
         warmup()
-    except Exception as e:
-        logger.debug(f"[WebSearch] Warmup failed: {e}")
-    
-    # Start hotkey service (already async internally)
+    except Exception:
+        pass
+
     try:
         from amigo.ui import hotkey_service
         hotkey_service.set_broadcast_callback(broadcaster.broadcast)
         hotkey_service.start_hotkey_service()
-    except Exception as e:
-        logger.warning(f"[Hotkey Service] Could not start: {e}")
-
-
-def _wait_for_llm_with_progress(executor: ThreadPoolExecutor):
-    """Wait for LLM to load with progress indicator."""
-    # Use ASCII spinner for Windows console compatibility
-    spinner = ["|", "/", "-", "\\"]
-    i = 0
-    start_time = time.time()
-    
-    print("[ AMIGO ] Loading AI model...", end=" ", flush=True)
-    
-    # Submit LLM loading to executor
-    future = executor.submit(_load_llm_background)
-    
-    while not _llm_ready.is_set():
-        elapsed = time.time() - start_time
-        print(f"\r[ AMIGO ] Loading AI model... {spinner[i % len(spinner)]} ({elapsed:.1f}s)", end="", flush=True)
-        i += 1
-        time.sleep(0.1)
-    
-    # Ensure the future completes (propagate any exception)
-    try:
-        future.result(timeout=1.0)
     except Exception:
-        pass  # Exception already captured in _llm_load_error
-    
-    elapsed = time.time() - start_time
-    if _llm_load_error:
-        print(f"\r[ AMIGO ] AI model load FAILED after {elapsed:.1f}s: {_llm_load_error}")
-        raise _llm_load_error
-    else:
-        print(f"\r[ AMIGO ] AI model loaded in {elapsed:.1f}s OK")
+        pass
 
-
-def initialize_amigo_async():
-    """Initialize all Amigo components asynchronously with non-blocking lifecycle."""
-    print("[ AMIGO ] Starting async initialization...")
-    
-    # Start all background initializations immediately (non-blocking)
-    _start_background_initializations()
-    
-    # Launch LLM loading in a dedicated daemon thread
     threading.Thread(target=_load_llm_background, daemon=True, name="LLMLoader").start()
-    
-    # Wait for LLM with progress (this is the critical path)
+
     spinner = ["|", "/", "-", "\\"]
-    i = 0
-    start_time = time.time()
-    print("[ AMIGO ] Loading AI model...", end=" ", flush=True)
+    i, start_time = 0, time.time()
     while not _llm_ready.is_set():
-        elapsed = time.time() - start_time
-        print(f"\r[ AMIGO ] Loading AI model... {spinner[i % len(spinner)]} ({elapsed:.1f}s)", end="", flush=True)
+        print(f"\r[ AMIGO ] Loading AI model... {spinner[i % 4]} ({time.time() - start_time:.1f}s)", end="", flush=True)
         i += 1
         time.sleep(0.1)
-    
-    elapsed = time.time() - start_time
+
     if _llm_load_error:
-        print(f"\r[ AMIGO ] AI model load FAILED after {elapsed:.1f}s: {_llm_load_error}")
+        print(f"\r[ AMIGO ] AI model load FAILED: {_llm_load_error}")
         raise _llm_load_error
-    else:
-        print(f"\r[ AMIGO ] AI model loaded in {elapsed:.1f}s OK")
-    
-    # Don't wait for RAG - let it initialize in background
-    print("[ AMIGO ] RAG engine initializing in background...")
-    
-    # Initialize proactive intelligence after LLM is ready
-    print("[ AMIGO ] Starting proactive intelligence...")
+    print(f"\r[ AMIGO ] AI model loaded in {time.time() - start_time:.1f}s OK")
+
     init_proactive_intelligence(speak_callback=speak, broadcast_callback=broadcaster.broadcast)
-    
     print("[ AMIGO ] All systems ready!")
+
+
+def launch_server(port: int = 5000, open_browser: bool = True) -> None:
+    def sig_handler(_signum, _frame):
+        _cleanup_all()
+        os._exit(0)
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, sig_handler)
+        except Exception:
+            pass
+
+    if open_browser:
+        threading.Timer(1.5, lambda: webbrowser.open(f"http://127.0.0.1:{port}")).start()
+
+    init_reminders(speak_callback=speak, broadcast_callback=broadcaster.broadcast)
+
+    try:
+        from werkzeug.serving import run_simple
+        run_simple("0.0.0.0", port, app, use_reloader=False, threaded=True)
+    except Exception:
+        app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+    finally:
+        _cleanup_all()
 
 
 if __name__ == "__main__":
@@ -1821,10 +1432,5 @@ if __name__ == "__main__":
     print("   AMIGO VOICE ASSISTANT - UI DASHBOARD SERVER   ")
     print(f"   [ {_info['name'].upper()} | {_info['tts_engine'].upper()} | RAG + AGENTIC ]")
     print("==================================================")
-    
-    # Async initialization with progress indicator
     initialize_amigo_async()
-
     launch_server(port=5000, open_browser=True)
-
-
