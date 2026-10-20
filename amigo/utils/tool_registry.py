@@ -96,16 +96,7 @@ def get_active_state(clean_expired: bool = True) -> dict:
 # ── Pre-compiled Regex Patterns ────────────────────────────────
 
 _RE_URLS = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]*[^\s<>"{}|\\^`\[\].,;:!?]')
-_RE_APP_STRIP = re.compile(r"^(?:please\s+)?(?:open|launch|start|run|show)\s+(?:the\s+|my\s+|an?\s+)?", re.IGNORECASE)
-_RE_APP_ARTICLE = re.compile(r"^(?:the|that|my|an?)\s+", re.IGNORECASE)
 _RE_MEDIA_CLEAN_TITLE = re.compile(r"^(?:play|playing)\s*:\s*", re.IGNORECASE)
-_RE_DOC_STRIP_ACTION = re.compile(
-    r"^(?:please\s+)?(?:can you\s+|can u\s+|could you\s+|could u\s+|will you\s+|would you\s+)?"
-    r"(?:tell me\s+|give me\s+|show me\s+)?"
-    r"(?:open|show|read|summarize|tell me about|what is in|what does|find|locate|check|view|inspect)\s+",
-    re.IGNORECASE,
-)
-_RE_DOC_STOPWORDS = re.compile(r"\b(?:the|that|those|these|my|a|an|file|files|document|documents|doc|pdf)\b", re.IGNORECASE)
 _RE_WAKE_WORD = re.compile(r"^(?:(?:hey|hi|hello|ok|okay)\s+)?amigo\b[\s,.:;!-]*", re.IGNORECASE)
 
 _media_update_cb = None
@@ -409,11 +400,11 @@ def _tool_open_app(params, query, spoken):
     params = params if isinstance(params, dict) else {}
     app_name = (params.get("name") or params.get("app") or params.get("app_name") or params.get("target") or params.get("query") or "").strip()
     if not app_name:
-        app_name = _RE_APP_STRIP.sub("", query).strip()
+        app_name = query.strip()
     if not app_name:
         return spoken or "Which application would you like to open?", None
 
-    clean_target = _RE_APP_ARTICLE.sub("", app_name).strip()
+    clean_target = app_name.strip()
     if open_windows_app(clean_target):
         update_active_state("active_app", {"name": clean_target})
         return spoken or f"Opened {clean_target.title()}.", None
@@ -513,15 +504,6 @@ def _tool_read_screen(params, query, spoken):
         return "Could not inspect the screen right now.", None
 
 
-_REMEMBER_PATTERNS = [
-    r"\bremember\s+(?:that|this)\b",
-    r"\bsave\s+(?:that|this)\b",
-    r"\bnote\s+(?:that|this)\b",
-    r"\bstore\s+(?:that|this)\b",
-    r"\bkeep\s+in\s+mind\s+(?:that)?\b",
-]
-
-
 def _tool_memory_recall(params, query, spoken):
     params = params if isinstance(params, dict) else {}
     conv_history = _get_conv_history()
@@ -529,12 +511,6 @@ def _tool_memory_recall(params, query, spoken):
     q_low = q.lower()
 
     fact = str(params.get("fact") or "").strip()
-    if not fact and any(re.search(p, q_low) for p in _REMEMBER_PATTERNS):
-        fact = q
-        for pat in _REMEMBER_PATTERNS:
-            fact = re.sub(pat, "", fact, flags=re.I)
-        fact = re.sub(r"^(?:please\s+|hey\s+amigo\s+|amigo\s+)", "", fact, flags=re.I).strip()
-
     if fact:
         rag_engine.add_user_fact(fact, category="user_memory")
         return f"I've remembered that: {fact}.", None
@@ -652,10 +628,7 @@ def _tool_chat(params, query, spoken, conversation_history=None):
     if not doc_context and query and not rag_engine._is_conversational_filler(query):
         active_state = get_active_state(clean_expired=True) or {}
         has_active_file = bool(active_state.get("active_file", {}).get("path"))
-        q_low = query.lower()
-        is_doc_query = has_active_file or any(w in q_low for w in ("document", "file", "pdf", "sheet", "resume", "cv", "notes", "report", "paper", "doc"))
-
-        if is_doc_query:
+        if has_active_file:
             try:
                 rag_ctx = rag_engine.build_rag_context(
                     query,
@@ -1051,8 +1024,7 @@ def resolve_document_path(query_or_target: str) -> str | None:
     if os.path.isfile(raw):
         return raw
 
-    clean = _RE_DOC_STRIP_ACTION.sub("", raw)
-    clean = re.sub(r"\s+", " ", _RE_DOC_STOPWORDS.sub("", clean)).strip()
+    clean = raw
 
     found_list = state.get("found_files", [])
     if isinstance(found_list, dict):
@@ -1707,15 +1679,9 @@ def _strip_wake_word(query: str) -> str:
 
 
 def parse_user_intent_fast(query: str) -> dict[str, Any] | None:
-    """Zero-latency fast path for empty queries and pending confirmation replies."""
+    """Fast path for blank queries; routing delegates to LLM for universal multi-lingual intent understanding."""
     if not query or not query.strip():
         return {"tool": "chat", "params": {"response": ""}, "speak": ""}
-    if get_pending_confirmation() is not None:
-        q_low = _strip_wake_word(query).lower().strip(" .,!?")
-        if q_low in ("yes", "yeah", "yep", "sure", "go ahead", "do it", "confirm", "proceed", "ok", "okay"):
-            return {"tool": "confirm_action", "params": {}, "speak": ""}
-        if q_low in ("no", "nope", "cancel", "stop", "don't", "do not", "abort", "never mind"):
-            return {"tool": "cancel_action", "params": {}, "speak": ""}
     return None
 
 

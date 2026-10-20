@@ -425,42 +425,16 @@ def _mk(
     )
 
 
-# Conversational wrapper stripper (preserves core nouns and entity names)
-_LEAD_IN = (
-    r"(?:(?:(?:hey|hi|hello|ok|okay)[\s,]+)?amigo\b[\s,]*"
-    r"|(?:can|could|would|will)\s+(?:you|u)\s+"
-    r"|please[\s,]+)"
-)
-_SEARCH_PHRASE = re.compile(
-    r"^(?:" + _LEAD_IN + r")*"
-    r"(?:search\s+(?:(?:google|the\s+web|the\s+internet|online)\s+)?for|look\s*up|find\s+out(?:\s+about)?)\s+",
-    re.I,
-)
-_SEARCH_BARE_VERB = re.compile(r"^(?:" + _LEAD_IN + r")+(?:search|google|find)\s+", re.I)
-_SEARCH_TRAIL = re.compile(r"\s+(?:on\s+google|on\s+the\s+(?:web|internet))$", re.I)
-_SEARCH_INQUIRY = re.compile(
-    r"^(?:" + _LEAD_IN + r")*"
-    r"(?:(?:can|could|would|will)\s+(?:you|u)\s+(?:please\s+)?(?:tell\s+me|find|search|look\s*up|show\s+me|name)\b(?:\s+(?:the|what|which|about))?"
-    r"|(?:tell\s+me|show\s+me|what\s+is\s+the\s+name\s+of|do\s+you\s+know\s+(?:the\s+name\s+of\s+)?)\b"
-    r")\s*",
-    re.I,
-)
-_SEARCH_INQUIRY_TRAIL = re.compile(
-    r"\s*[,.]?\s*(?:i\s+want\s+to\s+know|can\s+you\s+tell\s+me|please)[.?!,\s]*$",
-    re.I,
-)
+_RE_WAKE_STRIP = re.compile(r"^(?:(?:hey|hi|hello|ok|okay)[\s,]+)?amigo\b[\s,.:;!-]*", re.IGNORECASE)
 
 
 def clean_search_query(raw_query: str) -> str:
-    """Strips voice wake words and search command wrappers while preserving full semantic intent."""
+    """Strips voice wake words and surrounding punctuation while preserving full multi-lingual semantic intent."""
     if not raw_query:
         return ""
-    q = raw_query.strip()
-    q = _SEARCH_PHRASE.sub("", q)
-    q = _SEARCH_BARE_VERB.sub("", q)
-    q = _SEARCH_INQUIRY.sub("", q)
-    q = _SEARCH_TRAIL.sub("", q)
-    q = _SEARCH_INQUIRY_TRAIL.sub("", q).strip()
+    q = _RE_WAKE_STRIP.sub("", raw_query.strip()).strip()
+    q = q.strip("\"'`[](){}")
+    q = re.sub(r"\s+", " ", q).strip()
     return q if len(q) >= 2 else raw_query.strip()
 
 
@@ -1373,18 +1347,15 @@ def _yt_search(query: str, deadline: float, params: Optional[str] = None, latest
     ], deadline)
 
 
-_MEDIA_COMMAND = re.compile(
-    r"^(?:" + _LEAD_IN + r")+(?:open\s+youtube\s+(?:and\s+)?)?(?:play|put\s+on|listen\s+to|stream|watch)\s+", re.I
-)
-_MEDIA_TRAIL = re.compile(r"\s+(?:on|in)\s+youtube(?:\s+music)?$", re.I)
 _RE_LIVE_PHRASE = re.compile(r"\b(?:live\s*stream|livestream|live\s+now|currently\s+live)\b", re.I)
 _RE_LATEST_PHRASE = re.compile(r"\b(?:latest|newest|most\s+recent)\b\s*(?:videos?|uploads?|vids?)?", re.I)
 
 
 def _normalize_media_query(q: str) -> str:
-    out = _MEDIA_COMMAND.sub("", (q or "").strip())
-    out = _MEDIA_TRAIL.sub("", out).strip()
-    return out or (q or "").strip()
+    raw = (q or "").strip()
+    out = _RE_WAKE_STRIP.sub("", raw).strip()
+    out = re.sub(r"\s+(?:on|in)\s+youtube(?:\s+music)?$", "", out, flags=re.I).strip()
+    return out.strip("\"'`") or raw
 
 
 def _pick(videos: list[YTVideo], kind: str) -> Optional[YTVideo]:

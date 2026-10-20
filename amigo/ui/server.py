@@ -432,10 +432,6 @@ def _process_query(
     # Trigger TTS speech
     if final_reply:
         speech_to_voice = format_conversational_speech(final_reply)
-        if "matching file" in speech_to_voice and "\n" in speech_to_voice:
-            m_count = _RE_FILE_MATCH_COUNT.search(speech_to_voice)
-            c_num = m_count.group(1) if m_count else "some"
-            speech_to_voice = f"I found {c_num} matching files. Choose one on your screen or say 'Open number 1'."
         speak(speech_to_voice, request_id=request_id)
 
     return {

@@ -88,27 +88,7 @@ LOW_VALUE_TOOLS = {
     "stop", "stop_speaking",
 }
 
-# Structural grammar tokens (non-topical function words) used to isolate content-bearing entities dynamically
-_FUNCTION_TOKENS = {
-    "a", "an", "the", "and", "or", "but", "if", "then", "else", "when", "where", "why",
-    "how", "what", "which", "who", "whom", "whose", "this", "that", "these", "those",
-    "it", "its", "they", "them", "their", "he", "him", "his", "she", "her", "we", "us",
-    "our", "you", "your", "i", "me", "my", "mine", "is", "are", "was", "were", "be",
-    "been", "being", "have", "has", "had", "do", "does", "did", "will", "would", "shall",
-    "should", "can", "could", "may", "might", "must", "to", "of", "in", "on", "at", "by",
-    "for", "with", "about", "against", "between", "into", "through", "during", "before",
-    "after", "above", "below", "from", "up", "down", "out", "off", "over", "under",
-    "again", "further", "once", "here", "there", "all", "any", "both", "each", "few",
-    "more", "most", "other", "some", "such", "no", "nor", "not", "only", "own", "same",
-    "so", "than", "too", "very", "just", "now", "also", "tell", "give", "show", "find",
-    "get", "make", "know", "think", "see", "want", "use", "please", "amigo", "hey", "ok",
-    "okay", "yes", "no", "yeah", "yep", "nope", "thanks", "thank", "hello", "hi",
-}
-
-_FALSE_NAME_TOKENS = {
-    "amigo", "user", "someone", "back", "later", "tomorrow", "tonight", "soon",
-    "now", "again", "uber", "taxi", "busy", "calling", "call", "help",
-}
+# Language-agnostic token definitions (pure length and character entropy)
 
 MAX_VOICE_CONTEXT_CHARS = 1600
 MAX_FILE_SIZE = 50 * 1024 * 1024
@@ -536,7 +516,7 @@ def update_active_state(slot: str, data: dict | list | None) -> None:
 # ═══════════════════════════════════════════════════════════════
 
 def _extract_salient_terms(text: str, max_terms: int = 6) -> list[str]:
-    """Extract content-bearing tokens dynamically by filtering structural function words."""
+    """Extract content-bearing tokens dynamically using token length and casing without fixed language stopwords."""
     if not text:
         return []
     tokens = _RE_WORDS.findall(text)
@@ -544,7 +524,7 @@ def _extract_salient_terms(text: str, max_terms: int = 6) -> list[str]:
     seen = set()
     for t in tokens:
         low = t.lower()
-        if low not in _FUNCTION_TOKENS and not low.isdigit() and len(low) >= 3:
+        if len(low) >= 3 and not low.isdigit():
             if low not in seen:
                 seen.add(low)
                 salient.append(t)
@@ -564,9 +544,9 @@ def resolve_contextual_query(query: str, conversation_history: list[dict] | None
     if not q_tokens:
         return clean_q
 
-    salient_q = [t for t in q_tokens if t not in _FUNCTION_TOKENS]
+    salient_q = [t for t in q_tokens if len(t) >= 3 and not t.isdigit()]
 
-    # A query is context-dependent if it has <= 2 content words or high function-word ratio
+    # A query is context-dependent if it has <= 2 content words or high short-particle ratio
     is_context_dependent = len(salient_q) <= 2 or (len(salient_q) / max(1, len(q_tokens)) < 0.35)
     if not is_context_dependent:
         return clean_q
@@ -628,17 +608,13 @@ def clear_search_cache() -> None:
         _SEARCH_CACHE.clear()
 
 
-_FILLER_TOKENS = {
-    "hi", "hello", "hey", "thanks", "thank", "you", "ok", "okay", "bye", "goodbye",
-    "cool", "sure", "alright", "amigo", "yes", "no", "yeah", "yep", "nope", "got", "it",
-}
-
-
 def _is_conversational_filler(query: str) -> bool:
-    tokens = _RE_WORDS.findall((query or "").lower())
-    if not tokens or len(tokens) > 3:
-        return False
-    return all(t in _FILLER_TOKENS for t in tokens)
+    if not query or not query.strip():
+        return True
+    tokens = _RE_WORDS.findall(query)
+    if not tokens:
+        return True
+    return len(tokens) == 1 and len(tokens[0]) <= 3 and not any(ch in query for ch in ("?", "!", "$", "%"))
 
 
 def _score_and_rank(
@@ -734,7 +710,7 @@ def _bm25_search(query: str, top_k: int, metadata_filter: dict | None = None) ->
     if bm25 is None or not doc_map:
         return []
     try:
-        tokens = [t for t in _RE_WORDS.findall(query.lower()) if t not in _FUNCTION_TOKENS]
+        tokens = [t for t in _RE_WORDS.findall(query.lower()) if len(t) >= 2 and not t.isdigit()]
         if not tokens:
             return []
         scores = bm25.get_scores(tokens)
@@ -1652,8 +1628,8 @@ def index_calendar_event(subject: str, start: str, end: str, location: str = "",
 # ═══════════════════════════════════════════════════════════════
 
 def _clean_stt_entity(raw: str) -> str:
-    tokens = [t for t in _RE_WORDS.findall(raw.strip()) if t.lower() not in _FUNCTION_TOKENS]
-    return " ".join(tokens[:2]).title() if tokens else ""
+    tokens = [t for t in _RE_WORDS.findall(raw.strip()) if len(t) >= 2]
+    return " ".join(tokens[:3]).title() if tokens else raw.strip()
 
 
 def extract_user_profile_updates(user_query: str, remember: str = "") -> None:
@@ -1668,8 +1644,7 @@ def extract_user_profile_updates(user_query: str, remember: str = "") -> None:
 
     if m := re.search(r"\b(?:my name is|call me)\s+([A-Za-z][A-Za-z\s]{1,35})", text, re.I):
         name = _clean_stt_entity(m.group(1))
-        name_words = {w.lower() for w in name.split()}
-        if name and not (name_words & _FALSE_NAME_TOKENS):
+        if name and len(name) >= 2 and not any(ch.isdigit() for ch in name):
             identity["name"] = name
             add_user_fact(f"User's name is {name}", category="identity", importance=0.95)
             updated = True

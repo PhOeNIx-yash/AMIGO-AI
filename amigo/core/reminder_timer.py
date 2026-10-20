@@ -242,11 +242,7 @@ def handle_set_reminder(params: dict, query: str = "") -> str:
     """Schedules a persistent reminder for a future time."""
     params = params if isinstance(params, dict) else {}
     time_raw = params.get("time") or query
-    msg = str(params.get("message") or "").strip()
-    if not msg and query:
-        if m := re.search(r"\b(?:remind me (?:to |about )?)(.+?)\s+(?:at|in|on|tomorrow at)\b", query, re.IGNORECASE):
-            msg = m.group(1).strip()
-    msg = msg or "Reminder"
+    msg = str(params.get("message") or params.get("query") or query or "Reminder").strip()
 
     target_dt = parse_target_datetime(str(time_raw))
     if not target_dt:

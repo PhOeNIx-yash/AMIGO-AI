@@ -205,13 +205,8 @@ def _build_turn_runtime_context(query: str, web_context: str = "", doc_context: 
     if user_prof := rag_engine.get_user_profile_prompt(query, semantic_search=True):
         ctx_blocks.append(f"[User Profile & Memory]:\n{user_prof}")
 
-    q_low = (query or "").lower()
-    if any(kw in q_low for kw in _CLIPBOARD_KEYWORDS):
-        if clip := get_clipboard_text():
-            ctx_blocks.append(f"[Clipboard]: {_RE_SECRET.sub(r'\\1=***', clip)[:300]}")
-    if any(kw in q_low for kw in _SCREEN_KEYWORDS):
-        if screen := get_last_screen_text():
-            ctx_blocks.append(f"[Screen OCR]: {screen[:300]}")
+    if screen := get_last_screen_text():
+        ctx_blocks.append(f"[Screen OCR]: {screen[:300]}")
 
     if web_context:
         ctx_blocks.append(f"[Live Web Search Results]:\n{web_context}")
