@@ -444,14 +444,33 @@ def load_profile() -> dict:
 def _persist_profile_sync(profile_snapshot: dict) -> None:
     global _profile_mtime
     with _profile_lock:
-        try:
-            tmp = PROFILE_FILE + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(profile_snapshot, f, indent=2)
-            os.replace(tmp, PROFILE_FILE)
-            _profile_mtime = os.path.getmtime(PROFILE_FILE)
-        except Exception as e:
-            logger.error("[RAG v2] Profile save error: %s", e)
+        for attempt in range(3):
+            try:
+                tmp = PROFILE_FILE + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(profile_snapshot, f, indent=2)
+                os.replace(tmp, PROFILE_FILE)
+                _profile_mtime = os.path.getmtime(PROFILE_FILE)
+                return
+            except (PermissionError, OSError) as pe:
+                time.sleep(0.05)
+                try:
+                    with open(PROFILE_FILE, "w", encoding="utf-8") as f:
+                        json.dump(profile_snapshot, f, indent=2)
+                    _profile_mtime = os.path.getmtime(PROFILE_FILE)
+                    if os.path.exists(tmp):
+                        try:
+                            os.remove(tmp)
+                        except Exception:
+                            pass
+                    return
+                except Exception:
+                    if attempt == 2:
+                        logger.warning("[RAG v2] Profile save fallback failed: %s", pe)
+            except Exception as e:
+                if attempt == 2:
+                    logger.error("[RAG v2] Profile save error: %s", e)
+                time.sleep(0.05)
 
 
 def save_profile(profile: dict) -> None:
@@ -794,22 +813,10 @@ def search(
     pool_size = max(top_k * 2, 10)
 
     candidates: list[SearchResult] = []
-    if len(target_collections) == 1:
-        candidates.extend(_query_single_collection(target_collections[0], query_embeddings, pool_size, metadata_filter))
-        if DOCUMENTS in target_collections:
-            candidates.extend(_bm25_search(queries[0], pool_size, metadata_filter))
-    else:
-        futures = [
-            _executor.submit(_query_single_collection, c, query_embeddings, pool_size, metadata_filter)
-            for c in target_collections
-        ]
-        if DOCUMENTS in target_collections:
-            futures.append(_executor.submit(_bm25_search, queries[0], pool_size, metadata_filter))
-        for fut in as_completed(futures):
-            try:
-                candidates.extend(fut.result())
-            except Exception:
-                pass
+    for c in target_collections:
+        candidates.extend(_query_single_collection(c, query_embeddings, pool_size, metadata_filter))
+    if DOCUMENTS in target_collections:
+        candidates.extend(_bm25_search(queries[0], pool_size, metadata_filter))
 
     ranked = _score_and_rank(candidates, top_k)
     dict_results = [
@@ -955,11 +962,11 @@ def build_rag_context(
 
     if results:
         top_score = results[0].get("score", 0.0)
-        floor = min_score if min_score is not None else (0.38 if resolved_query != query.strip() else 0.43)
+        floor = min_score if min_score is not None else (0.45 if resolved_query != query.strip() else 0.50)
 
         if top_score >= floor:
-            margin = max(floor, top_score * 0.62)
-            relevant = [r for r in results if r.get("score", 0) >= margin or r.get("keyword_score", 0) > 5.0]
+            margin = max(floor, top_score * 0.70)
+            relevant = [r for r in results if r.get("score", 0) >= margin or r.get("keyword_score", 0) > 3.0]
 
             k_limit = min(top_k, 3) if for_voice else max(top_k, 8)
             for r in relevant[:k_limit]:
@@ -970,9 +977,14 @@ def build_rag_context(
                     continue
 
                 if src == DOCUMENTS:
+                    kw_score = float(r.get("keyword_score", 0) or 0)
+                    sem_score = float(r.get("score", 0) or 0)
+                    if kw_score <= 0.0 and sem_score < 0.76:
+                        continue
+
                     fname = meta.get("filename", "document")
                     fpath = meta.get("filepath", "")
-                    if fpath and os.path.exists(fpath):
+                    if fpath and os.path.exists(fpath) and (sem_score >= 0.78 or kw_score >= 3.0):
                         update_active_state("active_file", {"path": fpath, "name": fname})
                     parts.append(f"[From document '{fname}']:\n{chunk_text}")
                 elif src == CONVERSATIONS:

@@ -124,11 +124,13 @@ def load_reminders() -> List[dict]:
 
 
 def save_reminders(reminders: List[dict]) -> None:
-    try:
-        with open(REMINDERS_FILE, "w", encoding="utf-8") as f:
-            json.dump(reminders, f, indent=2)
-    except Exception:
-        pass
+    for _ in range(3):
+        try:
+            with open(REMINDERS_FILE, "w", encoding="utf-8") as f:
+                json.dump(reminders, f, indent=2)
+            return
+        except Exception:
+            time.sleep(0.05)
 
 
 # ---------------------------------------------------------------------------

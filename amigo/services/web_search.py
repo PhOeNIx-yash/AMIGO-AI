@@ -1,15 +1,17 @@
 """
-web_search.py - Next-Gen Federated Web Search, Live News, Market Quotes & YouTube Engine for Amigo.
+web_search.py - Autonomous Deep-Retrieval, Passage-Ranking & Federated Search Engine for Amigo.
 
-Architecture:
-  * Zero hardcoded topic regexes: Every query races General Web + Live News (Google News RSS + DDGS News)
-    simultaneously in parallel.
-  * Temporal Reciprocal Rank Fusion (T-RRF): Automatically fuses multi-engine rankings with a dynamic
-    recency decay curve based on actual publication timestamps and current system year.
-  * HTTP/2 persistent connection multiplexing via `httpx` + C-level HTML/XML parsing via `selectolax`.
-  * Persistent thread-local DDGS sessions (eliminates 800ms per-query TLS + VQD token handshakes).
-  * Native plug-and-play support for Tavily AI Search (TAVILY_API_KEY), Brave (BRAVE_API_KEY),
-    and SearXNG (AMIGO_SEARXNG_URL) alongside zero-key providers.
+Architecture (Zero Hardcoded Topic/Domain Rules):
+  * Information-Theoretic Query Decomposer: Automatically generates a parallel query matrix
+    (Natural Question + High-Specificity Token Skeleton) using token length entropy and casing
+    signals—no domain regexes or hardcoded entity lists.
+  * Multi-Index Federated Race: Simultaneously races General Web (DDGS, Bing, Tavily, Brave, SearXNG),
+    Live News (Google News RSS, DDGS News), and Video Scene Metadata (YouTube InnerTube) in parallel.
+  * Hybrid T-RRF + BM25 Proximity Reranking: Scores results using multi-engine Reciprocal Rank Fusion
+    combined with Okapi BM25 term saturation, bigram proximity bonuses, and exponential recency decay.
+  * Query-Focused Sliding-Window Passage Extractor: Fetches top candidate pages in parallel, strips
+    boilerplate + extracts JSON-LD schema data, and slices the exact paragraphs with the highest
+    query-token density rather than blindly taking the top of the page.
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ import time
 import urllib.parse
 import webbrowser
 import xml.etree.ElementTree as ET
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -66,26 +68,36 @@ YT_REGION = os.getenv("AMIGO_YT_REGION", "")
 TOP_K_FINAL_SNIPPETS = 6
 PER_ENGINE_FULL = 8
 PER_ENGINE_FAST = 6
-SNIPPET_CHARS = 480
+SNIPPET_CHARS = 520
 
 # Fast, non-blocking budgets (seconds)
-_BUDGETS = {"fast": 2.5, "full": 3.5}
-MERGE_GRACE_S = 0.40          # Wait 400ms after 1st web engine + 1st news engine to fuse remaining providers
+_BUDGETS = {"fast": 2.5, "full": 3.8}
+MERGE_GRACE_S = 0.45
 MERGE_GRACE_FAST_S = 0.35
 HTTP_TIMEOUT = 2.8
 
-FETCH_TIMEOUT = 2.5
-FETCH_DEADLINE_S = 3.0
-TOP_K_RESULTS_TO_FETCH = 2
-MAX_PAGE_BYTES = 350_000
-MAX_CONTENT_CHARS = 2200
+FETCH_TIMEOUT = 2.4
+FETCH_DEADLINE_S = 2.8
+TOP_K_RESULTS_TO_FETCH = 4
+MAX_PAGE_BYTES = 450_000
+MAX_CONTENT_CHARS = 1800
 
 CACHE_MAX = 256
-CACHE_TTL_S = 300             # 5-minute unified cache
+CACHE_TTL_S = 300
 YT_CACHE_TTL_S = 6 * 3600
 YT_BUDGET_S = 6.0
 
 RRF_K = 60
+
+# Grammatical function words (strictly syntactic, zero domain assumptions)
+_SYNTAX_FUNCTION_WORDS = frozenset({
+    "a", "an", "the", "and", "or", "but", "if", "while", "of", "at", "by", "for",
+    "with", "about", "into", "through", "during", "to", "from", "in", "on", "is",
+    "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does",
+    "did", "will", "would", "shall", "should", "can", "could", "may", "might",
+    "what", "which", "who", "whom", "whose", "when", "where", "why", "how", "that",
+    "this", "these", "those", "it", "its", "they", "them", "their", "there",
+})
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Data Classes
@@ -110,7 +122,7 @@ class SearchResult:
 
     @property
     def credibility(self) -> float:
-        return 0.9 if self.domain.endswith((".gov", ".edu")) else 0.75
+        return 0.9 if self.domain.endswith((".gov", ".edu")) else 0.78
 
 
 @dataclass
@@ -122,6 +134,16 @@ class SearchResponse:
     cache_hit: bool = False
     search_time_ms: int = 0
     engines_used: list[str] = field(default_factory=list)
+
+
+@dataclass
+class YTVideo:
+    video_id: str
+    title: str = ""
+    channel: str = "YouTube"
+    is_live: bool = False
+    duration_s: Optional[int] = None
+    source: str = ""
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -139,17 +161,24 @@ class _HttpClient:
                 headers=DEFAULT_HEADERS,
                 timeout=httpx.Timeout(HTTP_TIMEOUT, connect=1.2),
                 follow_redirects=True,
-                limits=httpx.Limits(max_keepalive_connections=20, max_connections=40),
+                limits=httpx.Limits(max_keepalive_connections=24, max_connections=48),
             )
         else:
             from requests.adapters import HTTPAdapter
             self._client = requests.Session()
-            adapter = HTTPAdapter(max_retries=0, pool_connections=20, pool_maxsize=40)
+            adapter = HTTPAdapter(max_retries=0, pool_connections=24, pool_maxsize=48)
             self._client.mount("http://", adapter)
             self._client.mount("https://", adapter)
             self._client.headers.update(DEFAULT_HEADERS)
 
-    def get(self, url: str, params: dict | None = None, headers: dict | None = None, cookies: dict | None = None, timeout: float = HTTP_TIMEOUT):
+    def get(
+        self,
+        url: str,
+        params: dict | None = None,
+        headers: dict | None = None,
+        cookies: dict | None = None,
+        timeout: float = HTTP_TIMEOUT,
+    ):
         if _HAS_HTTPX:
             resp = self._client.get(url, params=params, headers=headers, cookies=cookies, timeout=timeout)
             resp.raise_for_status()
@@ -158,7 +187,14 @@ class _HttpClient:
         resp.raise_for_status()
         return resp
 
-    def post(self, url: str, json_body: dict, headers: dict | None = None, cookies: dict | None = None, timeout: float = HTTP_TIMEOUT):
+    def post(
+        self,
+        url: str,
+        json_body: dict,
+        headers: dict | None = None,
+        cookies: dict | None = None,
+        timeout: float = HTTP_TIMEOUT,
+    ):
         if _HAS_HTTPX:
             resp = self._client.post(url, json=json_body, headers=headers, cookies=cookies, timeout=timeout)
             resp.raise_for_status()
@@ -169,7 +205,7 @@ class _HttpClient:
 
 
 _HTTP = _HttpClient()
-_EXECUTOR = ThreadPoolExecutor(max_workers=12, thread_name_prefix="amigo-search")
+_EXECUTOR = ThreadPoolExecutor(max_workers=16, thread_name_prefix="amigo-search")
 
 
 class _TTLCache:
@@ -240,12 +276,84 @@ def _select_healthy(names: list[str]) -> list[str]:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Text, Date & URL Normalization Helpers
+# YouTube Constants & Parsing Primitives (Declared early for federated access)
+# ──────────────────────────────────────────────────────────────────────────────
+
+_yt_client_version = os.getenv("AMIGO_YT_CLIENT_VERSION", "2.20250901.01.00")
+_YT_SEARCH_URL = "https://www.youtube.com/youtubei/v1/search?prettyPrint=false"
+_YT_COOKIES = {"CONSENT": "YES+1", "SOCS": "CAI"}
+_YT_P_VIDEOS = "EgIQAQ%3D%3D"
+_YT_P_LIVE = "EgJAAQ%3D%3D"
+_YT_P_NEWEST = "CAISAhAB"
+
+
+def _runs_text(node) -> str:
+    if not isinstance(node, dict):
+        return ""
+    if "simpleText" in node:
+        return str(node["simpleText"])
+    return "".join(r.get("text", "") for r in node.get("runs", []) if isinstance(r, dict))
+
+
+def _parse_duration(text: str) -> Optional[int]:
+    parts = (text or "").strip().split(":")
+    if not parts or not all(p.isdigit() for p in parts):
+        return None
+    secs = 0
+    for p in parts:
+        secs = secs * 60 + int(p)
+    return secs
+
+
+def _walk_video_renderers(node):
+    if isinstance(node, dict):
+        vr = node.get("videoRenderer")
+        if isinstance(vr, dict) and vr.get("videoId"):
+            yield vr
+        for v in node.values():
+            yield from _walk_video_renderers(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _walk_video_renderers(v)
+
+
+def _videos_from_json(data, source: str) -> list[YTVideo]:
+    out, seen = [], set()
+    for vr in _walk_video_renderers(data):
+        vid = vr["videoId"]
+        if vid in seen:
+            continue
+        seen.add(vid)
+        badges = [b.get("metadataBadgeRenderer", {}) for b in vr.get("badges", []) if isinstance(b, dict)]
+        overlays = [
+            o.get("thumbnailOverlayTimeStatusRenderer", {})
+            for o in vr.get("thumbnailOverlays", [])
+            if isinstance(o, dict)
+        ]
+        is_live = (
+            any(b.get("style") == "BADGE_STYLE_TYPE_LIVE_NOW" for b in badges)
+            or any(o.get("style") == "LIVE" for o in overlays)
+        )
+        channel = _runs_text(vr.get("ownerText")) or _runs_text(vr.get("longBylineText")) or "YouTube"
+        out.append(YTVideo(
+            video_id=vid,
+            title=_runs_text(vr.get("title")),
+            channel=channel,
+            is_live=is_live,
+            duration_s=_parse_duration(_runs_text(vr.get("lengthText"))),
+            source=source,
+        ))
+    return out
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Text, Date, URL & Information-Theoretic Query Decomposition
 # ──────────────────────────────────────────────────────────────────────────────
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 _TRACKING_PARAM = re.compile(r"^(?:utm_|fbclid$|gclid$|ref$|ref_src$|igshid$)", re.I)
+_WORD_RE = re.compile(r"[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*")
 
 
 def _clean_text(text: str) -> str:
@@ -273,19 +381,16 @@ def _norm_url(url: str) -> str:
 
 
 def _parse_date_age(raw_date: str) -> tuple[str, Optional[float]]:
-    """Parses ISO-8601 or RFC-2822 dates into (YYYY-MM-DD, age_in_days)."""
     if not raw_date:
         return "", None
     raw = raw_date.strip()
     dt = None
     try:
-        # RFC-2822 (used by Google News RSS)
         dt = email.utils.parsedate_to_datetime(raw)
     except Exception:
         pass
     if dt is None:
         try:
-            # ISO-8601 (used by DDGS News / Brave / Tavily)
             dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
         except Exception:
             pass
@@ -298,7 +403,14 @@ def _parse_date_age(raw_date: str) -> tuple[str, Optional[float]]:
     return raw[:10], None
 
 
-def _mk(title: str, url: str, snippet: str, source: str, published: str = "", domain_override: str = "") -> SearchResult:
+def _mk(
+    title: str,
+    url: str,
+    snippet: str,
+    source: str,
+    published: str = "",
+    domain_override: str = "",
+) -> SearchResult:
     title = _clean_text(title)
     pub_str, age_days = _parse_date_age(published)
     dom = domain_override or _domain(url)
@@ -333,8 +445,10 @@ _SEARCH_INQUIRY = re.compile(
     r")\s*",
     re.I,
 )
-_SEARCH_INQUIRY_TRAIL = re.compile(r"\s*[,.]?\s*(?:i\s+want\s+to\s+know|can\s+you\s+tell\s+me|please)[.?!,\s]*$", re.I)
-
+_SEARCH_INQUIRY_TRAIL = re.compile(
+    r"\s*[,.]?\s*(?:i\s+want\s+to\s+know|can\s+you\s+tell\s+me|please)[.?!,\s]*$",
+    re.I,
+)
 
 
 def clean_search_query(raw_query: str) -> str:
@@ -350,12 +464,54 @@ def clean_search_query(raw_query: str) -> str:
     return q if len(q) >= 2 else raw_query.strip()
 
 
+def _token_specificity(token: str) -> float:
+    """
+    Information-theoretic token weight without any hardcoded vocabulary lists.
+    Uses character length entropy, digit/hyphen signals, and capitalization.
+    """
+    low = token.lower()
+    if low in _SYNTAX_FUNCTION_WORDS:
+        return 0.05
+    weight = 1.0 + 0.35 * math.log1p(len(low))
+    if any(ch.isdigit() for ch in token):
+        weight += 0.85
+    if "-" in token:
+        weight += 0.65
+    if any(ch.isupper() for ch in token[1:]) or (token[0].isupper() and len(token) > 2):
+        weight += 0.30
+    return weight
+
+
+def _build_query_variants(raw_query: str) -> list[str]:
+    """
+    Decomposes complex multi-clause queries into up to 2 complementary search queries:
+      1. Clean natural-language query (hits Q&A forums, Reddit, StackExchange, articles)
+      2. High-specificity content-word skeleton (strips syntactic glue so search engines don't
+         drop critical tail entities when clauses are long).
+    """
+    clean_q = clean_search_query(raw_query) or raw_query.strip()
+    words = _WORD_RE.findall(clean_q)
+    if len(words) <= 5:
+        return [clean_q]
+
+    # Build a dense content-bearing skeleton preserving original sequential order
+    skeleton_tokens = [
+        w for w in words
+        if w.lower() not in _SYNTAX_FUNCTION_WORDS and (len(w) > 1 or w.isdigit())
+    ]
+    skeleton = " ".join(skeleton_tokens)
+    variants = [clean_q]
+    if skeleton and skeleton.lower() != clean_q.lower() and len(skeleton_tokens) >= 3:
+        variants.append(skeleton)
+    return variants
+
+
 def detect_query_type(query: str) -> str:
     return "federated"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Search Providers (Persistent Sessions, Fast Parsers)
+# Search Providers (Persistent Sessions, Multi-Variant Capable)
 # ──────────────────────────────────────────────────────────────────────────────
 
 _DDGS_CLS = None
@@ -374,7 +530,6 @@ def _load_ddgs():
 
 
 def _get_ddgs():
-    """Thread-local persistent DDGS client to avoid 800ms TLS + VQD token handshakes on every search."""
     client = getattr(_DDGS_LOCAL, "client", None)
     if client is None:
         client = _load_ddgs()(timeout=3)
@@ -383,27 +538,38 @@ def _get_ddgs():
 
 
 def _p_ddgs_web(query: str, limit: int) -> list[SearchResult]:
-    clean_q = clean_search_query(query) or query
+    variants = _build_query_variants(query)
     reg = SEARCH_REGION if (SEARCH_REGION and SEARCH_REGION != "wt-wt") else "us-en"
-    rows = []
-    try:
-        rows = list(_get_ddgs().text(clean_q, region=reg, max_results=limit) or [])
-    except Exception as e:
-        if "no results" in str(e).lower():
-            return []
+
+    def _run_one(q_str: str, lim: int) -> list[SearchResult]:
+        rows = []
         try:
-            _DDGS_LOCAL.client = None
-            rows = list(_get_ddgs().text(clean_q, region=reg, max_results=limit) or [])
-        except Exception as e2:
-            if "no results" in str(e2).lower():
+            rows = list(_get_ddgs().text(q_str, region=reg, max_results=lim) or [])
+        except Exception as e:
+            if "no results" in str(e).lower():
                 return []
-            logger.debug("[DDGS Web] search failed: %s", e2)
-            return []
-    out = []
-    for r in rows:
-        url = (r.get("href") or r.get("url") or "").strip()
-        if url and (r.get("title") or r.get("body")):
-            out.append(_mk(r.get("title", ""), url, r.get("body", ""), "ddgs"))
+            try:
+                _DDGS_LOCAL.client = None
+                rows = list(_get_ddgs().text(q_str, region=reg, max_results=lim) or [])
+            except Exception:
+                return []
+        return [
+            _mk(r.get("title", ""), (r.get("href") or r.get("url") or "").strip(), r.get("body", ""), "ddgs")
+            for r in rows
+            if (r.get("href") or r.get("url")) and (r.get("title") or r.get("body"))
+        ]
+
+    if len(variants) == 1:
+        return _run_one(variants[0], limit)
+
+    f1 = _EXECUTOR.submit(_run_one, variants[0], limit)
+    f2 = _EXECUTOR.submit(_run_one, variants[1], max(4, limit // 2))
+    out: list[SearchResult] = []
+    for f in (f1, f2):
+        try:
+            out.extend(f.result(timeout=2.4))
+        except Exception:
+            pass
     return out
 
 
@@ -419,10 +585,7 @@ def _p_ddgs_news(query: str, limit: int) -> list[SearchResult]:
         try:
             _DDGS_LOCAL.client = None
             rows = list(_get_ddgs().news(clean_q, region=reg, max_results=limit) or [])
-        except Exception as e2:
-            if "no results" in str(e2).lower():
-                return []
-            logger.debug("[DDGS News] search failed: %s", e2)
+        except Exception:
             return []
     out = []
     for r in rows:
@@ -433,15 +596,12 @@ def _p_ddgs_news(query: str, limit: int) -> list[SearchResult]:
 
 
 def _p_google_news_rss(query: str, limit: int) -> list[SearchResult]:
-    """
-    Queries Google's live News RSS endpoint (~200ms latency, never CAPTCHA-blocked, ultra-fresh index).
-    Captures breaking announcements, release windows, earnings leaks, and real-time events.
-    """
-    clean_q = clean_search_query(query) or query
+    variants = _build_query_variants(query)
+    q_str = variants[-1]
     hl, gl, ceid = ("en-IN", "IN", "IN:en") if "in" in SEARCH_REGION.lower() else ("en-US", "US", "US:en")
     resp = _HTTP.get(
         "https://news.google.com/rss/search",
-        params={"q": clean_q, "hl": hl, "gl": gl, "ceid": ceid},
+        params={"q": q_str, "hl": hl, "gl": gl, "ceid": ceid},
         timeout=2.2,
     )
     root = ET.fromstring(resp.text)
@@ -455,7 +615,6 @@ def _p_google_news_rss(query: str, limit: int) -> list[SearchResult]:
         publisher = source_el.text.strip() if (source_el is not None and source_el.text) else "news.google.com"
         source_url = source_el.get("url", "") if source_el is not None else ""
         dom = _domain(source_url) if source_url else publisher
-        # Strip trailing " - Publisher" from title if already captured
         if publisher and title.endswith(f" - {publisher}"):
             title = title[: -len(f" - {publisher}")].strip()
         snippet = desc if (desc and desc.lower() != title.lower()) else f"{title} (Reported by {publisher})"
@@ -477,13 +636,8 @@ def _decode_bing_url(href: str) -> str:
     return ""
 
 
-def _p_bing(query: str, limit: int) -> list[SearchResult]:
-    """Fast Bing HTML scraper powered by selectolax (C-engine) with bs4 fallback."""
-    clean_q = clean_search_query(query) or query
-    resp = _HTTP.get("https://www.bing.com/search", params={"q": clean_q, "setlang": "en"}, timeout=2.5)
-    html_text = resp.text
+def _parse_bing_html(html_text: str, limit: int) -> list[SearchResult]:
     out = []
-
     if _has_module("selectolax"):
         from selectolax.parser import HTMLParser
         tree = HTMLParser(html_text)
@@ -518,8 +672,78 @@ def _p_bing(query: str, limit: int) -> list[SearchResult]:
     return out
 
 
+def _p_bing(query: str, limit: int) -> list[SearchResult]:
+    variants = _build_query_variants(query)
+    if len(variants) == 1:
+        resp = _HTTP.get("https://www.bing.com/search", params={"q": variants[0], "setlang": "en"}, timeout=2.4)
+        return _parse_bing_html(resp.text, limit)
+
+    def _one(q_str: str) -> list[SearchResult]:
+        r = _HTTP.get("https://www.bing.com/search", params={"q": q_str, "setlang": "en"}, timeout=2.3)
+        return _parse_bing_html(r.text, limit)
+
+    f1 = _EXECUTOR.submit(_one, variants[0])
+    f2 = _EXECUTOR.submit(_one, variants[1])
+    out: list[SearchResult] = []
+    for f in (f1, f2):
+        try:
+            out.extend(f.result(timeout=2.4))
+        except Exception:
+            pass
+    return out
+
+
+def _p_youtube_metadata(query: str, limit: int) -> list[SearchResult]:
+    """
+    Queries YouTube's ultra-fast InnerTube JSON endpoint (~250ms) for rich video titles,
+    channel names, and snippet descriptions.
+    """
+    variants = _build_query_variants(query)
+    q_str = variants[-1]
+    client = {"clientName": "WEB", "clientVersion": _yt_client_version, "hl": "en"}
+    if YT_REGION:
+        client["gl"] = YT_REGION
+    resp = _HTTP.post(
+        _YT_SEARCH_URL,
+        json_body={"context": {"client": client}, "query": q_str, "params": _YT_P_VIDEOS},
+        cookies=_YT_COOKIES,
+        timeout=2.2,
+        headers={
+            "X-YouTube-Client-Name": "1",
+            "X-YouTube-Client-Version": _yt_client_version,
+            "Origin": "https://www.youtube.com",
+            "Content-Type": "application/json",
+        },
+    )
+    data = resp.json()
+    out: list[SearchResult] = []
+    seen: set[str] = set()
+    for vr in _walk_video_renderers(data):
+        vid = vr.get("videoId", "")
+        if not vid or vid in seen:
+            continue
+        seen.add(vid)
+        title = _runs_text(vr.get("title"))
+        channel = _runs_text(vr.get("ownerText")) or _runs_text(vr.get("longBylineText")) or "YouTube"
+        desc_parts = []
+        for s in vr.get("detailedMetadataSnippets") or []:
+            if isinstance(s, dict):
+                txt = _runs_text(s.get("snippetText"))
+                if txt:
+                    desc_parts.append(txt)
+        if not desc_parts:
+            txt = _runs_text(vr.get("descriptionSnippet"))
+            if txt:
+                desc_parts.append(txt)
+        desc = " ".join(desc_parts).strip()
+        snippet = f"[YouTube Video by {channel}] {title}. {desc}".strip()
+        out.append(_mk(title, f"https://www.youtube.com/watch?v={vid}", snippet, "yt_meta", domain_override="youtube.com"))
+        if len(out) >= min(limit, 5):
+            break
+    return out
+
+
 def _p_tavily(query: str, limit: int) -> list[SearchResult]:
-    """Optional AI-native search API (set TAVILY_API_KEY in env for LLM-grade snippets)."""
     if not TAVILY_API_KEY:
         raise RuntimeError("TAVILY_API_KEY not set")
     resp = _HTTP.post(
@@ -583,23 +807,22 @@ def _has_module(name: str) -> bool:
     return _MODULE_OK[name]
 
 
-# Provider registry: name -> (callable, category ["web" | "news"], base_weight)
 _PROVIDERS: dict[str, tuple[Callable, str, float]] = {
-    "ddgs":      (_p_ddgs_web,        "web",  1.05),
-    "gnews":     (_p_google_news_rss, "news", 1.00),
-    "ddgs_news": (_p_ddgs_news,       "news", 0.95),
-    "bing":      (_p_bing,            "web",  0.90),
-    "tavily":    (_p_tavily,          "web",  1.15),
-    "brave":     (_p_brave,           "web",  1.10),
-    "searxng":   (_p_searxng,         "web",  1.00),
+    "ddgs":      (_p_ddgs_web,         "web",   1.10),
+    "bing":      (_p_bing,             "web",   1.00),
+    "yt_meta":   (_p_youtube_metadata, "media", 0.92),
+    "gnews":     (_p_google_news_rss,  "news",  0.95),
+    "ddgs_news": (_p_ddgs_news,        "news",  0.90),
+    "tavily":    (_p_tavily,           "web",   1.20),
+    "brave":     (_p_brave,            "web",   1.15),
+    "searxng":   (_p_searxng,          "web",   1.05),
 }
 
 
 def _active_providers(engines: Optional[list[str]] = None) -> list[str]:
     if engines:
         return [e for e in engines if e in _PROVIDERS]
-    # Always race General Web + Live News together so we never miss recent events or timeless facts
-    active = ["ddgs", "gnews", "ddgs_news", "bing"]
+    active = ["ddgs", "bing", "yt_meta", "gnews", "ddgs_news"]
     if TAVILY_API_KEY:
         active.insert(0, "tavily")
     if BRAVE_API_KEY:
@@ -610,7 +833,7 @@ def _active_providers(engines: Optional[list[str]] = None) -> list[str]:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Parallel Federated Race + Temporal Reciprocal Rank Fusion (T-RRF)
+# Parallel Federated Race + Hybrid T-RRF & BM25-Proximity Reranker
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -621,20 +844,15 @@ def _timed(fn: Callable, *args):
 
 
 def _race(names: list[str], query: str, limit: int, budget: float, grace: float):
-    """
-    Races all healthy providers concurrently.
-    Starts the short `grace` countdown as soon as we have at least 1 'web' list AND 1 'news' list
-    (or any 2 providers), guaranteeing both broad coverage and real-time freshness at minimum latency.
-    """
     if not names:
         return {}, {}
     deadline = time.monotonic() + budget
     futs = {_EXECUTOR.submit(_timed, _PROVIDERS[n][0], query, limit): n for n in names}
     pending, got, timings = set(futs), {}, {}
-    grace_Anchor = None
+    grace_anchor = None
 
     while pending:
-        stop_at = deadline if grace_Anchor is None else min(deadline, grace_Anchor + grace)
+        stop_at = deadline if grace_anchor is None else min(deadline, grace_anchor + grace)
         remaining = stop_at - time.monotonic()
         if remaining <= 0:
             break
@@ -653,8 +871,8 @@ def _race(names: list[str], query: str, limit: int, budget: float, grace: float)
             if rows:
                 got[name] = rows
                 categories = {_PROVIDERS[k][1] for k in got}
-                if grace_Anchor is None and (("web" in categories and "news" in categories) or len(got) >= 2):
-                    grace_Anchor = time.monotonic()
+                if grace_anchor is None and ("web" in categories and len(got) >= 2):
+                    grace_anchor = time.monotonic()
 
     if not got:
         for f in pending:
@@ -664,93 +882,253 @@ def _race(names: list[str], query: str, limit: int, budget: float, grace: float)
     return got, timings
 
 
+def _bm25_and_proximity_score(
+    text: str,
+    query_tokens: list[str],
+    token_weights: dict[str, float],
+    query_bigrams: set[tuple[str, str]],
+) -> float:
+    """
+    Computes an Okapi BM25-style lexical saturation score + contiguous bigram proximity bonus
+    using purely information-theoretic token weights.
+    """
+    if not text or not query_tokens:
+        return 0.0
+    doc_tokens = [t.lower() for t in _WORD_RE.findall(text)]
+    if not doc_tokens:
+        return 0.0
+
+    doc_len = len(doc_tokens)
+    counts = Counter(doc_tokens)
+    k1 = 1.5
+    b = 0.75
+    avgdl = 45.0
+
+    score = 0.0
+    total_weight = sum(token_weights.values()) or 1.0
+
+    for tok, w in token_weights.items():
+        tf = counts.get(tok, 0)
+        if tf > 0:
+            norm_tf = (tf * (k1 + 1.0)) / (tf + k1 * (1.0 - b + b * (doc_len / avgdl)))
+            score += w * norm_tf
+
+    coverage = sum(token_weights[t] for t in token_weights if counts.get(t, 0) > 0) / total_weight
+    score *= (0.5 + 0.8 * (coverage ** 1.5))
+
+    if query_bigrams and len(doc_tokens) >= 2:
+        doc_bigrams = {(doc_tokens[i], doc_tokens[i + 1]) for i in range(len(doc_tokens) - 1)}
+        bigram_hits = len(query_bigrams & doc_bigrams)
+        score += bigram_hits * 1.35
+
+    return score
+
+
 def _temporal_rrf_fuse(by_engine: dict[str, list[SearchResult]], query: str) -> list[SearchResult]:
     """
-    Temporal Reciprocal Rank Fusion (T-RRF):
-    Combines multi-engine consensus with dynamic date awareness (no hardcoded topic lists).
+    Hybrid Temporal Reciprocal Rank Fusion (T-RRF) + BM25 Proximity Reranker.
     """
     merged: dict[str, SearchResult] = {}
     current_year = datetime.now().year
     recent_years = {str(current_year - 1), str(current_year), str(current_year + 1), str(current_year + 2)}
-    q_tokens = {t for t in re.findall(r"[a-z0-9]+", query.lower()) if len(t) > 1}
+
+    clean_q = clean_search_query(query) or query
+    raw_tokens = _WORD_RE.findall(clean_q)
+    content_tokens = [t.lower() for t in raw_tokens if t.lower() not in _SYNTAX_FUNCTION_WORDS and len(t) > 1]
+    if not content_tokens:
+        content_tokens = [t.lower() for t in raw_tokens if len(t) > 1]
+
+    token_weights = {t.lower(): _token_specificity(t) for t in raw_tokens if t.lower() in content_tokens}
+    query_bigrams = {
+        (content_tokens[i], content_tokens[i + 1])
+        for i in range(len(content_tokens) - 1)
+    }
 
     for engine, rows in by_engine.items():
         weight = _PROVIDERS.get(engine, (None, "web", 1.0))[2]
         for rank, r in enumerate(rows):
-            # Deduplicate by normalized URL or normalized title for news syndication
             key = _norm_url(r.url) if r.source != "gnews" else f"title:{r.title.lower()[:65]}"
-            gain = weight / (RRF_K + rank + 1)
+            rrf_gain = weight / (RRF_K + rank + 1)
 
-            # 1. Dynamic Recency Boost (exponential decay over age_days)
             if r.age_days is not None:
-                recency_boost = 0.0035 * math.exp(-r.age_days / 45.0)
-                gain += recency_boost
+                rrf_gain += 0.0030 * math.exp(-r.age_days / 45.0)
 
-            # 2. Current/Upcoming Year Mention Boost (surfaces up-to-date schedules/windows)
             text_blob = f"{r.title} {r.snippet}"
             if any(yr in text_blob for yr in recent_years):
-                gain += 0.0020
-
-            # 3. Query Entity Overlap Check (prevents unrelated news from floating up)
-            title_tokens = set(re.findall(r"[a-z0-9]+", f"{r.title} {r.snippet}".lower()))
-            if q_tokens and len(q_tokens & title_tokens) == 0:
-                gain *= 0.3
+                rrf_gain += 0.0015
 
             cur = merged.get(key)
             if cur is None:
-                r.score = gain
+                r.score = rrf_gain
                 merged[key] = r
             else:
-                cur.score += gain
+                cur.score += rrf_gain
                 if len(r.snippet) > len(cur.snippet):
                     cur.snippet = r.snippet
                 if r.published and not cur.published:
                     cur.published = r.published
 
+    for r in merged.values():
+        title_bm25 = _bm25_and_proximity_score(r.title, content_tokens, token_weights, query_bigrams)
+        snip_bm25 = _bm25_and_proximity_score(r.snippet, content_tokens, token_weights, query_bigrams)
+        lexical_score = (title_bm25 * 1.35 + snip_bm25) * 0.0045
+        r.score += lexical_score
+
     return sorted(merged.values(), key=lambda r: r.score, reverse=True)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Optional Full-Page Text Extraction (selectolax / trafilatura)
+# Query-Focused Sliding-Window Deep Passage Extractor
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _extract_main_text(page: str) -> str:
+def _extract_json_ld_strings(page: str) -> list[str]:
+    """Extracts structured answers, descriptions, and article bodies from embedded JSON-LD."""
+    out: list[str] = []
+    for m in re.finditer(r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', page, re.I | re.S):
+        raw = m.group(1).strip()
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except Exception:
+            continue
+        stack = [data]
+        while stack:
+            curr = stack.pop()
+            if isinstance(curr, dict):
+                for k, v in curr.items():
+                    if k in ("text", "articleBody", "description", "name", "headline") and isinstance(v, str) and len(v) > 25:
+                        out.append(_clean_text(v))
+                    elif isinstance(v, (dict, list)):
+                        stack.append(v)
+            elif isinstance(curr, list):
+                stack.extend(curr)
+    return out
+
+
+def _extract_raw_blocks(page: str) -> list[str]:
+    """Extracts clean paragraph blocks + JSON-LD structured text from raw HTML."""
+    blocks = _extract_json_ld_strings(page)
+
     if _has_module("trafilatura"):
         import trafilatura
-        txt = trafilatura.extract(page, include_comments=False, include_tables=False)
+        txt = trafilatura.extract(page, include_comments=True, include_tables=True)
         if txt:
-            return _WS_RE.sub(" ", txt).strip()
+            blocks.extend(p.strip() for p in txt.splitlines() if len(p.strip()) > 30)
+
     if _has_module("selectolax"):
         from selectolax.parser import HTMLParser
         tree = HTMLParser(page)
-        for tag in tree.css("script, style, nav, header, footer, aside, iframe, noscript, svg, form"):
+        for tag in tree.css("script, style, nav, footer, iframe, noscript, svg, form"):
             tag.decompose()
-        main = tree.css_first("article, main, #content, .content, .post, .entry")
-        if main:
-            return _WS_RE.sub(" ", main.text(separator=" ", strip=True)).strip()
-        paras = [p.text(separator=" ", strip=True) for p in tree.css("p")]
-        return _WS_RE.sub(" ", " ".join(p for p in paras if len(p) > 40)).strip()
-    return _clean_text(page)
+        for node in tree.css("p, li, dd, td, blockquote, article, .comment, .answer, .post-content"):
+            t = _WS_RE.sub(" ", node.text(separator=" ", strip=True)).strip()
+            if 35 <= len(t) <= 1200:
+                blocks.append(t)
+    elif not blocks:
+        cleaned = _clean_text(page)
+        blocks.extend(cleaned[i : i + 450] for i in range(0, len(cleaned), 380))
+
+    unique_blocks: list[str] = []
+    seen: set[str] = set()
+    for b in blocks:
+        sig = b[:80].lower()
+        if sig not in seen:
+            seen.add(sig)
+            unique_blocks.append(b)
+    return unique_blocks
 
 
-def _fetch_page_text(url: str) -> str:
+def _select_best_passages(page: str, query: str, max_chars: int = MAX_CONTENT_CHARS) -> str:
+    """
+    Scores paragraph blocks against the query's information-theoretic token weights
+    and returns the most relevant passage window.
+    """
+    blocks = _extract_raw_blocks(page)
+    if not blocks:
+        return ""
+
+    clean_q = clean_search_query(query) or query
+    raw_tokens = _WORD_RE.findall(clean_q)
+    content_tokens = [t.lower() for t in raw_tokens if t.lower() not in _SYNTAX_FUNCTION_WORDS and len(t) > 1]
+    if not content_tokens:
+        content_tokens = [t.lower() for t in raw_tokens if len(t) > 1]
+    token_weights = {t.lower(): _token_specificity(t) for t in raw_tokens if t.lower() in content_tokens}
+    query_bigrams = {(content_tokens[i], content_tokens[i + 1]) for i in range(len(content_tokens) - 1)}
+
+    windows: list[tuple[float, int, str]] = []
+    for idx, blk in enumerate(blocks):
+        window_text = blk
+        if idx + 1 < len(blocks) and len(window_text) < 280:
+            window_text = f"{blk} {blocks[idx + 1]}"
+        sc = _bm25_and_proximity_score(window_text, content_tokens, token_weights, query_bigrams)
+        if idx < 3:
+            sc += 0.35
+        windows.append((sc, idx, window_text))
+
+    windows.sort(key=lambda x: x[0], reverse=True)
+    selected: list[tuple[int, str]] = []
+    used_indices: set[int] = set()
+    total_len = 0
+
+    for sc, idx, txt in windows:
+        if sc <= 0 and selected:
+            break
+        if idx in used_indices:
+            continue
+        selected.append((idx, txt))
+        used_indices.add(idx)
+        total_len += len(txt) + 3
+        if total_len >= max_chars or len(selected) >= 4:
+            break
+
+    selected.sort(key=lambda x: x[0])
+    return " … ".join(txt for _, txt in selected)[:max_chars]
+
+
+def _fetch_page_text(url: str, query: str) -> str:
     try:
         resp = _HTTP.get(url, timeout=FETCH_TIMEOUT)
-        return _extract_main_text(resp.text[:MAX_PAGE_BYTES])[:MAX_CONTENT_CHARS]
+        ctype = (resp.headers.get("content-type") or "").lower()
+        if "pdf" in ctype or "audio" in ctype or "video" in ctype or "image" in ctype:
+            return ""
+        return _select_best_passages(resp.text[:MAX_PAGE_BYTES], query, max_chars=MAX_CONTENT_CHARS)
     except Exception:
         return ""
 
 
-def _fetch_contents(results: list[SearchResult]) -> None:
-    targets = [r for r in results[:TOP_K_RESULTS_TO_FETCH] if r.source != "gnews"]
-    futs = {_EXECUTOR.submit(_fetch_page_text, r.url): r for r in targets}
-    done, _ = wait(list(futs), timeout=FETCH_DEADLINE_S)
+def _fetch_contents(results: list[SearchResult], query: str) -> None:
+    targets = [
+        r for r in results[:TOP_K_RESULTS_TO_FETCH]
+        if r.source not in ("gnews", "yt_meta") and "youtube.com/watch" not in r.url
+    ]
+    if not targets:
+        return
+    futs = {_EXECUTOR.submit(_fetch_page_text, r.url, query): r for r in targets}
+    done, pending = wait(list(futs), timeout=FETCH_DEADLINE_S)
     for f in done:
         try:
             futs[f].fetched_content = f.result()
         except Exception:
             pass
+    for f in pending:
+        f.cancel()
+
+
+def _should_auto_deep_fetch(query: str, results: list[SearchResult], fast_mode: bool) -> bool:
+    if fast_mode or not results:
+        return False
+    clean_q = clean_search_query(query) or query
+    content_tokens = [
+        t.lower() for t in _WORD_RE.findall(clean_q)
+        if t.lower() not in _SYNTAX_FUNCTION_WORDS and len(t) > 1
+    ]
+    if len(content_tokens) >= 4:
+        return True
+    top_blob = " ".join(f"{r.title} {r.snippet}".lower() for r in results[:2])
+    missing = [t for t in content_tokens if t not in top_blob]
+    return bool(missing)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -762,13 +1140,14 @@ def search_web(
     query: str,
     max_results: int = TOP_K_FINAL_SNIPPETS,
     engines: Optional[list[str]] = None,
-    fetch_content: bool = False,
+    fetch_content: Optional[bool] = None,
     use_cache: bool = True,
     fast_mode: bool = False,
     freshness: Optional[str] = None,
 ) -> SearchResponse:
     """
-    Federated parallel web + live news search.
+    Federated parallel web + live news + video metadata search with automatic
+    query-focused deep passage extraction for complex questions.
     """
     t0 = time.monotonic()
     query = (query or "").strip()
@@ -779,7 +1158,7 @@ def search_web(
         fetch_content = False
         max_results = min(max_results, TOP_K_FINAL_SNIPPETS)
 
-    cache_key = (query.lower(), bool(fetch_content), tuple(sorted(engines or ())))
+    cache_key = (query.lower(), bool(fetch_content), bool(fast_mode), tuple(sorted(engines or ())))
     if use_cache:
         cached = _SEARCH_CACHE.get(cache_key)
         if cached is not None:
@@ -794,8 +1173,20 @@ def search_web(
     fused = _temporal_rrf_fuse(by_engine, query)[:PER_ENGINE_FULL]
     final = fused[:max_results]
 
-    if fetch_content and final:
-        _fetch_contents(final)
+    do_fetch = fetch_content if fetch_content is not None else _should_auto_deep_fetch(query, final, fast_mode)
+    if do_fetch and final:
+        _fetch_contents(final, query)
+        clean_q = clean_search_query(query) or query
+        raw_tokens = _WORD_RE.findall(clean_q)
+        content_tokens = [t.lower() for t in raw_tokens if t.lower() not in _SYNTAX_FUNCTION_WORDS and len(t) > 1]
+        token_weights = {t.lower(): _token_specificity(t) for t in raw_tokens if t.lower() in content_tokens}
+        query_bigrams = {(content_tokens[i], content_tokens[i + 1]) for i in range(len(content_tokens) - 1)}
+        for r in final:
+            if r.fetched_content:
+                r.score += _bm25_and_proximity_score(
+                    r.fetched_content, content_tokens, token_weights, query_bigrams
+                ) * 0.0035
+        final.sort(key=lambda r: r.score, reverse=True)
 
     resp = SearchResponse(
         query=query,
@@ -805,38 +1196,45 @@ def search_web(
         engines_used=list(by_engine),
     )
     if use_cache and fused:
-        _SEARCH_CACHE.set(cache_key, replace(resp, results=fused), CACHE_TTL_S)
+        _SEARCH_CACHE.set(cache_key, replace(resp, results=final), CACHE_TTL_S)
 
     logger.info(
-        "[WebSearch] %r -> %d results in %dms (%s)",
-        query[:50],
+        "[WebSearch] %r -> %d results in %dms (deep_fetch=%s | %s)",
+        query[:60],
         len(final),
         resp.search_time_ms,
+        bool(do_fetch),
         ", ".join(f"{k}:{v}ms" for k, v in timings.items()) or "no engine answered",
     )
     return resp
 
 
-def format_for_llm(response: SearchResponse, max_chars: int = 4000) -> str:
-    """Formats federated web + news results with explicit publication timestamps for accurate LLM synthesis."""
+def format_for_llm(response: SearchResponse, max_chars: int = 4800) -> str:
+    """Formats federated web, news, and deep-extracted passages for accurate LLM synthesis."""
     if not response.results:
         return "No search results found."
     now_str = datetime.now().strftime("%Y-%m-%d")
     lines = [
-        f"Live Web & News Search Results for: {response.query!r} (Current Date: {now_str})",
-        "(Synthesize facts directly. Prioritize dated/recent reports alongside official statements.)",
+        f"Live Web, Video & Deep-Passage Search Results for: {response.query!r} (Current Date: {now_str})",
+        "(Synthesize specific names, titles, facts, and timestamps directly from snippets and deep excerpts.)",
     ]
     for i, r in enumerate(response.results, 1):
         when = f" [Published: {r.published}]" if r.published else ""
-        lines.append(f"{i}. {r.title}{when} ({r.domain})\n   {r.snippet}")
+        lines.append(f"{i}. {r.title}{when} ({r.domain})\n   Snippet: {r.snippet}")
         if r.fetched_content:
-            lines.append(f"   Excerpt: {r.fetched_content[:500]}")
+            lines.append(f"   Deep Page Excerpt: {r.fetched_content[:950]}")
     return "\n".join(lines)[:max_chars]
 
 
 def scrape_web_info(query: str, max_results: int = 5) -> str:
     response = search_web(query, max_results=max_results)
-    return " | ".join(f"{r.title}: {r.snippet}" for r in response.results)[:3000]
+    parts = []
+    for r in response.results:
+        piece = f"{r.title}: {r.snippet}"
+        if r.fetched_content:
+            piece += f" [Excerpt: {r.fetched_content[:450]}]"
+        parts.append(piece)
+    return " | ".join(parts)[:3600]
 
 
 def searchGoogle(query: str) -> None:
@@ -853,78 +1251,6 @@ async def async_search_web(query: str, **kwargs) -> SearchResponse:
 # ──────────────────────────────────────────────────────────────────────────────
 # YouTube Resolution Engine
 # ──────────────────────────────────────────────────────────────────────────────
-
-_yt_client_version = os.getenv("AMIGO_YT_CLIENT_VERSION", "2.20250901.01.00")
-_YT_SEARCH_URL = "https://www.youtube.com/youtubei/v1/search?prettyPrint=false"
-_YT_COOKIES = {"CONSENT": "YES+1", "SOCS": "CAI"}
-_YT_P_VIDEOS = "EgIQAQ%3D%3D"
-_YT_P_LIVE = "EgJAAQ%3D%3D"
-_YT_P_NEWEST = "CAISAhAB"
-
-
-@dataclass
-class YTVideo:
-    video_id: str
-    title: str = ""
-    channel: str = "YouTube"
-    is_live: bool = False
-    duration_s: Optional[int] = None
-    source: str = ""
-
-
-def _runs_text(node) -> str:
-    if not isinstance(node, dict):
-        return ""
-    if "simpleText" in node:
-        return str(node["simpleText"])
-    return "".join(r.get("text", "") for r in node.get("runs", []) if isinstance(r, dict))
-
-
-def _parse_duration(text: str) -> Optional[int]:
-    parts = (text or "").strip().split(":")
-    if not parts or not all(p.isdigit() for p in parts):
-        return None
-    secs = 0
-    for p in parts:
-        secs = secs * 60 + int(p)
-    return secs
-
-
-def _walk_video_renderers(node):
-    if isinstance(node, dict):
-        vr = node.get("videoRenderer")
-        if isinstance(vr, dict) and vr.get("videoId"):
-            yield vr
-        for v in node.values():
-            yield from _walk_video_renderers(v)
-    elif isinstance(node, list):
-        for v in node:
-            yield from _walk_video_renderers(v)
-
-
-def _videos_from_json(data, source: str) -> list[YTVideo]:
-    out, seen = [], set()
-    for vr in _walk_video_renderers(data):
-        vid = vr["videoId"]
-        if vid in seen:
-            continue
-        seen.add(vid)
-        badges = [b.get("metadataBadgeRenderer", {}) for b in vr.get("badges", []) if isinstance(b, dict)]
-        overlays = [o.get("thumbnailOverlayTimeStatusRenderer", {}) for o in vr.get("thumbnailOverlays", []) if isinstance(o, dict)]
-        is_live = (
-            any(b.get("style") == "BADGE_STYLE_TYPE_LIVE_NOW" for b in badges)
-            or any(o.get("style") == "LIVE" for o in overlays)
-        )
-        channel = _runs_text(vr.get("ownerText")) or _runs_text(vr.get("longBylineText")) or "YouTube"
-        out.append(YTVideo(
-            video_id=vid,
-            title=_runs_text(vr.get("title")),
-            channel=channel,
-            is_live=is_live,
-            duration_s=_parse_duration(_runs_text(vr.get("lengthText"))),
-            source=source,
-        ))
-    return out
 
 
 def _extract_json_blob(page: str, var: str):
@@ -1222,7 +1548,10 @@ def get_stock_quote(query: str, range_val: str = "1d") -> Optional[Quote]:
 
         intervals = {"1d": "5m", "5d": "15m", "1mo": "1d", "3mo": "1d", "1y": "1wk"}
         interval = intervals.get(range_val, "5m")
-        data = _yf_get(_YF_CHART.format(symbol=urllib.parse.quote(symbol, safe="")), {"range": range_val, "interval": interval})
+        data = _yf_get(
+            _YF_CHART.format(symbol=urllib.parse.quote(symbol, safe="")),
+            {"range": range_val, "interval": interval},
+        )
         result = (data.get("chart") or {}).get("result") or []
         meta = (result[0].get("meta") if result else None) or {}
         price = meta.get("regularMarketPrice")
@@ -1234,10 +1563,12 @@ def get_stock_quote(query: str, range_val: str = "1d") -> Optional[Quote]:
         history = [round(float(c), 2) for c in closes if c is not None]
         timestamps = [int(t) for t in (result[0].get("timestamp") or []) if t is not None]
 
-        # If 1d has few points (weekend/after-hours), augment with 5d so the chart is always rich
         if range_val == "1d" and len(history) < 8:
             try:
-                data_5d = _yf_get(_YF_CHART.format(symbol=urllib.parse.quote(symbol, safe="")), {"range": "5d", "interval": "15m"})
+                data_5d = _yf_get(
+                    _YF_CHART.format(symbol=urllib.parse.quote(symbol, safe="")),
+                    {"range": "5d", "interval": "15m"},
+                )
                 res_5d = (data_5d.get("chart") or {}).get("result") or []
                 if res_5d:
                     q_5d = (res_5d[0].get("indicators", {}).get("quote", [{}])[0])
@@ -1253,7 +1584,9 @@ def get_stock_quote(query: str, range_val: str = "1d") -> Optional[Quote]:
         if meta.get("regularMarketTime"):
             try:
                 from zoneinfo import ZoneInfo
-                as_of = datetime.fromtimestamp(meta["regularMarketTime"], ZoneInfo(meta.get("exchangeTimezoneName") or "UTC"))
+                as_of = datetime.fromtimestamp(
+                    meta["regularMarketTime"], ZoneInfo(meta.get("exchangeTimezoneName") or "UTC")
+                )
             except Exception:
                 as_of = datetime.fromtimestamp(meta["regularMarketTime"])
         quote = Quote(
@@ -1302,7 +1635,7 @@ def warmup() -> None:
                 fn()
             except Exception:
                 pass
-        for url in ("https://news.google.com/", "https://www.bing.com/"):
+        for url in ("https://news.google.com/", "https://www.bing.com/", "https://www.youtube.com/"):
             try:
                 _HTTP.get(url, timeout=1.5)
             except Exception:
@@ -1317,5 +1650,4 @@ def shutdown() -> None:
     _YT_CACHE.clear()
 
 
-# Automatically warm up TLS pools and DDGS on module load
 warmup()

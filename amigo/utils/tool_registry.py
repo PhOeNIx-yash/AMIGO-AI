@@ -571,7 +571,14 @@ def _tool_ask_document(params, query, spoken, conversation_history=None):
     question = str(params.get("question") or params.get("query") or query or "").strip() or query
 
     resolved_question = rag_engine.resolve_contextual_query(question, conv_history)
-    target_path = resolve_document_path(filepath) if filepath else resolve_document_path(question)
+    target_path = None
+    if filepath:
+        target_path = resolve_document_path(filepath)
+    elif re.search(r"\b[\w\-.]+\.(?:pdf|docx?|txt|xlsx?|csv|json|py|pptx?|html)\b", question, re.I):
+        target_path = resolve_document_path(question)
+    elif act_f := (get_active_state(clean_expired=False) or {}).get("active_file"):
+        if isinstance(act_f, dict) and act_f.get("path") and os.path.exists(act_f["path"]):
+            target_path = act_f["path"]
 
     ctx = ""
     if target_path and os.path.exists(target_path):
@@ -601,10 +608,17 @@ _tool_document_qa = _tool_ask_document
 def _tool_summarize_document(params, query, spoken):
     params = params if isinstance(params, dict) else {}
     conv_history = _get_conv_history()
-    filepath = params.get("filepath", "")
-    target_path = resolve_document_path(filepath) if filepath else resolve_document_path(query)
+    filepath = str(params.get("filepath") or "").strip()
+    target_path = None
+    if filepath:
+        target_path = resolve_document_path(filepath)
+    elif re.search(r"\b[\w\-.]+\.(?:pdf|docx?|txt|xlsx?|csv|json|py|pptx?|html)\b", query, re.I):
+        target_path = resolve_document_path(query)
+    elif act_f := (get_active_state(clean_expired=False) or {}).get("active_file"):
+        if isinstance(act_f, dict) and act_f.get("path") and os.path.exists(act_f["path"]):
+            target_path = act_f["path"]
 
-    if target_path:
+    if target_path and os.path.exists(target_path):
         update_active_state("active_file", {"path": target_path, "name": os.path.basename(target_path)})
         ctx = rag_engine.get_file_summary_context(target_path)
     else:
@@ -636,19 +650,25 @@ def _tool_chat(params, query, spoken, conversation_history=None):
     doc_used = bool(doc_context)
 
     if not doc_context and query and not rag_engine._is_conversational_filler(query):
-        try:
-            rag_ctx = rag_engine.build_rag_context(
-                query,
-                top_k=4,
-                conversation_history=conv_history,
-                for_voice=True,
-                min_score=0.46,
-            )
-            if rag_ctx:
-                doc_context = rag_ctx
-                doc_used = True
-        except Exception as e:
-            logger.debug("[Chat RAG Lookup]: %s", e)
+        active_state = get_active_state(clean_expired=True) or {}
+        has_active_file = bool(active_state.get("active_file", {}).get("path"))
+        q_low = query.lower()
+        is_doc_query = has_active_file or any(w in q_low for w in ("document", "file", "pdf", "sheet", "resume", "cv", "notes", "report", "paper", "doc"))
+
+        if is_doc_query:
+            try:
+                rag_ctx = rag_engine.build_rag_context(
+                    query,
+                    top_k=4,
+                    conversation_history=conv_history,
+                    for_voice=True,
+                    min_score=0.72,
+                )
+                if rag_ctx:
+                    doc_context = rag_ctx
+                    doc_used = True
+            except Exception as e:
+                logger.debug("[Chat RAG Lookup]: %s", e)
 
     ai_reply = get_ai_response(query, doc_context=doc_context, conversation_history=conv_history)
     return ai_reply, None, ({"doc_context_used": True} if doc_used else {})
@@ -1051,28 +1071,27 @@ def resolve_document_path(query_or_target: str) -> str | None:
     search_terms = []
     if m_ext := re.search(r"\b([\w\-.]+\.(?:pdf|docx?|txt|xlsx?|csv|json|py|pptx?|html))\b", raw, re.I):
         search_terms.append(m_ext.group(1))
-    if m_doc := re.search(r"\b(?:file|document|doc|ticket|sheet|in|from|of)\s+([a-zA-Z0-9_\-]{2,25})", clean, re.I):
+    if m_doc := re.search(r"\b(?:file|document|doc|ticket|sheet)\s+([a-zA-Z0-9_\-]{2,25})", clean, re.I):
         cand = m_doc.group(1).strip()
         if cand and cand.lower() not in _REFERENT_WORDS and cand.lower() not in _ORDINAL_WORDS:
             search_terms.append(cand)
-    if not search_terms and len(clean) >= 3:
-        search_terms.append(clean)
 
-    for term in [t for t in search_terms if len(t.split()) <= 2]:
+    for term in search_terms:
         if len(term) >= 2:
             matches, _ = find_files(term)
             if matches:
                 update_active_state("active_file", {"path": matches[0], "name": os.path.basename(matches[0])})
                 return matches[0]
 
-    for term in [*search_terms, clean, raw]:
-        if term and len(term) >= 3 and term.lower() not in _REFERENT_WORDS:
-            results = rag_engine.search_files_by_context(term, top_k=1)
-            if results and results[0].get("score", 0) > 0.35:
-                fpath = results[0].get("filepath")
-                if fpath and os.path.exists(fpath):
-                    update_active_state("active_file", {"path": fpath, "name": os.path.basename(fpath)})
-                    return fpath
+    if search_terms:
+        for term in search_terms:
+            if term and len(term) >= 3 and term.lower() not in _REFERENT_WORDS:
+                results = rag_engine.search_files_by_context(term, top_k=1)
+                if results and results[0].get("score", 0) > 0.35:
+                    fpath = results[0].get("filepath")
+                    if fpath and os.path.exists(fpath):
+                        update_active_state("active_file", {"path": fpath, "name": os.path.basename(fpath)})
+                        return fpath
 
     return active_path if active_ok else None
 
@@ -1531,8 +1550,8 @@ TOOLS AVAILABLE:
 
 ROUTING RULES:
 1. FOLLOW-UP RESOLUTION: Always inspect the prior conversation turns and ACTIVE STATE. If the user asks a follow-up ("what about tomorrow?", "who directed it?", "summarize it", "open the second one", "and its price?"), resolve pronouns into explicit entities in the tool parameters and pick the tool matching the active topic.
-2. DIALOGUE, MATH & GENERAL KNOWLEDGE ('chat'): Use for greetings, casual conversation, math, date/time questions, or general explanations.
-3. WEB SEARCH ('web_search'): Use for current events, real-world facts, people, movies, prices, or follow-ups to a previous web_search. Always write a complete, self-contained search query in params['query'].
+2. DIALOGUE, MATH & GENERAL KNOWLEDGE ('chat'): Use for greetings, casual conversation, math, date/time questions, or general conceptual explanations.
+3. WEB SEARCH ('web_search'): Use for real-world products (cars, electronics, phones), buying advice, specs, reviews, current events, live facts, people, places, or prices. Always write a complete, self-contained search query in params['query'].
 4. LOCAL DOCUMENTS & PERSONAL FILES ('document_qa'): Use when asking about the user's saved files, bills, tickets, notes, or follow-ups about an Active File.
 5. CONFIRMATIONS: If '[Awaiting user confirmation]' is present and user agrees ('yes', 'sure', 'do it'), call 'confirm_action'. If user declines ('no', 'cancel'), call 'cancel_action'.
 

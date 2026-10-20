@@ -177,11 +177,16 @@ class TestReminderTimer(unittest.TestCase):
         with reminder_timer._reminders_lock:
             reminder_timer._scheduled_reminders.clear()
 
-        r1 = reminder_timer.handle_set_reminder({"message": "call mom", "time": "in 10 minutes"})
-        r2 = reminder_timer.handle_set_reminder({"message": "call mom's doctor", "time": "in 10 minutes"})
-        self.assertIn("remind you", r1.lower())
-        self.assertIn("remind you", r2.lower())
-        self.assertNotEqual(r2, "That reminder is already scheduled.")
+        try:
+            with patch.object(reminder_timer, "save_reminders"):
+                r1 = reminder_timer.handle_set_reminder({"message": "call mom", "time": "in 10 minutes"})
+                r2 = reminder_timer.handle_set_reminder({"message": "call mom's doctor", "time": "in 10 minutes"})
+                self.assertIn("remind you", r1.lower())
+                self.assertIn("remind you", r2.lower())
+                self.assertNotEqual(r2, "That reminder is already scheduled.")
+        finally:
+            with reminder_timer._reminders_lock:
+                reminder_timer._scheduled_reminders.clear()
 
 
 class TestCalculatenumbers(unittest.TestCase):
