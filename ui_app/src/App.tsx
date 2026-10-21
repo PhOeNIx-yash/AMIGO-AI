@@ -1085,7 +1085,7 @@ export default function App() {
       const hasActionCards = Boolean(
         data.actionCards &&
         data.actionCards.length > 0 &&
-        data.actionCards.some((c: any) => c.type !== "file")
+        data.actionCards.some((c: any) => c.type !== "file" && c.type !== "document" && c.type !== "memory")
       );
 
       // Check for generated content panel

@@ -1,7 +1,7 @@
 """
 RAG Background Indexer for Amigo Voice Assistant.
-Crawls user directories, indexes new/modified files into ChromaDB,
-and periodically re-indexes on a background thread.
+Crawls user directories, deduplicates symlinked/OneDrive paths via canonical resolution,
+indexes new/modified files into ChromaDB, and periodically re-indexes on a background thread.
 """
 
 import hashlib
@@ -20,7 +20,6 @@ _HOME = os.path.expanduser("~")
 
 FILE_HASHES_PATH = os.path.join(_PROJECT_ROOT, "rag_data", "file_hashes.json")
 
-# Default directories to scan (supports standard, OneDrive, and custom user folders)
 DEFAULT_SCAN_DIRS = [
     os.path.join(_HOME, "Documents"),
     os.path.join(_HOME, "OneDrive", "Documents"),
@@ -31,7 +30,6 @@ DEFAULT_SCAN_DIRS = [
     os.path.join(_HOME, "Downloads"),
 ]
 
-# Skip these directory names entirely (case-insensitive)
 SKIP_DIRS = {
     "node_modules", ".git", ".venv", "venv", "env", "envs", "__pycache__",
     ".idea", ".vscode", ".cache", ".npm", ".nuget", "appdata", ".checkpoints",
@@ -67,16 +65,18 @@ class RAGIndexer:
         self._load_hashes()
 
     def _load_hashes(self) -> None:
-        """Load file hash cache from disk."""
         if os.path.exists(FILE_HASHES_PATH):
             try:
                 with open(FILE_HASHES_PATH, "r", encoding="utf-8") as f:
-                    self._file_hashes = json.load(f)
+                    raw_hashes = json.load(f)
+                # Normalize loaded keys to canonical realpaths
+                self._file_hashes = {
+                    os.path.realpath(os.path.abspath(k)): v for k, v in raw_hashes.items()
+                }
             except Exception:
                 self._file_hashes = {}
 
     def _save_hashes(self) -> None:
-        """Persist file hash cache to disk."""
         try:
             os.makedirs(os.path.dirname(FILE_HASHES_PATH), exist_ok=True)
             with open(FILE_HASHES_PATH, "w", encoding="utf-8") as f:
@@ -85,46 +85,53 @@ class RAGIndexer:
             logger.debug("[Indexer] Hash save note: %s", e)
 
     def _file_hash(self, filepath: str) -> str:
-        """SHA256 hash based on filepath + modification time + size (fast, no content read)."""
         try:
-            stat = os.stat(filepath)
-            key = f"{filepath}::{stat.st_mtime}::{stat.st_size}"
+            canonical = os.path.realpath(os.path.abspath(filepath))
+            stat = os.stat(canonical)
+            key = f"{canonical}::{stat.st_mtime}::{stat.st_size}"
             return hashlib.sha256(key.encode()).hexdigest()[:16]
         except OSError:
             return ""
 
     def _file_changed(self, filepath: str) -> bool:
-        """Check if a file has been modified since last indexing."""
-        current_hash = self._file_hash(filepath)
+        canonical = os.path.realpath(os.path.abspath(filepath))
+        current_hash = self._file_hash(canonical)
         if not current_hash:
             return False
-        return self._file_hashes.get(filepath) != current_hash
+        return self._file_hashes.get(canonical) != current_hash
 
     def get_scan_directories(self) -> list[str]:
-        """Return list of directories to scan, always ensuring Downloads is included."""
-        dirs = []
+        raw_dirs = []
         if self._rag:
             try:
                 profile = self._rag.load_profile()
                 custom_dirs = profile.get("preferences", {}).get("rag_scan_dirs", [])
                 if custom_dirs:
-                    dirs = [d for d in custom_dirs if os.path.isdir(d)]
+                    raw_dirs = [d for d in custom_dirs if os.path.isdir(d)]
             except Exception:
                 pass
 
-        if not dirs:
-            dirs = [d for d in DEFAULT_SCAN_DIRS if os.path.isdir(d)]
+        if not raw_dirs:
+            raw_dirs = [d for d in DEFAULT_SCAN_DIRS if os.path.isdir(d)]
 
-        # Always include Downloads folder if it exists
         downloads = os.path.join(_HOME, "Downloads")
-        if os.path.isdir(downloads) and downloads not in dirs:
-            dirs.append(downloads)
+        if os.path.isdir(downloads):
+            raw_dirs.append(downloads)
 
-        return dirs
+        # Deduplicate directories that resolve to the same physical path (e.g. OneDrive junctions)
+        unique_dirs: list[str] = []
+        seen_real: set[str] = set()
+        for d in raw_dirs:
+            real_d = os.path.realpath(os.path.abspath(d)).lower()
+            if real_d not in seen_real:
+                seen_real.add(real_d)
+                unique_dirs.append(os.path.realpath(os.path.abspath(d)))
+
+        return unique_dirs
 
     def _discover_files(self, directories: list[str]) -> list[str]:
-        """Walk directories and return list of indexable file paths."""
         files: list[str] = []
+        seen_files: set[str] = set()
 
         supported_exts = set()
         max_size = 50 * 1024 * 1024
@@ -137,7 +144,6 @@ class RAGIndexer:
                 continue
             try:
                 for root, dirs, filenames in os.walk(scan_dir, topdown=True):
-                    # Case-insensitive prune of skipped directories
                     dirs[:] = [d for d in dirs if d.lower() not in SKIP_DIRS and not d.startswith(".")]
 
                     for fname in filenames:
@@ -146,10 +152,13 @@ class RAGIndexer:
                         ext = os.path.splitext(fname)[1].lower()
                         if supported_exts and ext not in supported_exts:
                             continue
-                        filepath = os.path.join(root, fname)
+                        filepath = os.path.realpath(os.path.abspath(os.path.join(root, fname)))
+                        if filepath.lower() in seen_files:
+                            continue
                         try:
                             fsize = os.path.getsize(filepath)
                             if 10 < fsize < max_size:
+                                seen_files.add(filepath.lower())
                                 files.append(filepath)
                         except OSError:
                             continue
@@ -159,7 +168,6 @@ class RAGIndexer:
         return files
 
     def full_index(self, force: bool = False, progress_cb: Callable | None = None) -> dict:
-        """Full crawl and index of all scan directories. If force=True, re-indexes even if files are unchanged."""
         with self._index_lock:
             if self._is_indexing:
                 return {"status": "already_running"}
@@ -182,7 +190,6 @@ class RAGIndexer:
         errors = 0
 
         try:
-            # Guard: If Chroma is empty but hash cache has entries, force full re-index
             if self._rag and hasattr(self._rag, "_col") and hasattr(self._rag, "DOCUMENTS"):
                 try:
                     col = self._rag._col(self._rag.DOCUMENTS)
@@ -200,7 +207,6 @@ class RAGIndexer:
             self._stats["files_left"] = total
             logger.info("[Indexer] Full index (force=%s): %d files found in %s", force, total, directories)
 
-            # Clean up deleted files from index and hash cache
             deleted = [fp for fp in list(self._file_hashes.keys()) if not os.path.exists(fp)]
             for df in deleted:
                 self._file_hashes.pop(df, None)
@@ -250,7 +256,7 @@ class RAGIndexer:
                         self._save_hashes()
                     else:
                         logger.warning("[Indexer] No text indexed for %s (scanned/empty/unreadable?)", filepath)
-                        self._file_hashes[filepath] = self._file_hash(filepath)  # don't retry until changed
+                        self._file_hashes[filepath] = self._file_hash(filepath)
                         skipped += 1
                         self._stats["files_skipped"] = skipped
                         self._save_hashes()
@@ -264,7 +270,7 @@ class RAGIndexer:
                     except Exception:
                         pass
 
-                time.sleep(0.05)  # Yield CPU to keep laptop cool and UI responsive
+                time.sleep(0.05)
 
             self._save_hashes()
             if indexed > 0 and self._rag and hasattr(self._rag, "_schedule_bm25_rebuild"):
@@ -297,16 +303,15 @@ class RAGIndexer:
         return self._stats.copy()
 
     def incremental_index(self) -> dict:
-        """Re-index only new or modified files since last scan."""
         return self.full_index(force=False)
 
     def index_single_file(self, filepath: str) -> bool:
-        """Index a single file on demand."""
         if not self._rag:
             return False
-        ok = self._rag.index_document(filepath)
+        canonical = os.path.realpath(os.path.abspath(filepath))
+        ok = self._rag.index_document(canonical)
         if ok:
-            self._file_hashes[filepath] = self._file_hash(filepath)
+            self._file_hashes[canonical] = self._file_hash(canonical)
             self._save_hashes()
             if hasattr(self._rag, "_schedule_bm25_rebuild"):
                 try:
@@ -316,7 +321,6 @@ class RAGIndexer:
         return ok
 
     def start_background_daemon(self, interval_minutes: int = 30, initial_delay: int = 120) -> None:
-        """Start background indexing daemon thread."""
         if self._daemon_thread and self._daemon_thread.is_alive():
             return
 
@@ -324,7 +328,6 @@ class RAGIndexer:
 
         def _daemon():
             logger.info("[Indexer] Background daemon started (interval=%dm).", interval_minutes)
-            # Wait before initial scan so server boots fast
             time.sleep(initial_delay)
 
             while not self._stop_event.is_set():
@@ -333,7 +336,6 @@ class RAGIndexer:
                 except Exception as e:
                     logger.error("[Indexer] Daemon error: %s", e)
 
-                # Wait for next interval
                 self._stop_event.wait(timeout=interval_minutes * 60)
 
             logger.info("[Indexer] Background daemon stopped.")
@@ -342,22 +344,18 @@ class RAGIndexer:
         self._daemon_thread.start()
 
     def stop_daemon(self) -> None:
-        """Stop the background indexing daemon."""
         self._stop_event.set()
         if self._daemon_thread:
             self._daemon_thread.join(timeout=5)
 
     def get_status(self) -> dict:
-        """Return current indexing status."""
         return {**self._stats, "is_indexing": self._is_indexing}
 
 
-# ── Module-level singleton ─────────────────────────────────────
 _indexer_instance: RAGIndexer | None = None
 
 
 def get_indexer(rag_engine=None) -> RAGIndexer:
-    """Get or create the global RAGIndexer singleton."""
     global _indexer_instance
     if _indexer_instance is None:
         _indexer_instance = RAGIndexer(rag_engine)
@@ -367,7 +365,6 @@ def get_indexer(rag_engine=None) -> RAGIndexer:
 
 
 def start_background_indexer(rag_engine, interval_minutes: int = 30) -> RAGIndexer:
-    """Convenience: create indexer and start its background daemon."""
     indexer = get_indexer(rag_engine)
     indexer.start_background_daemon(interval_minutes=interval_minutes)
     return indexer

@@ -1,20 +1,22 @@
 """
-Streamlined, High-Speed RAG & Working Memory Engine for Amigo Voice Assistant.
-Fixes & Enhancements:
-1. Context-aware follow-up resolution using live conversation buffer + active state (no hardcoded synonym lists).
-2. Sub-20ms cached query embeddings (eliminates double/triple LiteRT inference per turn).
-3. Parallel multi-collection vector + BM25 hybrid retrieval via unified ThreadPoolExecutor.
-4. Unified context builder (Documents + Past Conversations + User Facts + Active State).
-5. Debounced BM25 index rebuilds to prevent disk/CPU thrashing during bulk file crawling.
-6. Robust STT entity extraction guarding against conversation fillers and false-positive names.
+Streamlined, High-Precision RAG & Working Memory Engine for Amigo Voice Assistant.
+Key Architectural Fixes:
+1. Information-Theoretic (IDF + Entropy) salient term extraction (zero hardcoded word lists).
+2. Calibrated Hybrid Fusion (Cosine + IDF-weighted lexical overlap) preventing false-positive matches.
+3. Strict Anti-Pollution Context Gatekeeping so RAG never contaminates unrelated LLM answers.
+4. Overlap-preserving sentence window chunking + CSV/table structure preservation.
+5. Sub-20ms cached query embeddings & parallel multi-collection retrieval.
 """
 
 import atexit
 import collections
+import csv
 import datetime
 import hashlib
+import io
 import json
 import logging
+import math
 import os
 import pickle
 import re
@@ -87,22 +89,20 @@ LOW_VALUE_TOOLS = {
     "stop", "stop_speaking",
 }
 
-# Language-agnostic token definitions (pure length and character entropy)
-
-MAX_VOICE_CONTEXT_CHARS = 1000
+MAX_VOICE_CONTEXT_CHARS = 1200
 MAX_FILE_SIZE = 50 * 1024 * 1024
-CHUNK_SIZE = 512
-CHUNK_OVERLAP = 128
+CHUNK_SIZE = 600
+CHUNK_OVERLAP = 150
 EMBEDDING_MODEL = os.getenv(
     "AMIGO_EMBEDDING_MODEL",
-    "litert-community/embeddinggemma-2-text-vision-440m-litert-lm",
+    "nomic-ai/nomic-embed-text-v1.5",
 )
 
 STATE_TTLS = {
     "current_media": 1800,
     "active_app": 1800,
     "last_search": 900,
-    "active_subject": 1800,
+    "active_subject": 600,
     "active_file": 1800,
 }
 
@@ -121,6 +121,10 @@ _bm25_lock = threading.Lock()
 _bm25_rebuild_timer: threading.Timer | None = None
 _bm25_timer_lock = threading.Lock()
 
+# Online token frequency tracker for dynamic IDF estimation when BM25 is empty or warming up
+_token_doc_freq: collections.Counter = collections.Counter()
+_total_tracked_chunks: int = 1
+
 _profile_cache: dict | None = None
 _profile_mtime: float = 0.0
 _profile_last_check: float = 0.0
@@ -138,7 +142,6 @@ _SEARCH_CACHE_LOCK = threading.Lock()
 _extracted_text_cache: collections.OrderedDict[tuple[str, float], str] = collections.OrderedDict()
 _extracted_text_lock = threading.Lock()
 
-# Unified thread pool for background I/O and parallel vector searches
 _executor = ThreadPoolExecutor(max_workers=6, thread_name_prefix="AmigoRAG")
 
 
@@ -150,6 +153,8 @@ class SearchResult:
     metadata: dict = field(default_factory=dict)
     rerank_score: float = 0.0
     keyword_score: float = 0.0
+    lexical_overlap: float = 0.0
+    raw_semantic: float = 0.0
     importance: float = 1.0
 
 
@@ -157,55 +162,73 @@ class SearchResult:
 #  1. Fast Cached Embeddings & Chroma Initialization
 # ═══════════════════════════════════════════════════════════════
 
-class EmbeddingGemmaEmbeddingFunction:
-    """LiteRT EmbeddingGemma 2 (768-d) with built-in LRU query cache to eliminate redundant inference."""
+class NomicEmbeddingFunction:
+    """Nomic Embed Text v1.5 (768-d) embedding function with 2048 token context & LRU query caching."""
+    is_legacy: bool = False
 
     def __init__(self, target_model: str = EMBEDDING_MODEL):
-        import litert_lm
-        litert_lm.set_min_log_severity(litert_lm.LogSeverity.ERROR)
+        import torch
+        from transformers import AutoTokenizer, AutoModel, PreTrainedModel
 
-        models_dir = os.path.join(_PROJECT_ROOT, "models")
-        candidates = [
-            os.path.join(models_dir, "embeddinggemma-2-litert", "embeddinggemma-2-text-vision-440m.litertlm"),
-            os.path.join(models_dir, "embeddinggemma-2", "embeddinggemma-2-text-vision-440m.litertlm"),
-            os.path.join(models_dir, "embeddinggemma-2-text-vision-440m.litertlm"),
-        ]
-        chosen = next((os.path.abspath(c) for c in candidates if os.path.isfile(c)), None)
+        if not hasattr(PreTrainedModel, "get_extended_attention_mask"):
+            def _get_extended_attention_mask(self, attention_mask, input_shape=None, dtype=None):
+                if dtype is None:
+                    dtype = getattr(self, "dtype", torch.float32)
+                if attention_mask.dim() == 3:
+                    extended = attention_mask[:, None, :, :]
+                elif attention_mask.dim() == 2:
+                    extended = attention_mask[:, None, None, :]
+                else:
+                    extended = attention_mask
+                extended = extended.to(dtype=dtype)
+                return (1.0 - extended) * -10000.0
 
-        if not chosen:
-            from huggingface_hub import hf_hub_download
-            dest_dir = os.path.join(models_dir, "embeddinggemma-2-litert")
-            os.makedirs(dest_dir, exist_ok=True)
-            chosen = hf_hub_download(
-                repo_id=target_model if "/" in target_model else "litert-community/embeddinggemma-2-text-vision-440m-litert-lm",
-                filename="embeddinggemma-2-text-vision-440m.litertlm",
-                local_dir=dest_dir,
-            )
+            PreTrainedModel.get_extended_attention_mask = _get_extended_attention_mask
 
-        self.active_name = chosen
-        self._opts = litert_lm.EmbeddingOptions(normalize=True)
+        self.target_model = target_model
+        self.tokenizer = AutoTokenizer.from_pretrained(target_model)
+        self.model = AutoModel.from_pretrained(target_model, trust_remote_code=True)
+        self.model.eval()
         self._lock = threading.Lock()
         self._query_cache: collections.OrderedDict[str, list[float]] = collections.OrderedDict()
 
-        # Run strictly on CPU to leave 100% of GPU VRAM for the main Spark-X2.5-4B LLM
-        self._engine = litert_lm.EmbeddingEngine(chosen, backend=litert_lm.Backend.CPU())
-
     def name(self) -> str:
-        return "embedding_gemma_2"
+        return "nomic_embed_text_v1_5"
+
+    def _mean_pooling(self, model_output, attention_mask):
+        import torch
+        token_embeddings = model_output[0]
+        input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+        return torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(input_mask_expanded.sum(1), min=1e-9)
 
     def __call__(self, input: list[str] | str) -> list[list[float]]:
+        import torch
+        import torch.nn.functional as F
+
         if isinstance(input, str):
             input = [input]
         formatted = [
-            t[:2000] if t.startswith(("title:", "task:")) else f"title: none | text: {t[:2000]}"
+            t if t.startswith(("search_document: ", "search_query: ")) else f"search_document: {t}"
             for t in input
         ]
-        with self._lock:
-            resps = self._engine.compute_embedding_batch(formatted, options=self._opts)
-            return [r.embedding for r in resps]
+        with self._lock, torch.no_grad():
+            encoded = self.tokenizer(
+                formatted,
+                padding=True,
+                truncation=True,
+                max_length=2048,
+                return_tensors="pt",
+            )
+            model_out = self.model(**encoded)
+            pooled = self._mean_pooling(model_out, encoded["attention_mask"])
+            normalized = F.normalize(pooled, p=2, dim=1)
+            return normalized.tolist()
 
     def embed_query(self, input: list[str] | str) -> list[list[float]]:
-        """Embed queries with thread-safe LRU caching so repeated calls in the same turn cost 0ms."""
+        """Embed queries with search_query: prefix and thread-safe LRU caching."""
+        import torch
+        import torch.nn.functional as F
+
         if isinstance(input, str):
             input = [input]
 
@@ -215,33 +238,37 @@ class EmbeddingGemmaEmbeddingFunction:
 
         with self._lock:
             for i, text in enumerate(input):
-                safe = text[:1500].strip()
-                key = safe.lower()
+                clean_text = text.strip()
+                key = clean_text.lower()
                 if key in self._query_cache:
                     self._query_cache.move_to_end(key)
                     results[i] = self._query_cache[key]
                 else:
-                    prompt = safe if safe.startswith("task:") else f"task: search result | query: {safe}"
+                    prompt = clean_text if clean_text.startswith("search_query: ") else f"search_query: {clean_text}"
                     missing_indices.append(i)
                     missing_prompts.append(prompt)
 
             if missing_prompts:
-                resps = self._engine.compute_embedding_batch(missing_prompts, options=self._opts)
-                for idx, resp in zip(missing_indices, resps):
-                    emb = resp.embedding
+                with torch.no_grad():
+                    encoded = self.tokenizer(
+                        missing_prompts,
+                        padding=True,
+                        truncation=True,
+                        max_length=2048,
+                        return_tensors="pt",
+                    )
+                    model_out = self.model(**encoded)
+                    pooled = self._mean_pooling(model_out, encoded["attention_mask"])
+                    normalized = F.normalize(pooled, p=2, dim=1).tolist()
+
+                for idx, emb in zip(missing_indices, normalized):
                     results[idx] = emb
-                    key = input[idx][:1500].strip().lower()
+                    key = input[idx].strip().lower()
                     self._query_cache[key] = emb
                     if len(self._query_cache) > 256:
                         self._query_cache.popitem(last=False)
 
         return [r for r in results if r is not None]
-
-    def embed_image(self, image_path: str) -> list[float]:
-        import litert_lm
-        with self._lock:
-            content = litert_lm.Content.from_file(image_path)
-            return self._engine.compute_embedding(content, options=self._opts).embedding
 
 
 def _init_chroma() -> None:
@@ -252,14 +279,14 @@ def _init_chroma() -> None:
         try:
             import chromadb
             client = chromadb.PersistentClient(path=CHROMA_DIR)
-            _embedding_fn = EmbeddingGemmaEmbeddingFunction(EMBEDDING_MODEL)
+            _embedding_fn = NomicEmbeddingFunction(EMBEDDING_MODEL)
             _recreate_collections_if_needed(client, _embedding_fn)
 
             for name in ALL_COLLECTIONS:
                 _collections[name] = client.get_or_create_collection(
                     name=name,
                     embedding_function=_embedding_fn,
-                    metadata={"hnsw:space": "cosine"},
+                    metadata={"hnsw:space": "cosine", "embedding_model": _embedding_fn.name()},
                 )
 
             _chroma_client = client
@@ -278,28 +305,39 @@ def _recreate_collections_if_needed(client, embedding_fn) -> None:
     try:
         test_emb = embedding_fn(["test"])
         expected_dim = len(test_emb[0]) if test_emb else 768
+        target_model_name = getattr(embedding_fn, "name", lambda: "nomic_embed_text_v1_5")()
         saved_facts = None
 
         for name in ALL_COLLECTIONS:
             try:
                 col = client.get_collection(name=name)
+                col_meta = col.metadata or {}
+                model_mismatch = col_meta.get("embedding_model") != target_model_name
+
+                dim_mismatch = False
                 if col and col.count() > 0:
                     sample = col.get(limit=1, include=["embeddings"])
                     embs = sample.get("embeddings") if sample else None
                     if embs is not None and len(embs) > 0 and len(embs[0]) != expected_dim:
-                        if name == USER_FACTS:
-                            saved_facts = col.get(include=["documents", "metadatas"])
-                        client.delete_collection(name=name)
+                        dim_mismatch = True
+
+                if dim_mismatch or model_mismatch:
+                    if name == USER_FACTS and col.count() > 0:
+                        saved_facts = col.get(include=["documents", "metadatas"])
+                    client.delete_collection(name=name)
+                    logger.info("[RAG v2] Recreating collection '%s' for embedding model: %s", name, target_model_name)
             except Exception:
                 pass
 
         if saved_facts and saved_facts.get("documents"):
             col = client.get_or_create_collection(
-                name=USER_FACTS, embedding_function=embedding_fn, metadata={"hnsw:space": "cosine"}
+                name=USER_FACTS,
+                embedding_function=embedding_fn,
+                metadata={"hnsw:space": "cosine", "embedding_model": target_model_name},
             )
             col.add(ids=saved_facts["ids"], documents=saved_facts["documents"], metadatas=saved_facts["metadatas"])
     except Exception as e:
-        logger.debug("[RAG v2] Dimension check note: %s", e)
+        logger.debug("[RAG v2] Dimension/model check note: %s", e)
 
 
 def _col(name: str):
@@ -315,7 +353,7 @@ def is_rag_ready() -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  2. Fast BM25 Keyword Index
+#  2. Fast BM25 Keyword Index & Dynamic Token IDF
 # ═══════════════════════════════════════════════════════════════
 
 def _init_bm25_index() -> None:
@@ -326,7 +364,11 @@ def _init_bm25_index() -> None:
                 data = pickle.load(f)
                 _bm25_index = data.get("index")
                 _bm25_doc_map = data.get("doc_map", {})
-        elif _collections.get(DOCUMENTS) and _collections[DOCUMENTS].count() > 0:
+        if (
+            (_bm25_index is None or not _bm25_doc_map)
+            and _collections.get(DOCUMENTS)
+            and _collections[DOCUMENTS].count() > 0
+        ):
             _executor.submit(_rebuild_bm25_index)
     except Exception as e:
         logger.warning("[RAG v2] BM25 load failed: %s", e)
@@ -334,7 +376,7 @@ def _init_bm25_index() -> None:
 
 
 def _rebuild_bm25_index() -> None:
-    global _bm25_index, _bm25_doc_map
+    global _bm25_index, _bm25_doc_map, _token_doc_freq, _total_tracked_chunks
     with _bm25_lock:
         try:
             from rank_bm25 import BM25Okapi
@@ -350,14 +392,24 @@ def _rebuild_bm25_index() -> None:
             if not docs:
                 return
 
-            corpus = [ _RE_WORDS.findall(d.lower()) for d in docs ]
+            corpus = []
+            df_counter: collections.Counter = collections.Counter()
+            for d in docs:
+                tokens = _RE_WORDS.findall(d.lower())
+                corpus.append(tokens)
+                df_counter.update(set(tokens))
+
+            # Store full chunk text (up to 1500 chars) so BM25 matches never truncate answers
             doc_map = {
-                i: {"text": d[:800], "metadata": m, "id": ids[i] if i < len(ids) else str(i)}
+                i: {"text": d[:1500], "metadata": m, "id": ids[i] if i < len(ids) else str(i)}
                 for i, (d, m) in enumerate(zip(docs, metas))
             }
             new_index = BM25Okapi(corpus)
             _bm25_doc_map = doc_map
             _bm25_index = new_index
+            _token_doc_freq = df_counter
+            _total_tracked_chunks = max(1, len(docs))
+
             with open(BM25_INDEX_PATH, "wb") as f:
                 pickle.dump({"index": new_index, "doc_map": doc_map}, f)
         except Exception as e:
@@ -373,6 +425,76 @@ def _schedule_bm25_rebuild(delay: float = 3.0) -> None:
         _bm25_rebuild_timer = threading.Timer(delay, lambda: _executor.submit(_rebuild_bm25_index))
         _bm25_rebuild_timer.daemon = True
         _bm25_rebuild_timer.start()
+
+
+def _token_information_weight(token: str) -> float:
+    """
+    Compute the information weight (specificity) of a token dynamically without hardcoded stopword lists.
+    Combines:
+    1. Live corpus Inverse Document Frequency (IDF) from BM25 / tracked chunks when available.
+    2. Morphological specificity (sub-linear character length + digit/mixed-case indicators).
+    """
+    low = token.lower()
+    if len(low) < 2:
+        return 0.0
+
+    # Morphological specificity: short functional particles (2-3 chars) naturally carry low weight
+    # unless they contain digits or uppercase acronyms.
+    has_digit = any(c.isdigit() for c in token)
+    is_acronym = len(token) >= 2 and token.isupper()
+    length_factor = min(1.0, max(0.15, (len(low) - 2.0) / 5.0))
+    if has_digit or is_acronym:
+        length_factor = max(length_factor, 0.85)
+
+    # Corpus IDF factor if BM25 index is populated
+    bm25 = _bm25_index
+    if bm25 is not None and hasattr(bm25, "idf") and isinstance(bm25.idf, dict):
+        idf_val = bm25.idf.get(low)
+        if idf_val is not None:
+            # Normalize positive BM25 IDF into [0.1, 1.0]; common words across all chunks have near-0 or negative IDF
+            idf_norm = min(1.0, max(0.1, float(idf_val) / 5.0))
+            return round(0.6 * idf_norm + 0.4 * length_factor, 4)
+
+    if _total_tracked_chunks > 5 and low in _token_doc_freq:
+        df = _token_doc_freq[low]
+        idf_est = math.log(1.0 + (_total_tracked_chunks - df + 0.5) / (df + 0.5))
+        idf_norm = min(1.0, max(0.1, idf_est / 4.0))
+        return round(0.6 * idf_norm + 0.4 * length_factor, 4)
+
+    return round(length_factor, 4)
+
+
+def _compute_lexical_overlap(query_tokens: list[str], doc_text: str) -> float:
+    """
+    Compute information-weighted lexical overlap in [0.0, 1.0] between query tokens and candidate chunk.
+    Prevents high-frequency functional words from falsely validating an irrelevant chunk.
+    """
+    if not query_tokens or not doc_text:
+        return 0.0
+
+    doc_tokens = set(_RE_WORDS.findall(doc_text.lower()))
+    if not doc_tokens:
+        return 0.0
+
+    total_weight = 0.0
+    matched_weight = 0.0
+    for qt in query_tokens:
+        low_q = qt.lower()
+        w = _token_information_weight(qt)
+        if w < 0.25:
+            continue
+        total_weight += w
+        if low_q in doc_tokens:
+            matched_weight += w
+        elif len(low_q) >= 5:
+            # Prefix stem match (e.g., "indexing" <-> "indexed") without hardcoded stemmers
+            stem = low_q[: max(4, len(low_q) - 2)]
+            if any(dt.startswith(stem) for dt in doc_tokens if len(dt) >= 4):
+                matched_weight += w * 0.75
+
+    if total_weight <= 1e-6:
+        return 0.0
+    return round(min(1.0, matched_weight / total_weight), 4)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -392,7 +514,6 @@ def _default_profile() -> dict:
 def load_profile() -> dict:
     global _profile_cache, _profile_mtime, _profile_last_check
     now = time.time()
-    # Throttle disk os.stat checks to at most once every 5 seconds to eliminate synchronous file-system latency
     if _profile_cache is not None and (now - _profile_last_check < 5.0):
         return _profile_cache
     _profile_last_check = now
@@ -455,7 +576,6 @@ def _persist_profile_sync(profile_snapshot: dict) -> None:
 def save_profile(profile: dict) -> None:
     global _profile_cache
     _profile_cache = profile
-    # Pass shallow dictionary snapshot to background thread; serialization happens off the main thread
     _executor.submit(_persist_profile_sync, dict(profile))
 
 
@@ -512,72 +632,99 @@ def update_active_state(slot: str, data: dict | list | None) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  4. Context-Aware Follow-Up Resolution (No Hardcoding)
+#  4. Context-Aware Follow-Up Resolution (Information-Theoretic)
 # ═══════════════════════════════════════════════════════════════
 
-def _extract_salient_terms(text: str, max_terms: int = 6) -> list[str]:
-    """Extract content-bearing tokens dynamically using token length and casing without fixed language stopwords."""
+def _extract_salient_terms(text: str, max_terms: int = 5) -> list[str]:
+    """
+    Rank and extract the highest-information content tokens from text dynamically
+    using corpus IDF, token length, and casing—without hardcoded stopword lists.
+    """
     if not text:
         return []
     tokens = _RE_WORDS.findall(text)
-    salient = []
-    seen = set()
-    for t in tokens:
+    if not tokens:
+        return []
+
+    scored_candidates: list[tuple[float, int, str]] = []
+    seen: set[str] = set()
+
+    for idx, t in enumerate(tokens):
         low = t.lower()
-        if len(low) >= 3 and not low.isdigit():
-            if low not in seen:
-                seen.add(low)
-                salient.append(t)
-    return salient[:max_terms]
+        if len(low) < 3 or low.isdigit() or low in seen:
+            continue
+        seen.add(low)
+
+        weight = _token_information_weight(t)
+        # Boost mid-sentence capitalized proper nouns / technical identifiers
+        if idx > 0 and t[0].isupper() and not t.isupper():
+            weight += 0.25
+        elif t.isupper() and len(t) >= 2:
+            weight += 0.30
+
+        # Only retain tokens with meaningful information density
+        if weight >= 0.45:
+            scored_candidates.append((weight, idx, t))
+
+    # Sort by information weight descending, preserving original order on ties
+    scored_candidates.sort(key=lambda x: (-x[0], x[1]))
+    top_selected = sorted(scored_candidates[:max_terms], key=lambda x: x[1])
+    return [item[2] for item in top_selected]
 
 
 def resolve_contextual_query(query: str, conversation_history: list[dict] | None = None) -> str:
     """
-    Dynamically resolves follow-up questions and implicit references using live Working Memory
-    (recent User + Assistant turns and active environment state) without hardcoded synonym maps.
+    Dynamically resolves follow-up questions only when the query lacks self-contained
+    high-information entities, preventing topic bleed across unrelated turns.
     """
     if not query or not query.strip():
         return ""
 
     clean_q = query.strip()
-    q_tokens = _RE_WORDS.findall(clean_q.lower())
+    q_tokens = _RE_WORDS.findall(clean_q)
     if not q_tokens:
         return clean_q
 
-    salient_q = [t for t in q_tokens if len(t) >= 3 and not t.isdigit()]
+    salient_q = _extract_salient_terms(clean_q, max_terms=6)
+    total_info_mass = sum(_token_information_weight(t) for t in q_tokens)
 
-    # A query is context-dependent if it has <= 2 content words or high short-particle ratio
-    is_context_dependent = len(salient_q) <= 2 or (len(salient_q) / max(1, len(q_tokens)) < 0.35)
+    # A query is self-contained if it already has >= 2 salient content terms or high information mass
+    is_context_dependent = (len(salient_q) <= 1 and total_info_mass < 1.35) or (
+        len(q_tokens) <= 4 and len(salient_q) == 0
+    )
     if not is_context_dependent:
         return clean_q
 
-    history = conversation_history if conversation_history is not None else get_recent_conversations(count=3)
+    history = conversation_history if conversation_history is not None else get_recent_conversations(count=2)
     context_anchors: list[str] = []
 
-    # 1. Pull active subject / active file name from environment state
-    state = get_active_state(clean_expired=True)
-    active_subj = state.get("active_subject", {}).get("name", "")
-    active_file = state.get("active_file", {}).get("name", "")
-    last_search = state.get("last_search", {}).get("query", "")
+    # 1. Pull salient entities from the immediately preceding turn first (strongest recency signal)
+    if history:
+        last_turn = history[-1]
+        ts_str = last_turn.get("timestamp")
+        # Only inherit conversational context if the previous turn was recent (< 5 minutes old)
+        if not ts_str or not _is_expired(ts_str, 300):
+            u_msg = last_turn.get("user", "")
+            a_msg = last_turn.get("assistant", "")
+            context_anchors.extend(_extract_salient_terms(u_msg, max_terms=3))
+            if len(context_anchors) < 3:
+                context_anchors.extend(_extract_salient_terms(a_msg[:250], max_terms=2))
 
-    for item in (active_subj, os.path.splitext(active_file)[0] if active_file else "", last_search):
-        if item:
-            context_anchors.extend(_extract_salient_terms(item, max_terms=3))
+    # 2. Fall back to active file or active subject only if recent turn had no anchors
+    if not context_anchors:
+        state = get_active_state(clean_expired=True)
+        active_file = state.get("active_file", {}).get("name", "")
+        active_subj = state.get("active_subject", {}).get("name", "")
+        for item in (os.path.splitext(active_file)[0] if active_file else "", active_subj):
+            if item:
+                context_anchors.extend(_extract_salient_terms(item, max_terms=3))
 
-    # 2. Pull salient terms from the most recent conversation turns (both user AND assistant)
-    for turn in reversed(history[-2:]):
-        u_msg = turn.get("user", "")
-        a_msg = turn.get("assistant", "")
-        context_anchors.extend(_extract_salient_terms(u_msg, max_terms=4))
-        context_anchors.extend(_extract_salient_terms(a_msg[:300], max_terms=4))
-
-    # Deduplicate anchors not already in the query
-    q_lower_set = set(q_tokens)
-    unique_anchors = []
+    q_lower_set = {t.lower() for t in q_tokens}
+    unique_anchors: list[str] = []
     for term in context_anchors:
-        if term.lower() not in q_lower_set and term.lower() not in [a.lower() for a in unique_anchors]:
+        if term.lower() not in q_lower_set and term.lower() not in {a.lower() for a in unique_anchors}:
             unique_anchors.append(term)
-        if len(unique_anchors) >= 5:
+        if len(unique_anchors) >= 4:
             break
 
     if not unique_anchors:
@@ -600,7 +747,7 @@ def expand_query(query: str, conversation_history: list | None = None) -> list[s
 
 
 # ═══════════════════════════════════════════════════════════════
-#  5. Parallel Hybrid Search (Vector + BM25)
+#  5. Parallel Hybrid Search & Calibrated Relevance Scoring
 # ═══════════════════════════════════════════════════════════════
 
 def clear_search_cache() -> None:
@@ -614,50 +761,82 @@ def _is_conversational_filler(query: str) -> bool:
     tokens = _RE_WORDS.findall(query)
     if not tokens:
         return True
-    return len(tokens) == 1 and len(tokens[0]) <= 3 and not any(ch in query for ch in ("?", "!", "$", "%"))
+    if len(tokens) == 1 and len(tokens[0]) <= 3 and not any(ch in query for ch in ("?", "!", "$", "%")):
+        return True
+    return False
 
 
 def _score_and_rank(
     candidates: list[SearchResult],
+    query: str,
     top_k: int,
 ) -> list[SearchResult]:
-    """Single unified scoring pipeline: deduplicates chunks, blends semantic + BM25 + recency + importance."""
+    """
+    Calibrated Hybrid Scoring Pipeline:
+    1. Deduplicates chunks across vector & BM25 retrievers.
+    2. Computes information-weighted lexical overlap with the query.
+    3. Applies non-linear cosine calibration (suppresses Nomic's 0.45-0.58 baseline noise floor).
+    4. Prevents ungrounded vector matches or isolated single-word BM25 hits from ranking high.
+    """
+    query_tokens = _RE_WORDS.findall(query)
     deduped: dict[str, SearchResult] = {}
+
     for r in candidates:
-        key = f"{r.source}::{r.text[:180]}"
+        norm_prefix = _RE_CHUNK_WHITESPACE.sub(" ", r.text.strip()[:200]).lower()
+        key = f"{r.source}::{norm_prefix}"
         if key not in deduped:
             deduped[key] = r
         else:
             existing = deduped[key]
             existing.score = max(existing.score, r.score)
+            existing.raw_semantic = max(existing.raw_semantic, r.raw_semantic)
             existing.keyword_score = max(existing.keyword_score, r.keyword_score)
 
     now_dt = datetime.datetime.now()
-    final_list = list(deduped.values())
+    scored_results: list[SearchResult] = []
 
-    for r in final_list:
-        sem = max(0.0, min(1.0, r.score))
-        if r.keyword_score > 0:
-            kw_norm = min(1.0, r.keyword_score / 20.0)
-            combined = sem + (1.0 - sem) * 0.40 * kw_norm if sem > 0 else 0.80 * kw_norm
+    for r in deduped.values():
+        sem_raw = max(0.0, min(1.0, r.raw_semantic if r.raw_semantic > 0 else r.score))
+        r.raw_semantic = sem_raw
+
+        lex_overlap = _compute_lexical_overlap(query_tokens, r.text)
+        r.lexical_overlap = lex_overlap
+
+        # Calibrate Nomic cosine similarity: map [0.35, 0.90] -> [0.0, 1.0]
+        sem_calibrated = max(0.0, min(1.0, (sem_raw - 0.35) / 0.50))
+
+        # Normalize BM25 score with saturation
+        kw_norm = min(1.0, r.keyword_score / 15.0) if r.keyword_score > 0 else 0.0
+
+        if sem_raw > 0 and kw_norm > 0:
+            # True hybrid hit (found by both dense vector and BM25)
+            combined = 0.55 * sem_calibrated + 0.30 * kw_norm + 0.15 * lex_overlap
+        elif sem_raw > 0:
+            if lex_overlap > 0.08:
+                combined = 0.70 * sem_calibrated + 0.30 * lex_overlap
+            else:
+                combined = sem_calibrated * 0.85
         else:
-            combined = sem
+            # BM25-only hit
+            combined = 0.50 * kw_norm + 0.50 * lex_overlap
 
+        # Recency decay for episodic conversations (half-life = 14 days)
         recency_mult = 1.0
-        if r.source in (CONVERSATIONS, USER_FACTS):
+        if r.source == CONVERSATIONS:
             ts_str = r.metadata.get("timestamp") if isinstance(r.metadata, dict) else None
             if ts_str:
                 try:
                     age_days = max(0.0, (now_dt - datetime.datetime.fromisoformat(ts_str)).total_seconds() / 86400.0)
-                    recency_mult = 0.85 + 0.15 * (0.5 ** (age_days / 14.0))
+                    recency_mult = 0.82 + 0.18 * (0.5 ** (age_days / 14.0))
                 except Exception:
                     pass
 
-        imp_mult = 1.0 + 0.10 * ((r.importance or 1.0) - 0.5)
+        imp_mult = 1.0 + 0.08 * ((r.importance or 1.0) - 0.5)
         r.score = round(min(1.0, max(0.0, combined * imp_mult * recency_mult)), 4)
+        scored_results.append(r)
 
-    final_list.sort(key=lambda x: x.score, reverse=True)
-    return final_list[:top_k]
+    scored_results.sort(key=lambda x: x.score, reverse=True)
+    return scored_results[:top_k]
 
 
 def _query_single_collection(
@@ -688,13 +867,17 @@ def _query_single_collection(
         res = col.query(**kwargs)
         out: list[SearchResult] = []
         if res and res.get("documents"):
-            for docs, metas, dists in zip(res["documents"], res["metadatas"], res["distances"]):
+            # Discount fallback/expanded queries slightly vs primary query
+            for q_idx, (docs, metas, dists) in enumerate(zip(res["documents"], res["metadatas"], res["distances"])):
+                weight = 1.0 if q_idx == 0 else 0.94
                 for doc, meta, dist in zip(docs, metas, dists):
                     imp = float(meta.get("importance", 1.0)) if isinstance(meta, dict) else 1.0
+                    raw_sem = round((1.0 - dist) * weight, 4)
                     out.append(SearchResult(
                         text=doc,
                         source=col_name,
-                        score=round(1.0 - dist, 4),
+                        score=raw_sem,
+                        raw_semantic=raw_sem,
                         metadata=meta or {},
                         importance=imp,
                     ))
@@ -710,11 +893,14 @@ def _bm25_search(query: str, top_k: int, metadata_filter: dict | None = None) ->
     if bm25 is None or not doc_map:
         return []
     try:
-        tokens = [t for t in _RE_WORDS.findall(query.lower()) if len(t) >= 2 and not t.isdigit()]
+        # Filter out low-information particles before querying BM25
+        raw_tokens = _RE_WORDS.findall(query.lower())
+        tokens = [t for t in raw_tokens if len(t) >= 2 and not t.isdigit() and _token_information_weight(t) >= 0.30]
         if not tokens:
             return []
+
         scores = bm25.get_scores(tokens)
-        non_zero = [(idx, s) for idx, s in enumerate(scores) if s > 0.5]
+        non_zero = [(idx, float(s)) for idx, s in enumerate(scores) if s > 1.5]
         non_zero.sort(key=lambda x: x[1], reverse=True)
 
         results = []
@@ -728,9 +914,10 @@ def _bm25_search(query: str, top_k: int, metadata_filter: dict | None = None) ->
             results.append(SearchResult(
                 text=doc_info["text"],
                 source=DOCUMENTS,
-                score=min(1.0, float(raw_score) / 20.0),
+                score=min(1.0, raw_score / 20.0),
+                raw_semantic=0.0,
                 metadata=meta,
-                keyword_score=float(raw_score),
+                keyword_score=raw_score,
             ))
             if len(results) >= top_k:
                 break
@@ -752,9 +939,10 @@ def search(
 ) -> list[dict]:
     """
     Unified, low-latency hybrid search:
-    - Resolves follow-up context automatically.
+    - Resolves follow-up context conservatively.
     - Computes query embeddings once (cached in RAM).
     - Queries target ChromaDB collections + BM25 concurrently.
+    - Scores and calibrates results using semantic + information-weighted lexical overlap.
     """
     if skip_rag or not query or not query.strip() or _is_conversational_filler(query):
         return []
@@ -770,7 +958,6 @@ def search(
     if not target_collections:
         return []
 
-    # Resolve follow-up context automatically
     queries = expand_query(query, conversation_history)
     effective_query_key = "|".join(queries)
 
@@ -783,12 +970,10 @@ def search(
                 _SEARCH_CACHE.move_to_end(cache_key)
                 return [dict(r) for r in cached_res]
 
-    # Ensure Chroma & embedding model are ready
     _col(target_collections[0])
     query_embeddings = _embedding_fn.embed_query(queries) if _embedding_fn else []
     pool_size = max(top_k * 2, 10)
 
-    # Parallel multi-collection + BM25 retrieval via unified ThreadPoolExecutor
     search_futures = [
         _executor.submit(_query_single_collection, c, query_embeddings, pool_size, metadata_filter)
         for c in target_collections
@@ -803,12 +988,14 @@ def search(
         except Exception as e:
             logger.debug("[RAG v2] Parallel retrieval worker error: %s", e)
 
-    ranked = _score_and_rank(candidates, top_k)
+    ranked = _score_and_rank(candidates, queries[0], top_k)
     dict_results = [
         {
             "text": r.text,
             "source": r.source,
             "score": r.score,
+            "raw_semantic": r.raw_semantic,
+            "lexical_overlap": r.lexical_overlap,
             "metadata": r.metadata,
             "rerank_score": r.rerank_score,
             "keyword_score": r.keyword_score,
@@ -853,6 +1040,8 @@ def search_files_by_context(query: str, top_k: int = 10) -> list[dict]:
     seen: set[str] = set()
     unique: list[dict] = []
     for r in results:
+        if r.get("score", 0.0) < 0.42:
+            continue
         fp = r.get("metadata", {}).get("filepath", "")
         if fp and fp not in seen:
             seen.add(fp)
@@ -890,8 +1079,44 @@ def reinitialize_reranker() -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  6. Smart Context Builder
+#  6. Anti-Pollution Smart Context Builder
 # ═══════════════════════════════════════════════════════════════
+
+def _is_chunk_grounded(r: dict, floor: float) -> bool:
+    """
+    Source-specific gatekeeper that verifies a retrieved chunk is genuinely
+    grounded in the query before allowing it into the LLM prompt.
+    """
+    score = float(r.get("score", 0.0) or 0.0)
+    raw_sem = float(r.get("raw_semantic", score) or 0.0)
+    lex = float(r.get("lexical_overlap", 0.0) or 0.0)
+    kw = float(r.get("keyword_score", 0.0) or 0.0)
+    src = r.get("source", "")
+
+    if score < floor:
+        return False
+
+    if src == DOCUMENTS:
+        # A document chunk is grounded if it has decent semantic match or lexical/keyword match
+        return (
+            raw_sem >= 0.50
+            or (raw_sem >= 0.42 and (lex >= 0.10 or kw >= 1.0))
+            or kw >= 2.5
+            or score >= 0.25
+        )
+
+    if src == CONVERSATIONS:
+        # Past conversations are filtered strictly so old chat doesn't pollute new turns
+        return (raw_sem >= 0.65 and lex >= 0.20) or raw_sem >= 0.75 or score >= 0.45
+
+    if src == USER_FACTS:
+        return raw_sem >= 0.48 or lex >= 0.15 or score >= 0.25
+
+    if src in (EMAILS, CALENDAR):
+        return raw_sem >= 0.48 or lex >= 0.15 or score >= 0.25
+
+    return score >= floor
+
 
 def build_rag_context(
     query: str,
@@ -900,26 +1125,27 @@ def build_rag_context(
     for_voice: bool = True,
     search_results: list | None = None,
     min_score: float | None = None,
+    target_collections: list[str] | None = None,
 ) -> str:
     """
-    Build intelligent, multi-source RAG context for LLM prompt injection:
-    1. Resolves follow-up queries using recent turns and active state.
-    2. Injects recent working memory turns if follow-up reference is detected.
-    3. Retrieves across DOCUMENTS, CONVERSATIONS, EMAILS, and CALENDAR in a single pass.
-    4. Tracks `active_file` automatically.
+    Build high-precision, non-polluting RAG context for LLM prompt injection:
+    - Targets user documents and facts by default, avoiding conversational failure loops.
+    - Filters out ungrounded semantic noise using source-specific lexical + calibrated score gates.
     """
     if not query or not query.strip() or _is_conversational_filler(query):
         return ""
 
     history = conversation_history if conversation_history is not None else get_recent_conversations(count=4)
     resolved_query = resolve_contextual_query(query, history)
+    is_followup = resolved_query != query.strip()
 
     if search_results is not None:
         results = search_results
     else:
+        collections_to_search = target_collections if target_collections is not None else [DOCUMENTS, USER_FACTS, EMAILS, CALENDAR]
         results = search(
             query,
-            target_collections=[DOCUMENTS, CONVERSATIONS, EMAILS, CALENDAR, USER_FACTS],
+            target_collections=collections_to_search,
             top_k=top_k,
             conversation_history=history,
         )
@@ -928,8 +1154,8 @@ def build_rag_context(
     total_chars = 0
     max_chars = MAX_VOICE_CONTEXT_CHARS if for_voice else 8000
 
-    # 1. Include compact working memory (last 2 turns) if follow-up was detected
-    if resolved_query != query.strip() and history:
+    # 1. Include compact working memory (last 2 turns) ONLY if a follow-up reference was resolved
+    if is_followup and history:
         recent_turns_str = []
         for turn in history[-2:]:
             u = turn.get("user", "").strip()
@@ -941,55 +1167,68 @@ def build_rag_context(
             parts.append(wm_block)
             total_chars += len(wm_block)
 
-    # 2. Score filtering and source attribution
+    # 2. Grounding verification before adding any chunk
     state = get_active_state(clean_expired=True)
     active_fp = state.get("active_file", {}).get("path", "")
+    floor = min_score if min_score is not None else 0.20
 
     if results:
-        top_score = results[0].get("score", 0.0)
-        floor = min_score if min_score is not None else (0.45 if resolved_query != query.strip() else 0.50)
-
-        if top_score >= floor:
+        grounded = [r for r in results if _is_chunk_grounded(r, floor)]
+        if grounded:
+            top_score = grounded[0].get("score", 0.0)
             margin = max(floor, top_score * 0.70)
-            relevant = [r for r in results if r.get("score", 0) >= margin or r.get("keyword_score", 0) > 3.0]
+            relevant = [r for r in grounded if r.get("score", 0.0) >= margin]
 
             k_limit = min(top_k, 3) if for_voice else max(top_k, 8)
             for r in relevant[:k_limit]:
                 src = r.get("source", "")
                 meta = r.get("metadata", {})
-                chunk_text = (r.get("text") or "").strip()[:850]
+                chunk_text = (r.get("text") or "").strip()[:900]
                 if not chunk_text or total_chars + len(chunk_text) > max_chars:
                     continue
 
                 if src == DOCUMENTS:
-                    kw_score = float(r.get("keyword_score", 0) or 0)
-                    sem_score = float(r.get("score", 0) or 0)
-                    if kw_score <= 0.0 and sem_score < 0.76:
-                        continue
-
                     fname = meta.get("filename", "document")
                     fpath = meta.get("filepath", "")
-                    if fpath and os.path.exists(fpath) and (sem_score >= 0.78 or kw_score >= 3.0):
+                    if fpath and os.path.exists(fpath) and r.get("score", 0.0) >= 0.35:
                         update_active_state("active_file", {"path": fpath, "name": fname})
                     parts.append(f"[From document '{fname}']:\n{chunk_text}")
                 elif src == CONVERSATIONS:
-                    parts.append(f"[Past conversation]:\n{chunk_text}")
+                    # Never inject past failure disclaimers as evidence
+                    low_chunk = chunk_text.lower()
+                    if not any(f in low_chunk for f in ("couldn't find", "could not find", "don't have access", "cannot access")):
+                        parts.append(f"[Past conversation]:\n{chunk_text}")
                 elif src == EMAILS:
                     parts.append(f"[Email]:\n{chunk_text}")
                 elif src == CALENDAR:
                     parts.append(f"[Calendar Event]:\n{chunk_text}")
                 elif src == USER_FACTS:
-                    parts.append(f"[Known fact]: {chunk_text}")
+                    parts.append(f"[Known user fact]: {chunk_text}")
 
                 total_chars += len(chunk_text)
 
-    # 3. Fallback: if follow-up refers to active file but general search missed it
-    if not any("[From document" in p for p in parts) and active_fp and os.path.exists(active_fp) and resolved_query != query.strip():
+    # 3. Fallback: if follow-up refers to an active file that wasn't caught by general search
+    if (
+        not any("[From document" in p for p in parts)
+        and active_fp
+        and os.path.exists(active_fp)
+        and is_followup
+    ):
         file_ctx = build_file_context(active_fp, resolved_query, max_chars=max(400, max_chars - total_chars))
         if file_ctx:
             parts.append(file_ctx)
 
-    return "\n\n".join(parts)
+    if not parts:
+        return ""
+
+    body = "\n\n".join(parts)
+    return (
+        "<supplementary_context>\n"
+        "NOTE: Use the retrieved context below ONLY if it is directly relevant to answering the user's request. "
+        "If it is unrelated, ignore it completely and do not mention it.\n\n"
+        f"{body}\n"
+        "</supplementary_context>"
+    )
 
 
 def build_file_context(filepath: str, question: str, max_chars: int = 2500) -> str:
@@ -1010,17 +1249,25 @@ def build_file_context(filepath: str, question: str, max_chars: int = 2500) -> s
         if col and col.count() > 0:
             q_embs = _embedding_fn.embed_query([resolved_q]) if _embedding_fn else None
             for where_filter in ({"filepath": canonical_path}, {"filename": filename}):
-                kwargs: dict[str, Any] = {"n_results": 4, "where": where_filter, "include": ["documents"]}
+                kwargs: dict[str, Any] = {
+                    "n_results": 4,
+                    "where": where_filter,
+                    "include": ["documents", "distances"],
+                }
                 if q_embs:
                     kwargs["query_embeddings"] = q_embs
                 else:
                     kwargs["query_texts"] = [resolved_q]
                 res = col.query(**kwargs)
                 docs = (res or {}).get("documents", [[]])[0]
+                dists = (res or {}).get("distances", [[]])[0]
                 if docs:
                     selected, total_len = [], 0
-                    for d in docs:
-                        snippet = (d or "").strip()[:800]
+                    for idx, d in enumerate(docs):
+                        sim = 1.0 - float(dists[idx]) if idx < len(dists) else 0.0
+                        if sim < 0.52:
+                            continue
+                        snippet = (d or "").strip()[:850]
                         if snippet and total_len + len(snippet) <= max_chars:
                             selected.append(snippet)
                             total_len += len(snippet)
@@ -1030,10 +1277,6 @@ def build_file_context(filepath: str, question: str, max_chars: int = 2500) -> s
     except Exception as e:
         logger.debug("[RAG v2] build_file_context error: %s", e)
 
-    text = extract_text(canonical_path)
-    if text:
-        update_active_state("active_file", {"path": canonical_path, "name": filename})
-        return f"[Content from '{filename}']:\n{text[:max_chars].strip()}"
     return ""
 
 
@@ -1042,7 +1285,7 @@ def get_file_summary_context(filepath: str) -> str:
     if not text:
         return ""
     fname = os.path.basename(filepath)
-    update_active_state("active_file", {"path": os.path.abspath(filepath), "name": fname})
+    update_active_state("active_file", {"path": os.path.realpath(os.path.abspath(filepath)), "name": fname})
     return f"[Content from '{fname}']:\n{text[:8000]}"
 
 
@@ -1099,7 +1342,7 @@ def add_conversation(
     timestamp = datetime.datetime.now().isoformat()
     importance = _calculate_importance(user_msg, assistant_msg, tool, importance)
 
-    # Automatically track active subject from salient entities in user message
+    # Track active subject ONLY when high-information content tokens exist
     salient = _extract_salient_terms(user_msg, max_terms=3)
     if salient:
         update_active_state("active_subject", {"name": " ".join(salient), "category": tool})
@@ -1127,7 +1370,8 @@ def add_conversation(
 
     def _bg_persist():
         try:
-            if importance >= 0.60:
+            # Do not index short turns or low-importance chit-chat into long-term vector storage
+            if importance >= 0.65 and len(salient) >= 2:
                 col = _col(CONVERSATIONS)
                 if col:
                     col.add(
@@ -1214,7 +1458,9 @@ def clear_conversations() -> None:
         if _chroma_client:
             _chroma_client.delete_collection(CONVERSATIONS)
             _collections[CONVERSATIONS] = _chroma_client.get_or_create_collection(
-                name=CONVERSATIONS, embedding_function=_embedding_fn, metadata={"hnsw:space": "cosine"}
+                name=CONVERSATIONS,
+                embedding_function=_embedding_fn,
+                metadata={"hnsw:space": "cosine", "embedding_model": _embedding_fn.name() if _embedding_fn else ""},
             )
     except Exception:
         pass
@@ -1303,7 +1549,7 @@ def extract_text(filepath: str) -> str:
 
     cache_key = None
     try:
-        cache_key = (os.path.normpath(filepath), os.path.getmtime(filepath))
+        cache_key = (os.path.realpath(os.path.abspath(filepath)), os.path.getmtime(filepath))
         with _extracted_text_lock:
             if cache_key in _extracted_text_cache:
                 _extracted_text_cache.move_to_end(cache_key)
@@ -1319,6 +1565,8 @@ def extract_text(filepath: str) -> str:
             extracted = _extract_docx_enhanced(filepath)
         elif ext == ".xlsx":
             extracted = _extract_xlsx_enhanced(filepath)
+        elif ext == ".csv":
+            extracted = _extract_csv_enhanced(filepath)
         elif ext == ".pptx":
             extracted = _extract_pptx_enhanced(filepath)
         else:
@@ -1356,6 +1604,19 @@ def _format_table_as_markdown(rows: list[list[Any]]) -> str:
     ]
     lines.extend("| " + " | ".join(r) + " |" for r in cleaned[1:])
     return "\n".join(lines)
+
+
+def _extract_csv_enhanced(filepath: str) -> str:
+    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+        sample = f.read(MAX_FILE_SIZE)
+    reader = csv.reader(io.StringIO(sample))
+    rows = []
+    for row in reader:
+        if any(cell.strip() for cell in row):
+            rows.append(row)
+            if len(rows) >= 2000:
+                break
+    return _format_table_as_markdown(rows)
 
 
 def _extract_pdf_enhanced(filepath: str) -> str:
@@ -1464,7 +1725,11 @@ def semantic_chunk(
     overlap: int = CHUNK_OVERLAP,
     document_title: str = "",
 ) -> list[str]:
-    if not text or len(text.strip()) < 40:
+    """
+    Section-aware and sentence-window-preserving semantic chunker.
+    Preserves Markdown table headers across splits and maintains sliding sentence overlap.
+    """
+    if not text or len(text.strip()) < 30:
         return []
 
     matches = list(_RE_MARKDOWN_HEADERS.finditer(text))
@@ -1483,17 +1748,38 @@ def semantic_chunk(
         if not body:
             continue
         bc = f"[{' > '.join(filter(None, [document_title, header]))}]\n" if (document_title or header) else ""
-        avail = max(80, chunk_size - len(bc))
-        current = ""
+        avail = max(120, chunk_size - len(bc))
+        current_sents: list[str] = []
+        current_len = 0
+
+        def _flush_sentences(keep_overlap: bool = True):
+            nonlocal current_sents, current_len
+            if not current_sents:
+                return
+            chunk_body = " ".join(current_sents).strip()
+            if chunk_body:
+                all_chunks.append((bc + chunk_body).strip())
+            if keep_overlap and overlap > 0:
+                overlap_sents: list[str] = []
+                o_len = 0
+                for s in reversed(current_sents):
+                    if o_len + len(s) + 1 <= overlap or not overlap_sents:
+                        overlap_sents.insert(0, s)
+                        o_len += len(s) + 1
+                    else:
+                        break
+                current_sents = overlap_sents
+                current_len = o_len
+            else:
+                current_sents = []
+                current_len = 0
 
         for raw_p in body.split("\n\n"):
             p = raw_p.strip()
             if not p:
                 continue
             if _is_markdown_table(p):
-                if current:
-                    all_chunks.append((bc + current).strip())
-                    current = ""
+                _flush_sentences(keep_overlap=False)
                 lines = [ln.strip() for ln in p.splitlines() if ln.strip()]
                 hdr = "\n".join(lines[:2]) + "\n"
                 rows_acc: list[str] = []
@@ -1508,28 +1794,27 @@ def semantic_chunk(
                 continue
 
             p_norm = _RE_CHUNK_WHITESPACE.sub(" ", p)
-            if len(current) + len(p_norm) <= avail:
-                current = f"{current}\n\n{p_norm}".strip() if current else p_norm
-            else:
-                if current:
-                    all_chunks.append((bc + current).strip())
-                if len(p_norm) <= avail:
-                    current = (current[-overlap:] + "\n\n" + p_norm).strip() if current else p_norm
-                else:
-                    current = ""
-                    for sent in _RE_CHUNK_SENTENCES.split(p_norm):
-                        sent = sent.strip()
-                        if not sent:
-                            continue
-                        if len(current) + len(sent) + 1 <= avail:
-                            current = f"{current} {sent}".strip()
-                        else:
-                            if current:
-                                all_chunks.append((bc + current).strip())
-                            current = sent[:avail]
+            sentences = [s.strip() for s in _RE_CHUNK_SENTENCES.split(p_norm) if s.strip()]
+            for sent in sentences:
+                if len(sent) > avail:
+                    # Hard split ultra-long run-on lines with character overlap
+                    _flush_sentences(keep_overlap=False)
+                    step = max(60, avail - overlap)
+                    for idx in range(0, len(sent), step):
+                        sub = sent[idx : idx + avail].strip()
+                        if len(sub) > 25:
+                            all_chunks.append((bc + sub).strip())
+                    continue
 
-        if current:
-            all_chunks.append((bc + current).strip())
+                if current_len + len(sent) + 1 <= avail:
+                    current_sents.append(sent)
+                    current_len += len(sent) + 1
+                else:
+                    _flush_sentences(keep_overlap=True)
+                    current_sents.append(sent)
+                    current_len += len(sent) + 1
+
+        _flush_sentences(keep_overlap=False)
 
     return [c for c in all_chunks if len(c) > 25]
 
@@ -1584,7 +1869,7 @@ def index_document(filepath: str) -> bool:
 
         for i in range(0, len(ids), 100):
             b_docs = chunks[i : i + 100]
-            b_embs = _embedding_fn([f"title: {filename} | text: {d}" for d in b_docs]) if _embedding_fn else None
+            b_embs = _embedding_fn([f"search_document: {d}" for d in b_docs]) if _embedding_fn else None
             kwargs: dict[str, Any] = {
                 "ids": ids[i : i + 100],
                 "documents": b_docs,
@@ -1633,12 +1918,14 @@ def index_calendar_event(subject: str, start: str, end: str, location: str = "",
 
 
 # ═══════════════════════════════════════════════════════════════
-#  9. Profile Prompts & Lifecycle Helpers
+#  9. Profile Prompts & Lifecycle Helpers (Non-Polluting)
 # ═══════════════════════════════════════════════════════════════
 
 def _clean_stt_entity(raw: str) -> str:
-    tokens = [t for t in _RE_WORDS.findall(raw.strip()) if len(t) >= 2]
-    return " ".join(tokens[:3]).title() if tokens else raw.strip()
+    # Stop at punctuation or clause boundaries so STT run-on sentences aren't captured as names/cities
+    clause = re.split(r"[.!?,;:]|\b(?:and|but|because|so|right|now|today|please)\b", raw.strip(), maxsplit=1, flags=re.I)[0]
+    tokens = [t for t in _RE_WORDS.findall(clause.strip()) if len(t) >= 2]
+    return " ".join(tokens[:3]).title() if tokens else ""
 
 
 def extract_user_profile_updates(user_query: str, remember: str = "") -> None:
@@ -1651,14 +1938,14 @@ def extract_user_profile_updates(user_query: str, remember: str = "") -> None:
     preferences = profile.setdefault("preferences", {})
     updated = False
 
-    if m := re.search(r"\b(?:my name is|call me)\s+([A-Za-z][A-Za-z\s]{1,35})", text, re.I):
+    if m := re.search(r"\b(?:my name is|call me)\s+([A-Za-z][A-Za-z\s]{1,30})", text, re.I):
         name = _clean_stt_entity(m.group(1))
-        if name and len(name) >= 2 and not any(ch.isdigit() for ch in name):
+        if name and 2 <= len(name) <= 25 and not any(ch.isdigit() for ch in name):
             identity["name"] = name
             add_user_fact(f"User's name is {name}", category="identity", importance=0.95)
             updated = True
 
-    if m := re.search(r"\b(?:my (?:favorite|favourite) artist is|i love listening to)\s+([A-Za-z0-9][A-Za-z0-9\s]{1,40})", text, re.I):
+    if m := re.search(r"\b(?:my (?:favorite|favourite) artist is|i love listening to)\s+([A-Za-z0-9][A-Za-z0-9\s]{1,35})", text, re.I):
         artist = _clean_stt_entity(m.group(1))
         if artist:
             favs = preferences.setdefault("favorite_artists", [])
@@ -1668,7 +1955,7 @@ def extract_user_profile_updates(user_query: str, remember: str = "") -> None:
                 add_user_fact(f"Favorite artist: {artist}", category="preference", importance=0.75)
                 updated = True
 
-    if m := re.search(r"\b(?:i live in|my city is)\s+([A-Za-z][A-Za-z\s]{1,40})", text, re.I):
+    if m := re.search(r"\b(?:i live in|my city is)\s+([A-Za-z][A-Za-z\s]{1,30})", text, re.I):
         city = _clean_stt_entity(m.group(1))
         if city:
             preferences["favorite_city"] = city
@@ -1684,31 +1971,37 @@ def extract_user_profile_updates(user_query: str, remember: str = "") -> None:
 
 
 def get_user_profile_prompt(query: str = "", semantic_search: bool = True) -> str:
+    """
+    Build user profile prompt without forcing the LLM to hallucinate connections
+    to unrelated personal facts.
+    """
     profile = load_profile()
     parts: list[str] = []
     if name := profile.get("identity", {}).get("name"):
-        parts.append(f"You are talking to {name}. Use their name naturally.")
-    if artists := profile.get("preferences", {}).get("favorite_artists"):
-        parts.append(f"User's favorite artists: {', '.join(artists[:3])}.")
+        parts.append(f"User's name: {name} (address them naturally only when appropriate).")
     if city := profile.get("preferences", {}).get("favorite_city"):
-        parts.append(f"User lives in: {city}.")
+        parts.append(f"User's location: {city}.")
 
-    facts_retrieved = False
     if semantic_search and query and not _is_conversational_filler(query):
         try:
             matched = search(query, target_collections=[USER_FACTS], top_k=3)
             for mf in matched:
                 doc = (mf.get("text") or "").strip()
-                if doc and mf.get("score", 0) >= 0.45:
-                    parts.append(f"Remembered fact: <<BEGIN_FACT>>{doc}<<END_FACT>>")
-                    facts_retrieved = True
+                # Strict grounding check so random facts don't pollute general queries
+                if doc and _is_chunk_grounded(mf, floor=0.58):
+                    parts.append(f"Relevant user memory: {doc}")
         except Exception:
             pass
 
-    if facts_retrieved:
-        parts.append("CRITICAL: Answer factually using the user's personal data and memories above.")
+    if not parts:
+        return ""
 
-    return "\n".join(parts)
+    return (
+        "<user_profile_context>\n"
+        "Background info about the user (use ONLY if directly relevant to their question; otherwise ignore):\n"
+        + "\n".join(parts)
+        + "\n</user_profile_context>"
+    )
 
 
 def get_active_context_prompt() -> str:
@@ -1725,7 +2018,7 @@ def get_active_context_prompt() -> str:
         parts.append(f"Current Topic: {subj}")
     if srch := state.get("last_search", {}).get("query"):
         parts.append(f"Recent Search: '{srch}'")
-    return f"[PC Environment State: {' | '.join(parts)}]" if parts else ""
+    return f"[PC Environment State (reference only if asked): {' | '.join(parts)}]" if parts else ""
 
 
 def get_index_stats() -> dict:

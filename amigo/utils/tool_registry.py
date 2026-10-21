@@ -579,7 +579,13 @@ def _tool_ask_document(params, query, spoken, conversation_history=None):
         ctx = rag_engine.build_file_context(target_path, resolved_question)
 
     if not ctx or len(ctx.strip()) < 60:
-        broader_ctx = rag_engine.build_rag_context(resolved_question, top_k=5, conversation_history=conv_history, for_voice=False)
+        broader_ctx = rag_engine.build_rag_context(
+            resolved_question,
+            top_k=5,
+            conversation_history=conv_history,
+            for_voice=False,
+            target_collections=[rag_engine.DOCUMENTS, rag_engine.USER_FACTS],
+        )
         if broader_ctx:
             ctx = broader_ctx
             if not target_path:
@@ -1462,10 +1468,10 @@ def _tool(name: str, description: str, props: dict | None = None, required: list
 
 
 TOOL_DEFINITIONS = [
-    _tool("chat", "Conversational response: greetings, casual talk, advice, quick math, current date/time, general knowledge, or small talk.",
+    _tool("chat", "Conversational dialogue: greetings, casual chit-chat, opinions, advice, creative writing, or quick math. NOT for real-world leaders, external facts, or current information.",
           {"response": _p("string", "Your direct, natural spoken or written reply to the user (1 to 2 concise sentences)")},
           ["response"]),
-    _tool("web_search", "Search the web for real-time facts, news, people, movies, music trivia, release dates, or external knowledge.",
+    _tool("web_search", "Search the web for real-world people, current leaders (Prime Ministers, Presidents, CEOs, politicians), news, sports, geography, history, release dates, products, or external factual knowledge.",
           {"query": _p("string", "Self-contained search query with pronouns resolved from conversation history"),
            "show_in_browser": _p("boolean", "True if user asked to open search results in a browser")}, ["query"]),
     _tool("stock_quote", "Look up real-time stock or crypto prices.", {"symbol": _p("string", "Ticker or asset name")}, ["symbol"]),
@@ -1502,8 +1508,8 @@ TOOL_DEFINITIONS = [
     _tool("cancel_reminder", "Cancel one or all reminders.", {"query": _p("string", "'all' or reminder title")}, ["query"]),
     _tool("find_file", "Find local files or folders by name or topic.", {"query": _p("string", "Search pattern")}, ["query"]),
     _tool("open_file", "Open a local file by path, name, or ordinal ('number 1', 'it').", {"path": _p("string", "File reference")}, ["path"]),
-    _tool("document_qa", "Answer questions or summarize indexed local documents, files, bills, tickets, or personal records.",
-          {"query": _p("string", "Self-contained question about document contents"), "filepath": _p("string", "Optional filename")}, ["query"]),
+    _tool("document_qa", "Look up and answer questions from indexed local documents, personal records (PNR numbers, phone numbers, tickets, bookings, receipts, bills, notes), or active files.",
+          {"query": _p("string", "Self-contained question or lookup query"), "filepath": _p("string", "Optional filename")}, ["query"]),
     _tool("memory_recall", "Save a new personal fact ('remember that...') or recall saved user facts/preferences.",
           {"query": _p("string", "Question about saved memory"), "fact": _p("string", "Fact to save if user asked to remember")}),
     _tool("get_calendar", "View or search calendar schedule.", {"days": _p("integer", "Days ahead"), "query": _p("string", "Search keyword")}),
@@ -1557,11 +1563,11 @@ TOOLS AVAILABLE:
 
 ROUTING RULES:
 1. FOLLOW-UP & MEDIA CONTEXT: Always inspect prior turns. For 'play_youtube', pass the exact song or video query the user said in params['query']. Never guess or invent artist names that the user did not say (e.g. if the user says 'play emptiness', params['query'] MUST be 'emptiness', NOT 'emptiness by <artist>'). If the user asks to 'play it again' or replay music, call 'play_youtube' with the song/artist query from the prior turn. For resuming paused media, call 'resume_media'. For next song, call 'next_track'.
-2. DIALOGUE, MATH & GENERAL KNOWLEDGE ('chat'): Use for greetings, casual talk, math, or general conceptual explanations. Put your direct, concise spoken reply in params['response']. If the user specifically asks for the current time or date, call 'get_time' or 'get_date'.
+2. DIALOGUE, MATH & CREATIVE ('chat'): Use ONLY for greetings, casual chit-chat, opinions, advice, creative writing, or quick math. Put your direct, concise spoken reply in params['response']. If the user asks for the current time or date, call 'get_time' or 'get_date'. Do NOT use 'chat' for external facts, real-world leaders, or who-is questions.
 3. VOLUME CONTROL ('set_volume'): When muting, unmuting, or setting volume, pass params['action'] as 'mute', 'unmute', 'volume_up', 'volume_down', or 'set_volume' (with level).
 4. BROWSING & DIRECT ACTIONS ('open_website'): Use when user wants to visit a website, portal, or homepage (e.g., 'open booking.com', 'go to reddit', 'open github'). Only construct query URLs for standard public services (Google Flights, Google Maps). Never hallucinate or guess complex internal query parameters or path slugs for shopping/booking sites.
-5. WEB SEARCH ('web_search'): Use when user wants to search, find, or look up products, hotels, flights, deals, or items on ANY website or store (e.g., 'find hotels in Goa on Booking.com', 'find running shoes on Flipkart', 'curtain lights on Amazon'). Write the complete query in params['query']. Set show_in_browser=true if user wants to open the results.
-6. LOCAL DOCUMENTS & PERSONAL FILES ('document_qa'): Use when asking about the user's saved files, bills, tickets, notes, or follow-ups about an Active File.
+5. WEB SEARCH ('web_search'): Use for questions about real-world people, current leaders, Prime Ministers, Presidents, politicians, current events, news, sports, geography, history, real-time facts, or products (e.g., 'who is the Prime Minister of Nepal', 'who is the CEO of Microsoft', 'who won the match', 'find hotels in Goa on Booking.com'). Write the complete query in params['query']. Never hallucinate or invent real-world facts!
+6. LOCAL DOCUMENTS & PERSONAL RECORDS ('document_qa'): Use when asking about personal records, user documents, or details stored in user files (e.g., PNR number, phone number, flight/train ticket, booking, invoice, receipt, bills, notes, resume, passport, credentials, saved files, or follow-ups about an Active File). params['query'] MUST be the user's question.
 7. CONFIRMATIONS: If '[Awaiting user confirmation]' is present and user agrees ('yes', 'sure', 'do it'), call 'confirm_action'. If user declines ('no', 'cancel'), call 'cancel_action'.
 
 When outputting tool actions or direct chat responses, output ONLY valid JSON:
@@ -1717,8 +1723,8 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
         response = query_local_llm(
             messages,
             system_prompt="",
-            max_tokens=80,
-            temperature=0.0,
+            max_tokens=220,
+            temperature=0.5,
             repeat_penalty=1.0,
             thinking=False,
             sanitize=False,
@@ -2007,30 +2013,7 @@ def build_action_cards(tool: str, params: dict, result_metadata: dict, url: str 
             },
         })
 
-    elif tool == "memory_recall" and result_metadata.get("recalled_facts"):
-        facts = result_metadata.get("recalled_facts", [])
-        cards.append({
-            "id": "act-memory",
-            "type": "memory",
-            "title": "Recalled from Memory",
-            "subtitle": facts[0] if facts else response_text[:120],
-            "selected": True,
-            "badge": "Memory",
-            "payload": {"tool": "memory_recall", "facts": facts},
-        })
 
-    elif tool in ("document_qa", "ask_document") and (result_metadata.get("matched_docs") or result_metadata.get("doc_context_used")):
-        docs = result_metadata.get("matched_docs", [])
-        first_doc = os.path.basename(docs[0]) if docs else "Your documents"
-        cards.append({
-            "id": "act-doc-qa",
-            "type": "document",
-            "title": f"Document Knowledge: {first_doc}",
-            "subtitle": response_text[:140] + ("..." if len(response_text) > 140 else ""),
-            "selected": True,
-            "badge": "Document",
-            "payload": {"tool": "document_qa", "matched_docs": docs},
-        })
 
     elif tool == "clarification" or result_metadata.get("requires_clarification"):
         candidates = result_metadata.get("candidates") or params.get("candidate_tools") or ["chat", "web_search"]
