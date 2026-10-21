@@ -54,6 +54,7 @@ interface ChatWorkspaceProps {
   userName?: string;
   assistantState?: string;
   liveIntent?: string;
+  liveParams?: Record<string, any> | null;
   activePrompt?: string;
 }
 
@@ -292,10 +293,37 @@ const FormattedMessage: React.FC<{
   );
 };
 
-// Simple inline parser for bold, italic, code
+// Inline parser for markdown links, raw URLs, bold, italic, code
 function renderInlineMarkdown(text: string): React.ReactNode {
-  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/g);
+  const parts = text.split(/(\[[^\]]+\]\(https?:\/\/[^\s\)]+\)|https?:\/\/[^\s\)]+|\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/g);
   return parts.map((part, index) => {
+    const mdLink = part.match(/^\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)$/);
+    if (mdLink) {
+      return (
+        <a
+          key={index}
+          href={mdLink[2]}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 font-medium text-cyan-400 hover:text-cyan-300 underline underline-offset-2 transition-colors cursor-pointer"
+        >
+          {mdLink[1]}
+        </a>
+      );
+    }
+    if (/^https?:\/\/[^\s\)]+$/.test(part)) {
+      return (
+        <a
+          key={index}
+          href={part}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 font-medium text-cyan-400 hover:text-cyan-300 underline underline-offset-2 break-all transition-colors cursor-pointer"
+        >
+          {part}
+        </a>
+      );
+    }
     if (part.startsWith("**") && part.endsWith("**")) {
       return (
         <strong key={index} className="font-semibold text-slate-100">
@@ -331,6 +359,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   userName = "",
   assistantState,
   liveIntent,
+  liveParams,
   activePrompt,
 }) => {
   const theme = COLOR_THEMES[colorTheme] || COLOR_THEMES.beams || COLOR_THEMES.violet;
@@ -347,49 +376,224 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const speechRecognitionRef = useRef<any>(null);
 
-  // Compute live AI status state based on active processing context
-  const currentAiState: AiStatusState = useMemo(() => {
-    if (!isLoading) return "done";
-    const text = `${liveIntent || ""} ${activePrompt || ""} ${inputText || ""} ${assistantState || ""}`.toLowerCase();
-    if (
-      text.includes("search") ||
-      text.includes("web") ||
-      text.includes("google") ||
-      text.includes("find") ||
-      text.includes("browse") ||
-      text.includes("price") ||
-      text.includes("stock") ||
-      text.includes("news") ||
-      text.includes("weather")
-    ) {
-      return "researching";
+  // Dynamically compute AI status: state, dynamic action label, and specific detail
+  const statusInfo = useMemo(() => {
+    if (!isLoading) {
+      return {
+        state: "done" as AiStatusState,
+        label: "Done",
+        detail: undefined,
+      };
+    }
+
+    const intent = (liveIntent || "").trim().toLowerCase();
+    const serverLabel = liveParams?.label;
+    const serverDetail = liveParams?.detail;
+
+    // 1. If server explicitly supplied label/detail via SSE intent_detected:
+    if (serverLabel) {
+      let mappedState: AiStatusState = "thinking";
+      const sl = String(serverLabel).toLowerCase();
+      if (
+        intent.includes("open") ||
+        sl.includes("browsing") ||
+        intent.includes("website")
+      ) {
+        mappedState = "browsing";
+      } else if (
+        intent.includes("search") ||
+        sl.includes("search") ||
+        intent.includes("weather") ||
+        intent.includes("youtube")
+      ) {
+        mappedState = "researching";
+      } else if (
+        intent.includes("doc") ||
+        intent.includes("file") ||
+        intent.includes("screen") ||
+        intent.includes("stock") ||
+        sl.includes("analyz") ||
+        sl.includes("quote")
+      ) {
+        mappedState = "analyzing";
+      } else if (
+        intent.includes("content") ||
+        intent.includes("email") ||
+        sl.includes("draft") ||
+        sl.includes("writ")
+      ) {
+        mappedState = "writing";
+      }
+
+      return {
+        state: mappedState,
+        label: String(serverLabel),
+        detail:
+          serverDetail ||
+          (activePrompt
+            ? activePrompt.length > 38
+              ? activePrompt.slice(0, 38) + "..."
+              : activePrompt
+            : undefined),
+      };
+    }
+
+    // 2. Direct tool intent mapping:
+    if (intent === "web_search") {
+      return {
+        state: "researching" as AiStatusState,
+        label: "Searching Web",
+        detail:
+          (liveParams?.query as string) ||
+          (activePrompt
+            ? activePrompt.length > 38
+              ? activePrompt.slice(0, 38) + "..."
+              : activePrompt
+            : undefined),
+      };
+    }
+    if (intent === "open_website") {
+      return {
+        state: "browsing" as AiStatusState,
+        label: "Browsing",
+        detail:
+          (liveParams?.title as string) ||
+          (liveParams?.url as string) ||
+          "Opening link",
+      };
     }
     if (
-      text.includes("calc") ||
-      text.includes("analyz") ||
-      text.includes("rag") ||
-      text.includes("doc") ||
-      text.includes("pdf") ||
-      text.includes("table") ||
-      text.includes("chart") ||
-      text.includes("file") ||
-      text.includes("read")
+      intent === "document_qa" ||
+      intent === "ask_document" ||
+      intent === "summarize_document"
     ) {
-      return "analyzing";
+      return {
+        state: "analyzing" as AiStatusState,
+        label: "Analyzing Documents",
+        detail:
+          (liveParams?.filepath as string) ||
+          (liveParams?.query as string) ||
+          "Searching indexed notes",
+      };
     }
     if (
-      text.includes("writ") ||
-      text.includes("draft") ||
-      text.includes("code") ||
-      text.includes("compose") ||
-      text.includes("summary") ||
-      text.includes("explain") ||
-      text.includes("create")
+      intent === "generate_content" ||
+      intent === "regenerate_content" ||
+      intent === "draft_email"
     ) {
-      return "writing";
+      return {
+        state: "writing" as AiStatusState,
+        label: "Drafting",
+        detail:
+          (liveParams?.topic as string) ||
+          (liveParams?.type as string) ||
+          "Formulating draft",
+      };
     }
-    return "thinking";
-  }, [isLoading, liveIntent, activePrompt, inputText, assistantState]);
+    if (intent === "stock_quote") {
+      return {
+        state: "analyzing" as AiStatusState,
+        label: "Market Quote",
+        detail: liveParams?.symbol
+          ? `Quote: ${String(liveParams.symbol).toUpperCase()}`
+          : "Fetching live price",
+      };
+    }
+    if (intent === "get_weather") {
+      return {
+        state: "researching" as AiStatusState,
+        label: "Checking Weather",
+        detail: (liveParams?.city as string) || "Local forecast",
+      };
+    }
+    if (intent === "play_youtube") {
+      return {
+        state: "researching" as AiStatusState,
+        label: "Streaming Media",
+        detail: (liveParams?.query as string) || "YouTube",
+      };
+    }
+    if (intent === "read_screen" || intent === "screen_vision") {
+      return {
+        state: "analyzing" as AiStatusState,
+        label: "Vision Analysis",
+        detail: "Inspecting active screen",
+      };
+    }
+    if (intent === "find_file" || intent === "open_file") {
+      return {
+        state: "analyzing" as AiStatusState,
+        label: "Finding File",
+        detail: (liveParams?.query as string) || "Scanning file system",
+      };
+    }
+
+    // 3. Fallback heuristic from prompt text:
+    const promptText = `${activePrompt || ""} ${inputText || ""}`.toLowerCase();
+    if (
+      promptText.includes("search") ||
+      promptText.includes("google") ||
+      promptText.includes("flight") ||
+      promptText.includes("amazon") ||
+      promptText.includes("buy") ||
+      promptText.includes("weather")
+    ) {
+      return {
+        state: "researching" as AiStatusState,
+        label: "Researching",
+        detail: activePrompt
+          ? activePrompt.length > 38
+            ? activePrompt.slice(0, 38) + "..."
+            : activePrompt
+          : undefined,
+      };
+    }
+    if (
+      promptText.includes("analyze") ||
+      promptText.includes("pdf") ||
+      promptText.includes("file") ||
+      promptText.includes("doc") ||
+      promptText.includes("calculate") ||
+      promptText.includes("table")
+    ) {
+      return {
+        state: "analyzing" as AiStatusState,
+        label: "Analyzing",
+        detail: activePrompt
+          ? activePrompt.length > 38
+            ? activePrompt.slice(0, 38) + "..."
+            : activePrompt
+          : undefined,
+      };
+    }
+    if (
+      promptText.includes("write") ||
+      promptText.includes("draft") ||
+      promptText.includes("code") ||
+      promptText.includes("compose") ||
+      promptText.includes("email")
+    ) {
+      return {
+        state: "writing" as AiStatusState,
+        label: "Writing",
+        detail: activePrompt
+          ? activePrompt.length > 38
+            ? activePrompt.slice(0, 38) + "..."
+            : activePrompt
+          : undefined,
+      };
+    }
+
+    return {
+      state: "thinking" as AiStatusState,
+      label: "Thinking",
+      detail: activePrompt
+        ? activePrompt.length > 38
+          ? activePrompt.slice(0, 38) + "..."
+          : activePrompt
+        : undefined,
+    };
+  }, [isLoading, liveIntent, liveParams, activePrompt, inputText]);
 
   useEffect(() => {
     if (!isLoading) {
@@ -579,8 +783,9 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
           <div className="flex items-center justify-between pb-1 px-1">
             <div className="flex items-center space-x-2">
               <AiStatus
-                state={isLoading ? currentAiState : "done"}
-                label={isLoading ? undefined : "Amigo Ready"}
+                state={isLoading ? statusInfo.state : "done"}
+                label={isLoading ? statusInfo.label : "Amigo Ready"}
+                detail={isLoading ? statusInfo.detail : undefined}
                 timer={isLoading}
                 shimmer={isLoading}
                 className="scale-90 origin-left text-xs"
@@ -898,18 +1103,18 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                 <Sparkles className="w-3.5 h-3.5" />
               </div>
               <div
-                className={`px-3 py-1.5 rounded-xl border backdrop-blur-md shadow-sm transition-colors duration-200 ${
+                className={`px-3.5 py-1.5 rounded-full border backdrop-blur-md shadow-sm transition-all duration-300 ${
                   isDark
-                    ? "bg-slate-900/80 border-slate-800 text-slate-200"
-                    : "bg-white/90 border-slate-200 text-slate-800"
+                    ? "bg-slate-900/90 border-slate-800 text-slate-100 shadow-cyan-950/20"
+                    : "bg-white/95 border-slate-200 text-slate-800 shadow-slate-200/50"
                 }`}
               >
                 <AiStatus
-                  state={currentAiState}
-                  detail={activePrompt ? (activePrompt.length > 38 ? activePrompt.slice(0, 38) + "..." : activePrompt) : undefined}
+                  state={statusInfo.state}
+                  label={statusInfo.label}
+                  detail={statusInfo.detail}
                   timer={true}
                   shimmer={true}
-                  className="text-xs"
                 />
               </div>
             </motion.div>

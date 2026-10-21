@@ -1,6 +1,6 @@
 """
 LLM-Based Agent for Amigo Voice Assistant.
-Optimized for Granite 3.2/4.2 3B with:
+Optimized for Spark-X2.5 4B with:
 - Static system prompt prefix for instant LlamaRAMCache KV-cache reuse
 - Full multi-turn conversation history preservation
 - Single-pass RAG profile lookup per turn
@@ -16,10 +16,9 @@ import re
 import sys
 import threading
 import time
-import typing
 import unicodedata
 from pathlib import Path
-from typing import Any, Generator
+from typing import Generator
 
 try:
     import pyperclip
@@ -80,8 +79,6 @@ _internet_status_cache = {"status": "Connected (Online)", "online": True, "times
 _INTERNET_CACHE_TTL = 30.0
 
 _CLIPBOARD_KEYWORDS = ("clipboard", "copied", "what did i copy", "paste")
-_SCREEN_KEYWORDS = ("on my screen", "on screen", "this screen", "what do you see", "look at my screen")
-_RE_SECRET = re.compile(r"(password|token|secret|key|api_key|apikey)=([^\s]+)", re.IGNORECASE)
 _RE_SPEAKER_PREFIX = re.compile(r"^(Amigo|Assistant|AI):\s*", flags=re.IGNORECASE)
 
 _RE_PROBE_GUARD = re.compile(
@@ -105,13 +102,6 @@ _STATIC_VOICE_SYSTEM_PROMPT = (
     "- Do NOT use markdown formatting (no asterisks, bolding, headers, bullet points, or backticks) in spoken mode.\n"
     "- Resolve pronouns ('it', 'that', 'they', 'he', 'she', 'there') and follow-up questions naturally from the conversation history and active environment state.\n"
     "- Answer truthfully using provided context, personal memories, or internal knowledge without fabricating facts."
-)
-
-_STATIC_TEXT_SYSTEM_PROMPT = (
-    "You are Amigo, an intelligent personal AI assistant on the user's Windows PC.\n"
-    "Provide clear, direct, well-structured answers immediately without unnecessary preamble.\n"
-    "Never deflect with multi-choice question menus. Only reference 'available documents' if the user specifically asked about their personal files.\n"
-    "Resolve follow-up questions and pronouns naturally using the conversation history and environment state."
 )
 
 
@@ -179,15 +169,36 @@ def get_clipboard_text() -> str | None:
     return None
 
 
-def _build_voice_prompt(query: str = "", is_voice: bool = True, has_web_context: bool = False) -> str:
-    """Returns a static system prompt so llama.cpp KV prefix cache never invalidates."""
-    base = _STATIC_VOICE_SYSTEM_PROMPT if is_voice else _STATIC_TEXT_SYSTEM_PROMPT
-    if is_thinking_enabled():
-        return base + "\n- Enclose internal reasoning strictly inside <think>...</think> tags before your final answer."
-    return base
+_master_prompt_provider = None
 
 
-def _build_turn_runtime_context(query: str, web_context: str = "", doc_context: str = "") -> str:
+def set_master_prompt_provider(fn) -> None:
+    """Register provider for the unified immutable system prompt shared across routing and synthesis."""
+    global _master_prompt_provider
+    _master_prompt_provider = fn
+
+
+def get_static_system_prompt() -> str:
+    """Return the master immutable system prompt to guarantee 100% KV-cache prefix hits in llama.cpp."""
+    if callable(_master_prompt_provider):
+        try:
+            return _master_prompt_provider()
+        except Exception:
+            pass
+    try:
+        from amigo.utils.tool_registry import get_static_master_prompt
+        return get_static_master_prompt()
+    except Exception:
+        pass
+    return _STATIC_VOICE_SYSTEM_PROMPT
+
+
+def build_turn_runtime_context(
+    query: str,
+    web_context: str = "",
+    doc_context: str = "",
+    pending_confirmation: str = "",
+) -> str:
     """Assemble dynamic turn metadata (time, active state, user profile facts, web/doc context) in one place."""
     ctx_blocks: list[str] = []
 
@@ -198,8 +209,16 @@ def _build_turn_runtime_context(query: str, web_context: str = "", doc_context: 
         env_line += " (Note: PC is currently offline)"
     ctx_blocks.append(env_line)
 
+    if pending_confirmation:
+        ctx_blocks.append(pending_confirmation)
+
     if active_ctx := rag_engine.get_active_context_prompt():
         ctx_blocks.append(active_ctx)
+
+    state = rag_engine.get_active_state(clean_expired=True) or {}
+    if gen_info := state.get("generated_content"):
+        if isinstance(gen_info, dict) and gen_info.get("content"):
+            ctx_blocks.append(f"[Active Draft: {gen_info.get('type', 'content')} about '{gen_info.get('topic', '')}']")
 
     # Single cached lookup for user profile & facts
     if user_prof := rag_engine.get_user_profile_prompt(query, semantic_search=True):
@@ -216,6 +235,35 @@ def _build_turn_runtime_context(query: str, web_context: str = "", doc_context: 
     return "\n\n".join(ctx_blocks)
 
 
+def build_unified_history_messages(
+    conversation_history: list | None = None,
+    max_turns: int = 3,
+) -> list[dict]:
+    """
+    Format past conversation turns into identical user / assistant messages
+    shared across both Pass 1 (Router) and Pass 2 (Synthesis) to guarantee 100% prefix KV cache hits.
+    """
+    turns = (
+        [t for t in conversation_history[-max_turns:] if isinstance(t, dict)]
+        if conversation_history
+        else (rag_engine.get_recent_conversations(count=max_turns) or [])
+    )
+    low_val_tools = getattr(rag_engine, "LOW_VALUE_TOOLS", set())
+    formatted = []
+    for t in turns:
+        tool = (t.get("tool") or "chat").strip().lower()
+        if tool in low_val_tools or tool == "error":
+            continue
+        u = (t.get("user") or t.get("query") or "").strip()
+        a = (t.get("assistant") or t.get("response") or "").strip()
+        if u and a:
+            clean_a, _ = _strip_reasoning(a)
+            spoken = (clean_a.strip() or a)[:400]
+            formatted.append({"role": "user", "content": u[:300]})
+            formatted.append({"role": "assistant", "content": spoken or "Done."})
+    return formatted
+
+
 def _build_ai_messages(
     query: str,
     use_memory: bool = True,
@@ -224,39 +272,18 @@ def _build_ai_messages(
     conversation_history: list | None = None,
     is_voice: bool = True,
 ) -> list[dict]:
-    """Assemble multi-turn chat messages so follow-up questions preserve full conversational continuity."""
-    messages: list[dict] = []
+    """Assemble multi-turn chat messages sharing identical prefix with Pass 1 for 100% KV cache reuse."""
+    messages: list[dict] = [{"role": "system", "content": get_static_system_prompt()}]
 
     if use_memory:
-        history_count = 6 if is_voice else 10
-        recent = (
-            [t for t in conversation_history[-history_count:] if isinstance(t, dict)]
-            if conversation_history
-            else (rag_engine.get_recent_conversations(count=history_count) or [])
-        )
+        history_count = 3 if is_voice else 5
+        messages.extend(build_unified_history_messages(conversation_history=conversation_history, max_turns=history_count))
 
-        cur_q = (query or "").strip().lower()
-        if recent and cur_q:
-            last = recent[-1]
-            last_u = (last.get("user") or last.get("query") or "").strip().lower()
-            last_a = (last.get("assistant") or last.get("response") or "").strip()
-            if last_u == cur_q and not last_a:
-                recent = recent[:-1]
-
-        low_val_tools = getattr(rag_engine, "LOW_VALUE_TOOLS", set())
-        for c in recent:
-            t = (c.get("tool") or "").strip().lower()
-            if t in low_val_tools or t == "error":
-                continue
-            u = (c.get("user") or c.get("query") or "").strip()
-            a = (c.get("assistant") or c.get("response") or "").strip()
-            if u and a:
-                clean_a, _ = _strip_reasoning(a)
-                messages.append({"role": "user", "content": u[:500]})
-                messages.append({"role": "assistant", "content": (clean_a.strip() or a)[:800]})
-
-    runtime_ctx = _build_turn_runtime_context(query, web_context=web_context, doc_context=doc_context)
-    user_content = f"{runtime_ctx}\n\nUser Question: {query}" if runtime_ctx else query
+    runtime_ctx = build_turn_runtime_context(query, web_context=web_context, doc_context=doc_context)
+    mode_tag = "[Mode: Voice | Output: Direct Spoken Answer]" if is_voice else "[Mode: Text | Output: Direct Formatted Answer]"
+    if is_thinking_enabled():
+        mode_tag += " [Reasoning: Enclose internal thinking strictly inside <think>...</think> tags]"
+    user_content = f"{runtime_ctx}\n\nUser Question: {query}\n{mode_tag}" if runtime_ctx else f"{query}\n{mode_tag}"
     messages.append({"role": "user", "content": user_content})
     return messages
 
@@ -283,14 +310,13 @@ def get_ai_response(
         conversation_history=conversation_history,
         is_voice=is_voice,
     )
-    prompt = _build_voice_prompt(query=query, is_voice=is_voice, has_web_context=bool(web_context))
     thinking_active = is_thinking_enabled()
     limit = max_tokens or (1024 if thinking_active else (220 if is_voice else 512))
     sampling = get_sampling_params()
 
     response = query_local_llm(
         messages,
-        system_prompt=prompt,
+        system_prompt="",
         max_tokens=limit,
         temperature=sampling["temperature"],
         thinking=thinking_active,
@@ -312,7 +338,7 @@ def get_ai_response_stream(
     interruption_event: threading.Event | None = None,
     is_voice: bool = True,
     conversation_history: list | None = None,
-) -> typing.Generator[str, None, None]:
+) -> Generator[str, None, None]:
     """Stream sentence chunks from the local model with full context."""
     if not query or not query.strip():
         yield "How can I help you today?"
@@ -326,13 +352,12 @@ def get_ai_response_stream(
         conversation_history=conversation_history,
         is_voice=is_voice,
     )
-    prompt = _build_voice_prompt(query=query, is_voice=is_voice, has_web_context=bool(web_context))
     thinking_active = is_thinking_enabled()
     max_tokens = 1024 if thinking_active else (220 if is_voice else 512)
     sampling = get_sampling_params()
     token_gen = query_local_llm_stream(
         messages,
-        system_prompt=prompt,
+        system_prompt="",
         max_tokens=max_tokens,
         interruption_event=interruption_event,
         temperature=sampling["temperature"],
@@ -382,7 +407,7 @@ def add_to_memory(
 
 
 # ═══════════════════════════════════════════════════════════════
-#  Low-Level Local LLM Inference Engine (Granite 3.2/4.2 3B GGUF)
+#  Low-Level Local LLM Inference Engine (Spark-X2.5 4B GGUF)
 # ═══════════════════════════════════════════════════════════════
 
 _PHYSICAL_CORES = None
@@ -390,10 +415,12 @@ _LLM_CONFIG = None
 _CONFIG_LOCK = threading.Lock()
 
 MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "models"))
-MODEL_NAME = "Granite 4.2 3B"
-MODEL_FILENAME = "granite-4.2-3b-Q4_K_M.gguf"
+MODEL_NAME = "Spark-X2.5 4B"
+MODEL_FILENAME = "Spark-X2.5-4B-Q4_K_M.gguf"
 MODEL_PATH = os.path.join(MODEL_DIR, MODEL_FILENAME)
-MODEL_TARGETS = [("ibm-granite/granite-3.2-3b-instruct-GGUF", "granite-3.2-3b-instruct-Q4_K_M.gguf")]
+MODEL_TARGETS = [
+    ("abenzerps/Spark-X2.5-4B-GGUF", "Spark-X2.5-4B-Q4_K_M.gguf"),
+]
 
 STOP_TOKENS = [
     "<|im_start|>", "<|im_end|>", "<|endoftext|>", "<|end_of_text|>",
@@ -401,18 +428,18 @@ STOP_TOKENS = [
 ]
 
 AVAILABLE_MODELS = {
-    "granite-4.2-3b": {
-        "key": "granite-4.2-3b",
-        "name": MODEL_NAME,
-        "filename": MODEL_FILENAME,
-        "path": MODEL_PATH,
-        "targets": MODEL_TARGETS,
-        "downloaded": os.path.exists(MODEL_PATH) and os.path.getsize(MODEL_PATH) > 500_000_000,
-        "size_gb": 2.14,
+    "spark-x2.5-4b": {
+        "key": "spark-x2.5-4b",
+        "name": "Spark-X2.5 4B",
+        "filename": "Spark-X2.5-4B-Q4_K_M.gguf",
+        "path": os.path.join(MODEL_DIR, "Spark-X2.5-4B-Q4_K_M.gguf"),
+        "targets": [("abenzerps/Spark-X2.5-4B-GGUF", "Spark-X2.5-4B-Q4_K_M.gguf")],
+        "downloaded": os.path.exists(os.path.join(MODEL_DIR, "Spark-X2.5-4B-Q4_K_M.gguf")) and os.path.getsize(os.path.join(MODEL_DIR, "Spark-X2.5-4B-Q4_K_M.gguf")) > 500_000_000,
+        "size_gb": 2.60,
     },
 }
 
-_active_model_key = "granite-4.2-3b"
+_active_model_key = "spark-x2.5-4b"
 _local_llm_instance = None
 _llm_lock = threading.Lock()
 _inference_lock = threading.Lock()
@@ -456,18 +483,22 @@ def _get_llm_config() -> dict:
         except Exception:
             pass
 
+        # 4096 context with Q8_0 KV-cache offload (~180MB) fits comfortably within 4GB RTX 3050 VRAM alongside 2.45GB model weights
+        default_ctx = "4096"
         _LLM_CONFIG = {
-            "n_ctx": int(os.getenv("AMIGO_LLM_N_CTX", "4096")),
-            "n_threads": int(os.getenv("AMIGO_LLM_N_THREADS", str(min(8, max(1, cores))))),
-            "n_threads_batch": int(os.getenv("AMIGO_LLM_N_THREADS_BATCH", str(min(12, max(1, total_cpus))))),
-            "n_batch": int(os.getenv("AMIGO_LLM_N_BATCH", "512")),
-            "n_ubatch": int(os.getenv("AMIGO_LLM_N_UBATCH", "256")),
+            "n_ctx": int(os.getenv("AMIGO_LLM_N_CTX", default_ctx)),
+            "n_threads": int(os.getenv("AMIGO_LLM_N_THREADS", str(max(1, cores - 1)))),
+            "n_threads_batch": int(os.getenv("AMIGO_LLM_N_THREADS_BATCH", str(cores))),
+            "n_batch": int(os.getenv("AMIGO_LLM_N_BATCH", "1024")),
+            "n_ubatch": int(os.getenv("AMIGO_LLM_N_UBATCH", "512")),
             "n_gpu_layers": int(os.getenv("AMIGO_LLM_N_GPU_LAYERS", "-1" if has_gpu else "0")),
             "use_mmap": os.getenv("AMIGO_LLM_USE_MMAP", "true").lower() == "true",
             "logits_all": False,
             "embedding": False,
             "offload_kqv": has_gpu,
             "flash_attn": has_gpu,
+            "type_k": 8 if has_gpu else 0,
+            "type_v": 8 if has_gpu else 0,
             "numa": False,
         }
     return _LLM_CONFIG
@@ -555,23 +586,23 @@ def init_local_llm(force_reload: bool = False):
                 "logits_all": False,
                 "embedding": False,
                 "offload_kqv": config["offload_kqv"],
+                "type_k": config.get("type_k", 8 if config["offload_kqv"] else 0),
+                "type_v": config.get("type_v", 8 if config["offload_kqv"] else 0),
                 "numa": False,
                 "verbose": False,
             }
             try:
                 _local_llm_instance = Llama(**kwargs)
-            except Exception:
+                logger.info("[Local AI Engine] Successfully initialized %s on GPU (RTX 3050, n_gpu_layers=%s, n_ctx=%s, flash_attn=%s)", MODEL_NAME, kwargs["n_gpu_layers"], kwargs["n_ctx"], kwargs["flash_attn"])
+                print(f"[Local AI Engine] Spark-X2.5 is running on GPU: NVIDIA GeForce RTX 3050 (n_gpu_layers={kwargs['n_gpu_layers']}, n_ctx={kwargs['n_ctx']}, flash_attn={kwargs['flash_attn']})", flush=True)
+            except Exception as gpu_err:
+                logger.warning("[Local AI Engine] GPU load attempt failed (%s), falling back to CPU", gpu_err)
                 kwargs["n_gpu_layers"] = 0
                 kwargs["offload_kqv"] = False
                 kwargs["flash_attn"] = False
+                kwargs["type_k"] = 0
+                kwargs["type_v"] = 0
                 _local_llm_instance = Llama(**kwargs)
-
-            try:
-                from llama_cpp import LlamaRAMCache
-                cache_bytes = int(os.getenv("AMIGO_LLM_CACHE_BYTES", str(1024 * 1024 * 1024)))
-                _local_llm_instance.set_cache(LlamaRAMCache(capacity_bytes=cache_bytes))
-            except Exception:
-                pass
 
             _setup_chat_formatter(_local_llm_instance)
             return _local_llm_instance
@@ -610,7 +641,7 @@ def is_creativity_enabled() -> bool:
 
 
 def get_sampling_params() -> dict:
-    return {"temperature": 0.25 if _creativity_enabled else 0.1, "top_p": 0.9}
+    return {"temperature": 0.3 if _creativity_enabled else 0.15, "top_p": 0.95, "min_p": 0.05}
 
 
 def _setup_chat_formatter(llm) -> None:
@@ -748,6 +779,8 @@ def query_local_llm(
     response_format: dict | None = None,
     stop: list[str] | None = None,
     raise_on_error: bool = False,
+    repeat_penalty: float | None = None,
+    min_p: float | None = None,
 ) -> str:
     llm = init_local_llm()
     if not llm:
@@ -763,7 +796,8 @@ def query_local_llm(
             "max_tokens": max_tokens,
             "temperature": sampling["temperature"] if temperature is None else temperature,
             "top_p": sampling["top_p"],
-            "repeat_penalty": 1.05,
+            "min_p": sampling.get("min_p", 0.05) if min_p is None else min_p,
+            "repeat_penalty": 1.05 if repeat_penalty is None else repeat_penalty,
             "stop": STOP_TOKENS if stop is None else stop,
         }
         if response_format:
@@ -938,27 +972,37 @@ def get_available_models() -> dict:
     return AVAILABLE_MODELS
 
 
-def set_active_model(model_key: str = "granite-4.2-3b") -> bool:
-    global _active_model_key, _local_llm_instance
+def set_active_model(model_key: str = "spark-x2.5-4b") -> bool:
+    global _active_model_key, _local_llm_instance, _LLM_CONFIG
     if model_key not in AVAILABLE_MODELS:
         return False
-    with _inference_lock, _llm_lock:
+    with _inference_lock, _llm_lock, _CONFIG_LOCK:
         _active_model_key = model_key
         _local_llm_instance = None
+        _LLM_CONFIG = None
     return init_local_llm(force_reload=True) is not None
 
 
 def get_active_model_info() -> dict:
     m_info = AVAILABLE_MODELS.get(_active_model_key, next(iter(AVAILABLE_MODELS.values())))
     m_path = m_info["path"]
+    has_gpu = False
+    try:
+        import llama_cpp
+        has_gpu = bool(llama_cpp.llama_supports_gpu_offload())
+    except Exception:
+        pass
     return {
         "key": _active_model_key,
         "name": m_info["name"],
         "filename": m_info["filename"],
         "path": m_path,
         "downloaded": os.path.exists(m_path) and os.path.getsize(m_path) > 500_000_000,
-        "size_gb": m_info.get("size_gb", 2.14),
+        "size_gb": m_info.get("size_gb", 2.60),
         "vision_ready": False,
+        "accelerator": "NVIDIA GeForce RTX 3050 (CUDA)" if has_gpu else "CPU",
+        "gpu_offload": has_gpu,
+        "flash_attn": has_gpu,
     }
 
 

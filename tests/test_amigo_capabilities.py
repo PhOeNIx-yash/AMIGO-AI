@@ -16,7 +16,7 @@ TEST_QUERIES = [
     # Media control
     ("play believer by imagine dragons on youtube", "play_youtube"),
     ("pause the music", "pause_media"),
-    ("resume playback", "play_media"),
+    ("resume playback", "resume_media"),
     ("next song", "next_track"),
     ("previous track", "prev_track"),
     ("what song is playing", "current_media"),

@@ -8,6 +8,7 @@ Features:
 - Backward-compatible forwarders and structured UI action card builders.
 """
 
+import collections
 import datetime
 import json
 import logging
@@ -82,6 +83,16 @@ def sanitize_for_tts(*args, **kwargs):
 
 def set_last_screen_text(*args, **kwargs):
     from amigo.core.llm_agent import set_last_screen_text as _impl
+    return _impl(*args, **kwargs)
+
+
+def build_turn_runtime_context(*args, **kwargs):
+    from amigo.core.llm_agent import build_turn_runtime_context as _impl
+    return _impl(*args, **kwargs)
+
+
+def build_unified_history_messages(*args, **kwargs):
+    from amigo.core.llm_agent import build_unified_history_messages as _impl
     return _impl(*args, **kwargs)
 
 
@@ -178,7 +189,11 @@ def _tool_web_search(params, query, spoken):
             "structured_data": search_response.structured_data,
             "cache_hit": search_response.cache_hit,
         }
-        return response, search_url, meta
+        top_result = search_response.results[0]
+        verified_url = top_result.url or search_url
+        meta["top_url"] = verified_url
+        meta["title"] = top_result.title
+        return response, verified_url, meta
 
     response = get_ai_response(
         query,
@@ -227,6 +242,7 @@ def _tool_open_website(params, query, spoken):
     if not is_internet_connected():
         return _offline_reply(query, "websites cannot be opened offline"), None, {"status": "offline"}
     raw_url = str(params.get("url") or "").strip()
+    title = str(params.get("title") or "").strip()
     if raw_url:
         if re.match(r"^https?://", raw_url, re.I):
             url = raw_url
@@ -235,10 +251,11 @@ def _tool_open_website(params, query, spoken):
         else:
             url = f"https://{raw_url}"
         webbrowser.open(url)
-        update_active_state("active_subject", {"name": url, "category": "website"})
-        return f"Opened {url}.", url
+        label = title or url
+        update_active_state("active_subject", {"name": label, "category": "website"})
+        return f"Opening {label}.", url, {"url": url, "title": label}
     searchGoogle(query)
-    return "Searched the web.", None
+    return "Searched the web.", None, {"query": query}
 
 
 def _tool_play_youtube(params, query, spoken):
@@ -337,7 +354,7 @@ def _tool_time_date(params, query, spoken):
     return f"It is {now.strftime('%I:%M %p').lstrip('0')} on {now.strftime('%A, %B')} {now.day}, {now.year}.", None
 
 
-_WEATHER_CACHE: dict[str, tuple[float, dict]] = {}
+_WEATHER_CACHE: collections.OrderedDict[str, tuple[float, dict]] = collections.OrderedDict()
 _WEATHER_TTL_SECONDS = 300.0
 
 
@@ -345,10 +362,13 @@ def _cached_weather_data(city: str) -> dict:
     key = (city or "").strip().lower()
     hit = _WEATHER_CACHE.get(key)
     if hit and (time.time() - hit[0]) < _WEATHER_TTL_SECONDS:
+        _WEATHER_CACHE.move_to_end(key)
         return hit[1]
     data = get_weather_data(city or "")
     if isinstance(data, dict) and data:
         _WEATHER_CACHE[key] = (time.time(), data)
+        if len(_WEATHER_CACHE) > 32:
+            _WEATHER_CACHE.popitem(last=False)
         return data
     return {}
 
@@ -474,9 +494,6 @@ def _tool_find_file(params, query, spoken):
     return summary or f"No files found matching '{q}'.", None, {"file_results": []}
 
 
-_tool_find_document = _tool_find_file
-
-
 def _tool_take_screenshot(params, query, spoken):
     try:
         from amigo.services.screen_vision import capture_screen_image
@@ -578,9 +595,6 @@ def _tool_ask_document(params, query, spoken, conversation_history=None):
     return "I couldn't find anything relevant in your indexed documents.", None
 
 
-_tool_document_qa = _tool_ask_document
-
-
 def _tool_summarize_document(params, query, spoken):
     params = params if isinstance(params, dict) else {}
     conv_history = _get_conv_history()
@@ -616,14 +630,20 @@ def _tool_search_knowledge(params, query, spoken):
 def _tool_chat(params, query, spoken, conversation_history=None):
     """Conversational reply with full multi-turn memory and automatic RAG context."""
     params = params if isinstance(params, dict) else {}
+    doc_context = str(params.get("context") or params.get("doc_context") or "").strip()
+    doc_used = bool(doc_context)
+    direct_reply = (spoken or params.get("reply") or params.get("response") or "").strip()
+
+    # Fast path: If the router already produced a quality conversational response
+    # and no attached document requires re-reading, return immediately (avoids slow 2nd LLM round-trip)
+    if direct_reply and not doc_context and len(direct_reply) >= 3:
+        return direct_reply, None, ({"doc_context_used": False})
+
     if not query or not query.strip():
-        direct_reply = (spoken or params.get("response") or "").strip()
         if direct_reply:
             return direct_reply, None
 
     conv_history = _get_conv_history(conversation_history)
-    doc_context = str(params.get("context") or params.get("doc_context") or "").strip()
-    doc_used = bool(doc_context)
 
     if not doc_context and query and not rag_engine._is_conversational_filler(query):
         active_state = get_active_state(clean_expired=True) or {}
@@ -1442,12 +1462,16 @@ def _tool(name: str, description: str, props: dict | None = None, required: list
 
 
 TOOL_DEFINITIONS = [
-    _tool("chat", "Conversational response: casual talk, advice, math, current date/time, general knowledge, or follow-up discussion. Takes NO parameters."),
+    _tool("chat", "Conversational response: greetings, casual talk, advice, quick math, current date/time, general knowledge, or small talk.",
+          {"response": _p("string", "Your direct, natural spoken or written reply to the user (1 to 2 concise sentences)")},
+          ["response"]),
     _tool("web_search", "Search the web for real-time facts, news, people, movies, music trivia, release dates, or external knowledge.",
           {"query": _p("string", "Self-contained search query with pronouns resolved from conversation history"),
            "show_in_browser": _p("boolean", "True if user asked to open search results in a browser")}, ["query"]),
     _tool("stock_quote", "Look up real-time stock or crypto prices.", {"symbol": _p("string", "Ticker or asset name")}, ["symbol"]),
-    _tool("play_youtube", "Play songs, music, or videos on YouTube.", {"query": _p("string", "Exact song/video title and artist")}, ["query"]),
+    _tool("play_youtube", "Play songs, music, or videos on YouTube.",
+          {"query": _p("string", "Exact song, video title, or music search query as spoken by the user. Do NOT invent, assume, or add artist names if the user did not say them.")},
+          ["query"]),
     _tool("resume_media", "Resume paused audio/video playback."),
     _tool("pause_media", "Pause currently playing audio/video."),
     _tool("next_track", "Skip to next track."),
@@ -1494,6 +1518,9 @@ TOOL_DEFINITIONS = [
     _tool("press_key", "Send a keyboard shortcut.", {"keys": _p("string", "Shortcut e.g. ctrl+c")}, ["keys"]),
     _tool("confirm_action", "Confirm a pending action when user says yes/go ahead."),
     _tool("cancel_action", "Cancel a pending action when user says no/cancel."),
+    _tool("open_website", "Open a website, portal, search results, or direct deep-link in the browser (e.g. Amazon shopping, Google Flights, Google Maps, online booking, or any destination URL).",
+          {"url": _p("string", "Target URL to open (including search or booking parameters)"),
+           "title": _p("string", "Short title or label describing the destination or action")}, ["url"]),
     _tool("stop", "Stop active speech or playback."),
     _tool("exit", "Close Amigo."),
 ]
@@ -1515,29 +1542,53 @@ def _tools_block() -> str:
     return _TOOLS_BLOCK_CACHE
 
 
-_ROUTER_SYSTEM_PROMPT = """You are Amigo's intent router. Select the best tool action(s) for the user's latest message.
+_MASTER_SYSTEM_PROMPT = """You are Amigo, a friendly, intelligent, and capable personal AI voice and desktop assistant on the user's Windows PC.
+
+CORE RULES:
+- State the direct answer or solution immediately in the first sentence.
+- Keep responses concise and natural (1 to 3 sentences) unless the user asks for detailed explanations, lists, or code.
+- Never use robotic filler phrases like 'Certainly!', 'Sure thing!', 'As an AI', or 'According to search results'.
+- Never deflect with multi-choice question menus. Answer directly with what you know.
+- Only reference 'available documents' or 'in your files' if the user specifically asked about their personal files.
+- Resolve pronouns ('it', 'that', 'they', 'he', 'she', 'there') and follow-up questions naturally from conversation history and active environment state.
 
 TOOLS AVAILABLE:
 <<TOOLS>>
 
 ROUTING RULES:
-1. FOLLOW-UP RESOLUTION: Always inspect the prior conversation turns and ACTIVE STATE. If the user asks a follow-up ("what about tomorrow?", "who directed it?", "summarize it", "open the second one", "and its price?"), resolve pronouns into explicit entities in the tool parameters and pick the tool matching the active topic.
-2. DIALOGUE, MATH & GENERAL KNOWLEDGE ('chat'): Use for greetings, casual conversation, math, date/time questions, or general conceptual explanations.
-3. WEB SEARCH ('web_search'): Use for real-world products (cars, electronics, phones), buying advice, specs, reviews, current events, live facts, people, places, or prices. Always write a complete, self-contained search query in params['query'].
-4. LOCAL DOCUMENTS & PERSONAL FILES ('document_qa'): Use when asking about the user's saved files, bills, tickets, notes, or follow-ups about an Active File.
-5. CONFIRMATIONS: If '[Awaiting user confirmation]' is present and user agrees ('yes', 'sure', 'do it'), call 'confirm_action'. If user declines ('no', 'cancel'), call 'cancel_action'.
+1. FOLLOW-UP & MEDIA CONTEXT: Always inspect prior turns. For 'play_youtube', pass the exact song or video query the user said in params['query']. Never guess or invent artist names that the user did not say (e.g. if the user says 'play emptiness', params['query'] MUST be 'emptiness', NOT 'emptiness by <artist>'). If the user asks to 'play it again' or replay music, call 'play_youtube' with the song/artist query from the prior turn. For resuming paused media, call 'resume_media'. For next song, call 'next_track'.
+2. DIALOGUE, MATH & GENERAL KNOWLEDGE ('chat'): Use for greetings, casual talk, math, or general conceptual explanations. Put your direct, concise spoken reply in params['response']. If the user specifically asks for the current time or date, call 'get_time' or 'get_date'.
+3. VOLUME CONTROL ('set_volume'): When muting, unmuting, or setting volume, pass params['action'] as 'mute', 'unmute', 'volume_up', 'volume_down', or 'set_volume' (with level).
+4. BROWSING & DIRECT ACTIONS ('open_website'): Use when user wants to visit a website, portal, or homepage (e.g., 'open booking.com', 'go to reddit', 'open github'). Only construct query URLs for standard public services (Google Flights, Google Maps). Never hallucinate or guess complex internal query parameters or path slugs for shopping/booking sites.
+5. WEB SEARCH ('web_search'): Use when user wants to search, find, or look up products, hotels, flights, deals, or items on ANY website or store (e.g., 'find hotels in Goa on Booking.com', 'find running shoes on Flipkart', 'curtain lights on Amazon'). Write the complete query in params['query']. Set show_in_browser=true if user wants to open the results.
+6. LOCAL DOCUMENTS & PERSONAL FILES ('document_qa'): Use when asking about the user's saved files, bills, tickets, notes, or follow-ups about an Active File.
+7. CONFIRMATIONS: If '[Awaiting user confirmation]' is present and user agrees ('yes', 'sure', 'do it'), call 'confirm_action'. If user declines ('no', 'cancel'), call 'cancel_action'.
 
-Output ONLY valid JSON:
+When outputting tool actions or direct chat responses, output ONLY valid JSON:
 {"actions": [{"tool": "<tool_name>", "params": {<parameters>}}]}"""
 
+_MASTER_PROMPT_CACHE: str | None = None
 
-def get_static_router_prefix() -> str:
-    return _ROUTER_SYSTEM_PROMPT.replace("<<TOOLS>>", _tools_block())
+
+def get_static_master_prompt() -> str:
+    global _MASTER_PROMPT_CACHE
+    if _MASTER_PROMPT_CACHE is None:
+        _MASTER_PROMPT_CACHE = _MASTER_SYSTEM_PROMPT.replace("<<TOOLS>>", _tools_block())
+    return _MASTER_PROMPT_CACHE
+
+
+get_static_router_prefix = get_static_master_prompt
+
+try:
+    from amigo.core.llm_agent import set_master_prompt_provider
+    set_master_prompt_provider(get_static_master_prompt)
+except Exception:
+    pass
 
 
 def build_agent_system_prompt(query: str = "", conversation_history: list | None = None) -> str:
-    """Backward-compatible helper returning router prompt with active draft/state lines."""
-    prefix = get_static_router_prefix()
+    """Backward-compatible helper returning master prompt with active draft/state lines."""
+    prefix = get_static_master_prompt()
     state_lines = []
     if pending := _pending_confirmation_line():
         state_lines.append(pending)
@@ -1555,50 +1606,21 @@ def build_agent_system_prompt(query: str = "", conversation_history: list | None
 def _build_router_messages(query: str, conversation_history: list | None = None) -> list[dict]:
     """
     Build multi-turn chat messages for the router:
-    - Message 0 (`system`): 100% static tool schema so llama.cpp reuses the KV cache instantly.
-    - Messages 1..N (`user`/`assistant`): Last 3 conversation turns with tool metadata so local models understand follow-ups.
-    - Final Message (`user`): Active environment state + current user query.
+    - Message 0 (`system`): 100% static unified schema shared with synthesis for 0ms prefix KV cache reuse.
+    - Messages 1..N (`user`/`assistant`): Last 3 turns formatted identically to Pass 2.
+    - Final Message (`user`): Complete runtime context (time, state, profile facts) + query + [Mode: Voice | Output: JSON].
     """
-    messages: list[dict] = [{"role": "system", "content": get_static_router_prefix()}]
+    messages: list[dict] = [{"role": "system", "content": get_static_master_prompt()}]
+    messages.extend(build_unified_history_messages(conversation_history=conversation_history, max_turns=3))
 
-    turns = (
-        [t for t in conversation_history if isinstance(t, dict)]
-        if conversation_history
-        else (rag_engine.get_recent_conversations(count=4) or [])
-    )
-    cur = (query or "").strip().lower()
-    if turns and cur and (turns[-1].get("user") or "").strip().lower() == cur and not (turns[-1].get("assistant") or "").strip():
-        turns = turns[:-1]
-
-    for t in turns[-3:]:
-        u = (t.get("user") or t.get("query") or "").strip()
-        a = (t.get("assistant") or t.get("response") or "").strip()
-        tool = (t.get("tool") or "chat").strip()
-        params = t.get("params") if isinstance(t.get("params"), dict) else {}
-        if u:
-            messages.append({"role": "user", "content": u[:250]})
-            assistant_summary = json.dumps({"actions": [{"tool": tool, "params": params}]}, ensure_ascii=False)
-            if a:
-                assistant_summary += f"\n(Reply: {a[:160]})"
-            messages.append({"role": "assistant", "content": assistant_summary})
-
-    state_lines = []
-    if pending := _pending_confirmation_line():
-        state_lines.append(pending)
-    if active_ctx := rag_engine.get_active_context_prompt():
-        state_lines.append(active_ctx)
-    state = rag_engine.get_active_state(clean_expired=True) or {}
-    if gen_info := state.get("generated_content"):
-        if isinstance(gen_info, dict) and gen_info.get("content"):
-            state_lines.append(f"[Active Draft: {gen_info.get('type', 'content')} about '{gen_info.get('topic', '')}']")
-
-    user_payload = "\n".join(state_lines) + f"\nUser: {query}" if state_lines else query
+    pending = _pending_confirmation_line()
+    runtime_ctx = build_turn_runtime_context(query, pending_confirmation=pending)
+    user_payload = f"{runtime_ctx}\n\nUser Question: {query}\n[Mode: Voice | Output: JSON]" if runtime_ctx else f"{query}\n[Mode: Voice | Output: JSON]"
     messages.append({"role": "user", "content": user_payload})
     return messages
 
 
 _JSON_DECODER = json.JSONDecoder()
-_RE_XML_CALL = re.compile(r'<function\s+name="[^"]+">[\s\S]*?</function>')
 _ROUTER_STOP = ["<|im_end|>", "<|endoftext|>", "<|im_start|>"]
 
 
@@ -1639,9 +1661,13 @@ def _call_from_obj(obj) -> list[dict]:
         return []
     t_name = tool_cand.strip().lower()
     params = _coerce_params(obj.get("params") if "params" in obj else obj.get("arguments"))
-    speak = obj.get("speak") or (params.get("response") if t_name == "chat" else "")
-    if t_name == "chat" and not params.get("response") and speak:
-        params["response"] = speak
+    speak = obj.get("speak") or (params.get("reply") or params.get("response") if t_name == "chat" else "")
+    if t_name == "chat":
+        reply_val = params.get("reply") or params.get("response") or speak
+        if reply_val:
+            params["response"] = reply_val
+            params["reply"] = reply_val
+            speak = reply_val
     return [{"tool": t_name, "params": params, "speak": speak if isinstance(speak, str) else ""}]
 
 
@@ -1691,8 +1717,9 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
         response = query_local_llm(
             messages,
             system_prompt="",
-            max_tokens=120,
-            temperature=0.05,
+            max_tokens=80,
+            temperature=0.0,
+            repeat_penalty=1.0,
             thinking=False,
             sanitize=False,
             response_format={"type": "json_object"},
@@ -1720,10 +1747,15 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
             elif last_tool == "web_search" and is_internet_connected():
                 tool_calls = [{"tool": "web_search", "params": {"query": resolved}, "speak": ""}]
 
-    # Ensure chat tool has response parameter
+    # Ensure chat tool has response/reply parameter
     for call in tool_calls:
-        if call["tool"] == "chat" and not call["params"].get("response"):
-            call["params"]["response"] = call.get("speak") or final_response
+        if call["tool"] == "chat":
+            reply_val = call["params"].get("reply") or call["params"].get("response") or call.get("speak") or final_response
+            if reply_val:
+                call["params"]["response"] = reply_val
+                call["params"]["reply"] = reply_val
+                if not call.get("speak"):
+                    call["speak"] = reply_val
 
     if tool_calls:
         return tool_calls, final_response
@@ -1855,7 +1887,7 @@ def execute_actions(
             continue
         tool = action.get("tool", "chat")
         params = action.get("params", {}) if isinstance(action.get("params"), dict) else {}
-        spoken = action.get("speak", "") or params.get("speak", "") or params.get("response", "")
+        spoken = action.get("speak", "") or params.get("speak", "") or params.get("reply", "") or params.get("response", "")
 
         if last_tool_output:
             for key in ("text", "context", "prompt"):
@@ -2015,5 +2047,18 @@ def build_action_cards(tool: str, params: dict, result_metadata: dict, url: str 
                 "actionType": "button",
                 "payload": {"tool": cand, "query": query_text, "original_prompt": prompt},
             })
+
+    elif tool == "open_website" and (url or params.get("url")):
+        target_url = url or params.get("url")
+        display_title = params.get("title") or result_metadata.get("title") or "Open Web Destination"
+        cards.append({
+            "id": f"act-url-{abs(hash(target_url)) % 100000}",
+            "type": "general",
+            "title": display_title,
+            "subtitle": target_url,
+            "selected": True,
+            "badge": "Web Link",
+            "payload": {"tool": "open_website", "url": target_url, "title": display_title},
+        })
 
     return cards

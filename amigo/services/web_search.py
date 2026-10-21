@@ -1194,7 +1194,8 @@ def format_for_llm(response: SearchResponse, max_chars: int = 4800) -> str:
     ]
     for i, r in enumerate(response.results, 1):
         when = f" [Published: {r.published}]" if r.published else ""
-        lines.append(f"{i}. {r.title}{when} ({r.domain})\n   Snippet: {r.snippet}")
+        url_part = f" [URL: {r.url}]" if r.url else f" ({r.domain})"
+        lines.append(f"{i}. {r.title}{when}{url_part}\n   Snippet: {r.snippet}")
         if r.fetched_content:
             lines.append(f"   Deep Page Excerpt: {r.fetched_content[:950]}")
     return "\n".join(lines)[:max_chars]

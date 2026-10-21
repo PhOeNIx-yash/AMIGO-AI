@@ -335,7 +335,7 @@ def _handle_wake_action():
 
 def _hotkey_message_loop():
     """Background Windows message pump for listening to Alt+V."""
-    global _running, _thread_id
+    global _running, _thread_id, _is_processing, _last_trigger_time
     _thread_id = ctypes.windll.kernel32.GetCurrentThreadId()
     user32 = ctypes.windll.user32
 

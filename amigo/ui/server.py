@@ -93,7 +93,6 @@ from amigo.core.reminder_timer import (
 )
 from amigo.services.os_automation import next_track, play_pause_media, prev_track, set_volume
 from amigo.services.weather import get_weather_data
-from amigo.utils.network_utils import is_internet_connected
 from amigo.utils.tool_registry import (
     _ROUTER_STOP,
     UI_TOOL_HANDLERS,
@@ -215,25 +214,29 @@ def get_active_model_info() -> dict:
         models = get_llm_available_models() or {}
         info = next(iter(models.values()), {})
 
-    name = info.get("name", "Granite 4.2 3B")
-    key = info.get("key", "granite-4.2-3b")
+    name = info.get("name", "Spark-X2.5 4B")
+    key = info.get("key", "spark-x2.5-4b")
     vision_ok = is_vision_ready()
+    ctx_len = int(os.getenv("AMIGO_LLM_N_CTX", "4096"))
     return {
         "key": key,
         "name": name,
         "type": "local_gguf",
-        "context_length": 4096,
+        "context_length": ctx_len,
         "tts_engine": get_tts_engine_name(),
         "system1_router": f"LLM Agent ({name})",
         "vision_ready": vision_ok,
         "vision_mode": f"Native Multimodal ({name})" if vision_ok else "OCR Fallback (Windows Media OCR)",
         "hotkey": "Alt+V",
+        "accelerator": info.get("accelerator", "NVIDIA GeForce RTX 3050 (CUDA)"),
+        "gpu_offload": info.get("gpu_offload", True),
+        "flash_attn": info.get("flash_attn", True),
     }
 
 
 def get_available_models() -> list[dict]:
     try:
-        active_key = get_active_model_info().get("key", "granite-4.2-3b")
+        active_key = get_active_model_info().get("key", "spark-x2.5-4b")
         return [
             {
                 "key": k,
@@ -244,7 +247,9 @@ def get_available_models() -> list[dict]:
             for k, v in (get_llm_available_models() or {}).items()
         ]
     except Exception:
-        return [{"key": "granite-4.2-3b", "name": "Granite 4.2 3B", "status": "active", "type": "local"}]
+        return [
+            {"key": "spark-x2.5-4b", "name": "Spark-X2.5 4B", "status": "active", "type": "local"},
+        ]
 
 
 def _apply_voice_preference(memory: dict, target_voice: str) -> str:
@@ -359,13 +364,32 @@ def _process_query(
 
     logger.debug("[Timing] request_id=%s stage=route duration_ms=%.1f", request_id, (time.perf_counter() - t0) * 1000)
 
-    # Broadcast primary detected intent
+    # Broadcast primary detected intent with descriptive labels for UI
     first_tool = actions[0].get("tool", "chat") if actions else "chat"
     first_params = actions[0].get("params", {}) if actions else {}
+    _tool_label_map = {
+        "web_search": ("Searching Web", str(first_params.get("query") or clean_user_query)),
+        "open_website": ("Browsing", str(first_params.get("title") or first_params.get("url") or "Web")),
+        "document_qa": ("Analyzing Documents", str(first_params.get("filepath") or first_params.get("query") or "Indexed files")),
+        "ask_document": ("Analyzing Documents", str(first_params.get("filepath") or first_params.get("query") or "Indexed files")),
+        "summarize_document": ("Summarizing", str(first_params.get("filepath") or "Document")),
+        "stock_quote": ("Market Quote", str(first_params.get("symbol") or "Price quote").upper()),
+        "get_weather": ("Checking Weather", str(first_params.get("city") or "Local forecast")),
+        "play_youtube": ("Streaming Media", str(first_params.get("query") or "YouTube")),
+        "generate_content": ("Drafting Content", str(first_params.get("topic") or first_params.get("type") or "Draft")),
+        "find_file": ("Finding File", str(first_params.get("query") or "File system")),
+        "read_screen": ("Inspecting Screen", "Visual screen analysis"),
+        "set_timer": ("Setting Timer", f"{first_params.get('duration', '')}s countdown"),
+        "set_reminder": ("Setting Reminder", str(first_params.get("query") or "Reminder")),
+        "chat": ("Thinking", clean_user_query[:35] if clean_user_query else ""),
+    }
+    status_label, status_detail = _tool_label_map.get(first_tool.lower(), (first_tool.replace("_", " ").title(), ""))
     broadcaster.broadcast("intent_detected", {
         "intent": first_tool.lower(),
         "tool": first_tool.lower(),
         "params": first_params,
+        "label": status_label,
+        "detail": status_detail,
     })
 
     # Delegate execution & tool chaining to tool_registry.execute_actions
@@ -504,7 +528,7 @@ def index():
     return jsonify({
         "status": "online",
         "service": "Amigo AI Engine & Windows 11 Voice Assistant Backend",
-        "model": info.get("name", "Granite 4.2 3B"),
+        "model": info.get("name", "Spark-X2.5 4B"),
     })
 
 
@@ -611,7 +635,7 @@ def api_assistant_process():
         return jsonify({
             "status": "online",
             "message": "Amigo AI Engine online",
-            "model": info.get("name", "Granite 4.2 3B"),
+            "model": info.get("name", "Spark-X2.5 4B"),
             "version": "Windows 11 Voice Assistant",
         })
 
@@ -960,8 +984,8 @@ def handle_settings():
         "user_profile": u_prof,
         "user_name": get_current_user_name(),
         "voice": curr_voice,
-        "model": info.get("key", "granite-4.2-3b"),
-        "model_name": info.get("name", "Granite 4.2 3B"),
+        "model": info.get("key", "spark-x2.5-4b"),
+        "model_name": info.get("name", "Spark-X2.5 4B"),
         "thinking_enabled": is_thinking_enabled(),
         "available_models": get_available_models(),
         "available_voices": get_voice_catalog(),

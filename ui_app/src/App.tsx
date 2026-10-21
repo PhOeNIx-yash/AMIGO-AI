@@ -869,9 +869,12 @@ export default function App() {
                   setHudDismissed(false);
                 }
               }
-              if (data.params) {
-                setLiveParams(data.params);
-              }
+              const p = data.params || {};
+              setLiveParams({
+                ...p,
+                label: data.label || p.label,
+                detail: data.detail || p.detail,
+              });
               setState("working");
             } else if (data.type === "proactive_notification") {
               const msg = data.message || data.text;
@@ -1810,6 +1813,7 @@ export default function App() {
                       userName={userName}
                       assistantState={state}
                       liveIntent={liveIntent || assistantData?.intent}
+                      liveParams={liveParams}
                       activePrompt={activePrompt}
                     />
                   </motion.div>

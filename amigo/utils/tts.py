@@ -10,7 +10,6 @@ import logging
 import os
 import queue
 import re
-import tarfile
 import threading
 import time
 import urllib.request

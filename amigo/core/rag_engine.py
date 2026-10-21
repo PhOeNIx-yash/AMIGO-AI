@@ -11,7 +11,6 @@ Fixes & Enhancements:
 
 import atexit
 import collections
-import copy
 import datetime
 import hashlib
 import json
@@ -23,7 +22,7 @@ import sys
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -90,7 +89,7 @@ LOW_VALUE_TOOLS = {
 
 # Language-agnostic token definitions (pure length and character entropy)
 
-MAX_VOICE_CONTEXT_CHARS = 1600
+MAX_VOICE_CONTEXT_CHARS = 1000
 MAX_FILE_SIZE = 50 * 1024 * 1024
 CHUNK_SIZE = 512
 CHUNK_OVERLAP = 128
@@ -124,11 +123,12 @@ _bm25_timer_lock = threading.Lock()
 
 _profile_cache: dict | None = None
 _profile_mtime: float = 0.0
+_profile_last_check: float = 0.0
 _profile_lock = threading.Lock()
 
 _BUFFER_MAX = 15
 _conversation_buffer: collections.deque | None = None
-_all_conversations_cache: list[dict] | None = None
+_all_conversations_cache: collections.deque | None = None
 _conv_cache_lock = threading.Lock()
 
 _SEARCH_CACHE: collections.OrderedDict[str, tuple[float, list[dict]]] = collections.OrderedDict()
@@ -187,15 +187,8 @@ class EmbeddingGemmaEmbeddingFunction:
         self._lock = threading.Lock()
         self._query_cache: collections.OrderedDict[str, list[float]] = collections.OrderedDict()
 
-        engine = None
-        try:
-            if hasattr(litert_lm.Backend, "GPU"):
-                engine = litert_lm.EmbeddingEngine(chosen, backend=litert_lm.Backend.GPU())
-        except Exception:
-            pass
-        if engine is None:
-            engine = litert_lm.EmbeddingEngine(chosen, backend=litert_lm.Backend.CPU())
-        self._engine = engine
+        # Run strictly on CPU to leave 100% of GPU VRAM for the main Spark-X2.5-4B LLM
+        self._engine = litert_lm.EmbeddingEngine(chosen, backend=litert_lm.Backend.CPU())
 
     def name(self) -> str:
         return "embedding_gemma_2"
@@ -359,7 +352,7 @@ def _rebuild_bm25_index() -> None:
 
             corpus = [ _RE_WORDS.findall(d.lower()) for d in docs ]
             doc_map = {
-                i: {"text": d, "metadata": m, "id": ids[i] if i < len(ids) else str(i)}
+                i: {"text": d[:800], "metadata": m, "id": ids[i] if i < len(ids) else str(i)}
                 for i, (d, m) in enumerate(zip(docs, metas))
             }
             new_index = BM25Okapi(corpus)
@@ -397,7 +390,13 @@ def _default_profile() -> dict:
 
 
 def load_profile() -> dict:
-    global _profile_cache, _profile_mtime
+    global _profile_cache, _profile_mtime, _profile_last_check
+    now = time.time()
+    # Throttle disk os.stat checks to at most once every 5 seconds to eliminate synchronous file-system latency
+    if _profile_cache is not None and (now - _profile_last_check < 5.0):
+        return _profile_cache
+    _profile_last_check = now
+
     current_mtime = os.path.getmtime(PROFILE_FILE) if os.path.exists(PROFILE_FILE) else 0.0
     if _profile_cache is not None and current_mtime <= _profile_mtime:
         return _profile_cache
@@ -456,7 +455,8 @@ def _persist_profile_sync(profile_snapshot: dict) -> None:
 def save_profile(profile: dict) -> None:
     global _profile_cache
     _profile_cache = profile
-    _executor.submit(_persist_profile_sync, copy.deepcopy(profile))
+    # Pass shallow dictionary snapshot to background thread; serialization happens off the main thread
+    _executor.submit(_persist_profile_sync, dict(profile))
 
 
 _ACTIVE_STATE: dict[str, Any] = {
@@ -781,18 +781,27 @@ def search(
             ts, cached_res = _SEARCH_CACHE[cache_key]
             if now - ts < _SEARCH_CACHE_TTL:
                 _SEARCH_CACHE.move_to_end(cache_key)
-                return copy.deepcopy(cached_res)
+                return [dict(r) for r in cached_res]
 
     # Ensure Chroma & embedding model are ready
     _col(target_collections[0])
     query_embeddings = _embedding_fn.embed_query(queries) if _embedding_fn else []
     pool_size = max(top_k * 2, 10)
 
-    candidates: list[SearchResult] = []
-    for c in target_collections:
-        candidates.extend(_query_single_collection(c, query_embeddings, pool_size, metadata_filter))
+    # Parallel multi-collection + BM25 retrieval via unified ThreadPoolExecutor
+    search_futures = [
+        _executor.submit(_query_single_collection, c, query_embeddings, pool_size, metadata_filter)
+        for c in target_collections
+    ]
     if DOCUMENTS in target_collections:
-        candidates.extend(_bm25_search(queries[0], pool_size, metadata_filter))
+        search_futures.append(_executor.submit(_bm25_search, queries[0], pool_size, metadata_filter))
+
+    candidates: list[SearchResult] = []
+    for f in search_futures:
+        try:
+            candidates.extend(f.result(timeout=2.0))
+        except Exception as e:
+            logger.debug("[RAG v2] Parallel retrieval worker error: %s", e)
 
     ranked = _score_and_rank(candidates, top_k)
     dict_results = [
@@ -808,7 +817,7 @@ def search(
     ]
 
     with _SEARCH_CACHE_LOCK:
-        _SEARCH_CACHE[cache_key] = (now, copy.deepcopy(dict_results))
+        _SEARCH_CACHE[cache_key] = (now, dict_results)
         if len(_SEARCH_CACHE) > 512:
             _SEARCH_CACHE.popitem(last=False)
 
@@ -1149,7 +1158,7 @@ def get_all_conversations(limit: int = 200) -> list[dict]:
     global _all_conversations_cache
     with _conv_cache_lock:
         if _all_conversations_cache is not None:
-            return list(_all_conversations_cache[-limit:])
+            return list(_all_conversations_cache)[-limit:]
 
     try:
         col = _col(CONVERSATIONS)
@@ -1167,7 +1176,7 @@ def get_all_conversations(limit: int = 200) -> list[dict]:
             ]
             items.sort(key=lambda x: x.get("timestamp", ""))
             with _conv_cache_lock:
-                _all_conversations_cache = items
+                _all_conversations_cache = collections.deque(items, maxlen=200)
             return items
     except Exception:
         pass
@@ -1199,7 +1208,7 @@ def clear_conversations() -> None:
     global _conversation_buffer, _all_conversations_cache
     _conversation_buffer = collections.deque(maxlen=_BUFFER_MAX)
     with _conv_cache_lock:
-        _all_conversations_cache = []
+        _all_conversations_cache = collections.deque(maxlen=200)
 
     try:
         if _chroma_client:
@@ -1318,10 +1327,10 @@ def extract_text(filepath: str) -> str:
     except Exception as e:
         logger.debug("[RAG v2] Extraction error for %s: %s", filepath, e)
 
-    if cache_key and extracted:
+    if cache_key and extracted and len(extracted) <= 500 * 1024:
         with _extracted_text_lock:
             _extracted_text_cache[cache_key] = extracted
-            if len(_extracted_text_cache) > 150:
+            if len(_extracted_text_cache) > 15:
                 _extracted_text_cache.popitem(last=False)
 
     return extracted

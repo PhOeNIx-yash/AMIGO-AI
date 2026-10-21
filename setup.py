@@ -96,16 +96,18 @@ def main():
         print(f"    Vosk model check note: {e}")
 
 
-    # Local LLM GGUF Model Check (Granite 4.2 3B — System 2)
+    # Local LLM GGUF Model Check
+    model_name_display = "Spark-X2.5 4B"
     try:
         from amigo.core.llm_agent import get_active_model_info, get_model_path, ensure_model_downloaded
         model_info = get_active_model_info()
-        print(f" -> Checking Agent LLM (System 2): {model_info['name']} (~{model_info.get('size_gb', 2.14)}GB)...")
+        model_name_display = model_info.get("name", "Spark-X2.5 4B")
+        print(f" -> Checking Agent LLM (System 2): {model_name_display} (~{model_info.get('size_gb', 2.60)}GB)...")
         model_path = get_model_path()
         if os.path.exists(model_path) and os.path.getsize(model_path) > 500_000_000:
-            print(f"    {model_info['name']} is ready at {model_path}.")
+            print(f"    {model_name_display} is ready at {model_path}.")
         else:
-            print(f" -> Downloading {model_info['name']} GGUF model...")
+            print(f" -> Downloading {model_name_display} GGUF model...")
             ensure_model_downloaded()
         # Vision Configuration Check
         print(" -> Screen Vision: Configured with native Windows Media OCR engine (winocr).")
@@ -116,7 +118,7 @@ def main():
     print("           AMIGO SETUP COMPLETED SUCCESSFULLY!")
     print("=" * 60)
     print("\nActive Engine Stack:")
-    print("  Agent Engine  — Granite 4.2 3B : high-accuracy formal logic & agentic execution")
+    print(f"  Agent Engine  — {model_name_display} : high-accuracy formal logic & agentic execution")
     print("  Speech Engine — Supertonic-3  : 44.1kHz studio on-device neural speech synthesis")
     print("  Voice Input   — Vosk          : offline high-accuracy speech recognition")
     print("\nHow to launch Amigo:")
