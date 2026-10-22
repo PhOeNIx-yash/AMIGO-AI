@@ -674,63 +674,54 @@ def _extract_salient_terms(text: str, max_terms: int = 5) -> list[str]:
 
 def resolve_contextual_query(query: str, conversation_history: list[dict] | None = None) -> str:
     """
-    Dynamically resolves follow-up questions only when the query lacks self-contained
-    high-information entities, preventing topic bleed across unrelated turns.
+    Dynamically resolves follow-up questions of ANY length by checking whether the query
+    already explicitly mentions the active entity from recent conversation.
+    Zero arbitrary word-count limits.
     """
     if not query or not query.strip():
         return ""
 
     clean_q = query.strip()
-    q_tokens = _RE_WORDS.findall(clean_q)
-    if not q_tokens:
-        return clean_q
-
-    salient_q = _extract_salient_terms(clean_q, max_terms=6)
-    total_info_mass = sum(_token_information_weight(t) for t in q_tokens)
-
-    # A query is self-contained if it already has >= 2 salient content terms or high information mass
-    is_context_dependent = (len(salient_q) <= 1 and total_info_mass < 1.35) or (
-        len(q_tokens) <= 4 and len(salient_q) == 0
-    )
-    if not is_context_dependent:
-        return clean_q
-
     history = conversation_history if conversation_history is not None else get_recent_conversations(count=2)
+    if not history:
+        return clean_q
+
+    last_turn = history[-1]
+    ts_str = last_turn.get("timestamp")
+    # Only inherit conversational context if the previous turn was recent (< 5 minutes old)
+    if ts_str and _is_expired(ts_str, 300):
+        return clean_q
+
+    u_msg = last_turn.get("user", "")
+    a_msg = last_turn.get("assistant", "")
+
+    # Extract salient anchors from the recent turn
     context_anchors: list[str] = []
+    context_anchors.extend(_extract_salient_terms(u_msg, max_terms=3))
+    if len(context_anchors) < 3:
+        context_anchors.extend(_extract_salient_terms(a_msg[:250], max_terms=2))
 
-    # 1. Pull salient entities from the immediately preceding turn first (strongest recency signal)
-    if history:
-        last_turn = history[-1]
-        ts_str = last_turn.get("timestamp")
-        # Only inherit conversational context if the previous turn was recent (< 5 minutes old)
-        if not ts_str or not _is_expired(ts_str, 300):
-            u_msg = last_turn.get("user", "")
-            a_msg = last_turn.get("assistant", "")
-            context_anchors.extend(_extract_salient_terms(u_msg, max_terms=3))
-            if len(context_anchors) < 3:
-                context_anchors.extend(_extract_salient_terms(a_msg[:250], max_terms=2))
-
-    # 2. Fall back to active file or active subject only if recent turn had no anchors
     if not context_anchors:
-        state = get_active_state(clean_expired=True)
-        active_file = state.get("active_file", {}).get("name", "")
-        active_subj = state.get("active_subject", {}).get("name", "")
-        for item in (os.path.splitext(active_file)[0] if active_file else "", active_subj):
-            if item:
-                context_anchors.extend(_extract_salient_terms(item, max_terms=3))
+        return clean_q
 
-    q_lower_set = {t.lower() for t in q_tokens}
+    # Check if the query already explicitly mentions any of the context entities
+    q_words = {w.lower() for w in _RE_WORDS.findall(clean_q)}
+    already_mentions_entity = any(term.lower() in q_words for term in context_anchors)
+    if already_mentions_entity:
+        return clean_q
+
+    # Query does not mention the active entity: attach anchors naturally
     unique_anchors: list[str] = []
     for term in context_anchors:
-        if term.lower() not in q_lower_set and term.lower() not in {a.lower() for a in unique_anchors}:
+        if term.lower() not in q_words and term.lower() not in {a.lower() for a in unique_anchors}:
             unique_anchors.append(term)
-        if len(unique_anchors) >= 4:
+        if len(unique_anchors) >= 3:
             break
 
     if not unique_anchors:
         return clean_q
 
-    resolved = f"{clean_q} ({' '.join(unique_anchors)})"
+    resolved = f"{clean_q} {' '.join(unique_anchors)}"
     logger.debug("[RAG v2] Resolved follow-up query: '%s' -> '%s'", clean_q, resolved)
     return resolved
 
@@ -2014,11 +2005,7 @@ def get_active_context_prompt() -> str:
         parts.append(f"Active App: {app}")
     if f := state.get("active_file", {}).get("name"):
         parts.append(f"Active File: {f}")
-    if subj := state.get("active_subject", {}).get("name"):
-        parts.append(f"Current Topic: {subj}")
-    if srch := state.get("last_search", {}).get("query"):
-        parts.append(f"Recent Search: '{srch}'")
-    return f"[PC Environment State (reference only if asked): {' | '.join(parts)}]" if parts else ""
+    return f"[PC Environment State: {' | '.join(parts)}]" if parts else ""
 
 
 def get_index_stats() -> dict:

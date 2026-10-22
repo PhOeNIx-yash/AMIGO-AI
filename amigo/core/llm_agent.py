@@ -483,8 +483,8 @@ def _get_llm_config() -> dict:
         except Exception:
             pass
 
-        # 4096 context with Q8_0 KV-cache offload (~180MB) fits comfortably within 4GB RTX 3050 VRAM alongside 2.45GB model weights
-        default_ctx = "4096"
+        # 8192 context with Q8_0 KV-cache offload (~360MB) fits comfortably within 4GB RTX 3050 VRAM alongside 2.45GB model weights
+        default_ctx = "8192"
         _LLM_CONFIG = {
             "n_ctx": int(os.getenv("AMIGO_LLM_N_CTX", default_ctx)),
             "n_threads": int(os.getenv("AMIGO_LLM_N_THREADS", str(max(1, cores - 1)))),
@@ -803,7 +803,15 @@ def query_local_llm(
         if response_format:
             kwargs["response_format"] = response_format
         with _inference_lock:
-            res = llm.create_chat_completion(**kwargs)
+            try:
+                res = llm.create_chat_completion(**kwargs)
+            except Exception as e:
+                if "exceed context window" in str(e).lower() and kwargs.get("max_tokens", 0) > 128:
+                    logger.warning("[LLM Query] Context overflow detected, retrying with compressed max_tokens...")
+                    kwargs["max_tokens"] = 128
+                    res = llm.create_chat_completion(**kwargs)
+                else:
+                    raise
         output = (res["choices"][0]["message"]["content"] or "").strip()
         return (sanitize_for_tts(output) or output) if sanitize else output
     except Exception as e:
@@ -839,15 +847,30 @@ def query_local_llm_stream(
         with _inference_lock:
             stream_res = None
             try:
-                stream_res = llm.create_chat_completion(
-                    messages=_prepare_chat_messages(system_prompt, prompt),
-                    max_tokens=max_tokens,
-                    temperature=temp,
-                    top_p=sampling["top_p"],
-                    repeat_penalty=1.05,
-                    stop=STOP_TOKENS,
-                    stream=True,
-                )
+                try:
+                    stream_res = llm.create_chat_completion(
+                        messages=_prepare_chat_messages(system_prompt, prompt),
+                        max_tokens=max_tokens,
+                        temperature=temp,
+                        top_p=sampling["top_p"],
+                        repeat_penalty=1.05,
+                        stop=STOP_TOKENS,
+                        stream=True,
+                    )
+                except Exception as e:
+                    if "exceed context window" in str(e).lower() and max_tokens > 128:
+                        logger.warning("[LLM Stream] Context overflow detected, retrying with compressed max_tokens...")
+                        stream_res = llm.create_chat_completion(
+                            messages=_prepare_chat_messages(system_prompt, prompt),
+                            max_tokens=128,
+                            temperature=temp,
+                            top_p=sampling["top_p"],
+                            repeat_penalty=1.05,
+                            stop=STOP_TOKENS,
+                            stream=True,
+                        )
+                    else:
+                        raise
                 for chunk in stream_res:
                     if interruption_event and interruption_event.is_set():
                         break

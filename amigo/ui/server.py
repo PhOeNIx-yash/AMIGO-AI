@@ -217,7 +217,7 @@ def get_active_model_info() -> dict:
     name = info.get("name", "Spark-X2.5 4B")
     key = info.get("key", "spark-x2.5-4b")
     vision_ok = is_vision_ready()
-    ctx_len = int(os.getenv("AMIGO_LLM_N_CTX", "4096"))
+    ctx_len = int(os.getenv("AMIGO_LLM_N_CTX", "8192"))
     return {
         "key": key,
         "name": name,

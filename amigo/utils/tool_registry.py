@@ -173,8 +173,9 @@ def _tool_web_search(params, query, spoken):
 
     if search_response.results:
         web_context = format_for_llm(search_response, max_chars=3500)
+        prompt_q = resolved_q if resolved_q and resolved_q != raw_q else query
         response = get_ai_response(
-            query,
+            prompt_q,
             web_context=web_context,
             conversation_history=conv_history,
             use_memory=True,
@@ -1508,11 +1509,11 @@ TOOL_DEFINITIONS = [
     _tool("cancel_reminder", "Cancel one or all reminders.", {"query": _p("string", "'all' or reminder title")}, ["query"]),
     _tool("find_file", "Find local files or folders by name or topic.", {"query": _p("string", "Search pattern")}, ["query"]),
     _tool("open_file", "Open a local file by path, name, or ordinal ('number 1', 'it').", {"path": _p("string", "File reference")}, ["path"]),
-    _tool("document_qa", "Look up and answer questions from indexed local documents, personal records (PNR numbers, phone numbers, tickets, bookings, receipts, bills, notes), or active files.",
+    _tool("document_qa", "Look up and answer questions from indexed personal documents and user records on this PC (resume, phone numbers, PNR, booked tickets, bills, notes). NOT for world knowledge.",
           {"query": _p("string", "Self-contained question or lookup query"), "filepath": _p("string", "Optional filename")}, ["query"]),
     _tool("memory_recall", "Save a new personal fact ('remember that...') or recall saved user facts/preferences.",
           {"query": _p("string", "Question about saved memory"), "fact": _p("string", "Fact to save if user asked to remember")}),
-    _tool("get_calendar", "View or search calendar schedule.", {"days": _p("integer", "Days ahead"), "query": _p("string", "Search keyword")}),
+    _tool("get_calendar", "View or search Outlook calendar schedule, meetings, and appointments (NOT for travel tickets, train fares, or flight prices).", {"days": _p("integer", "Days ahead"), "query": _p("string", "Search keyword")}),
     _tool("read_emails", "Read recent/unread emails or search Outlook.", {"action": _p("string", "recent | unread | search"), "query": _p("string", "Keyword")}),
     _tool("unread_emails", "Check and read unread emails in Outlook."),
     _tool("draft_email", "Draft an email in Outlook.", {"to": _p("string", "Recipient"), "subject": _p("string", "Subject"), "prompt": _p("string", "Body")}, ["prompt"]),
@@ -1524,7 +1525,7 @@ TOOL_DEFINITIONS = [
     _tool("press_key", "Send a keyboard shortcut.", {"keys": _p("string", "Shortcut e.g. ctrl+c")}, ["keys"]),
     _tool("confirm_action", "Confirm a pending action when user says yes/go ahead."),
     _tool("cancel_action", "Cancel a pending action when user says no/cancel."),
-    _tool("open_website", "Open a website, portal, search results, or direct deep-link in the browser (e.g. Amazon shopping, Google Flights, Google Maps, online booking, or any destination URL).",
+    _tool("open_website", "Open a website URL in the browser when user explicitly asks to open or visit a site (e.g. 'open ixigo', 'go to amazon'). NOT for general queries or shopping intent.",
           {"url": _p("string", "Target URL to open (including search or booking parameters)"),
            "title": _p("string", "Short title or label describing the destination or action")}, ["url"]),
     _tool("stop", "Stop active speech or playback."),
@@ -1562,13 +1563,15 @@ TOOLS AVAILABLE:
 <<TOOLS>>
 
 ROUTING RULES:
-1. FOLLOW-UP & MEDIA CONTEXT: Always inspect prior turns. For 'play_youtube', pass the exact song or video query the user said in params['query']. Never guess or invent artist names that the user did not say (e.g. if the user says 'play emptiness', params['query'] MUST be 'emptiness', NOT 'emptiness by <artist>'). If the user asks to 'play it again' or replay music, call 'play_youtube' with the song/artist query from the prior turn. For resuming paused media, call 'resume_media'. For next song, call 'next_track'.
-2. DIALOGUE, MATH & CREATIVE ('chat'): Use ONLY for greetings, casual chit-chat, opinions, advice, creative writing, or quick math. Put your direct, concise spoken reply in params['response']. If the user asks for the current time or date, call 'get_time' or 'get_date'. Do NOT use 'chat' for external facts, real-world leaders, or who-is questions.
-3. VOLUME CONTROL ('set_volume'): When muting, unmuting, or setting volume, pass params['action'] as 'mute', 'unmute', 'volume_up', 'volume_down', or 'set_volume' (with level).
-4. BROWSING & DIRECT ACTIONS ('open_website'): Use when user wants to visit a website, portal, or homepage (e.g., 'open booking.com', 'go to reddit', 'open github'). Only construct query URLs for standard public services (Google Flights, Google Maps). Never hallucinate or guess complex internal query parameters or path slugs for shopping/booking sites.
+0. STRICT TOPIC INDEPENDENCE: Never blend keywords, brand names, or website names from past turns into a new query unless the user explicitly refers to them. For example, if a previous turn opened a site (like ixigo or amazon) and the user says 'i am looking to buy an car', that is a brand new request about cars; NEVER include the previous website or tool! Use 'chat' to give buying advice.
+1. BROWSING ('open_website'): Use ONLY when user EXPLICITLY asks to open, visit, launch, or go to a website or URL (e.g. 'open ixigo', 'go to amazon', 'visit youtube.com'). NEVER call 'open_website' for general statements or intent like 'i am looking to buy a car' or 'where can I find deals' — use 'chat' to advise or 'web_search' to search.
+2. FOLLOW-UP & MEDIA CONTEXT: For 'play_youtube', pass the exact song or video query the user said in params['query']. Never guess or invent artist names that the user did not say (e.g. if the user says 'play emptiness', params['query'] MUST be 'emptiness', NOT 'emptiness by <artist>'). If the user asks to 'play it again' or replay music, call 'play_youtube' with the song/artist query from the prior turn. For resuming paused media, call 'resume_media'. For next song, call 'next_track'.
+3. DIALOGUE, MATH & ADVICE ('chat'): Use for greetings, casual chit-chat, opinions, buying advice (e.g., 'i am looking to buy a car', 'recommend a smartphone'), creative writing, or quick math. Put your direct, concise spoken reply in params['response']. If the user asks for the current time or date, call 'get_time' or 'get_date'. Do NOT use 'chat' for external facts, real-world leaders, or who-is questions.
+4. VOLUME CONTROL ('set_volume'): When muting, unmuting, or setting volume, pass params['action'] as 'mute', 'unmute', 'volume_up', 'volume_down', or 'set_volume' (with level).
 5. WEB SEARCH ('web_search'): Use for questions about real-world people, current leaders, Prime Ministers, Presidents, politicians, current events, news, sports, geography, history, real-time facts, or products (e.g., 'who is the Prime Minister of Nepal', 'who is the CEO of Microsoft', 'who won the match', 'find hotels in Goa on Booking.com'). Write the complete query in params['query']. Never hallucinate or invent real-world facts!
-6. LOCAL DOCUMENTS & PERSONAL RECORDS ('document_qa'): Use when asking about personal records, user documents, or details stored in user files (e.g., PNR number, phone number, flight/train ticket, booking, invoice, receipt, bills, notes, resume, passport, credentials, saved files, or follow-ups about an Active File). params['query'] MUST be the user's question.
-7. CONFIRMATIONS: If '[Awaiting user confirmation]' is present and user agrees ('yes', 'sure', 'do it'), call 'confirm_action'. If user declines ('no', 'cancel'), call 'cancel_action'.
+6. LOCAL DOCUMENTS & PERSONAL RECORDS ('document_qa'): Use ONLY when asking about personal records, user documents, or details stored in user files on this PC (e.g., user's PNR number, phone number, booked flight/train ticket, booking, invoice, receipt, bills, notes, resume, passport, credentials, saved files, or follow-ups about an Active File). NEVER route public vehicles (Tata Sierra), cars, celebrities, or world knowledge to 'document_qa'. params['query'] MUST be the user's question.
+7. CALENDAR ('get_calendar') VS TRAVEL TICKETS: Use 'get_calendar' ONLY for user's Outlook calendar meetings, schedule, and appointments. Travel tickets, train prices, fares, or journey costs are NOT calendar events! For train prices or tickets, check local files ('document_qa' if user has a booked ticket) or search the web ('web_search').
+8. CONFIRMATIONS: If '[Awaiting user confirmation]' is present and user agrees ('yes', 'sure', 'do it'), call 'confirm_action'. If user declines ('no', 'cancel'), call 'cancel_action'.
 
 When outputting tool actions or direct chat responses, output ONLY valid JSON:
 {"actions": [{"tool": "<tool_name>", "params": {<parameters>}}]}"""
