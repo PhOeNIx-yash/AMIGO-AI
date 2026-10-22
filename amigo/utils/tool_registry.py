@@ -194,6 +194,8 @@ def _tool_web_search(params, query, spoken):
         verified_url = top_result.url or search_url
         meta["top_url"] = verified_url
         meta["title"] = top_result.title
+        update_active_state("last_link", {"url": verified_url, "title": top_result.title, "query": target})
+        update_active_state("last_search", {"query": target, "url": verified_url, "title": top_result.title})
         return response, verified_url, meta
 
     response = get_ai_response(
@@ -244,6 +246,26 @@ def _tool_open_website(params, query, spoken):
         return _offline_reply(query, "websites cannot be opened offline"), None, {"status": "offline"}
     raw_url = str(params.get("url") or "").strip()
     title = str(params.get("title") or "").strip()
+
+    # Dynamic Link Injection: If recent search found a specific URL, inject it for follow-ups
+    state = rag_engine.get_active_state(clean_expired=True) or {}
+    last_link_data = state.get("last_link") or state.get("last_search") or {}
+    prior_url = str(last_link_data.get("url") or "").strip()
+
+    if prior_url:
+        p_parsed = urllib.parse.urlparse(prior_url)
+        p_netloc = p_parsed.netloc.lower().replace("www.", "")
+        r_parsed = urllib.parse.urlparse(raw_url if "://" in raw_url else f"https://{raw_url}")
+        r_netloc = r_parsed.netloc.lower().replace("www.", "")
+
+        is_generic_root = not r_parsed.path or r_parsed.path == "/"
+        domain_matches = bool(r_netloc and p_netloc and (r_netloc in p_netloc or p_netloc in r_netloc))
+
+        if not raw_url or (domain_matches and is_generic_root and len(p_parsed.path) > 1):
+            raw_url = prior_url
+            if not title and last_link_data.get("title"):
+                title = str(last_link_data["title"])
+
     if raw_url:
         if re.match(r"^https?://", raw_url, re.I):
             url = raw_url
@@ -253,8 +275,13 @@ def _tool_open_website(params, query, spoken):
             url = f"https://{raw_url}"
         webbrowser.open(url)
         label = title or url
-        update_active_state("active_subject", {"name": label, "category": "website"})
+        update_active_state("active_subject", {"name": label, "category": "website", "url": url})
+        update_active_state("last_link", {"name": label, "url": url, "title": label})
         return f"Opening {label}.", url, {"url": url, "title": label}
+    if prior_url:
+        webbrowser.open(prior_url)
+        label = last_link_data.get("title") or prior_url
+        return f"Opening {label}.", prior_url, {"url": prior_url, "title": label}
     searchGoogle(query)
     return "Searched the web.", None, {"query": query}
 
@@ -428,11 +455,11 @@ def _tool_open_app(params, query, spoken):
     clean_target = app_name.strip()
     if open_windows_app(clean_target):
         update_active_state("active_app", {"name": clean_target})
-        return spoken or f"Opened {clean_target.title()}.", None
+        return spoken or f"Opened {clean_target.title()}.", None, {"status": "completed", "app": clean_target}
 
     if is_app_already_running(clean_target):
         update_active_state("active_app", {"name": clean_target})
-        return f"{clean_target.title()} is already open.", None
+        return f"{clean_target.title()} is already open.", None, {"status": "completed", "app": clean_target}
 
     return f"I couldn't find an app called '{clean_target.title()}' installed on your PC.", None, {"status": "completed", "query": clean_target}
 
@@ -558,41 +585,29 @@ def _tool_memory_recall(params, query, spoken):
 
 
 def _tool_ask_document(params, query, spoken, conversation_history=None):
-    """Unified RAG Q&A handler with full follow-up context and active_file awareness."""
+    """Unified RAG Q&A handler with full follow-up context and cross-corpus retrieval."""
     params = params if isinstance(params, dict) else {}
     conv_history = _get_conv_history(conversation_history)
     filepath = str(params.get("filepath") or "").strip()
     question = str(params.get("question") or params.get("query") or query or "").strip() or query
 
     resolved_question = rag_engine.resolve_contextual_query(question, conv_history)
-    target_path = None
-    if filepath:
-        target_path = resolve_document_path(filepath)
-    elif re.search(r"\b[\w\-.]+\.(?:pdf|docx?|txt|xlsx?|csv|json|py|pptx?|html)\b", question, re.I):
-        target_path = resolve_document_path(question)
-    elif act_f := (get_active_state(clean_expired=False) or {}).get("active_file"):
-        if isinstance(act_f, dict) and act_f.get("path") and os.path.exists(act_f["path"]):
-            target_path = act_f["path"]
+    target_path = resolve_document_path(filepath) if filepath else None
 
-    ctx = ""
+    # Retrieve from broader corpus across all user documents & facts
+    ctx = rag_engine.build_rag_context(
+        resolved_question,
+        top_k=6,
+        conversation_history=conv_history,
+        for_voice=False,
+        target_collections=[rag_engine.DOCUMENTS, rag_engine.USER_FACTS],
+    )
+
+    # If a specific file was targeted, also ensure its matching sections are included
     if target_path and os.path.exists(target_path):
-        update_active_state("active_file", {"path": target_path, "name": os.path.basename(target_path)})
-        ctx = rag_engine.build_file_context(target_path, resolved_question)
-
-    if not ctx or len(ctx.strip()) < 60:
-        broader_ctx = rag_engine.build_rag_context(
-            resolved_question,
-            top_k=5,
-            conversation_history=conv_history,
-            for_voice=False,
-            target_collections=[rag_engine.DOCUMENTS, rag_engine.USER_FACTS],
-        )
-        if broader_ctx:
-            ctx = broader_ctx
-            if not target_path:
-                act_f = (get_active_state(clean_expired=False) or {}).get("active_file")
-                if isinstance(act_f, dict) and act_f.get("path") and os.path.exists(act_f["path"]):
-                    target_path = act_f["path"]
+        file_ctx = rag_engine.build_file_context(target_path, resolved_question)
+        if file_ctx and file_ctx not in ctx:
+            ctx = f"{file_ctx}\n\n{ctx}".strip() if ctx else file_ctx
 
     if ctx:
         meta = {"matched_docs": [target_path]} if target_path else {"doc_context_used": True}
@@ -606,25 +621,25 @@ def _tool_summarize_document(params, query, spoken):
     params = params if isinstance(params, dict) else {}
     conv_history = _get_conv_history()
     filepath = str(params.get("filepath") or "").strip()
-    target_path = None
-    if filepath:
-        target_path = resolve_document_path(filepath)
-    elif re.search(r"\b[\w\-.]+\.(?:pdf|docx?|txt|xlsx?|csv|json|py|pptx?|html)\b", query, re.I):
-        target_path = resolve_document_path(query)
-    elif act_f := (get_active_state(clean_expired=False) or {}).get("active_file"):
+    target_path = resolve_document_path(filepath) if filepath else None
+
+    if not target_path:
+        act_f = (get_active_state(clean_expired=True) or {}).get("active_file")
         if isinstance(act_f, dict) and act_f.get("path") and os.path.exists(act_f["path"]):
             target_path = act_f["path"]
 
     if target_path and os.path.exists(target_path):
-        update_active_state("active_file", {"path": target_path, "name": os.path.basename(target_path)})
-        ctx = rag_engine.get_file_summary_context(target_path)
-    else:
-        ctx = rag_engine.build_rag_context(query, top_k=6, conversation_history=conv_history)
+        text = rag_engine.extract_text(target_path)
+        if text:
+            update_active_state("active_file", {"path": target_path, "name": os.path.basename(target_path)})
+            summary = get_ai_response(
+                f"Summarize this document clearly:\n\n{text[:6000]}",
+                conversation_history=conv_history,
+                use_memory=False,
+            )
+            return summary, None, {"status": "completed", "file": target_path}
 
-    if ctx:
-        target_prompt = query.strip() or "Summarize this document concisely."
-        return get_ai_response(target_prompt, doc_context=ctx, conversation_history=conv_history), None
-    return "I couldn't find that document to summarize.", None
+    return "Which document would you like me to summarize?", None
 
 
 def _tool_search_knowledge(params, query, spoken):
@@ -892,10 +907,8 @@ def _require_confirmation(action_name: str, params: dict, query: str, spoken: st
 
 
 def _tool_close_app(params, query, spoken):
-    confirm_result = _require_confirmation("Close app", params, query, spoken or "Closing app")
-    if confirm_result[2].get("requires_confirmation"):
-        return confirm_result
-    name = (params or {}).get("app_name") or (params or {}).get("name") or (params or {}).get("app") or ""
+    params = params if isinstance(params, dict) else {}
+    name = params.get("name") or params.get("app_name") or params.get("app") or ""
     closed = os_automation.close_app(name)
     if not name or name.lower() in ("current", "active", "this", "window", "app", "application", "it"):
         return "Window closed.", None
@@ -1028,7 +1041,7 @@ def _ordinal_index(text: str, count: int):
     low = text.lower()
     if re.search(r"\blast\s+one\b", low):
         return count - 1
-    m = re.search(r"\b(?:number|no\.?|#)\s*(\d+)\b", low) or re.search(r"\b(\d+)(?:st|nd|rd|th)\b", low)
+    m = re.search(r"\b(?:number|no\.?|#)?\s*(\d+)\b", low) or re.search(r"\b(\d+)(?:st|nd|rd|th)\b", low)
     if m:
         n = int(m.group(1))
         return n - 1 if 1 <= n <= count else -1
@@ -1057,7 +1070,9 @@ def resolve_document_path(query_or_target: str) -> str | None:
     if isinstance(found_list, dict):
         found_list = found_list.get("items", [])
     if isinstance(found_list, list) and found_list:
-        idx = _ordinal_index(raw, len(found_list))
+        idx = _ordinal_index(clean, len(found_list))
+        if idx is None:
+            idx = _ordinal_index(raw, len(found_list))
         if idx == -1:
             return None
         if idx is not None and os.path.exists(found_list[idx]):
@@ -1065,6 +1080,8 @@ def resolve_document_path(query_or_target: str) -> str | None:
 
     tokens = re.findall(r"[a-z0-9']+", clean.lower())
     if not tokens or all(t in _REFERENT_WORDS or t in _ORDINAL_WORDS or t.isdigit() for t in tokens):
+        if found_list and isinstance(found_list, list) and os.path.exists(found_list[0]):
+            return found_list[0]
         return active_path if active_ok else None
 
     search_terms = []
@@ -1469,10 +1486,10 @@ def _tool(name: str, description: str, props: dict | None = None, required: list
 
 
 TOOL_DEFINITIONS = [
-    _tool("chat", "Conversational dialogue: greetings, casual chit-chat, opinions, advice, creative writing, or quick math. NOT for real-world leaders, external facts, or current information.",
+    _tool("chat", "Conversational dialogue: greetings, casual conversation, opinions, advice, creative writing, or quick math that do not require external lookup or local system inspection.",
           {"response": _p("string", "Your direct, natural spoken or written reply to the user (1 to 2 concise sentences)")},
           ["response"]),
-    _tool("web_search", "Search the web for real-world people, current leaders (Prime Ministers, Presidents, CEOs, politicians), news, sports, geography, history, release dates, products, or external factual knowledge.",
+    _tool("web_search", "Search the web for external information, current events, public facts, online lookups, or live web research.",
           {"query": _p("string", "Self-contained search query with pronouns resolved from conversation history"),
            "show_in_browser": _p("boolean", "True if user asked to open search results in a browser")}, ["query"]),
     _tool("stock_quote", "Look up real-time stock or crypto prices.", {"symbol": _p("string", "Ticker or asset name")}, ["symbol"]),
@@ -1483,12 +1500,12 @@ TOOL_DEFINITIONS = [
     _tool("pause_media", "Pause currently playing audio/video."),
     _tool("next_track", "Skip to next track."),
     _tool("prev_track", "Go to previous track."),
-    _tool("current_media", "Check which song or video is currently playing."),
+    _tool("current_media", "Check what media, song, video, or live stream is currently playing or paused on the PC."),
     _tool("set_volume", "Control system audio volume (mute, unmute, volume_up, volume_down, set_volume).",
           {"action": _p("string", "mute | unmute | volume_up | volume_down | set_volume"), "level": _p("integer", "0-100")}),
     _tool("set_brightness", "Adjust screen brightness.", {"level": _p("integer", "0-100")}, ["level"]),
     _tool("take_screenshot", "Capture a screenshot of the screen."),
-    _tool("read_screen", "Inspect current screen content and answer questions about it.", {"question": _p("string", "Question about screen")}),
+    _tool("read_screen", "Inspect the visual display, active window, or graphical user interface on the screen (UI layout, visual errors, dialogs, visible window state). Do not use for querying information from indexed documents or files.", {"question": _p("string", "Question about the screen or active window")}),
     _tool("open_app", "Launch an installed desktop app.", {"name": _p("string", "App name")}, ["name"]),
     _tool("close_app", "Close an application or active window.", {"name": _p("string", "App name")}),
     _tool("window_mgmt", "Manage windows (minimize_all, maximize, restore, switch_window, close_window).",
@@ -1509,11 +1526,11 @@ TOOL_DEFINITIONS = [
     _tool("cancel_reminder", "Cancel one or all reminders.", {"query": _p("string", "'all' or reminder title")}, ["query"]),
     _tool("find_file", "Find local files or folders by name or topic.", {"query": _p("string", "Search pattern")}, ["query"]),
     _tool("open_file", "Open a local file by path, name, or ordinal ('number 1', 'it').", {"path": _p("string", "File reference")}, ["path"]),
-    _tool("document_qa", "Look up and answer questions from indexed personal documents and user records on this PC (resume, phone numbers, PNR, booked tickets, bills, notes). NOT for world knowledge.",
+    _tool("document_qa", "Search and answer questions using the user's indexed local files, personal documents, and saved records on this PC.",
           {"query": _p("string", "Self-contained question or lookup query"), "filepath": _p("string", "Optional filename")}, ["query"]),
     _tool("memory_recall", "Save a new personal fact ('remember that...') or recall saved user facts/preferences.",
           {"query": _p("string", "Question about saved memory"), "fact": _p("string", "Fact to save if user asked to remember")}),
-    _tool("get_calendar", "View or search Outlook calendar schedule, meetings, and appointments (NOT for travel tickets, train fares, or flight prices).", {"days": _p("integer", "Days ahead"), "query": _p("string", "Search keyword")}),
+    _tool("get_calendar", "View or search calendar schedule, meetings, and appointments.", {"days": _p("integer", "Days ahead"), "query": _p("string", "Search keyword")}),
     _tool("read_emails", "Read recent/unread emails or search Outlook.", {"action": _p("string", "recent | unread | search"), "query": _p("string", "Keyword")}),
     _tool("unread_emails", "Check and read unread emails in Outlook."),
     _tool("draft_email", "Draft an email in Outlook.", {"to": _p("string", "Recipient"), "subject": _p("string", "Subject"), "prompt": _p("string", "Body")}, ["prompt"]),
@@ -1525,9 +1542,9 @@ TOOL_DEFINITIONS = [
     _tool("press_key", "Send a keyboard shortcut.", {"keys": _p("string", "Shortcut e.g. ctrl+c")}, ["keys"]),
     _tool("confirm_action", "Confirm a pending action when user says yes/go ahead."),
     _tool("cancel_action", "Cancel a pending action when user says no/cancel."),
-    _tool("open_website", "Open a website URL in the browser when user explicitly asks to open or visit a site (e.g. 'open ixigo', 'go to amazon'). NOT for general queries or shopping intent.",
-          {"url": _p("string", "Target URL to open (including search or booking parameters)"),
-           "title": _p("string", "Short title or label describing the destination or action")}, ["url"]),
+    _tool("open_website", "Open or navigate to a website or URL in the default browser when the user explicitly requests to launch or visit a site. Do not use for searching or querying information.",
+          {"url": _p("string", "Website URL or domain to open in browser"),
+           "title": _p("string", "Short title of the site")}, ["url"]),
     _tool("stop", "Stop active speech or playback."),
     _tool("exit", "Close Amigo."),
 ]
@@ -1563,15 +1580,16 @@ TOOLS AVAILABLE:
 <<TOOLS>>
 
 ROUTING RULES:
-0. STRICT TOPIC INDEPENDENCE: Never blend keywords, brand names, or website names from past turns into a new query unless the user explicitly refers to them. For example, if a previous turn opened a site (like ixigo or amazon) and the user says 'i am looking to buy an car', that is a brand new request about cars; NEVER include the previous website or tool! Use 'chat' to give buying advice.
-1. BROWSING ('open_website'): Use ONLY when user EXPLICITLY asks to open, visit, launch, or go to a website or URL (e.g. 'open ixigo', 'go to amazon', 'visit youtube.com'). NEVER call 'open_website' for general statements or intent like 'i am looking to buy a car' or 'where can I find deals' — use 'chat' to advise or 'web_search' to search.
-2. FOLLOW-UP & MEDIA CONTEXT: For 'play_youtube', pass the exact song or video query the user said in params['query']. Never guess or invent artist names that the user did not say (e.g. if the user says 'play emptiness', params['query'] MUST be 'emptiness', NOT 'emptiness by <artist>'). If the user asks to 'play it again' or replay music, call 'play_youtube' with the song/artist query from the prior turn. For resuming paused media, call 'resume_media'. For next song, call 'next_track'.
-3. DIALOGUE, MATH & ADVICE ('chat'): Use for greetings, casual chit-chat, opinions, buying advice (e.g., 'i am looking to buy a car', 'recommend a smartphone'), creative writing, or quick math. Put your direct, concise spoken reply in params['response']. If the user asks for the current time or date, call 'get_time' or 'get_date'. Do NOT use 'chat' for external facts, real-world leaders, or who-is questions.
-4. VOLUME CONTROL ('set_volume'): When muting, unmuting, or setting volume, pass params['action'] as 'mute', 'unmute', 'volume_up', 'volume_down', or 'set_volume' (with level).
-5. WEB SEARCH ('web_search'): Use for questions about real-world people, current leaders, Prime Ministers, Presidents, politicians, current events, news, sports, geography, history, real-time facts, or products (e.g., 'who is the Prime Minister of Nepal', 'who is the CEO of Microsoft', 'who won the match', 'find hotels in Goa on Booking.com'). Write the complete query in params['query']. Never hallucinate or invent real-world facts!
-6. LOCAL DOCUMENTS & PERSONAL RECORDS ('document_qa'): Use ONLY when asking about personal records, user documents, or details stored in user files on this PC (e.g., user's PNR number, phone number, booked flight/train ticket, booking, invoice, receipt, bills, notes, resume, passport, credentials, saved files, or follow-ups about an Active File). NEVER route public vehicles (Tata Sierra), cars, celebrities, or world knowledge to 'document_qa'. params['query'] MUST be the user's question.
-7. CALENDAR ('get_calendar') VS TRAVEL TICKETS: Use 'get_calendar' ONLY for user's Outlook calendar meetings, schedule, and appointments. Travel tickets, train prices, fares, or journey costs are NOT calendar events! For train prices or tickets, check local files ('document_qa' if user has a booked ticket) or search the web ('web_search').
-8. CONFIRMATIONS: If '[Awaiting user confirmation]' is present and user agrees ('yes', 'sure', 'do it'), call 'confirm_action'. If user declines ('no', 'cancel'), call 'cancel_action'.
+1. INTENT-BASED ROUTING:
+- Navigation vs Search: When the user asks to launch, open, or visit an application, file, or website, route to navigation tools ('open_website', 'open_app', 'open_file'). When the user asks a question, requests information, searches, or checks details, route to information retrieval tools ('web_search', 'document_qa'), even if a specific website or platform is mentioned.
+- Local Records vs Visual Display:
+  * Route to 'document_qa' for retrieving facts, contents, data, or text from the user's local documents, files, and stored records on the computer, regardless of whether a document or viewer is currently open on the desktop.
+  * Route to 'read_screen' exclusively when the user asks to inspect the physical display, visual appearance, GUI layout, on-screen errors, or graphical window state.
+- Local Documents vs Web Search: Route to 'document_qa' for information stored in the user's personal files and local PC records. Route to 'web_search' for external information, public facts, current events, or web research.
+- Spoken Dialogue & Advice ('chat'): Use for conversational dialogue, reasoning, creative writing, translations, opinions, and advice that do not require external lookup or local system inspection. Output direct reply in params['response'].
+- Media & Playback: For media requests ('play_youtube'), pass the exact media title or query requested by the user in params['query'] without extrapolating or inventing metadata. Use 'resume_media', 'pause_media', 'next_track', 'prev_track' for playback controls.
+- Context & Independence: Resolve pronouns and follow-up references ('it', 'that', 'this') naturally using recent conversation turns. If the user initiates a new topic, do not carry over entities, domains, or tool targets from prior unrelated turns.
+- System Actions & Confirmations: If an action is pending user confirmation and the user affirms ('yes', 'sure', 'confirm'), call 'confirm_action'. If the user declines ('no', 'cancel'), call 'cancel_action'.
 
 When outputting tool actions or direct chat responses, output ONLY valid JSON:
 {"actions": [{"tool": "<tool_name>", "params": {<parameters>}}]}"""
@@ -1756,6 +1774,27 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
             elif last_tool == "web_search" and is_internet_connected():
                 tool_calls = [{"tool": "web_search", "params": {"query": resolved}, "speak": ""}]
 
+    # Disambiguation: if open_website was chosen with a query string in the URL,
+    # route to web_search so Amigo retrieves and synthesizes the answer
+    for i, call in enumerate(tool_calls):
+        if call["tool"] == "open_website":
+            raw_url = str((call.get("params") or {}).get("url") or "").strip()
+            has_query_params = bool(urllib.parse.urlparse(raw_url).query)
+            if has_query_params and is_internet_connected():
+                history = _get_conv_history(conversation_history)
+                resolved = rag_engine.resolve_contextual_query(query, history)
+                tool_calls[i] = {
+                    "tool": "web_search",
+                    "params": {"query": resolved or query.strip()},
+                    "speak": "",
+                }
+            elif raw_url and "." not in raw_url and "://" not in raw_url and "/" not in raw_url:
+                tool_calls[i] = {
+                    "tool": "open_app",
+                    "params": {"name": raw_url},
+                    "speak": "",
+                }
+
     # Ensure chat tool has response/reply parameter
     for call in tool_calls:
         if call["tool"] == "chat":
@@ -1932,7 +1971,7 @@ def build_action_cards(tool: str, params: dict, result_metadata: dict, url: str 
         for index, file_item in enumerate(result_metadata.get("file_results", [])):
             cards.append({
                 "id": f"act-file-{index}",
-                "type": "general",
+                "type": "file",
                 "title": file_item.get("name", "Document"),
                 "subtitle": file_item.get("folder", "") or file_item.get("path", ""),
                 "selected": False,

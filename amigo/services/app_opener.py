@@ -13,6 +13,7 @@ import threading
 import subprocess
 import webbrowser
 import shutil
+import ctypes
 from typing import Dict, List, Optional, Tuple
 
 
@@ -47,12 +48,12 @@ FILE_CACHE_FILE = os.path.join(_PROJECT_ROOT, "rag_data", "file_index.json")
 
 _app_dict: Dict[str, str] = {}
 _index_built: bool = False
-_build_lock = threading.Lock()
+_build_lock = threading.RLock()
 _build_thread: Optional[threading.Thread] = None
 
 _file_index: List[Tuple[str, str, float]] = []  # (full_path, fname_lower, mtime)
 _file_index_built: bool = False
-_file_index_lock = threading.Lock()
+_file_index_lock = threading.RLock()
 _file_index_thread: Optional[threading.Thread] = None
 
 
@@ -116,28 +117,34 @@ def _src_start_apps() -> Dict[str, str]:
 
 
 def _src_app_paths_registry() -> Dict[str, str]:
-    """Queries Windows HKLM App Paths registry."""
+    """Queries Windows HKLM and HKCU App Paths registry for installed software paths."""
     out = {}
-    try:
-        root = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths")
-        i = 0
-        while True:
-            try:
-                exe_name = winreg.EnumKey(root, i)
-                i += 1
-                sub = winreg.OpenKey(root, exe_name)
-                path_val, _ = winreg.QueryValueEx(sub, "")
-                sub.Close()
-                path_val = os.path.expandvars(path_val.strip().strip('"'))
-                if path_val and os.path.isfile(path_val):
-                    out[os.path.splitext(exe_name)[0].lower().strip()] = path_val
-            except OSError:
-                break
-            except Exception:
-                pass
-        root.Close()
-    except Exception:
-        pass
+    hives = [
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths"),
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths"),
+    ]
+    for hive, subpath in hives:
+        try:
+            root = winreg.OpenKey(hive, subpath, 0, winreg.KEY_READ)
+            num_keys = winreg.QueryInfoKey(root)[0]
+            for i in range(num_keys):
+                try:
+                    exe_name = winreg.EnumKey(root, i)
+                    sub = winreg.OpenKey(root, exe_name)
+                    path_val, _ = winreg.QueryValueEx(sub, "")
+                    sub.Close()
+                    path_val = os.path.expandvars(path_val.strip().strip('"'))
+                    if path_val and os.path.isfile(path_val):
+                        stem = os.path.splitext(exe_name)[0].lower().strip()
+                        out[stem] = path_val
+                except OSError:
+                    continue
+                except Exception:
+                    pass
+            root.Close()
+        except Exception:
+            pass
     return out
 
 
@@ -230,11 +237,14 @@ def _src_common_exes() -> Dict[str, str]:
         scan_bases.append((os.path.join(app_data, "Zoom", "bin"), 1))
         scan_bases.append((os.path.join(app_data, "Programs"), 2))
 
+    deadline = time.time() + 2.0
     for base, max_depth in scan_bases:
-        if not os.path.isdir(base):
+        if not os.path.isdir(base) or time.time() > deadline:
             continue
         try:
             for root, dirs, files in os.walk(base):
+                if time.time() > deadline:
+                    break
                 dirs[:] = [d for d in dirs if d.lower() not in _SKIP_DIRS]
                 rel_depth = len(os.path.relpath(root, base).split(os.sep))
                 if rel_depth > max_depth:
@@ -282,11 +292,11 @@ def _build_index() -> None:
     global _app_dict, _index_built
     t0 = time.time()
     idx = {}
-    idx.update(_src_common_exes())
-    idx.update(_src_uninstall_registry())
     idx.update(_src_app_paths_registry())
-    idx.update(_src_lnk_shortcuts())
     idx.update(_src_start_apps())
+    idx.update(_src_lnk_shortcuts())
+    idx.update(_src_uninstall_registry())
+    idx.update(_src_common_exes())
 
     with _build_lock:
         _app_dict = idx
@@ -483,34 +493,47 @@ def _search_files_fallback(keywords: List[str], max_results: int = 10) -> List[s
                 if len(results) >= max_results * 5:
                     break
 
-    # 2. If cached index is not ready or gave no hits, do a fast targeted scan of primary user directories only
+    # 2. If cached index is not ready or gave no hits, do a fast targeted scan with strict 1.5s deadline
     if not results:
+        onedrive = os.environ.get("OneDrive") or os.environ.get("OneDriveConsumer") or os.path.join(_USER_HOME, "OneDrive")
         target_roots = [
-            os.path.join(_USER_HOME, "Documents"),
             os.path.join(_USER_HOME, "Downloads"),
             os.path.join(_USER_HOME, "Desktop"),
+            os.path.join(_USER_HOME, "Documents"),
         ]
+        if onedrive and os.path.isdir(onedrive):
+            for sub in ("Desktop", "Documents"):
+                p = os.path.join(onedrive, sub)
+                if os.path.isdir(p) and p not in target_roots:
+                    target_roots.append(p)
+
+        deadline = time.time() + 1.5
         seen = set()
         for root in target_roots:
-            if not os.path.isdir(root):
+            if not os.path.isdir(root) or time.time() > deadline:
                 continue
-            for dirpath, dirnames, filenames in os.walk(root, topdown=True):
-                dirnames[:] = [d for d in dirnames if not d.startswith((".", "$")) and d.lower() not in _SKIP_DIRS]
-                rel_depth = len(os.path.relpath(dirpath, root).split(os.sep))
-                if rel_depth > 3:
-                    dirnames.clear()
-                    continue
-                for fname in filenames:
-                    full = os.path.join(dirpath, fname)
-                    if full not in seen:
-                        seen.add(full)
-                        score = _score_file(full, fname, keywords)
-                        if score > 0:
-                            try:
-                                mtime = os.path.getmtime(full)
-                            except OSError:
-                                mtime = 0
-                            results.append((score, mtime, full))
+            try:
+                for dirpath, dirnames, filenames in os.walk(root, topdown=True):
+                    if time.time() > deadline:
+                        break
+                    dirnames[:] = [d for d in dirnames if not d.startswith((".", "$")) and d.lower() not in _SKIP_DIRS]
+                    rel_depth = len(os.path.relpath(dirpath, root).split(os.sep))
+                    if rel_depth > 3:
+                        dirnames.clear()
+                        continue
+                    for fname in filenames:
+                        full = os.path.join(dirpath, fname)
+                        if full not in seen:
+                            seen.add(full)
+                            score = _score_file(full, fname, keywords)
+                            if score > 0:
+                                try:
+                                    mtime = os.path.getmtime(full)
+                                except OSError:
+                                    mtime = 0
+                                results.append((score, mtime, full))
+            except Exception:
+                pass
 
     results.sort(key=lambda x: (x[0], x[1]), reverse=True)
     return [r[2] for r in results[:max_results]]
@@ -615,6 +638,48 @@ def open_folder(folder_name: str) -> Tuple[bool, str]:
     return True, "Opening File Explorer."
 
 
+def _launch_target(target: str, clean_name: str = "") -> bool:
+    if not target:
+        return False
+    try:
+        if target.startswith("uwp:"):
+            aumid = target[4:]
+            res = ctypes.windll.shell32.ShellExecuteW(None, "open", f"shell:AppsFolder\\{aumid}", None, None, 1)
+            if res > 32:
+                return True
+        if not os.path.exists(target) and ("!" in target or "." in target):
+            res = ctypes.windll.shell32.ShellExecuteW(None, "open", f"shell:AppsFolder\\{target}", None, None, 1)
+            if res > 32:
+                return True
+        if target.lower().endswith(".lnk"):
+            res = ctypes.windll.shell32.ShellExecuteW(None, "open", target, None, None, 1)
+            if res > 32:
+                return True
+            try:
+                os.startfile(target)
+                return True
+            except Exception:
+                pass
+        if os.path.isfile(target):
+            try:
+                subprocess.Popen([target], cwd=os.path.dirname(target), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return True
+            except Exception:
+                res = ctypes.windll.shell32.ShellExecuteW(None, "open", target, None, None, 1)
+                if res > 32:
+                    return True
+        res = ctypes.windll.shell32.ShellExecuteW(None, "open", target, None, None, 1)
+        if res > 32:
+            return True
+        if clean_name and clean_name != target:
+            res = ctypes.windll.shell32.ShellExecuteW(None, "open", clean_name, None, None, 1)
+            if res > 32:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def open_windows_app(app_name: str) -> bool:
     """Dynamically launches any application, executable, or Windows shell tool without hardcoded lists."""
     if not app_name:
@@ -630,14 +695,13 @@ def open_windows_app(app_name: str) -> bool:
         if ok:
             return True
 
+    clean_target = _normalize(clean) or clean
+
     # 1. Dynamic system PATH (resolves control, taskmgr, calc, notepad, cmd, wt, etc. instantly without waiting on index)
-    exe_candidate = shutil.which(clean) or shutil.which(clean.replace(" ", "")) or shutil.which(clean.replace(" ", "_"))
-    if exe_candidate:
-        try:
-            subprocess.Popen([exe_candidate], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for cand in (clean_target, clean, clean_target.replace(" ", ""), clean.replace(" ", "")):
+        exe_candidate = shutil.which(cand) or shutil.which(f"{cand}.exe")
+        if exe_candidate and _launch_target(exe_candidate, clean_target):
             return True
-        except Exception:
-            pass
 
     # 2. Check indexed apps (Start Menu, Registry, User AppData, Program Files)
     ensure_built()
@@ -646,33 +710,21 @@ def open_windows_app(app_name: str) -> bool:
         while not _index_built and time.time() < deadline:
             time.sleep(0.04)
 
-    _, path = _find_best_app(app_name)
-    if path:
-        try:
-            if path.startswith("uwp:"):
-                subprocess.Popen(["explorer.exe", f"shell:AppsFolder\\{path[4:]}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                return True
-            if not os.path.exists(path) and ("!" in path or "." in path):
-                subprocess.Popen(["explorer.exe", f"shell:AppsFolder\\{path}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                return True
-            if path.lower().endswith(".lnk"):
-                os.startfile(path)
-                return True
-            if os.path.exists(path):
-                subprocess.Popen([path], cwd=os.path.dirname(path), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                return True
-        except Exception:
-            try:
-                os.startfile(path)
-                return True
-            except Exception:
-                pass
+    _, path = _find_best_app(clean_target)
+    if not path and clean != clean_target:
+        _, path = _find_best_app(clean)
+    if path and _launch_target(path, clean_target):
+        return True
 
-    # 3. Native Windows Shell Start (handles shell namespaces, control applets, ms-settings:, protocol URIs)
+    # 3. Direct Win32 ShellExecute on target (handles shell commands, ms-settings:, calc, notepad, etc.)
     try:
-        r = subprocess.run(["cmd.exe", "/c", "start", "", clean], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
-        if r.returncode == 0:
+        res = ctypes.windll.shell32.ShellExecuteW(None, "open", clean_target, None, None, 1)
+        if res > 32:
             return True
+        if clean != clean_target:
+            res = ctypes.windll.shell32.ShellExecuteW(None, "open", clean, None, None, 1)
+            if res > 32:
+                return True
     except Exception:
         pass
 
@@ -721,4 +773,6 @@ def execute_file_action(file_path: str, action: str = "open") -> Tuple[bool, str
 
     ok = open_file_or_location(file_path)
     return ok, "Opening file." if ok else "Could not open file."
+
+
 

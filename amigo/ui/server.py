@@ -370,6 +370,9 @@ def _process_query(
     _tool_label_map = {
         "web_search": ("Searching Web", str(first_params.get("query") or clean_user_query)),
         "open_website": ("Browsing", str(first_params.get("title") or first_params.get("url") or "Web")),
+        "open_app": ("Opening App", str(first_params.get("name") or clean_user_query)),
+        "close_app": ("Closing App", str(first_params.get("name") or first_params.get("app_name") or clean_user_query)),
+        "open_file": ("Opening File", str(first_params.get("path") or "Document")),
         "document_qa": ("Analyzing Documents", str(first_params.get("filepath") or first_params.get("query") or "Indexed files")),
         "ask_document": ("Analyzing Documents", str(first_params.get("filepath") or first_params.get("query") or "Indexed files")),
         "summarize_document": ("Summarizing", str(first_params.get("filepath") or "Document")),
@@ -438,6 +441,7 @@ def _process_query(
         params=last_params,
         clipboard_used=clipboard_used,
         remember=last_remember,
+        url=last_url,
     )
 
     last_thought = get_last_thought()

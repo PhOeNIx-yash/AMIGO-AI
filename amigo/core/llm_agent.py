@@ -394,6 +394,7 @@ def add_to_memory(
     clipboard_used: bool = False,
     remember: str = "",
     state_update: dict | None = None,
+    url: str | None = None,
 ) -> None:
     rag_engine.add_conversation(
         user_msg=user_query,
@@ -403,6 +404,7 @@ def add_to_memory(
         clipboard_used=clipboard_used,
         remember=remember,
         state_update=state_update,
+        url=url,
     )
 
 

@@ -695,11 +695,8 @@ def resolve_contextual_query(query: str, conversation_history: list[dict] | None
     u_msg = last_turn.get("user", "")
     a_msg = last_turn.get("assistant", "")
 
-    # Extract salient anchors from the recent turn
-    context_anchors: list[str] = []
-    context_anchors.extend(_extract_salient_terms(u_msg, max_terms=3))
-    if len(context_anchors) < 3:
-        context_anchors.extend(_extract_salient_terms(a_msg[:250], max_terms=2))
+    # Extract salient anchors from the recent turn using information weights
+    context_anchors: list[str] = _extract_salient_terms(u_msg, max_terms=5)
 
     if not context_anchors:
         return clean_q
@@ -715,7 +712,7 @@ def resolve_contextual_query(query: str, conversation_history: list[dict] | None
     for term in context_anchors:
         if term.lower() not in q_words and term.lower() not in {a.lower() for a in unique_anchors}:
             unique_anchors.append(term)
-        if len(unique_anchors) >= 3:
+        if len(unique_anchors) >= 4:
             break
 
     if not unique_anchors:
@@ -1317,6 +1314,7 @@ def add_conversation(
     remember: str = "",
     state_update: dict | None = None,
     importance: float = 1.0,
+    url: str | None = None,
 ) -> None:
     if not user_msg or not user_msg.strip():
         return
@@ -1336,7 +1334,10 @@ def add_conversation(
     # Track active subject ONLY when high-information content tokens exist
     salient = _extract_salient_terms(user_msg, max_terms=3)
     if salient:
-        update_active_state("active_subject", {"name": " ".join(salient), "category": tool})
+        update_active_state("active_subject", {"name": " ".join(salient), "category": tool, "url": url or ""})
+
+    if url:
+        update_active_state("last_link", {"url": url, "title": assistant_msg[:80], "tool": tool})
 
     turn_item = {
         "user": user_msg,
@@ -1346,6 +1347,8 @@ def add_conversation(
         "timestamp": timestamp,
         "importance": importance,
     }
+    if url:
+        turn_item["url"] = url
     buf = _ensure_buffer()
     buf.append(turn_item)
 
@@ -1998,6 +2001,10 @@ def get_user_profile_prompt(query: str = "", semantic_search: bool = True) -> st
 def get_active_context_prompt() -> str:
     state = get_active_state(clean_expired=True)
     parts: list[str] = []
+    if last_link := state.get("last_link"):
+        if u := last_link.get("url"):
+            t = last_link.get("title") or "Website Link"
+            parts.append(f"Active Link: {u} ({t})")
     if media := state.get("current_media"):
         if title := media.get("title") or media.get("query"):
             parts.append(f"Playing: '{title}' on {media.get('platform', 'YouTube')}")
