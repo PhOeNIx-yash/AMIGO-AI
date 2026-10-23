@@ -26,12 +26,13 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-if hasattr(sys.stdout, "reconfigure"):
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
+try:
+    for _stream in (sys.stdout, sys.stderr):
+        _reconfigure = getattr(_stream, "reconfigure", None)
+        if callable(_reconfigure):
+            _reconfigure(encoding="utf-8", errors="replace")
+except (OSError, ValueError):
+    pass
 
 logging.basicConfig(
     level=logging.INFO,
@@ -214,8 +215,8 @@ def get_active_model_info() -> dict:
         models = get_llm_available_models() or {}
         info = next(iter(models.values()), {})
 
-    name = info.get("name", "Spark-X2.5 4B")
-    key = info.get("key", "spark-x2.5-4b")
+    name = info.get("name", "Spark-X2.6 4B")
+    key = info.get("key", "spark-x2.6-4b")
     vision_ok = is_vision_ready()
     ctx_len = int(os.getenv("AMIGO_LLM_N_CTX", "8192"))
     return {
@@ -236,7 +237,7 @@ def get_active_model_info() -> dict:
 
 def get_available_models() -> list[dict]:
     try:
-        active_key = get_active_model_info().get("key", "spark-x2.5-4b")
+        active_key = get_active_model_info().get("key", "spark-x2.6-4b")
         return [
             {
                 "key": k,
@@ -248,7 +249,7 @@ def get_available_models() -> list[dict]:
         ]
     except Exception:
         return [
-            {"key": "spark-x2.5-4b", "name": "Spark-X2.5 4B", "status": "active", "type": "local"},
+            {"key": "spark-x2.6-4b", "name": "Spark-X2.6 4B", "status": "active", "type": "local"},
         ]
 
 
@@ -532,7 +533,7 @@ def index():
     return jsonify({
         "status": "online",
         "service": "Amigo AI Engine & Windows 11 Voice Assistant Backend",
-        "model": info.get("name", "Spark-X2.5 4B"),
+        "model": info.get("name", "Spark-X2.6 4B"),
     })
 
 
@@ -560,12 +561,12 @@ def api_upload():
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     filename, saved_path = None, None
 
-    if "file" in request.files and request.files["file"].filename:
-        f = request.files["file"]
-        raw_filename = os.path.basename(f.filename)
+    uploaded_file = request.files.get("file")
+    if uploaded_file is not None and uploaded_file.filename:
+        raw_filename = os.path.basename(uploaded_file.filename)
         safe_name = f"{int(time.time())}_{re.sub(r'[^a-zA-Z0-9_.-]', '_', raw_filename)}"
         saved_path = os.path.join(UPLOAD_DIR, safe_name)
-        f.save(saved_path)
+        uploaded_file.save(saved_path)
         filename = raw_filename
     elif request.is_json:
         data = request.get_json(silent=True) or {}
@@ -639,7 +640,7 @@ def api_assistant_process():
         return jsonify({
             "status": "online",
             "message": "Amigo AI Engine online",
-            "model": info.get("name", "Spark-X2.5 4B"),
+            "model": info.get("name", "Spark-X2.6 4B"),
             "version": "Windows 11 Voice Assistant",
         })
 
@@ -988,8 +989,8 @@ def handle_settings():
         "user_profile": u_prof,
         "user_name": get_current_user_name(),
         "voice": curr_voice,
-        "model": info.get("key", "spark-x2.5-4b"),
-        "model_name": info.get("name", "Spark-X2.5 4B"),
+        "model": info.get("key", "spark-x2.6-4b"),
+        "model_name": info.get("name", "Spark-X2.6 4B"),
         "thinking_enabled": is_thinking_enabled(),
         "available_models": get_available_models(),
         "available_voices": get_voice_catalog(),
@@ -1324,7 +1325,10 @@ def api_proactive_trigger():
     try:
         data = request.get_json(silent=True) or {}
         level = data.get("level") or "info"
-        sent = get_proactive_intelligence().trigger_notification(data.get("message"), level)
+        message = data.get("message")
+        if message is not None and not isinstance(message, str):
+            return jsonify({"error": "message must be a string"}), 400
+        sent = get_proactive_intelligence().trigger_notification(message or "", level)
         return jsonify({"success": True, "message": sent, "level": level})
     except Exception as e:
         return jsonify({"error": str(e)}), 500

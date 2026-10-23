@@ -1,6 +1,6 @@
 """
 LLM-Based Agent for Amigo Voice Assistant.
-Optimized for Spark-X2.5 4B with:
+Optimized for Spark-X2.6 4B with:
 - Static system prompt prefix for instant LlamaRAMCache KV-cache reuse
 - Full multi-turn conversation history preservation
 - Single-pass RAG profile lookup per turn
@@ -409,7 +409,7 @@ def add_to_memory(
 
 
 # ═══════════════════════════════════════════════════════════════
-#  Low-Level Local LLM Inference Engine (Spark-X2.5 4B GGUF)
+#  Low-Level Local LLM Inference Engine (Spark-X2.6 4B GGUF)
 # ═══════════════════════════════════════════════════════════════
 
 _PHYSICAL_CORES = None
@@ -417,11 +417,11 @@ _LLM_CONFIG = None
 _CONFIG_LOCK = threading.Lock()
 
 MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "models"))
-MODEL_NAME = "Spark-X2.5 4B"
-MODEL_FILENAME = "Spark-X2.5-4B-Q4_K_M.gguf"
+MODEL_NAME = "Spark-X2.6 4B"
+MODEL_FILENAME = "Spark-X2.6-4B-Q4_K_M.gguf"
 MODEL_PATH = os.path.join(MODEL_DIR, MODEL_FILENAME)
 MODEL_TARGETS = [
-    ("abenzerps/Spark-X2.5-4B-GGUF", "Spark-X2.5-4B-Q4_K_M.gguf"),
+    ("abenzerps/Spark-X2.6-4B-Quantized", "Spark-X2.6-4B-Q4_K_M.gguf"),
 ]
 
 STOP_TOKENS = [
@@ -430,18 +430,18 @@ STOP_TOKENS = [
 ]
 
 AVAILABLE_MODELS = {
-    "spark-x2.5-4b": {
-        "key": "spark-x2.5-4b",
-        "name": "Spark-X2.5 4B",
-        "filename": "Spark-X2.5-4B-Q4_K_M.gguf",
-        "path": os.path.join(MODEL_DIR, "Spark-X2.5-4B-Q4_K_M.gguf"),
-        "targets": [("abenzerps/Spark-X2.5-4B-GGUF", "Spark-X2.5-4B-Q4_K_M.gguf")],
-        "downloaded": os.path.exists(os.path.join(MODEL_DIR, "Spark-X2.5-4B-Q4_K_M.gguf")) and os.path.getsize(os.path.join(MODEL_DIR, "Spark-X2.5-4B-Q4_K_M.gguf")) > 500_000_000,
-        "size_gb": 2.60,
+    "spark-x2.6-4b": {
+        "key": "spark-x2.6-4b",
+        "name": "Spark-X2.6 4B",
+        "filename": "Spark-X2.6-4B-Q4_K_M.gguf",
+        "path": os.path.join(MODEL_DIR, "Spark-X2.6-4B-Q4_K_M.gguf"),
+        "targets": [("abenzerps/Spark-X2.6-4B-Quantized", "Spark-X2.6-4B-Q4_K_M.gguf")],
+        "downloaded": os.path.exists(os.path.join(MODEL_DIR, "Spark-X2.6-4B-Q4_K_M.gguf")) and os.path.getsize(os.path.join(MODEL_DIR, "Spark-X2.6-4B-Q4_K_M.gguf")) > 500_000_000,
+        "size_gb": 2.47,
     },
 }
 
-_active_model_key = "spark-x2.5-4b"
+_active_model_key = "spark-x2.6-4b"
 _local_llm_instance = None
 _llm_lock = threading.Lock()
 _inference_lock = threading.Lock()
@@ -596,7 +596,7 @@ def init_local_llm(force_reload: bool = False):
             try:
                 _local_llm_instance = Llama(**kwargs)
                 logger.info("[Local AI Engine] Successfully initialized %s on GPU (RTX 3050, n_gpu_layers=%s, n_ctx=%s, flash_attn=%s)", MODEL_NAME, kwargs["n_gpu_layers"], kwargs["n_ctx"], kwargs["flash_attn"])
-                print(f"[Local AI Engine] Spark-X2.5 is running on GPU: NVIDIA GeForce RTX 3050 (n_gpu_layers={kwargs['n_gpu_layers']}, n_ctx={kwargs['n_ctx']}, flash_attn={kwargs['flash_attn']})", flush=True)
+                print(f"[Local AI Engine] Spark-X2.6 is running on GPU: NVIDIA GeForce RTX 3050 (n_gpu_layers={kwargs['n_gpu_layers']}, n_ctx={kwargs['n_ctx']}, flash_attn={kwargs['flash_attn']})", flush=True)
             except Exception as gpu_err:
                 logger.warning("[Local AI Engine] GPU load attempt failed (%s), falling back to CPU", gpu_err)
                 kwargs["n_gpu_layers"] = 0
@@ -660,7 +660,13 @@ def _setup_chat_formatter(llm) -> None:
                         self.base = base
 
                     def __call__(self, *args, **kwargs):
-                        kwargs.setdefault("enable_thinking", get_current_thinking_enabled())
+                        thinking = kwargs.get("enable_thinking")
+                        if thinking is None:
+                            thinking = get_current_thinking_enabled()
+                        kwargs["enable_thinking"] = bool(thinking)
+                        chat_kw = kwargs.setdefault("chat_template_kwargs", {})
+                        if isinstance(chat_kw, dict):
+                            chat_kw["enable_thinking"] = bool(thinking)
                         return self.base(*args, **kwargs)
 
                 new_handler = llama_chat_format.chat_formatter_to_chat_completion_handler(
@@ -793,6 +799,7 @@ def query_local_llm(
     token = _thinking_ctx.set(thinking) if thinking is not None else None
     try:
         sampling = get_sampling_params()
+        is_thinking = bool(thinking if thinking is not None else get_current_thinking_enabled())
         kwargs = {
             "messages": _prepare_chat_messages(system_prompt, prompt),
             "max_tokens": max_tokens,
@@ -846,6 +853,7 @@ def query_local_llm_stream(
     try:
         sampling = get_sampling_params()
         temp = sampling["temperature"] if temperature is None else temperature
+        is_thinking = bool(thinking if thinking is not None else get_current_thinking_enabled())
         with _inference_lock:
             stream_res = None
             try:
@@ -997,7 +1005,7 @@ def get_available_models() -> dict:
     return AVAILABLE_MODELS
 
 
-def set_active_model(model_key: str = "spark-x2.5-4b") -> bool:
+def set_active_model(model_key: str = "spark-x2.6-4b") -> bool:
     global _active_model_key, _local_llm_instance, _LLM_CONFIG
     if model_key not in AVAILABLE_MODELS:
         return False
