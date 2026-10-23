@@ -145,6 +145,8 @@ class TestContentGenerator(unittest.TestCase):
         mock_gen.assert_called_once()
         self.assertEqual(spoken, "Drafted email")
         self.assertEqual(mock_gen.call_args[0][0]["type"], "email")
+        if not isinstance(meta, dict):
+            self.fail("Expected generated content metadata")
         self.assertTrue(meta.get("showGeneratedPanel"))
 
     @patch("amigo.services.os_automation.type_text")
@@ -211,10 +213,9 @@ class TestContentGenerator(unittest.TestCase):
     def test_safe_restart_pc(self, mock_run):
         from amigo.services.os_automation import restart_pc
         mock_run.return_value.returncode = 0
-        self.assertTrue(restart_pc("45"))
+        self.assertTrue(restart_pc(45))
         mock_run.assert_called_with(["shutdown", "/r", "/t", "45"], check=True)
 
 
 if __name__ == "__main__":
     unittest.main()
-

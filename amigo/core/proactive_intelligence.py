@@ -647,7 +647,7 @@ class ProactiveIntelligence:
         notification_id: str,
         message: str,
         level: str = "info",
-        suggestion_id: str = None,
+        suggestion_id: str | None = None,
         is_priority: bool = False,
     ) -> None:
         """Send a proactive notification with proper channel dispatching and cooldowns."""
@@ -695,7 +695,7 @@ class ProactiveIntelligence:
         logger.info(f"Proactive notification [{level}]: {message}")
 
     def trigger_notification(
-        self, message: str = None, level: str = "info", notification_id: str = "manual_trigger"
+        self, message: str | None = None, level: str = "info", notification_id: str = "manual_trigger"
     ) -> str:
         """Manually trigger a proactive notification, evaluating dynamically if message is omitted."""
         if not message or message in ("generate", "auto", "dynamic"):
@@ -739,7 +739,7 @@ class ProactiveIntelligence:
         logger.info(f"Proactive manual trigger [{level}]: {message}")
         return message
 
-    def record_user_action(self, action: str, context: Dict = None) -> None:
+    def record_user_action(self, action: str, context: Dict | None = None) -> None:
         """Record user action for habit and pattern learning."""
         if not self.config.get("pattern_learning_enabled", True):
             return
@@ -816,8 +816,8 @@ def get_proactive_intelligence() -> ProactiveIntelligence:
 
 
 def init_proactive_intelligence(
-    speak_callback: Callable[[str], None] = None,
-    broadcast_callback: Callable[[str, dict], None] = None,
+    speak_callback: Callable[[str], None] | None = None,
+    broadcast_callback: Callable[[str, dict], None] | None = None,
 ) -> ProactiveIntelligence:
     """Initialize and start proactive intelligence."""
     global _proactive_instance

@@ -588,33 +588,23 @@ def _tool_ask_document(params, query, spoken, conversation_history=None):
     """Unified RAG Q&A handler with full follow-up context and cross-corpus retrieval."""
     params = params if isinstance(params, dict) else {}
     conv_history = _get_conv_history(conversation_history)
-    filepath = str(params.get("filepath") or "").strip()
     question = str(params.get("question") or params.get("query") or query or "").strip() or query
 
     resolved_question = rag_engine.resolve_contextual_query(question, conv_history)
-    target_path = resolve_document_path(filepath) if filepath else None
+    evidence, sources = rag_engine.build_document_evidence(resolved_question, top_k=6)
+    if not evidence:
+        return (
+            "I couldn't find enough relevant information in your indexed documents.",
+            None,
+            {"status": "insufficient_evidence", "sources": []},
+        )
 
-    # Retrieve from broader corpus across all user documents & facts
-    ctx = rag_engine.build_rag_context(
-        resolved_question,
-        top_k=6,
-        conversation_history=conv_history,
-        for_voice=False,
-        target_collections=[rag_engine.DOCUMENTS, rag_engine.USER_FACTS],
+    response = get_ai_response(question, doc_context=evidence, conversation_history=conv_history)
+    citations = "\n\nSources: " + "; ".join(
+        f"[{source['id']}] {source['file']} — {source['location']}"
+        for source in sources
     )
-
-    # If a specific file was targeted, also ensure its matching sections are included
-    if target_path and os.path.exists(target_path):
-        file_ctx = rag_engine.build_file_context(target_path, resolved_question)
-        if file_ctx and file_ctx not in ctx:
-            ctx = f"{file_ctx}\n\n{ctx}".strip() if ctx else file_ctx
-
-    if ctx:
-        meta = {"matched_docs": [target_path]} if target_path else {"doc_context_used": True}
-        response = get_ai_response(question, doc_context=ctx, conversation_history=conv_history)
-        return response, None, meta
-
-    return "I couldn't find anything relevant in your indexed documents.", None
+    return f"{response}{citations}", None, {"sources": sources}
 
 
 def _tool_summarize_document(params, query, spoken):
@@ -1493,6 +1483,8 @@ TOOL_DEFINITIONS = [
           {"query": _p("string", "Self-contained search query with pronouns resolved from conversation history"),
            "show_in_browser": _p("boolean", "True if user asked to open search results in a browser")}, ["query"]),
     _tool("stock_quote", "Look up real-time stock or crypto prices.", {"symbol": _p("string", "Ticker or asset name")}, ["symbol"]),
+    _tool("get_time", "Read the current local system time."),
+    _tool("get_date", "Read the current local date."),
     _tool("play_youtube", "Play songs, music, or videos on YouTube.",
           {"query": _p("string", "Exact song, video title, or music search query as spoken by the user. Do NOT invent, assume, or add artist names if the user did not say them.")},
           ["query"]),
@@ -1581,11 +1573,14 @@ TOOLS AVAILABLE:
 
 ROUTING RULES:
 1. INTENT-BASED ROUTING:
+- Route by understanding the user's intent, not by matching fixed words or memorized example phrases.
 - Navigation vs Search: When the user asks to launch, open, or visit an application, file, or website, route to navigation tools ('open_website', 'open_app', 'open_file'). When the user asks a question, requests information, searches, or checks details, route to information retrieval tools ('web_search', 'document_qa'), even if a specific website or platform is mentioned.
+- Use dedicated tools for information that must come from the current PC, such as the local clock, system state, media, or installed applications.
 - Local Records vs Visual Display:
   * Route to 'document_qa' for retrieving facts, contents, data, or text from the user's local documents, files, and stored records on the computer, regardless of whether a document or viewer is currently open on the desktop.
   * Route to 'read_screen' exclusively when the user asks to inspect the physical display, visual appearance, GUI layout, on-screen errors, or graphical window state.
 - Local Documents vs Web Search: Route to 'document_qa' for information stored in the user's personal files and local PC records. Route to 'web_search' for external information, public facts, current events, or web research.
+- Do not send every factual question to web search. If uncertain, the subject is unfamiliar or specialized, or current facts are needed, use retrieved results; answer from retrieved results and say so rather than guessing.
 - Spoken Dialogue & Advice ('chat'): Use for conversational dialogue, reasoning, creative writing, translations, opinions, and advice that do not require external lookup or local system inspection. Output direct reply in params['response'].
 - Media & Playback: For media requests ('play_youtube'), pass the exact media title or query requested by the user in params['query'] without extrapolating or inventing metadata. Use 'resume_media', 'pause_media', 'next_track', 'prev_track' for playback controls.
 - Context & Independence: Resolve pronouns and follow-up references ('it', 'that', 'this') naturally using recent conversation turns. If the user initiates a new topic, do not carry over entities, domains, or tool targets from prior unrelated turns.

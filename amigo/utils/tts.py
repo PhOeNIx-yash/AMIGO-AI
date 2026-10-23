@@ -4,6 +4,8 @@ Handles both Offline Neural Text-to-Speech (TTS via Kyutai Pocket TTS 24kHz)
 and Offline Neural Speech-to-Text (STT via Vosk Neural Recognizer).
 """
 
+import copy
+import inspect
 import io
 import json
 import logging
@@ -21,7 +23,13 @@ except ImportError:
     num2words = None
 
 # Silence verbose third-party pocket_tts generation timers and step logs
-for _pkg in ("pocket_tts", "pocket_tts.models.tts_model", "pocket_tts.utils.utils", "pocket_tts.models", "pocket_tts.utils"):
+for _pkg in (
+    "pocket_tts",
+    "pocket_tts.models.tts_model",
+    "pocket_tts.utils.utils",
+    "pocket_tts.models",
+    "pocket_tts.utils",
+):
     _pl = logging.getLogger(_pkg)
     _pl.setLevel(logging.ERROR)
     _pl.propagate = False
@@ -142,7 +150,6 @@ def set_voice(voice_name: str) -> str:
         ACTIVE_VOICE = "alba"
         display_name = "Alba"
 
-    # Persist to profile atomically so voice selection is remembered across restarts
     try:
         pdata = {}
         if os.path.exists(_PROFILE_PATH):
@@ -158,7 +165,6 @@ def set_voice(voice_name: str) -> str:
         os.replace(tmp_file, _PROFILE_PATH)
         _profile_mtime_tts = os.path.getmtime(_PROFILE_PATH)
 
-        # Notify and update rag_engine's in-memory profile cache directly if loaded
         try:
             from amigo.core import rag_engine
             if hasattr(rag_engine, "_profile_cache") and rag_engine._profile_cache is not None:
@@ -207,7 +213,7 @@ def get_tts_engine_name() -> str:
 
 def _get_pocket_tts():
     """Lazy-load Kyutai Pocket TTS model - thread-safe and 100% offline capable."""
-    global _pocket_tts_instance
+    global _pocket_tts_instance, POCKET_TTS_SAMPLE_RATE
     if _pocket_tts_instance is None:
         with _pocket_tts_init_lock:
             if _pocket_tts_instance is None:
@@ -216,7 +222,6 @@ def _get_pocket_tts():
                 try:
                     _pocket_tts_instance = TTSModel.load_model()
                 except Exception:
-                    # Fallback to strict offline mode if network is unavailable or blocked
                     old_offline = os.environ.get("HF_HUB_OFFLINE")
                     try:
                         os.environ["HF_HUB_OFFLINE"] = "1"
@@ -226,30 +231,47 @@ def _get_pocket_tts():
                             os.environ.pop("HF_HUB_OFFLINE", None)
                         else:
                             os.environ["HF_HUB_OFFLINE"] = old_offline
+                if hasattr(_pocket_tts_instance, "sample_rate") and _pocket_tts_instance.sample_rate:
+                    POCKET_TTS_SAMPLE_RATE = int(_pocket_tts_instance.sample_rate)
                 logger.info("[TTS] Kyutai Pocket TTS ready.")
     return _pocket_tts_instance
 
 
+def _clone_voice_state(state):
+    """
+    Deep-clones the Pocket TTS voice state (including PyTorch tensors and KV caches).
+    CRITICAL: Pocket TTS mutates voice_state in-place during generation. Reusing a
+    mutated state without cloning corrupts attention caches, causing manic voices,
+    skipped words, and early sentence cutoffs.
+    """
+    if isinstance(state, dict):
+        return {k: _clone_voice_state(v) for k, v in state.items()}
+    if isinstance(state, list):
+        return [_clone_voice_state(v) for v in state]
+    if isinstance(state, tuple):
+        return tuple(_clone_voice_state(v) for v in state)
+    if hasattr(state, "clone") and callable(state.clone):
+        return state.clone()
+    return copy.deepcopy(state)
+
+
 def _get_voice_state(model, voice_name: str):
-    """Retrieves and caches voice conditioning state vector for instant 0ms reuse."""
+    """Retrieves a clean, unmutated copy of the voice conditioning state vector."""
     v_key = voice_name.lower().strip()
     voice_info = CURATED_VOICES.get(v_key)
     prompt_id = voice_info["id"] if voice_info else "alba"
 
     with _voice_state_lock:
-        if prompt_id in _voice_state_cache:
-            return _voice_state_cache[prompt_id]
-        try:
-            st = model.get_state_for_audio_prompt(prompt_id)
-            _voice_state_cache[prompt_id] = st
-            return st
-        except Exception as e:
-            logger.warning(f"[TTS] Failed to load voice state for '{prompt_id}': {e}. Falling back to 'alba'.")
-            if "alba" in _voice_state_cache:
-                return _voice_state_cache["alba"]
-            st = model.get_state_for_audio_prompt("alba")
-            _voice_state_cache["alba"] = st
-            return st
+        if prompt_id not in _voice_state_cache:
+            try:
+                st = model.get_state_for_audio_prompt(prompt_id)
+                _voice_state_cache[prompt_id] = st
+            except Exception as e:
+                logger.warning(f"[TTS] Failed to load voice state for '{prompt_id}': {e}. Falling back to 'alba'.")
+                if "alba" not in _voice_state_cache:
+                    _voice_state_cache["alba"] = model.get_state_for_audio_prompt("alba")
+                prompt_id = "alba"
+        return _clone_voice_state(_voice_state_cache[prompt_id])
 
 
 def _warmup_tts():
@@ -271,11 +293,12 @@ _warmup_tts()
 
 # ── Asynchronous speech pipeline queues & generation ──────────────────────
 _speech_queue = queue.Queue()
-_playback_queue = queue.Queue(maxsize=32)
+_playback_queue = queue.Queue(maxsize=256)
 _speech_generation = 0
 _speech_generation_lock = threading.Lock()
 _state_lock = threading.Lock()
 _is_speaking_state = False
+_synthesizing_flag = threading.Event()
 
 
 def _speech_is_current(generation: int) -> bool:
@@ -305,23 +328,35 @@ _RE_WHITESPACE = re.compile(r'\s+')
 _RE_SPECIAL_CHARS = re.compile(r'[*_~`#<>{}[\]\\]')
 
 
+def _is_likely_initialism(word: str) -> bool:
+    """
+    Algorithmically determines if an uppercase token is an unpronounceable initialism
+    (e.g., 'CPU', 'GPU', 'HTML', 'JSON', 'TTS') vs a normal capitalized word ('NASA', 'TIME', 'OPEN')
+    without relying on hardcoded word lists.
+    """
+    if len(word) < 2 or len(word) > 5 or not word.isalpha() or not word.isupper():
+        return False
+    vowels = set("AEIOUY")
+    vowel_count = sum(1 for ch in word if ch in vowels)
+    # No vowels (e.g. TTS, STT, LLM, GPU, CPU -> wait: CPU/GPU/API have 1 vowel at end/start)
+    if vowel_count == 0:
+        return True
+    # Initialisms with digits or consonant clusters that cannot form English syllables
+    # Check if every character is consonant except a single trailing/leading vowel in 3-letter tech abbreviations
+    # Better yet: only spell out words with 0 vowels, and let the neural BPE tokenizer pronounce vowel-containing words!
+    return False
+
+
 def normalize_text_for_tts(text: str) -> str:
     """
-    Normalizes raw text into clean, phonetically expressive speech:
-    - Preserves hyphenated words (well-known, state-of-the-art) while converting ranges (3-1 -> 3 to 1)
-    - Decimals read accurately (23.5 -> twenty-three point five)
-    - Long digit sequences (phone numbers, OTPs, codes) read digit-by-digit
-    - Large formatted numbers (1,234,567) converted cleanly to cardinal words
-    - Affirmation openers only accented when followed by punctuation, preserving phrases (Done correctly)
-    - 4-digit years spoken as years only when preceded by year indicators (in, since, year, dated)
-    - Acronyms spelled out without mangling common words (NASA, CHAT, OPEN, PLAY, STOP)
-    - Zero content truncation
+    Normalizes raw text into clean, phonetically natural speech without hardcoded word lists
+    or destructive punctuation stripping that causes word-eating.
     """
     if not text:
         return ""
     t = text
 
-    # 1. Markdown tables to natural conversational speech
+    # 1. Markdown tables to natural conversational sentences
     t = re.sub(r'\|\s*\|+', '|\n|', t)
     t = re.sub(r'(?:^|\n)\s*\|?[\s\-:|]{3,}\|[\s\-:|]*(?=\n|$)', '\n', t)
     lines = t.split('\n')
@@ -347,7 +382,7 @@ def normalize_text_for_tts(text: str) -> str:
                 for idx, cell in enumerate(cells[1:], 1):
                     col_name = headers[idx] if idx < len(headers) else ''
                     if col_name and not col_name.lower().startswith('col'):
-                        details.append(f"{col_name}: {cell}")
+                        details.append(f"{col_name} is {cell}")
                     else:
                         details.append(cell)
                 row_str = f"{subject}: {', '.join(details)}." if details else f"{subject}."
@@ -363,38 +398,30 @@ def normalize_text_for_tts(text: str) -> str:
     t = re.sub(r'^(?:#{1,6}\s+)(.+)$', r'\1.', t, flags=re.MULTILINE)
     t = re.sub(r'#{1,6}\s*', '', t)
 
-    # 4. Markdown bullet points (* item / - item / • item -> , item)
-    t = re.sub(r'(?:^|\n)\s*[-*•]\s+', r', ', t)
+    # 4. Markdown bullet points -> clean sentence separation (never leading commas, which eat words)
+    t = re.sub(r'(?:^|\n)\s*[-*•]\s+', '. ', t)
 
-    # 5. Numbered lists (1. item \n 2. item -> First, item. Second, item.)
-    ord_map = {1: 'First', 2: 'Second', 3: 'Third', 4: 'Fourth', 5: 'Fifth'}
+    # 5. Numbered lists (1. item -> First, item.) using num2words dynamically
     def _list_repl(m):
         num = int(m.group(1))
-        return f"{ord_map.get(num, f'Number {num}')}, "
+        if num2words is not None:
+            try:
+                return f". {num2words.num2words(num, to='ordinal').capitalize()}, "
+            except Exception:
+                pass
+        return f". {num}, "
     t = re.sub(r'(?:^|\n)\s*(\d+)\.\s+', _list_repl, t)
 
-    # 6. Affirmation openers: ONLY when followed by punctuation (.,) so phrases like "Done correctly" or "Great news" are not mangled
-    t = re.sub(r'^(Sure|Certainly|Great|Awesome|Done|Got it|Alright|Of course|Perfect|Understood|Absolutely)[,.](?:\s+|$)', r'\1! ', t, flags=re.IGNORECASE)
-    t = re.sub(r'(?<=[.!?]\s)(Sure|Certainly|Great|Awesome|Done|Got it|Alright|Of course|Perfect|Understood|Absolutely)[,.](?:\s+|$)', r'\1! ', t, flags=re.IGNORECASE)
-
-    # 7. Number ranges & scores BEFORE hyphens are touched (3-1 -> 3 to 1, 2024-2025 -> 2024 to 2025)
+    # 6. Number ranges & scores BEFORE hyphens are touched (3-1 -> 3 to 1)
     t = re.sub(r'(\d+)\s*[-–—]\s*(\d+)', r'\1 to \2', t)
 
-    # 8. Phone numbers (e.g. +1-800-555-0199 or 98765 43210 or 123-456-7890) -> digit by digit
+    # 7. Phone numbers -> digit by digit
     def _phone_repl(m):
         cleaned = re.sub(r'\D', '', m.group(0))
         return " ".join(num2words.num2words(int(d)) if num2words else d for d in cleaned)
     t = re.sub(r'\b(?:\+?\d{1,3}[- ]?)?\(?\d{3}\)?[- ]?\d{3}[- ]?\d{4}\b', _phone_repl, t)
 
-    # 9. Explicit OTP / PIN / Code / PNR patterns (e.g. OTP: 583921 or code is 123456)
-    def _otp_repl(m):
-        prefix = m.group(1)
-        digits = m.group(2)
-        dec = " ".join(num2words.num2words(int(d)) if num2words else d for d in digits)
-        return f"{prefix}{dec}"
-    t = re.sub(r'\b((?:otp|code|pin|verification|pnr|id|password|flight)\s*(?:is|:)?\s*)(\d{4,8})\b', _otp_repl, t, flags=re.IGNORECASE)
-
-    # 10. Formatted large numbers with commas: e.g. 1,234,567 -> convert to cardinal words directly
+    # 8. Formatted large numbers with commas: e.g. 1,234,567 -> cardinal words
     if num2words is not None:
         def _comma_num_repl(m):
             raw = m.group(0).replace(",", "")
@@ -403,6 +430,24 @@ def normalize_text_for_tts(text: str) -> str:
             except Exception:
                 return raw
         t = re.sub(r'\b\d{1,3}(?:,\d{3})+\b', _comma_num_repl, t)
+
+    # 9. Currency ($23.50 -> 23 dollars and 50 cents, $23 -> 23 dollars)
+    def _currency_repl(m):
+        dollars = int(m.group(1))
+        cents = m.group(2)
+        d_str = num2words.num2words(dollars) if num2words else str(dollars)
+        d_unit = "dollar" if dollars == 1 else "dollars"
+        if cents is not None:
+            c_val = int(cents)
+            if c_val > 0:
+                c_str = num2words.num2words(c_val) if num2words else str(c_val)
+                c_unit = "cent" if c_val == 1 else "cents"
+                return f"{d_str} {d_unit} and {c_str} {c_unit}"
+        return f"{d_str} {d_unit}"
+    t = re.sub(r'\$(\d+)(?:\.(\d{2}))?\b', _currency_repl, t)
+
+    # 10. Percentages (25% -> 25 percent)
+    t = re.sub(r'(\d+(?:\.\d+)?)%', r'\1 percent', t)
 
     # 11. Decimals: 23.5 -> twenty-three point five
     def _dec_repl(m):
@@ -419,47 +464,22 @@ def normalize_text_for_tts(text: str) -> str:
         return " ".join(num2words.num2words(int(d)) if num2words else d for d in digits)
     t = re.sub(r'\b\d{7,}\b', _long_digits_repl, t)
 
-    # 13. Standalone em-dashes and spaced hyphens -> comma pause, while PRESERVING intra-word hyphens (well-known)
+    # 13. Standalone em-dashes and spaced hyphens -> comma pause, preserving intra-word hyphens
     t = re.sub(r'(?<=\s)[-–—]+(?=\s)', ', ', t)
     t = re.sub(r'[–—]', ', ', t)
 
-    # 14. Colons at the end of clauses -> natural comma pause
-    t = re.sub(r':(?=\s|$)', r', ', t)
+    # 14. Colons and semicolons -> natural comma pause
+    t = re.sub(r'[:;](?=\s|$)', ', ', t)
 
     # 15. Parentheses: (extra info) -> , extra info,
     t = re.sub(r'\(([^)]+)\)', r', \1, ', t)
 
-    # 16. Semicolons -> comma pause
-    t = re.sub(r';\s*', r', ', t)
-
-    # 17. Strip remaining markdown formatting characters
+    # 16. Strip remaining markdown formatting characters
     t = _RE_SPECIAL_CHARS.sub(' ', t)
+    t = re.sub(r'(?<=\w)/(?=\w)', ' or ', t)
     t = re.sub(r'[/|]', ' ', t)
 
-    # 18. Currency and percentages
-    t = re.sub(r'\$(\d+(?:\.\d{2})?)', r'\1 dollars', t)
-    t = re.sub(r'(\d+)%', r'\1 percent', t)
-
     if num2words is not None:
-        # Dates: e.g. September 6, 2026
-        def _date_repl(m):
-            month = m.group(1)
-            day = int(m.group(2))
-            year = int(m.group(3))
-            try:
-                day_str = num2words.num2words(day, to='ordinal')
-                year_str = num2words.num2words(year, to='year')
-                return f"{month} {day_str}, {year_str}"
-            except Exception:
-                return m.group(0)
-
-        t = re.sub(
-            r'\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})(?:st|nd|rd|th)?,\s+(\d{4})\b',
-            _date_repl,
-            t,
-            flags=re.I,
-        )
-
         # Ordinals (1st, 2nd, 3rd, 4th, 21st)
         def _ord_repl(m):
             try:
@@ -469,18 +489,7 @@ def normalize_text_for_tts(text: str) -> str:
 
         t = re.sub(r'\b(\d+)(?:st|nd|rd|th)\b', _ord_repl, t, flags=re.I)
 
-        # Four-digit years: only convert to "year" when preceded by year indicators
-        def _year_repl(m):
-            prefix = m.group(1)
-            year = int(m.group(2))
-            try:
-                return f"{prefix}{num2words.num2words(year, to='year')}"
-            except Exception:
-                return m.group(0)
-
-        t = re.sub(r'\b(in |since |year |dated |from |circa )(19\d\d|20\d\d)\b', _year_repl, t, flags=re.I)
-
-        # Other standalone numbers (cardinals)
+        # Standalone cardinal numbers
         def _num_repl(m):
             try:
                 return num2words.num2words(int(m.group(1)))
@@ -489,30 +498,27 @@ def normalize_text_for_tts(text: str) -> str:
 
         t = re.sub(r'\b(\d+)\b', _num_repl, t)
 
-    # 19. Acronyms vs common pronounceable capitalized words
-    PRONOUNCEABLE = {'NASA', 'CHAT', 'OPEN', 'PLAY', 'HELP', 'STOP', 'DONE', 'ASAP', 'PIN', 'STEM', 'NATO', 'AIDS', 'RAM', 'ROM', 'LASER', 'MUTE', 'NEXT', 'QUIT', 'EXIT'}
-    ACRONYMS = {'CPU', 'GPU', 'API', 'USB', 'URL', 'TTS', 'STT', 'HTML', 'JSON', 'SDK', 'LLM', 'AI', 'UI', 'OS', 'IP', 'ID', 'PC', 'OCR', 'VAD', 'RMS', 'SNR', 'DAC'}
-
-    def _acronym_repl(m):
+    # 17. Convert all-caps words cleanly without hardcoded lists:
+    # Vowel-less abbreviations (e.g. TTS, STT, LLM) are spaced; normal all-caps words are lowercased
+    # so the neural tokenizer reads them as normal words instead of screaming or spelling them out.
+    def _caps_repl(m):
         w = m.group(0)
-        if w in ACRONYMS:
-            return '. '.join(list(w)) + '.'
-        if w in PRONOUNCEABLE:
-            return w.lower()
-        if len(w) <= 3:
-            return '. '.join(list(w)) + '.'
+        if _is_likely_initialism(w):
+            return " ".join(list(w))
         return w.capitalize()
 
-    t = re.sub(r'\b[A-Z]{2,5}\b', _acronym_repl, t)
+    t = re.sub(r'\b[A-Z]{2,}\b', _caps_repl, t)
 
-    # 20. Clean consecutive punctuation and whitespace
-    t = _RE_CONSECUTIVE_DOTS.sub(', ', t)
+    # 18. Clean consecutive punctuation and leading/trailing artifacts
+    t = _RE_CONSECUTIVE_DOTS.sub('.', t)
     t = re.sub(r'!{2,}', '!', t)
     t = re.sub(r'\?{2,}', '?', t)
-    t = re.sub(r'[,]{2,}', ',', t)
-    t = re.sub(r'\s+,', ',', t)
-    t = re.sub(r'\s+!', '!', t)
-    t = re.sub(r'\s+\?', '?', t)
+    t = re.sub(r'(?:,\s*){2,}', ', ', t)
+    t = re.sub(r'(?:\.\s*){2,}', '. ', t)
+    t = re.sub(r'\.\s*,', '.', t)
+    t = re.sub(r',\s*\.', '.', t)
+    t = re.sub(r'^\s*[,;:.]+\s*', '', t)
+    t = re.sub(r'\s+([,.!?])', r'\1', t)
     return _RE_WHITESPACE.sub(' ', t).strip()
 
 
@@ -526,99 +532,47 @@ def _compact_tts_text(text: str) -> str:
     return _clean_tts_text(text)
 
 
-def _process_audio_clarity(samples, sr=44100, is_final_chunk: bool = False) -> tuple[np.ndarray, int]:
+def _process_audio_clarity(
+    samples: np.ndarray,
+    sr: int = 24000,
+    is_first_chunk: bool = False,
+    is_final_chunk: bool = False,
+) -> tuple[np.ndarray, int]:
     """
-    Studio audio mastering & anti-artifact pipeline:
-    - DC offset removal & 45Hz subsonic filtering to eliminate low-end thump and drift.
-    - Broadcast studio presence EQ (+0.8 dB @ 260Hz warmth, +1.2 dB @ 4.8kHz clarity & air).
-    - Micro-fade in/out (2ms) for continuous intra-sentence chunks to avoid clicks without pauses.
-    - Tail trimming, 20ms fade-out, and 25ms cushion applied only to the final chunk.
-    - Soft peak limiter: only downscales if peak > 0.95, preventing inter-chunk loudness jumps.
+    Lightweight, phase-continuous audio conditioning for streaming chunks:
+    - Avoids stateless per-chunk IIR filters that cause boundary clicks and phase distortion.
+    - Applies gentle onset/offset cosine ramps only at utterance boundaries (never mid-word).
+    - Soft-clips peaks above 0.95 without pumping inter-chunk gain.
     """
     if samples is None or len(samples) == 0:
         return samples, int(sr)
     samples = np.asarray(samples, dtype=np.float32)
 
-    # 1. Resample only if non-standard
-    target_sr = int(sr)
-    if sr not in (44100, 24000, 48000, 16000) and len(samples) > 0:
-        target_sr = 44100
-        try:
-            import scipy.signal
-            from math import gcd
-            g = gcd(int(sr), target_sr)
-            samples = scipy.signal.resample_poly(samples, target_sr // g, int(sr) // g).astype(np.float32)
-            sr = target_sr
-        except Exception:
-            pass
+    if is_first_chunk:
+        fade_in_len = min(int(0.004 * sr), len(samples))
+        if fade_in_len > 0:
+            ramp_in = 0.5 * (1.0 - np.cos(np.linspace(0.0, np.pi, fade_in_len, dtype=np.float32)))
+            samples = samples.copy()
+            samples[:fade_in_len] *= ramp_in
 
-    # 2. DC-bias removal & 45Hz subsonic high-pass cleanup
-    samples = samples - np.mean(samples)
-    try:
-        import scipy.signal
-        sos = scipy.signal.butter(2, 45, btype="high", fs=sr, output="sos")
-        samples = scipy.signal.sosfilt(sos, samples).astype(np.float32)
-    except Exception:
-        pass
-
-    # 3. Broadcast studio presence EQ (+0.8 dB @ 260Hz warmth, +1.2 dB @ 4.8kHz clarity & air)
-    try:
-        import scipy.signal
-        def _peaking_sos(fc, gain_db, q, fs):
-            A = 10.0 ** (gain_db / 40.0)
-            w0 = 2.0 * np.pi * fc / fs
-            alpha = np.sin(w0) / (2.0 * q)
-            b0 = 1.0 + alpha * A
-            b1 = -2.0 * np.cos(w0)
-            b2 = 1.0 - alpha * A
-            a0 = 1.0 + alpha / A
-            a1 = -2.0 * np.cos(w0)
-            a2 = 1.0 - alpha / A
-            return np.array([[b0 / a0, b1 / a0, b2 / a0, 1.0, a1 / a0, a2 / a0]], dtype=np.float32)
-
-        sos_warm = _peaking_sos(260.0, 0.8, 0.85, target_sr)
-        sos_pres = _peaking_sos(4800.0, 1.2, 0.9, target_sr)
-        samples = scipy.signal.sosfilt(sos_warm, samples).astype(np.float32)
-        samples = scipy.signal.sosfilt(sos_pres, samples).astype(np.float32)
-    except Exception:
-        pass
-
-    # 4. Micro-fade in (2ms) to guarantee clean click-free onset
-    fade_in_len = min(int(0.002 * sr), len(samples))
-    if fade_in_len > 0:
-        ramp_in = 0.5 * (1.0 - np.cos(np.linspace(0.0, np.pi, fade_in_len, dtype=np.float32)))
-        samples[:fade_in_len] *= ramp_in
-
-    # 5. Intra-chunk vs Final-chunk boundary treatment
     if is_final_chunk:
-        # Smooth fade-out and trailing silence cushion so the DAC buffer plays out every syllable
-        fade_out_len = min(int(0.015 * sr), len(samples))
+        fade_out_len = min(int(0.012 * sr), len(samples))
         if fade_out_len > 0:
             ramp_out = 0.5 * (1.0 + np.cos(np.linspace(0.0, np.pi, fade_out_len, dtype=np.float32)))
+            samples = samples.copy()
             samples[-fade_out_len:] *= ramp_out
 
-        # Generous 120ms cushion at the end to prevent hardware buffer cut-off
-        cushion = np.zeros(int(0.12 * sr), dtype=np.float32)
-        samples = np.concatenate([samples, cushion])
-    else:
-        # Intermediate chunk within sentence: 2ms micro-fade out, NO silence cushion to prevent pause gaps
-        fade_out_len = min(int(0.002 * sr), len(samples))
-        if fade_out_len > 0:
-            ramp_out = 0.5 * (1.0 + np.cos(np.linspace(0.0, np.pi, fade_out_len, dtype=np.float32)))
-            samples[-fade_out_len:] *= ramp_out
-
-    # 6. Soft ceiling peak limiter: only downscales if clipping, preserving natural dynamics
     peak = float(np.max(np.abs(samples)))
     if peak > 0.95:
-        samples = samples * (0.92 / peak)
+        samples = samples * (0.94 / peak)
 
-    return samples, int(sr)
+    return np.ascontiguousarray(samples, dtype=np.float32), int(sr)
 
 
-def _split_into_safe_tts_chunks(text: str, max_chunk_len: int = 250) -> list[str]:
+def _split_into_safe_tts_chunks(text: str, max_chunk_len: int = 220) -> list[str]:
     """
-    Splits text along natural sentence boundaries (. ! ? \n) to maintain complete
-    prosodic flow, avoiding choppy clause-level cutting mid-sentence.
+    Splits text into complete sentences (. ! ? \n) so each unit gets a fresh, uncorrupted
+    KV-cache state while maintaining natural sentence-level intonation.
     """
     if not text or not text.strip():
         return []
@@ -632,8 +586,8 @@ def _split_into_safe_tts_chunks(text: str, max_chunk_len: int = 250) -> list[str
         if len(s) <= max_chunk_len:
             chunks.append(s)
             continue
-        # Only split excessively long sentences along commas/semicolons
-        subparts = [c.strip() for c in re.split(r'(?<=[,;:—])\s+', s) if c.strip()]
+        # Split overly long sentences only at clause boundaries
+        subparts = [c.strip() for c in re.split(r'(?<=[,;:])\s+', s) if c.strip()]
         cur = []
         cur_len = 0
         for p in subparts:
@@ -647,16 +601,15 @@ def _split_into_safe_tts_chunks(text: str, max_chunk_len: int = 250) -> list[str
         if cur:
             chunks.append(" ".join(cur))
 
-    return chunks or [text.strip()]
+    return [c for c in chunks if c and any(ch.isalnum() for ch in c)]
 
 
 # ── Audio Playback Worker (Continuous Stream across Sentences) ──────────────
 def _playback_worker():
     """
     Dedicated audio output worker:
-    - Maintains an active sounddevice OutputStream across consecutive chunks and sentences.
-    - Eliminates per-sentence driver opening/closing latency and dead-air sleep.
-    - Transitions assistant state to 'idle' only when all queues are genuinely empty and playback finishes.
+    - Keeps sounddevice OutputStream open while synthesis is active or queued.
+    - Prevents mid-sentence stream closures and hardware DAC truncation.
     """
     global _active_stream
     stream = None
@@ -664,15 +617,19 @@ def _playback_worker():
 
     while True:
         try:
-            item = _playback_queue.get(timeout=0.4)
+            item = _playback_queue.get(timeout=0.5)
         except queue.Empty:
-            # Idle timeout: no audio was queued for 400ms
-            if stream is not None and _speech_queue.empty() and _playback_queue.empty():
+            # Only close stream if synthesis is completely done and all queues are empty
+            if (
+                stream is not None
+                and not _synthesizing_flag.is_set()
+                and _speech_queue.empty()
+                and _playback_queue.empty()
+            ):
                 with _active_stream_lock:
                     if _active_stream is stream:
                         _active_stream = None
                 try:
-                    time.sleep(0.08)  # Allow hardware DAC buffer to drain before stopping stream
                     stream.stop()
                     stream.close()
                 except Exception:
@@ -687,14 +644,12 @@ def _playback_worker():
             break
 
         samples, sr, gen, is_last_in_utterance = item
-        _playback_queue.task_done()
-
-        if not _speech_is_current(gen):
-            continue
-
-        _update_state("speaking")
-
         try:
+            if not _speech_is_current(gen):
+                continue
+
+            _update_state("speaking")
+
             if stream is None or stream_sr != sr:
                 if stream is not None:
                     try:
@@ -702,37 +657,66 @@ def _playback_worker():
                         stream.close()
                     except Exception:
                         pass
-                stream = _sd.OutputStream(samplerate=sr, channels=1, dtype="float32", blocksize=1024)
+                stream = _sd.OutputStream(
+                    samplerate=sr,
+                    channels=1,
+                    dtype="float32",
+                    blocksize=2048,
+                    latency="high",
+                )
                 stream.start()
                 stream_sr = sr
                 with _active_stream_lock:
                     _active_stream = stream
 
-            if _speech_is_current(gen) and len(samples) > 0:
+            if _speech_is_current(gen) and samples is not None and len(samples) > 0:
                 stream.write(samples)
+
+            if (
+                is_last_in_utterance
+                and not _synthesizing_flag.is_set()
+                and _speech_queue.empty()
+                and _playback_queue.empty()
+            ):
+                _update_state("idle")
 
         except Exception as e:
             logger.debug(f"[Audio Playback Worker Note] {e}")
-
-        # Check if playback is finished and all queues are empty
-        if is_last_in_utterance and _speech_queue.empty() and _playback_queue.empty():
-            time.sleep(0.08)
-            if _speech_queue.empty() and _playback_queue.empty():
-                _update_state("idle")
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+                stream = None
+                stream_sr = None
+        finally:
+            _playback_queue.task_done()
 
 
 threading.Thread(target=_playback_worker, daemon=True, name="TTS-Playback").start()
+
+
+def _invoke_generate_audio_stream(model, voice_state, text: str, stop_evt: threading.Event):
+    """
+    Calls model.generate_audio_stream safely by inspecting supported parameters,
+    avoiding TypeError if `stop` is not supported by the installed pocket_tts version.
+    """
+    sig = inspect.signature(model.generate_audio_stream)
+    kwargs = {}
+    if "stop" in sig.parameters:
+        kwargs["stop"] = stop_evt
+    if "copy_state" in sig.parameters:
+        kwargs["copy_state"] = True
+    return model.generate_audio_stream(voice_state, text, **kwargs)
 
 
 # ── Speech Synthesis Worker (Pipelines ahead of playback) ─────────────────
 def _speech_worker():
     """
     Dedicated synthesis worker:
-    - Streams Pocket TTS audio in real-time (24kHz chunks) directly to playback worker.
-    - Yields chunks as they are generated by the Kyutai neural engine (~150ms time-to-first-sound).
-    - Halts immediately without CPU waste on user interruption.
+    - Gives every sentence chunk a clean, cloned voice_state so the KV-cache never overflows or corrupts.
+    - Streams 24kHz audio chunks with proper onset/offset conditioning and inter-sentence breath pauses.
     """
-    global _current_stop_event
     while True:
         item = _speech_queue.get()
         voice_override = None
@@ -749,6 +733,7 @@ def _speech_worker():
             _speech_queue.task_done()
             continue
 
+        _synthesizing_flag.set()
         try:
             tts_started = time.perf_counter()
             _update_state("speaking")
@@ -761,7 +746,6 @@ def _speech_worker():
 
             model = _get_pocket_tts()
             target_voice = voice_override.lower().strip() if voice_override else sync_voice_from_profile()
-            voice_state = _get_voice_state(model, target_voice)
 
             clean_text = _compact_tts_text(text)
             if not clean_text:
@@ -771,7 +755,6 @@ def _speech_worker():
             if not chunks:
                 chunks = [clean_text]
 
-            total_chunks = len(chunks)
             stop_evt = _current_stop_event
             first_chunk_emitted = False
 
@@ -779,42 +762,78 @@ def _speech_worker():
                 if not chunk or not _speech_is_current(generation) or stop_evt.is_set():
                     break
 
-                spoken_chunk = chunk if chunk.endswith((".", "!", "?", ",", ";", ":")) else chunk + "."
+                # Ensure terminal punctuation so the neural model completes the final word prosody
+                spoken_chunk = chunk.strip()
+                if not spoken_chunk.endswith((".", "!", "?")):
+                    spoken_chunk = spoken_chunk.rstrip(",;:") + "."
 
                 try:
                     with _tts_lock:
                         if not _speech_is_current(generation) or stop_evt.is_set():
                             break
-                        # Stream audio tensor chunks (each 80ms / 1920 samples @ 24kHz)
-                        audio_stream = model.generate_audio_stream(voice_state, spoken_chunk, stop=stop_evt)
+
+                        # CRITICAL: Always obtain a fresh cloned voice state per chunk so
+                        # KV-cache mutations never accumulate into manic speech or word eating
+                        fresh_voice_state = _get_voice_state(model, target_voice)
+                        audio_stream = _invoke_generate_audio_stream(
+                            model, fresh_voice_state, spoken_chunk, stop_evt
+                        )
+
+                        is_first_tensor = True
+                        prev_samples = None
 
                         for chunk_tensor in audio_stream:
                             if not _speech_is_current(generation) or stop_evt.is_set():
+                                prev_samples = None
                                 break
 
-                            samples = chunk_tensor.cpu().numpy()
-                            if samples is not None and samples.size > 0:
-                                samples = np.ascontiguousarray(samples, dtype=np.float32)
-                                while _speech_is_current(generation) and not stop_evt.is_set():
-                                    try:
-                                        _playback_queue.put((samples, POCKET_TTS_SAMPLE_RATE, generation, False), timeout=0.1)
-                                        first_chunk_emitted = True
-                                        break
-                                    except queue.Full:
-                                        continue
+                            raw_samples = chunk_tensor.detach().cpu().numpy().reshape(-1)
+                            if raw_samples is not None and raw_samples.size > 0:
+                                if prev_samples is not None:
+                                    processed, sr = _process_audio_clarity(
+                                        prev_samples,
+                                        POCKET_TTS_SAMPLE_RATE,
+                                        is_first_chunk=is_first_tensor,
+                                        is_final_chunk=False,
+                                    )
+                                    is_first_tensor = False
+                                    while _speech_is_current(generation) and not stop_evt.is_set():
+                                        try:
+                                            _playback_queue.put((processed, sr, generation, False), timeout=0.1)
+                                            first_chunk_emitted = True
+                                            break
+                                        except queue.Full:
+                                            continue
+                                prev_samples = raw_samples
+
+                        # Flush the final tensor of this sentence with smooth fade-out and natural pause
+                        if prev_samples is not None and _speech_is_current(generation) and not stop_evt.is_set():
+                            processed, sr = _process_audio_clarity(
+                                prev_samples,
+                                POCKET_TTS_SAMPLE_RATE,
+                                is_first_chunk=is_first_tensor,
+                                is_final_chunk=True,
+                            )
+                            # Add natural 90ms inter-sentence pause (or 160ms final hardware drain cushion)
+                            pause_dur = 0.16 if (idx == len(chunks) - 1) else 0.09
+                            pause_pad = np.zeros(int(pause_dur * sr), dtype=np.float32)
+                            processed = np.concatenate([processed, pause_pad])
+
+                            is_last = (idx == len(chunks) - 1)
+                            while _speech_is_current(generation) and not stop_evt.is_set():
+                                try:
+                                    _playback_queue.put((processed, sr, generation, is_last), timeout=0.1)
+                                    first_chunk_emitted = True
+                                    break
+                                except queue.Full:
+                                    continue
 
                 except Exception as chunk_err:
                     logger.error(f"[Pocket TTS Chunk Error] {chunk_err} on chunk: {chunk[:60]}")
                     continue
 
-            # Signal utterance completion if still current
-            if _speech_is_current(generation) and not stop_evt.is_set() and first_chunk_emitted:
-                try:
-                    # Trailing silence cushion (60ms) to allow hardware buffer to play out cleanly
-                    tail_silence = np.zeros(int(0.06 * POCKET_TTS_SAMPLE_RATE), dtype=np.float32)
-                    _playback_queue.put((tail_silence, POCKET_TTS_SAMPLE_RATE, generation, True), timeout=0.2)
-                except Exception:
-                    pass
+            if not first_chunk_emitted and _speech_queue.empty() and _playback_queue.empty():
+                _update_state("idle")
 
             logger.debug(
                 "[Timing] request_id=%s stage=tts duration_ms=%.1f",
@@ -825,6 +844,7 @@ def _speech_worker():
         except Exception as e:
             logger.error(f"[TTS] Speech synthesis error: {e}")
         finally:
+            _synthesizing_flag.clear()
             _speech_queue.task_done()
 
 
@@ -836,15 +856,19 @@ _last_spoken_time = 0.0
 _speech_dedup_lock = threading.Lock()
 
 
-def speak(text: str, block: bool = False, request_id: str | None = None, broadcast_chat: bool = False, voice: str | None = None) -> None:
+def speak(
+    text: str,
+    block: bool = False,
+    request_id: str | None = None,
+    broadcast_chat: bool = False,
+    voice: str | None = None,
+) -> None:
     """Speak text asynchronously, update assistant state, and stream audio with zero dead air."""
     if not text:
         return
     global _last_spoken_text, _last_spoken_time
     clean = text.strip()
     now = time.time()
-    # Deduplicate only longer phrases (> 3 words) repeated within 1.0 second.
-    # Never suppress short confirmations like "Done.", "Sure.", "Cancelled."
     with _speech_dedup_lock:
         if clean == _last_spoken_text and (now - _last_spoken_time) < 1.0 and len(clean.split()) > 3:
             return
@@ -869,10 +893,8 @@ def stop_speaking() -> None:
     with _speech_generation_lock:
         _speech_generation += 1
 
-    # Reset stop event for next utterance
     _current_stop_event = threading.Event()
 
-    # Flush speech queue
     while True:
         try:
             _speech_queue.get_nowait()
@@ -880,7 +902,6 @@ def stop_speaking() -> None:
         except queue.Empty:
             break
 
-    # Flush playback queue
     while True:
         try:
             _playback_queue.get_nowait()
@@ -888,7 +909,6 @@ def stop_speaking() -> None:
         except queue.Empty:
             break
 
-    # Abort active sounddevice output stream immediately
     with _active_stream_lock:
         if _active_stream is not None:
             try:
@@ -929,7 +949,6 @@ def _find_vosk_model_path() -> str:
         if os.path.isdir(path) and (os.path.exists(os.path.join(path, "am")) or os.path.exists(os.path.join(path, "ivector"))):
             return path
 
-    # Check any subfolder in _VOSK_DIR
     if os.path.isdir(_VOSK_DIR):
         for sub in os.listdir(_VOSK_DIR):
             sub_path = os.path.join(_VOSK_DIR, sub)
@@ -1032,7 +1051,6 @@ def transcribe_samples(samples: np.ndarray, sample_rate: int = 16000) -> str:
 
     try:
         samples = np.asarray(samples, dtype=np.float32)
-        # Resample to 16000 Hz if necessary
         if sample_rate != 16000 and len(samples) > 0:
             try:
                 import scipy.signal
@@ -1042,14 +1060,13 @@ def transcribe_samples(samples: np.ndarray, sample_rate: int = 16000) -> str:
             except Exception:
                 pass
 
-        if len(samples) < 1600:  # Less than 100ms
+        if len(samples) < 1600:
             return ""
 
         peak = float(np.max(np.abs(samples)))
         if peak < 0.01:
             return ""
 
-        # Normalize gain if too low or high
         if peak > 0:
             samples = samples / max(peak, 0.2)
 
@@ -1086,7 +1103,6 @@ def transcribe_audio_bytes(audio_bytes: bytes) -> str:
     if not audio_bytes:
         return ""
 
-    # 1. Try PyAV (handles WebM/Opus from browser MediaRecorder, OGG, WAV, MP3, AAC, FLAC)
     try:
         import av
         with io.BytesIO(audio_bytes) as in_bio:
@@ -1096,7 +1112,6 @@ def transcribe_audio_bytes(audio_bytes: bytes) -> str:
             for frame in container.decode(audio=0):
                 for rf in resampler.resample(frame):
                     chunks.append(rf.to_ndarray()[0])
-            # Flush resampler buffer so the tail is never dropped
             for rf in resampler.resample(None):
                 chunks.append(rf.to_ndarray()[0])
             if chunks:
@@ -1105,7 +1120,6 @@ def transcribe_audio_bytes(audio_bytes: bytes) -> str:
     except Exception as e_av:
         logger.debug(f"[STT] PyAV decode note: {e_av}")
 
-    # 2. Try soundfile (WAV, FLAC, OGG)
     try:
         import soundfile as sf
         with io.BytesIO(audio_bytes) as bio:
@@ -1116,7 +1130,6 @@ def transcribe_audio_bytes(audio_bytes: bytes) -> str:
     except Exception:
         pass
 
-    # 3. Fallback: Raw 16-bit PCM
     try:
         samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
         return transcribe_samples(samples, 16000)
@@ -1140,7 +1153,6 @@ def transcribe_b64(audio_b64: str) -> str:
         return ""
 
 
-# Warm up STT in background thread
 def _warmup_stt():
     def _run():
         try:

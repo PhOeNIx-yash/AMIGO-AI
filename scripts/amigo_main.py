@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
 Amigo Voice Assistant - Main Entry Point
-Coordinates voice/type input, LLM agent action dispatching, and Supertonic-3 Neural TTS / Vosk Offline STT.
+Coordinates voice/type input, LLM agent action dispatching, Pocket TTS, and Vosk Offline STT.
 """
 
 import os
@@ -179,7 +179,11 @@ def _execute_action(action: dict, query: str, spoken_so_far: list, interruption_
     # Streaming conversation / live web search answer
     if tool == "chat" or (tool == "web_search" and not spoken):
         snippets = scrape_web_info(params.get("query", query)) if tool == "web_search" else None
-        gen = get_ai_response_stream(query, web_context=snippets, interruption_event=interruption_event)
+        gen = get_ai_response_stream(
+            query,
+            web_context=snippets or "",
+            interruption_event=interruption_event,
+        )
         spoken = speak_stream(gen, interruption_event=interruption_event)
     else:
         spoken, url, meta = execute_tool(tool, params, query=query, spoken=spoken)

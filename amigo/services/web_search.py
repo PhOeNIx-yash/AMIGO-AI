@@ -22,6 +22,7 @@ import asyncio
 import base64
 import email.utils
 import html as _html
+import importlib
 import json
 import logging
 import math
@@ -36,13 +37,16 @@ from collections import Counter, OrderedDict
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Callable, Optional
+from typing import Any, Callable, Optional, cast
 
+from requests import Session
+import requests
+
+httpx = None
 try:
     import httpx
     _HAS_HTTPX = True
 except ImportError:
-    import requests
     _HAS_HTTPX = False
 
 logger = logging.getLogger("amigo.web_search")
@@ -252,7 +256,7 @@ class _HttpClient:
     """Unified HTTP/2 client using httpx with automatic fallback to requests."""
 
     def __init__(self):
-        if _HAS_HTTPX:
+        if httpx is not None:
             self._client = httpx.Client(
                 http2=True,
                 headers=DEFAULT_HEADERS,
@@ -276,11 +280,13 @@ class _HttpClient:
         cookies: dict | None = None,
         timeout: float = HTTP_TIMEOUT,
     ):
-        if _HAS_HTTPX:
+        if httpx is not None and isinstance(self._client, httpx.Client):
             resp = self._client.get(url, params=params, headers=headers, cookies=cookies, timeout=timeout)
             resp.raise_for_status()
             return resp
-        resp = self._client.get(url, params=params, headers=headers, cookies=cookies, timeout=(1.2, timeout))
+        resp = cast(Session, self._client).get(
+            url, params=params, headers=headers, cookies=cookies, timeout=(1.2, timeout)
+        )
         resp.raise_for_status()
         return resp
 
@@ -293,13 +299,13 @@ class _HttpClient:
         cookies: dict | None = None,
         timeout: float = HTTP_TIMEOUT,
     ):
-        if _HAS_HTTPX:
+        if httpx is not None and isinstance(self._client, httpx.Client):
             resp = self._client.post(
                 url, json=json_body, data=data, headers=headers, cookies=cookies, timeout=timeout
             )
             resp.raise_for_status()
             return resp
-        resp = self._client.post(
+        resp = cast(Session, self._client).post(
             url, json=json_body, data=data, headers=headers, cookies=cookies, timeout=(1.2, timeout)
         )
         resp.raise_for_status()
@@ -628,7 +634,7 @@ def _p_ddgs_web(query: str, limit: int) -> list[SearchResult]:
         # never triggers its broken internal wt.wikipedia.org opensearch sub-engine.
         for backend in ("duckduckgo", "lite", "html"):
             try:
-                kwargs = {"max_results": lim, "backend": backend}
+                kwargs: dict[str, Any] = {"max_results": lim, "backend": backend}
                 if reg:
                     kwargs["region"] = reg
                 rows = list(_get_ddgs().text(q_str, **kwargs) or [])
@@ -680,14 +686,15 @@ def _p_ddg_html(query: str, limit: int) -> list[SearchResult]:
 
     out: list[SearchResult] = []
     if _has_module("selectolax"):
-        from selectolax.parser import HTMLParser
+        HTMLParser = importlib.import_module("selectolax.parser").HTMLParser
         tree = HTMLParser(resp.text)
         for node in tree.css(".result, .web-result"):
             a = node.css_first("a.result__a")
             snip_el = node.css_first(".result__snippet")
             if not a:
                 continue
-            href = a.attributes.get("href", "")
+            href_value = a.attributes.get("href")
+            href = href_value if isinstance(href_value, str) else ""
             if "uddg=" in href:
                 qs = urllib.parse.parse_qs(urllib.parse.urlparse(href).query)
                 href = qs.get("uddg", [href])[0]
@@ -707,7 +714,8 @@ def _p_ddg_html(query: str, limit: int) -> list[SearchResult]:
         snip_el = node.select_one(".result__snippet")
         if not a:
             continue
-        href = a.get("href", "")
+        href_value = a.get("href")
+        href = href_value if isinstance(href_value, str) else ""
         if "uddg=" in href:
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(href).query)
             href = qs.get("uddg", [href])[0]
@@ -723,7 +731,7 @@ def _p_ddg_html(query: str, limit: int) -> list[SearchResult]:
 
 def _p_ddgs_news(query: str, limit: int) -> list[SearchResult]:
     clean_q = clean_search_query(query) or query
-    kwargs = {"max_results": limit}
+    kwargs: dict[str, Any] = {"max_results": limit}
     if SEARCH_REGION:
         kwargs["region"] = SEARCH_REGION
     rows = []
@@ -793,7 +801,7 @@ def _parse_bing_html(html_text: str, limit: int, query: str = "") -> list[Search
         if w.lower() not in _SYNTAX_FUNCTION_WORDS and len(w) > 2
     ] if query else []
     if _has_module("selectolax"):
-        from selectolax.parser import HTMLParser
+        HTMLParser = importlib.import_module("selectolax.parser").HTMLParser
         tree = HTMLParser(html_text)
         for node in tree.css("li.b_algo"):
             a = node.css_first("h2 a")
@@ -819,7 +827,10 @@ def _parse_bing_html(html_text: str, limit: int, query: str = "") -> list[Search
         p = item.select_one(".b_caption p, p")
         if not a:
             continue
-        url = _decode_bing_url(a.get("href", ""))
+        href = a.get("href")
+        if not isinstance(href, str):
+            continue
+        url = _decode_bing_url(href)
         if not url.startswith("http") or "bing.com" in _domain(url):
             continue
         title = a.get_text(" ", strip=True)
@@ -1185,13 +1196,13 @@ def _extract_raw_blocks(page: str) -> list[str]:
     blocks = _extract_json_ld_strings(page)
 
     if _has_module("trafilatura"):
-        import trafilatura
+        trafilatura = importlib.import_module("trafilatura")
         txt = trafilatura.extract(page, include_comments=True, include_tables=True)
         if txt:
             blocks.extend(p.strip() for p in txt.splitlines() if len(p.strip()) > 30)
 
     if _has_module("selectolax"):
-        from selectolax.parser import HTMLParser
+        HTMLParser = importlib.import_module("selectolax.parser").HTMLParser
         tree = HTMLParser(page)
         for tag in tree.css("script, style, nav, footer, iframe, noscript, svg, form"):
             tag.decompose()
@@ -1476,10 +1487,14 @@ def _yt_html(query: str, params: Optional[str]) -> list[YTVideo]:
 
 
 def _yt_ytdlp(query: str, latest: bool = False, n: int = 5) -> list[YTVideo]:
-    import yt_dlp
-    opts = {"quiet": True, "no_warnings": True, "skip_download": True, "extract_flat": True, "socket_timeout": 4}
+    yt_dlp = importlib.import_module("yt_dlp")
     prefix = "ytsearchdate" if latest else "ytsearch"
-    with yt_dlp.YoutubeDL(opts) as ydl:
+    with yt_dlp.YoutubeDL() as ydl:
+        ydl.params["quiet"] = True
+        ydl.params["no_warnings"] = True
+        ydl.params["skip_download"] = True
+        ydl.params["extract_flat"] = True
+        ydl.params["socket_timeout"] = 4
         info = ydl.extract_info(f"{prefix}{n}:{query}", download=False) or {}
     out = []
     for e in info.get("entries") or []:
@@ -1504,7 +1519,7 @@ def _get_ytmusic():
     global _YTM
     with _YTM_LOCK:
         if _YTM is None:
-            from ytmusicapi import YTMusic
+            YTMusic = importlib.import_module("ytmusicapi").YTMusic
             _YTM = YTMusic()
         return _YTM
 
@@ -1686,7 +1701,11 @@ class Quote:
 
     @property
     def change_pct(self) -> Optional[float]:
-        return None if self.change is None else self.change / self.previous_close * 100
+        change = self.change
+        previous_close = self.previous_close
+        if change is None or previous_close in (None, 0):
+            return None
+        return change / previous_close * 100
 
     @property
     def url(self) -> str:
@@ -1789,7 +1808,9 @@ def format_quote(q: Quote) -> str:
     sym = _CCY_SYMBOL.get(q.currency, f"{q.currency} " if q.currency else "")
     text = f"{q.name} is at {sym}{q.price:,.2f}"
     if q.change_pct is not None:
-        text += f", {'up' if q.change >= 0 else 'down'} {abs(q.change_pct):.2f} percent from the previous close"
+        change = q.change
+        if change is not None:
+            text += f", {'up' if change >= 0 else 'down'} {abs(q.change_pct):.2f} percent from the previous close"
     if q.as_of:
         text += f". Last trade was at {q.as_of.strftime('%I:%M %p').lstrip('0')} on {q.as_of.strftime('%b')} {q.as_of.day}"
     return text + "."

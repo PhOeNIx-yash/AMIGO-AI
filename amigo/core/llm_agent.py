@@ -17,8 +17,12 @@ import sys
 import threading
 import time
 import unicodedata
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Generator
+from typing import TYPE_CHECKING, Generator, cast
+
+if TYPE_CHECKING:
+    from llama_cpp.llama_types import ChatCompletionRequestMessage, CreateChatCompletionStreamResponse
 
 try:
     import pyperclip
@@ -182,7 +186,10 @@ def get_static_system_prompt() -> str:
     """Return the master immutable system prompt to guarantee 100% KV-cache prefix hits in llama.cpp."""
     if callable(_master_prompt_provider):
         try:
-            return _master_prompt_provider()
+            prompt = _master_prompt_provider()
+            if isinstance(prompt, str):
+                return prompt
+            logger.warning("Master prompt provider returned %s instead of str", type(prompt).__name__)
         except Exception:
             pass
     try:
@@ -763,11 +770,15 @@ def sanitize_for_tts(text: str) -> str:
     return _filter_tts_chars(_clean_markdown(text)) if text else ""
 
 
-def _prepare_chat_messages(system_prompt: str, prompt: str | list[dict]) -> list[dict]:
+def _prepare_chat_messages(
+    system_prompt: str,
+    prompt: str | list[dict],
+) -> list["ChatCompletionRequestMessage"]:
     if isinstance(prompt, list):
         if prompt and prompt[0].get("role") == "system":
-            return prompt
-        return ([{"role": "system", "content": system_prompt}] if system_prompt else []) + prompt
+            return cast(list["ChatCompletionRequestMessage"], prompt)
+        messages = ([{"role": "system", "content": system_prompt}] if system_prompt else []) + prompt
+        return cast(list["ChatCompletionRequestMessage"], messages)
     return [{"role": "system", "content": system_prompt}, {"role": "user", "content": str(prompt)}]
 
 
@@ -806,14 +817,16 @@ def query_local_llm(
             kwargs["response_format"] = response_format
         with _inference_lock:
             try:
-                res = llm.create_chat_completion(**kwargs)
+                res = llm.create_chat_completion(**kwargs, stream=False)
             except Exception as e:
                 if "exceed context window" in str(e).lower() and kwargs.get("max_tokens", 0) > 128:
                     logger.warning("[LLM Query] Context overflow detected, retrying with compressed max_tokens...")
                     kwargs["max_tokens"] = 128
-                    res = llm.create_chat_completion(**kwargs)
+                    res = llm.create_chat_completion(**kwargs, stream=False)
                 else:
                     raise
+        if not isinstance(res, dict):
+            raise TypeError("LLM returned a stream for a non-streaming request")
         output = (res["choices"][0]["message"]["content"] or "").strip()
         return (sanitize_for_tts(output) or output) if sanitize else output
     except Exception as e:
@@ -847,10 +860,10 @@ def query_local_llm_stream(
         sampling = get_sampling_params()
         temp = sampling["temperature"] if temperature is None else temperature
         with _inference_lock:
-            stream_res = None
+            stream_res: Iterator["CreateChatCompletionStreamResponse"] | None = None
             try:
                 try:
-                    stream_res = llm.create_chat_completion(
+                    stream_result = llm.create_chat_completion(
                         messages=_prepare_chat_messages(system_prompt, prompt),
                         max_tokens=max_tokens,
                         temperature=temp,
@@ -859,10 +872,13 @@ def query_local_llm_stream(
                         stop=STOP_TOKENS,
                         stream=True,
                     )
+                    if isinstance(stream_result, dict):
+                        raise TypeError("LLM returned a non-stream response for a streaming request")
+                    stream_res = stream_result
                 except Exception as e:
                     if "exceed context window" in str(e).lower() and max_tokens > 128:
                         logger.warning("[LLM Stream] Context overflow detected, retrying with compressed max_tokens...")
-                        stream_res = llm.create_chat_completion(
+                        stream_result = llm.create_chat_completion(
                             messages=_prepare_chat_messages(system_prompt, prompt),
                             max_tokens=128,
                             temperature=temp,
@@ -871,8 +887,13 @@ def query_local_llm_stream(
                             stop=STOP_TOKENS,
                             stream=True,
                         )
+                        if isinstance(stream_result, dict):
+                            raise TypeError("LLM returned a non-stream response for a streaming request")
+                        stream_res = stream_result
                     else:
                         raise
+                if stream_res is None:
+                    raise RuntimeError("LLM stream was not initialized")
                 for chunk in stream_res:
                     if interruption_event and interruption_event.is_set():
                         break
@@ -882,9 +903,10 @@ def query_local_llm_stream(
                 logger.error("[LLM Stream Error]: %s", e)
                 yield "I'm having trouble processing that request."
             finally:
-                if callable(getattr(stream_res, "close", None)):
+                close_stream = getattr(stream_res, "close", None)
+                if callable(close_stream):
                     try:
-                        stream_res.close()
+                        close_stream()
                     except Exception:
                         pass
     finally:

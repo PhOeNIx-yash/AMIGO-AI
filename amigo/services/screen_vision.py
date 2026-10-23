@@ -134,7 +134,7 @@ def capture_screen_image(save_path: str | None = "amigo_screenshot.png"):
             raw_data = ctypes.create_string_buffer(buffer_len)
             gdi32.GetDIBits(hdc_mem, hbm, 0, height, raw_data, ctypes.byref(bmi), 0)
 
-            screenshot = Image.frombuffer("RGBA", (width, height), raw_data, "raw", "BGRA", 0, 1).convert("RGB")
+            screenshot = Image.frombuffer("RGBA", (width, height), raw_data.raw, "raw", "BGRA", 0, 1).convert("RGB")
 
             # Cleanup GDI handles
             gdi32.DeleteObject(hbm)

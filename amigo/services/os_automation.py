@@ -207,6 +207,8 @@ def close_app(app_name: str = "") -> bool:
     try:
         import psutil
         for proc in psutil.process_iter(['pid', 'name']):
+            pname = ""
+            stem = ""
             try:
                 pname = (proc.info['name'] or '').lower()
                 stem = pname.replace(".exe", "")
@@ -402,15 +404,14 @@ def set_volume(level: int | str) -> tuple[bool, str]:
         pythoncom.CoInitialize()
         try:
             devices = AudioUtilities.GetSpeakers()
-            if hasattr(devices, "EndpointVolume"):
-                devices.EndpointVolume.SetMasterVolumeLevelScalar(level_int / 100.0, None)
+            endpoint_volume = getattr(devices, "EndpointVolume", None)
+            if endpoint_volume is not None:
+                set_volume_level = getattr(endpoint_volume, "SetMasterVolumeLevelScalar", None)
+                if not callable(set_volume_level):
+                    raise RuntimeError("Audio endpoint does not support volume control")
+                set_volume_level(level_int / 100.0, None)
             else:
-                from ctypes import POINTER, cast
-                from comtypes import CLSCTX_ALL
-                from pycaw.pycaw import IAudioEndpointVolume
-                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                volume = cast(interface, POINTER(IAudioEndpointVolume))
-                volume.SetMasterVolumeLevelScalar(level_int / 100.0, None)
+                raise RuntimeError("Audio device does not expose its endpoint volume")
             return True, f"Volume set to {level_int} percent."
         finally:
             pythoncom.CoUninitialize()
@@ -471,4 +472,3 @@ def get_system_status() -> dict:
             "plugged": None,
             "summary": "Could not read system hardware status.",
         }
-

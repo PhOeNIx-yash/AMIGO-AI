@@ -53,7 +53,7 @@ def set_broadcast_callback(callback):
     _broadcast_callback = callback
 
 
-def _broadcast(event_type: str, data: dict = None):
+def _broadcast(event_type: str, data: dict | None = None):
     """Sends event to Web UI dashboard via registered SSE callback or HTTP bridge if external."""
     payload = data or {}
 
@@ -131,6 +131,9 @@ def _play_searching_sound():
 def _handle_wake_action():
     """Handles the Alt+V wake event: captures screen first, updates UI state, then listens and executes."""
     global _is_processing
+    query = ""
+    last_tool_params: dict = {}
+    last_tool_metadata: dict = {}
     with _lock:
         if _is_processing:
             logger.debug("[Hotkey] Already processing an active request, ignoring duplicate trigger.")
@@ -306,7 +309,7 @@ def _handle_wake_action():
         })
         _broadcast("state_change", {"state": "speaking"})
 
-        # Step 7: Speak output via Supertonic-3 Neural TTS
+        # Step 7: Speak output via the configured neural TTS engine
         speak(clean_reply, block=True)
 
     except Exception as e:
