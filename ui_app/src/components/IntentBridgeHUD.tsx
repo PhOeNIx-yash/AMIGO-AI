@@ -2,6 +2,7 @@ import React, { useRef, useEffect } from "react";
 import { motion } from "motion/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  AiBrain01Icon,
   AiSparklesIcon,
   SparklesIcon,
   FlashIcon,

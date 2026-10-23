@@ -5,6 +5,8 @@ Coordinates voice/type input, LLM agent action dispatching, and Supertonic-3 Neu
 """
 
 import os
+import queue
+import re
 import sys
 import threading
 import time
@@ -19,12 +21,12 @@ try:
 except Exception:
     _sd = None
 
-from amigo.core.llm_agent import add_to_memory, get_ai_response_stream, get_quick_feedback
+from amigo.core.llm_agent import add_to_memory, get_ai_response_stream, load_memory, get_quick_feedback
 from amigo.services.app_opener import ensure_built
 from amigo.core.llm_agent import get_active_model_info, get_clipboard_text, init_local_llm, sanitize_for_tts, _RE_PROBE_GUARD
-from amigo.core.llm_agent import get_agent_actions
+from amigo.core.llm_agent import get_agent_action, get_agent_actions
 from amigo.core.reminder_timer import init_reminders
-from amigo.services.web_search import scrape_web_info
+from amigo.services.web_search import search_web, format_for_llm, scrape_web_info
 from amigo.utils.tool_registry import execute_tool
 from amigo.utils.tts import (
     speak as tts_speak,
@@ -165,7 +167,7 @@ def take_command(timeout=8, phrase_time_limit=15) -> str:
         return "None"
 
 
-def _execute_action(action: dict, query: str, interruption_event: threading.Event | None = None) -> str:
+def _execute_action(action: dict, query: str, spoken_so_far: list, interruption_event: threading.Event | None = None) -> str:
     """Executes a single tool action and returns spoken text."""
     tool = action.get("tool", "chat")
     params = action.get("params", {})
@@ -208,7 +210,7 @@ def process_agent_query(query: str) -> None:
     for action in actions:
         if interruption_event.is_set():
             break
-        spoken = _execute_action(action, query, interruption_event=interruption_event)
+        spoken = _execute_action(action, query, combined_spoken, interruption_event=interruption_event)
         if spoken:
             combined_spoken.append(spoken)
         last_tool = action.get("tool", "chat")

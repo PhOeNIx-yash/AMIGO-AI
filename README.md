@@ -1,6 +1,6 @@
 # Amigo Voice Assistant 🎙️✨
 
-A private, intelligent, and agentic personal voice assistant powered locally by the **Spark-X2.5 4B (Q4_K_M)** GGUF model, **Vosk** offline neural speech recognition, and **Supertonic 3** 44.1kHz studio neural speech synthesis.
+A private, intelligent, and agentic personal voice assistant powered locally by the **Spark-X2.6 4B (Q4_K_M)** GGUF model, **Vosk** offline neural speech recognition, and **Supertonic 3** 44.1kHz studio neural speech synthesis.
 
 Amigo provides desktop automation, browser & window control, document intelligence (invoices, PDFs, spreadsheets), live interactive action widgets (countdown timers, stopwatches, weather telemetry), deep web browsing, app management, and an adaptive RAG-powered vector memory system — completely offline, with **zero API keys and zero cloud dependencies**.
 
@@ -9,7 +9,7 @@ Amigo provides desktop automation, browser & window control, document intelligen
 ## 🚀 What's New (v2.0)
 
 ### 🧠 **LLM-Based Agentic Reasoning Architecture** (NEW)
-- **Full natural language understanding & formal deductive reasoning** via Spark-X2.5 4B with structured tool calling
+- **Full natural language understanding & formal deductive reasoning** via Spark-X2.6 4B with structured tool calling
 - **Internal reasoning scratchpad** with `<think>...</think>` support and intelligent tool decision-making
 - **Multi-step compound command chains** — "Open Notepad and type Hello World" executes atomically
 - **Context-aware follow-ups** — "Play it again", "Close that", "Search for that" resolve from conversation history
@@ -174,7 +174,7 @@ amigo-main/
 │       ├── tool_registry.py        # Central tool registry, dispatcher & action cards
 │       └── tts.py                  # Unified speech engine (Supertonic 3 TTS & Sherpa-ONNX STT)
 ├── models/                 # AI model weights
-│   ├── Spark-X2.5-4B-Q4_K_M.gguf     # Spark-X2.5 4B GGUF weights
+│   ├── Spark-X2.6-4B-Q4_K_M.gguf     # Spark-X2.6 4B GGUF weights
 │   └── vosk/                       # Vosk offline STT model
 ├── rag_data/               # RAG vector database & uploads
 │   ├── chroma/             # ChromaDB persistent storage
@@ -210,7 +210,7 @@ This automatically:
 1. Creates a virtual environment (`venv/`) for isolated dependencies.
 2. Installs all Python dependencies via `pip install -r requirements.txt`.
 3. Initializes the `Supertonic 3` neural voice engine (44.1kHz studio quality).
-4. Downloads or loads the `Spark-X2.5 4B` quantized GGUF model (~2.60 GB).
+4. Downloads or loads the `Spark-X2.6 4B` quantized GGUF model (~2.60 GB).
 5. Downloads the `Sherpa-ONNX` streaming Zipformer STT model (~80 MB).
 6. Initializes RAG vector data storage directories and default profile.
 7. Verifies or compiles the Web Dashboard production build (`ui_app/dist`).

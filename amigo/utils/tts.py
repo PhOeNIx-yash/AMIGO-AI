@@ -771,6 +771,7 @@ def _speech_worker():
             if not chunks:
                 chunks = [clean_text]
 
+            total_chunks = len(chunks)
             stop_evt = _current_stop_event
             first_chunk_emitted = False
 

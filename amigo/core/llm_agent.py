@@ -8,6 +8,7 @@ Optimized for Spark-X2.6 4B with:
 
 import contextvars
 import datetime
+import json
 import logging
 import multiprocessing
 import os
@@ -68,6 +69,7 @@ def _setup_cuda_dll_directory() -> None:
 _setup_cuda_dll_directory()
 
 import amigo.core.rag_engine as rag_engine
+from amigo.core.rag_engine import get_recent_conversations
 from amigo.utils.network_utils import is_internet_connected
 
 logger = logging.getLogger("amigo.llm_agent")
@@ -435,7 +437,7 @@ AVAILABLE_MODELS = {
         "path": os.path.join(MODEL_DIR, "Spark-X2.6-4B-Q4_K_M.gguf"),
         "targets": [("abenzerps/Spark-X2.6-4B-Quantized", "Spark-X2.6-4B-Q4_K_M.gguf")],
         "downloaded": os.path.exists(os.path.join(MODEL_DIR, "Spark-X2.6-4B-Q4_K_M.gguf")) and os.path.getsize(os.path.join(MODEL_DIR, "Spark-X2.6-4B-Q4_K_M.gguf")) > 500_000_000,
-        "size_gb": 2.47,
+        "size_gb": 2.60,
     },
 }
 
@@ -475,6 +477,7 @@ def _get_llm_config() -> dict:
         if _LLM_CONFIG is not None:
             return _LLM_CONFIG
         cores = _get_physical_cores()
+        total_cpus = multiprocessing.cpu_count()
         has_gpu = False
         try:
             import llama_cpp
@@ -657,13 +660,7 @@ def _setup_chat_formatter(llm) -> None:
                         self.base = base
 
                     def __call__(self, *args, **kwargs):
-                        thinking = kwargs.get("enable_thinking")
-                        if thinking is None:
-                            thinking = get_current_thinking_enabled()
-                        kwargs["enable_thinking"] = bool(thinking)
-                        chat_kw = kwargs.setdefault("chat_template_kwargs", {})
-                        if isinstance(chat_kw, dict):
-                            chat_kw["enable_thinking"] = bool(thinking)
+                        kwargs.setdefault("enable_thinking", get_current_thinking_enabled())
                         return self.base(*args, **kwargs)
 
                 new_handler = llama_chat_format.chat_formatter_to_chat_completion_handler(

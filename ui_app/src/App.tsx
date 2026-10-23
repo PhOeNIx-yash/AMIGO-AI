@@ -91,6 +91,7 @@ function BeamsBackground({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const beamsRef = useRef<Beam[]>([]);
   const animationFrameRef = useRef<number>(0);
+  const MINIMUM_BEAMS = 20;
   const isDarkModeRef = useRef<boolean>(typeof isDark === "boolean" ? isDark : false);
 
   const opacityMap = {
@@ -268,6 +269,35 @@ function BeamsBackground({
       />
 
       {children}
+    </div>
+  );
+}
+
+function renderFormattedContent(text: string) {
+  if (!text) return null;
+  const blocks = text.split(/\n\s*\n/).filter((b) => b.trim());
+  if (blocks.length <= 1) {
+    const lines = text.split(/\n/).filter((l) => l.trim());
+    if (lines.length > 1) {
+      return (
+        <div className="space-y-2">
+          {lines.map((line, idx) => (
+            <p key={idx} className="leading-relaxed">
+              {line.trim()}
+            </p>
+          ))}
+        </div>
+      );
+    }
+    return <p className="leading-relaxed whitespace-pre-wrap">{text.trim()}</p>;
+  }
+  return (
+    <div className="space-y-3">
+      {blocks.map((block, idx) => (
+        <p key={idx} className="leading-relaxed whitespace-pre-wrap">
+          {block.trim()}
+        </p>
+      ))}
     </div>
   );
 }
@@ -683,6 +713,7 @@ export default function App() {
   const [liveTranscript, setLiveTranscript] = useState<string>("");
 
   const [assistantData, setAssistantData] = useState<AssistantResponse | null>(null);
+  const [selectedContact, setSelectedContact] = useState<ContactItem | undefined>(undefined);
   const [loading, setLoading] = useState<boolean>(false);
   const loadingRef = useRef<boolean>(false);
   const [hudDismissed, setHudDismissed] = useState<boolean>(false);
@@ -963,6 +994,7 @@ export default function App() {
     setActivePrompt("");
     setDisplayText(greetingText);
     setAssistantData(null);
+    setSelectedContact(undefined);
     setIsListening(false);
     setLoading(false);
     setHudDismissed(true);
@@ -1147,6 +1179,7 @@ export default function App() {
     setActivePrompt(entry.prompt);
     const responseData = entry.response;
     setAssistantData(responseData);
+    setSelectedContact(entry.selectedContact);
     const fullText = responseData.speechReply || responseData.executionSummary?.details || responseData.displayTitle || entry.prompt;
     setDisplayText(fullText);
     const hasActionCards = Boolean(
@@ -1306,6 +1339,7 @@ export default function App() {
 
   // User selects a specific contact from the disambiguation list
   const handleSelectContact = (contact: ContactItem) => {
+    setSelectedContact(contact);
     setDisplayText("OK! Great! Working on this...");
     setState("working");
 
@@ -1385,7 +1419,20 @@ export default function App() {
             {/* Windows 11 Fluent TitleBar Header */}
             <TitleBar
               isDark={isDark}
+              onToggleTheme={() => setIsDark(!isDark)}
+              soundEnabled={soundEnabled}
+              onToggleSound={handleToggleSound}
               colorTheme={colorTheme}
+              onChangeColorTheme={setColorTheme}
+              visualizerMode={visualizerMode}
+              onChangeVisualizerMode={setVisualizerMode}
+              textAnimationStyle={textAnimationStyle}
+              onChangeTextAnimationStyle={setTextAnimationStyle}
+              onReset={handleReset}
+              pluginMode={pluginMode}
+              onChangePluginMode={setPluginMode}
+              isOpen={isOpen}
+              onToggleOpen={() => setIsOpen(!isOpen)}
               showHistory={showHistory}
               onToggleHistory={() => setShowHistory(!showHistory)}
               historyCount={history.length}
@@ -1409,6 +1456,7 @@ export default function App() {
                 onToggleTheme={() => setIsDark(!isDark)}
                 colorTheme={colorTheme}
                 onChangeColorTheme={setColorTheme}
+                visualizerMode={visualizerMode}
                 onChangeVisualizerMode={setVisualizerMode}
                 thinkingOrbStyle={thinkingOrbStyle}
                 onChangeThinkingOrbStyle={setThinkingOrbStyle}
@@ -1424,6 +1472,8 @@ export default function App() {
                 onChangeAutoCycleInterval={setAutoCycleInterval}
                 pluginMode={pluginMode}
                 onChangePluginMode={setPluginMode}
+                soundEnabled={soundEnabled}
+                onToggleSound={handleToggleSound}
                 backendConfig={backendConfig}
                 onSaveBackendConfig={handleSaveBackendConfig}
                 historyCount={history.length}
@@ -1759,7 +1809,9 @@ export default function App() {
                       isDark={isDark}
                       colorTheme={colorTheme}
                       backendConfig={backendConfig}
+                      onSwitchToAssistant={() => handleSwitchViewMode("assistant")}
                       userName={userName}
+                      assistantState={state}
                       liveIntent={liveIntent || assistantData?.intent}
                       liveParams={liveParams}
                       activePrompt={activePrompt}

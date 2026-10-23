@@ -10,8 +10,11 @@ import {
   Key,
   Globe,
   Radio,
+  Sliders,
   Code2,
   RotateCcw,
+  Sparkles,
+  ExternalLink,
   Brain,
 } from "lucide-react";
 import { BackendConfig, ColorTheme } from "../types";

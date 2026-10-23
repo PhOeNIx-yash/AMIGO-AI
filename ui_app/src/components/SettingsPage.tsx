@@ -6,6 +6,7 @@ import {
   Server,
   CheckCircle2,
   AlertCircle,
+  Sparkles,
   Sun,
   Moon,
   ArrowLeft,
@@ -48,6 +49,7 @@ interface SettingsPageProps {
   onToggleTheme: () => void;
   colorTheme: ColorTheme;
   onChangeColorTheme: (theme: ColorTheme) => void;
+  visualizerMode: VisualizerMode;
   onChangeVisualizerMode: (mode: VisualizerMode) => void;
   thinkingOrbStyle?: ThinkingOrbStyle;
   onChangeThinkingOrbStyle?: (style: ThinkingOrbStyle) => void;
@@ -63,6 +65,8 @@ interface SettingsPageProps {
   onChangeAutoCycleInterval?: (seconds: number) => void;
   pluginMode: PluginMode;
   onChangePluginMode: (mode: PluginMode) => void;
+  soundEnabled: boolean;
+  onToggleSound: () => void;
   backendConfig: BackendConfig;
   onSaveBackendConfig: (config: BackendConfig) => void;
   historyCount: number;
@@ -80,6 +84,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   onToggleTheme,
   colorTheme,
   onChangeColorTheme,
+  visualizerMode,
   onChangeVisualizerMode,
   thinkingOrbStyle = "orbits",
   onChangeThinkingOrbStyle,
@@ -95,6 +100,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   onChangeAutoCycleInterval,
   pluginMode,
   onChangePluginMode,
+  soundEnabled,
+  onToggleSound,
   backendConfig,
   onSaveBackendConfig,
   historyCount,

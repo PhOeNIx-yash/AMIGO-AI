@@ -17,7 +17,7 @@ sounddevice>=0.4.6             # Real-time audio playback backend
 numpy>=1.24.0                  # Audio array processing
 pywin32>=306                   # Windows shell integrations
 
-# ── Local LLM Engine (Spark-X2.5 4B) ───────────────────────────
+# ── Local LLM Engine (Spark-X2.6 4B) ───────────────────────────
 llama-cpp-python>=0.2.80       # Local GGUF quantized model inference (CPU/CUDA)
 nvidia-cuda-runtime-cu12>=12.0.0; sys_platform == 'win32'  # CUDA 12 runtime DLLs for NVIDIA GPU acceleration
 nvidia-cublas-cu12>=12.0.0; sys_platform == 'win32'        # cuBLAS high-performance GPU tensor kernels
@@ -56,5 +56,4 @@ python-pptx>=0.6.23            # PowerPoint (.pptx) extraction
 openpyxl>=3.1.0                # Excel spreadsheet (.xlsx) extraction
 pdfplumber>=0.11.0             # Enhanced PDF extraction with layout/table detection
 rank-bm25>=0.2.2               # BM25 keyword search for hybrid retrieval
-
 

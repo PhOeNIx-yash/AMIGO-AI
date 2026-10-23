@@ -594,27 +594,27 @@ def _tool_ask_document(params, query, spoken, conversation_history=None):
     resolved_question = rag_engine.resolve_contextual_query(question, conv_history)
     target_path = resolve_document_path(filepath) if filepath else None
 
-    ctx, sources = rag_engine.build_document_evidence(
+    # Retrieve from broader corpus across all user documents & facts
+    ctx = rag_engine.build_rag_context(
         resolved_question,
         top_k=6,
         conversation_history=conv_history,
-        filepath=target_path if target_path and os.path.exists(target_path) else None,
+        for_voice=False,
+        target_collections=[rag_engine.DOCUMENTS, rag_engine.USER_FACTS],
     )
 
-    if ctx and sources:
+    # If a specific file was targeted, also ensure its matching sections are included
+    if target_path and os.path.exists(target_path):
+        file_ctx = rag_engine.build_file_context(target_path, resolved_question)
+        if file_ctx and file_ctx not in ctx:
+            ctx = f"{file_ctx}\n\n{ctx}".strip() if ctx else file_ctx
+
+    if ctx:
+        meta = {"matched_docs": [target_path]} if target_path else {"doc_context_used": True}
         response = get_ai_response(question, doc_context=ctx, conversation_history=conv_history)
-        source_list = "; ".join(
-            f"[{source['id']}] {source['file']} — {source['location']}"
-            for source in sources
-        )
-        response = f"{response.rstrip()}\n\nSources: {source_list}".strip()
-        return response, None, {"doc_context_used": True, "sources": sources}
+        return response, None, meta
 
-    return (
-        "I couldn't find enough relevant information in the indexed documents to answer that.",
-        None,
-        {"doc_context_used": False, "sources": [], "status": "insufficient_evidence"},
-    )
+    return "I couldn't find anything relevant in your indexed documents.", None
 
 
 def _tool_summarize_document(params, query, spoken):
@@ -1489,7 +1489,7 @@ TOOL_DEFINITIONS = [
     _tool("chat", "Conversational dialogue: greetings, casual conversation, opinions, advice, creative writing, or quick math that do not require external lookup or local system inspection.",
           {"response": _p("string", "Your direct, natural spoken or written reply to the user (1 to 2 concise sentences)")},
           ["response"]),
-    _tool("web_search", "Retrieve external public information. Use when the answer is uncertain, unfamiliar, needs independent verification, or depends on current web sources; do not use for information already available from a more specific local or live tool.",
+    _tool("web_search", "Search the web for external information, current events, public facts, online lookups, or live web research.",
           {"query": _p("string", "Self-contained search query with pronouns resolved from conversation history"),
            "show_in_browser": _p("boolean", "True if user asked to open search results in a browser")}, ["query"]),
     _tool("stock_quote", "Look up real-time stock or crypto prices.", {"symbol": _p("string", "Ticker or asset name")}, ["symbol"]),
@@ -1498,9 +1498,9 @@ TOOL_DEFINITIONS = [
           ["query"]),
     _tool("resume_media", "Resume paused audio/video playback."),
     _tool("pause_media", "Pause currently playing audio/video."),
-    _tool("next_track", "Advance active media playback to the next item. Changes playback; does not identify the current item."),
-    _tool("prev_track", "Return active media playback to the previous item. Changes playback; does not identify the current item."),
-    _tool("current_media", "Report the title and playback state of media currently active on the PC without changing playback."),
+    _tool("next_track", "Skip to next track."),
+    _tool("prev_track", "Go to previous track."),
+    _tool("current_media", "Check what media, song, video, or live stream is currently playing or paused on the PC."),
     _tool("set_volume", "Control system audio volume (mute, unmute, volume_up, volume_down, set_volume).",
           {"action": _p("string", "mute | unmute | volume_up | volume_down | set_volume"), "level": _p("integer", "0-100")}),
     _tool("set_brightness", "Adjust screen brightness.", {"level": _p("integer", "0-100")}, ["level"]),
@@ -1519,8 +1519,6 @@ TOOL_DEFINITIONS = [
     _tool("system_status", "Check battery, CPU, RAM, and disk status."),
     _tool("open_settings", "Open a Windows or assistant settings page.", {"setting": _p("string", "Setting name")}, ["setting"]),
     _tool("open_history", "Open or view conversational memory and interaction history."),
-    _tool("get_time", "Read the current local system time from the PC clock."),
-    _tool("get_date", "Read the current local date from the PC clock."),
     _tool("get_weather", "Get weather forecast for a city.", {"city": _p("string", "City name resolved from context")}),
     _tool("set_timer", "Start a countdown timer.", {"duration": _p("integer", "Seconds"), "label": _p("string", "Label")}, ["duration"]),
     _tool("set_reminder", "Create a task reminder.", {"query": _p("string", "Reminder text and time")}, ["query"]),
@@ -1528,7 +1526,7 @@ TOOL_DEFINITIONS = [
     _tool("cancel_reminder", "Cancel one or all reminders.", {"query": _p("string", "'all' or reminder title")}, ["query"]),
     _tool("find_file", "Find local files or folders by name or topic.", {"query": _p("string", "Search pattern")}, ["query"]),
     _tool("open_file", "Open a local file by path, name, or ordinal ('number 1', 'it').", {"path": _p("string", "File reference")}, ["path"]),
-    _tool("document_qa", "Retrieve and answer from the contents of the user's indexed local files, personal documents, and saved records on this PC. Use when the requested evidence is in those files; do not substitute screen inspection or public web search.",
+    _tool("document_qa", "Search and answer questions using the user's indexed local files, personal documents, and saved records on this PC.",
           {"query": _p("string", "Self-contained question or lookup query"), "filepath": _p("string", "Optional filename")}, ["query"]),
     _tool("memory_recall", "Save a new personal fact ('remember that...') or recall saved user facts/preferences.",
           {"query": _p("string", "Question about saved memory"), "fact": _p("string", "Fact to save if user asked to remember")}),
@@ -1570,35 +1568,31 @@ def _tools_block() -> str:
 
 _MASTER_SYSTEM_PROMPT = """You are Amigo, a friendly, intelligent, and capable personal AI voice and desktop assistant on the user's Windows PC.
 
-ROLE AND RESPONSE:
-- Understand the user's intended outcome from the whole request, relevant conversation history, and current runtime context.
-- Be concise, natural, and direct. Give the answer first; expand when the user asks for detail.
-- Avoid canned introductions, repetitive phrasing, unsupported claims, and unnecessary clarification menus.
-- Resolve follow-ups from relevant conversation context. Do not carry over unrelated topics or invent missing details.
-- Ask a concise clarification only when essential information is missing or the intended action is genuinely ambiguous.
+CORE RULES:
+- State the direct answer or solution immediately in the first sentence.
+- Keep responses concise and natural (1 to 3 sentences) unless the user asks for detailed explanations, lists, or code.
+- Never use robotic filler phrases like 'Certainly!', 'Sure thing!', 'As an AI', or 'According to search results'.
+- Never deflect with multi-choice question menus. Answer directly with what you know.
+- Only reference 'available documents' or 'in your files' if the user specifically asked about their personal files.
+- Resolve pronouns ('it', 'that', 'they', 'he', 'she', 'there') and follow-up questions naturally from conversation history and active environment state.
 
 TOOLS AVAILABLE:
 <<TOOLS>>
 
-TOOL SELECTION:
-- Select tools by the user's intent and each tool's described capability, not by matching fixed words or memorized example phrases. The same word can imply different actions in different contexts.
-- Prefer the most specific available tool over general chat or web search when it directly provides the requested local or live information.
-- First determine the requested outcome and where its answer or action must come from: the assistant's stable knowledge, public web sources, indexed personal files, the current PC, a connected service, or a requested desktop action. Select the tool for that source and outcome.
-- Use chat for conversation, creative work, advice, reasoning, and factual answers you can provide reliably from stable knowledge without external lookup. Put the complete direct reply in params["response"].
-- For external factual questions, use web_search when you are uncertain, the subject is unfamiliar or specialized, the user needs verification, or the answer depends on current or changing information. Search for the specific missing facts, then answer from retrieved results. If search returns no adequate evidence or is unavailable, say so rather than guessing.
-- Do not send every factual question to web search. A familiar, stable fact you can answer reliably does not need a search unless the user requests verification or sources.
-- Use dedicated tools for information that must come from the current PC or a specialized live service, including system time/date, weather, market prices, system status, reminders, calendar, and email. Do not substitute general knowledge for live or personal data.
-- Use document_qa for questions about the user's indexed personal files and saved records; use memory_recall for saved personal facts. Use web_search for public external information, not as a substitute for local records.
-- Use read_screen only to interpret the visible display or active window. Use document_qa for document contents, whether or not the document is open on screen.
-- Use open_website only to navigate to a site. Use web_search to retrieve and explain information from the web. Use play_youtube for requested playback, not for general information about media.
-- For desktop, media, file, timer, content, or other requested actions, select the tool whose described capability matches the requested outcome. Preserve user-provided names, values, and text; resolve references from relevant context and do not fabricate parameters.
-- Honor pending confirmations: affirmative responses confirm the pending action; negative responses cancel it. Stop active speech or playback when requested.
-- Use multiple actions only when the user requests a sequence or compound task; preserve its order and do not add unrequested actions.
+ROUTING RULES:
+1. INTENT-BASED ROUTING:
+- Navigation vs Search: When the user asks to launch, open, or visit an application, file, or website, route to navigation tools ('open_website', 'open_app', 'open_file'). When the user asks a question, requests information, searches, or checks details, route to information retrieval tools ('web_search', 'document_qa'), even if a specific website or platform is mentioned.
+- Local Records vs Visual Display:
+  * Route to 'document_qa' for retrieving facts, contents, data, or text from the user's local documents, files, and stored records on the computer, regardless of whether a document or viewer is currently open on the desktop.
+  * Route to 'read_screen' exclusively when the user asks to inspect the physical display, visual appearance, GUI layout, on-screen errors, or graphical window state.
+- Local Documents vs Web Search: Route to 'document_qa' for information stored in the user's personal files and local PC records. Route to 'web_search' for external information, public facts, current events, or web research.
+- Spoken Dialogue & Advice ('chat'): Use for conversational dialogue, reasoning, creative writing, translations, opinions, and advice that do not require external lookup or local system inspection. Output direct reply in params['response'].
+- Media & Playback: For media requests ('play_youtube'), pass the exact media title or query requested by the user in params['query'] without extrapolating or inventing metadata. Use 'resume_media', 'pause_media', 'next_track', 'prev_track' for playback controls.
+- Context & Independence: Resolve pronouns and follow-up references ('it', 'that', 'this') naturally using recent conversation turns. If the user initiates a new topic, do not carry over entities, domains, or tool targets from prior unrelated turns.
+- System Actions & Confirmations: If an action is pending user confirmation and the user affirms ('yes', 'sure', 'confirm'), call 'confirm_action'. If the user declines ('no', 'cancel'), call 'cancel_action'.
 
-OUTPUT CONTRACT:
-Return only valid JSON in this shape, without markdown or commentary:
-{"actions": [{"tool": "<tool_name>", "params": {}}]}
-Include only parameters required by the selected tool. For chat, include the complete reply in params["response"]."""
+When outputting tool actions or direct chat responses, output ONLY valid JSON:
+{"actions": [{"tool": "<tool_name>", "params": {<parameters>}}]}"""
 
 _MASTER_PROMPT_CACHE: str | None = None
 

@@ -5,6 +5,8 @@ import {
   Send,
   Loader2,
   Square,
+  Radio,
+  Sparkles,
   Plus,
   File as FileIcon,
   FileText,
@@ -50,6 +52,7 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
   loadingText = "Searching...",
 }) => {
   const [inputText, setInputText] = useState("");
+  const [isFocused, setIsFocused] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [liveTranscript, setLiveTranscript] = useState("");
@@ -822,8 +825,10 @@ export const VoiceControls: React.FC<VoiceControlsProps> = ({
               disabled={disabled || isListening}
               className="w-full max-w-3xl"
               onFocus={() => {
+                setIsFocused(true);
                 setTimeout(() => window.scrollTo(0, 0), 50);
               }}
+              onBlur={() => setIsFocused(false)}
           leftSlot={
             /* GPU-composited Spring-animated Attachment Menu */
             <div className="relative z-30 flex items-center flex-shrink-0" ref={menuRef}>

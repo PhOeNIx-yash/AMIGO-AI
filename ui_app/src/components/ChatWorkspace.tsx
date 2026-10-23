@@ -19,6 +19,8 @@ import {
   BarChart3,
   TrendingUp,
   Bot,
+  User,
+  ArrowDown,
   Trash2,
 } from "lucide-react";
 import { HaloSearchInput } from "@/components/ui/halo-search";
@@ -48,7 +50,9 @@ interface ChatWorkspaceProps {
   isDark: boolean;
   colorTheme?: ColorTheme;
   backendConfig?: BackendConfig;
+  onSwitchToAssistant?: () => void;
   userName?: string;
+  assistantState?: string;
   liveIntent?: string;
   liveParams?: Record<string, any> | null;
   activePrompt?: string;
@@ -351,7 +355,9 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   isLoading,
   isDark,
   colorTheme = "beams",
+  onSwitchToAssistant,
   userName = "",
+  assistantState,
   liveIntent,
   liveParams,
   activePrompt,

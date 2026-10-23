@@ -97,11 +97,11 @@ def main():
 
 
     # Local LLM GGUF Model Check
-    model_name_display = "Spark-X2.5 4B"
+    model_name_display = "Spark-X2.6 4B"
     try:
         from amigo.core.llm_agent import get_active_model_info, get_model_path, ensure_model_downloaded
         model_info = get_active_model_info()
-        model_name_display = model_info.get("name", "Spark-X2.5 4B")
+        model_name_display = model_info.get("name", "Spark-X2.6 4B")
         print(f" -> Checking Agent LLM (System 2): {model_name_display} (~{model_info.get('size_gb', 2.60)}GB)...")
         model_path = get_model_path()
         if os.path.exists(model_path) and os.path.getsize(model_path) > 500_000_000:
@@ -146,4 +146,3 @@ if __name__ == "__main__":
             main()
     else:
         main()
-

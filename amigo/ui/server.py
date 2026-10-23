@@ -26,13 +26,12 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-try:
-    for _stream in (sys.stdout, sys.stderr):
-        _reconfigure = getattr(_stream, "reconfigure", None)
-        if callable(_reconfigure):
-            _reconfigure(encoding="utf-8", errors="replace")
-except (OSError, ValueError):
-    pass
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 logging.basicConfig(
     level=logging.INFO,
@@ -561,12 +560,12 @@ def api_upload():
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     filename, saved_path = None, None
 
-    uploaded_file = request.files.get("file")
-    if uploaded_file is not None and uploaded_file.filename:
-        raw_filename = os.path.basename(uploaded_file.filename)
+    if "file" in request.files and request.files["file"].filename:
+        f = request.files["file"]
+        raw_filename = os.path.basename(f.filename)
         safe_name = f"{int(time.time())}_{re.sub(r'[^a-zA-Z0-9_.-]', '_', raw_filename)}"
         saved_path = os.path.join(UPLOAD_DIR, safe_name)
-        uploaded_file.save(saved_path)
+        f.save(saved_path)
         filename = raw_filename
     elif request.is_json:
         data = request.get_json(silent=True) or {}
@@ -1325,10 +1324,7 @@ def api_proactive_trigger():
     try:
         data = request.get_json(silent=True) or {}
         level = data.get("level") or "info"
-        message = data.get("message")
-        if message is not None and not isinstance(message, str):
-            return jsonify({"error": "message must be a string"}), 400
-        sent = get_proactive_intelligence().trigger_notification(message or "", level)
+        sent = get_proactive_intelligence().trigger_notification(data.get("message"), level)
         return jsonify({"success": True, "message": sent, "level": level})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
