@@ -12,7 +12,6 @@ import {
 import {
   History as HistoryIcon,
   Play,
-  Trash2,
   Search,
   Clock,
   ChevronRight,

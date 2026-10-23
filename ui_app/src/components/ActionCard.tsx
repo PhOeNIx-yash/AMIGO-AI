@@ -1,13 +1,12 @@
 import React, { useState, useEffect, useRef } from "react";
 import { motion } from "motion/react";
-import { scaleFade, staggerContainer, staggerItem } from "../utils/motionConfig";
+import { staggerContainer, staggerItem } from "../utils/motionConfig";
 import {
   MessageSquare,
   Utensils,
   MapPin,
   Calendar,
   Check,
-  Zap,
   Code2,
   ExternalLink,
   CloudSun,
@@ -18,7 +17,6 @@ import {
   Cloud,
   Droplets,
   Wind,
-  Compass,
   Thermometer,
   RotateCw,
   Search,
@@ -30,12 +28,7 @@ import {
   Clock,
   FolderOpen,
   FileText,
-  Copy,
   Music,
-  SkipForward,
-  SkipBack,
-  Volume2,
-  VolumeX,
   Sparkles,
   Globe,
   Settings,
@@ -44,8 +37,6 @@ import {
   AlertCircle,
   TrendingUp,
   TrendingDown,
-  DollarSign,
-  BarChart2,
 } from "lucide-react";
 import { ActionCardItem, ColorTheme } from "../types";
 import { COLOR_THEMES } from "../data/presets";
@@ -154,7 +145,7 @@ export const isReminderItem = (item: ActionCardItem): boolean => {
 /**
  * Atmospheric Weather Icon with Micro-Animations
  */
-const AnimatedWeatherIcon: React.FC<{ iconType?: string; isDark: boolean }> = ({ iconType = "sunny", isDark }) => {
+const AnimatedWeatherIcon: React.FC<{ iconType?: string }> = ({ iconType = "sunny" }) => {
   switch (iconType?.toLowerCase()) {
     case "rain":
       return (
@@ -467,7 +458,7 @@ const WeatherCardPalette: React.FC<{
 
       <div className="flex items-center justify-between my-2 relative z-10">
         <div className="flex items-center space-x-3.5">
-          <AnimatedWeatherIcon iconType={iconType} isDark={isDark} />
+          <AnimatedWeatherIcon iconType={iconType} />
           <div>
             <div
               className="text-3xl sm:text-4xl font-bold tracking-tight bg-clip-text text-transparent"

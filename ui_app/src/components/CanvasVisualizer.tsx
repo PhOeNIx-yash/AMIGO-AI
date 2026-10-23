@@ -6,7 +6,6 @@ import {
 } from "thinking-orbs/engine";
 import { scaleCounts, scaleRadii, OrbState } from "thinking-orbs";
 import { AssistantState, ColorTheme, VisualizerMode, ThinkingOrbStyle } from "../types";
-import { COLOR_THEMES } from "../data/presets";
 import { audioBus } from "../utils/audioBus";
 
 export interface CanvasVisualizerProps {

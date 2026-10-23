@@ -8,7 +8,6 @@ Optimized for Spark-X2.6 4B with:
 
 import contextvars
 import datetime
-import json
 import logging
 import multiprocessing
 import os
@@ -69,7 +68,6 @@ def _setup_cuda_dll_directory() -> None:
 _setup_cuda_dll_directory()
 
 import amigo.core.rag_engine as rag_engine
-from amigo.core.rag_engine import get_recent_conversations
 from amigo.utils.network_utils import is_internet_connected
 
 logger = logging.getLogger("amigo.llm_agent")
@@ -477,7 +475,6 @@ def _get_llm_config() -> dict:
         if _LLM_CONFIG is not None:
             return _LLM_CONFIG
         cores = _get_physical_cores()
-        total_cpus = multiprocessing.cpu_count()
         has_gpu = False
         try:
             import llama_cpp
@@ -799,7 +796,6 @@ def query_local_llm(
     token = _thinking_ctx.set(thinking) if thinking is not None else None
     try:
         sampling = get_sampling_params()
-        is_thinking = bool(thinking if thinking is not None else get_current_thinking_enabled())
         kwargs = {
             "messages": _prepare_chat_messages(system_prompt, prompt),
             "max_tokens": max_tokens,
@@ -853,7 +849,6 @@ def query_local_llm_stream(
     try:
         sampling = get_sampling_params()
         temp = sampling["temperature"] if temperature is None else temperature
-        is_thinking = bool(thinking if thinking is not None else get_current_thinking_enabled())
         with _inference_lock:
             stream_res = None
             try:

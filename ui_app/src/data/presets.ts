@@ -1,5 +1,3 @@
-import { ContactItem } from "../types";
-
 export interface ColorThemeDefinition {
   name: string;
   primary: string;
@@ -148,4 +146,3 @@ export const GREETING_PRESETS: GreetingPresetItem[] = [
   { id: "amigo_listening", text: "Hi, I'm Amigo • How can I help ?", category: "amigo" },
   { id: "ready_whenever", text: "Ready whenever you are", category: "creative" },
 ];
-

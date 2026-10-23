@@ -5,8 +5,6 @@ import {
   CheckCircle2,
   Check,
 } from "lucide-react";
-import { sfx } from "../utils/audio";
-import { audioBus } from "../utils/audioBus";
 import { saveAssistantSettings } from "../services/assistantApi";
 
 export interface VoiceOption {

@@ -726,7 +726,6 @@ def resolve_contextual_query(query: str, conversation_history: list[dict] | None
         return clean_q
 
     u_msg = last_turn.get("user", "")
-    a_msg = last_turn.get("assistant", "")
 
     # Extract salient anchors from the recent turn using information weights
     context_anchors: list[str] = _extract_salient_terms(u_msg, max_terms=5)

@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import { motion } from "motion/react";
 import { scaleFade } from "../utils/motionConfig";
-import { Copy, Edit, RotateCcw, Download, Send, X, Check, Loader2, AlertCircle } from "lucide-react";
+import { Copy, Edit, RotateCcw, Download, Send, X, Check, Loader2 } from "lucide-react";
 import { COLOR_THEMES } from "../data/presets";
 import { ErrorState } from "@/components/ui/error-state";
 
