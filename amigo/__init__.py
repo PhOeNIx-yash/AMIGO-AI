@@ -66,7 +66,7 @@ from amigo.core.proactive_intelligence import (
 from amigo.services.app_opener import find_files, open_folder, open_windows_app, execute_file_action
 from amigo.services.calendar_integration import get_todays_events, get_upcoming_events, is_outlook_available as calendar_available
 from amigo.services.mail_integration import get_recent_emails, get_unread_emails, search_emails, is_outlook_available as mail_available
-from amigo.services.os_automation import close_app, play_pause_media, next_track, prev_track, set_volume, get_system_status
+from amigo.services.os_automation import play_pause_media, next_track, prev_track, set_volume, get_system_status
 from amigo.services.screen_vision import read_text_from_image, analyze_image, capture_screen_image
 from amigo.services.web_search import search_web
 from amigo.services.weather import get_weather_data
@@ -78,10 +78,6 @@ from amigo.utils.tts import speak, stop_speaking, set_tts_callbacks, get_tts_eng
 from amigo.utils.tool_registry import UI_TOOL_HANDLERS, build_action_cards, execute_tool, set_media_update_callback
 from amigo.utils.network_utils import is_internet_connected
 from amigo.utils import resolve_settings
-
-set_llm_thinking_enabled = set_thinking_enabled
-is_llm_thinking_enabled = is_thinking_enabled
-open_app = open_windows_app
 
 __version__ = "2.0.0"
 __all__ = [

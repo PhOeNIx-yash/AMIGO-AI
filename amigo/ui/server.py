@@ -26,12 +26,11 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-stdout_reconfigure = getattr(sys.stdout, "reconfigure", None)
-stderr_reconfigure = getattr(sys.stderr, "reconfigure", None)
-if callable(stdout_reconfigure) and callable(stderr_reconfigure):
+for _stream in (sys.stdout, sys.stderr):
     try:
-        stdout_reconfigure(encoding="utf-8", errors="replace")
-        stderr_reconfigure(encoding="utf-8", errors="replace")
+        _reconfigure = getattr(_stream, "reconfigure", None)
+        if callable(_reconfigure):
+            _reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
 
@@ -61,7 +60,6 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 
 import amigo.core.rag_engine as rag_engine
 from amigo.core.llm_agent import (
-    _CLIPBOARD_KEYWORDS,
     _get_internet_status,
     add_to_memory,
     clear_conversations_memory,
@@ -134,6 +132,13 @@ except Exception:
 logger = logging.getLogger("amigo.ui_server")
 _RE_FILE_MATCH_COUNT = re.compile(r"I found (\d+) matching file")
 _SILENT_TOOLS = {"chat", "stop", "stop_speaking", "pause_media", "resume_media", "next_track", "prev_track", "blocked"}
+_CLIPBOARD_KEYWORDS = (
+    "clipboard",
+    "copy",
+    "copied",
+    "paste",
+    "pasted",
+)
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
@@ -571,7 +576,7 @@ def api_upload():
         filename = raw_filename
     elif request.is_json:
         data = request.get_json(silent=True) or {}
-        raw_filename = os.path.basename(data.get("filename", "upload.bin"))
+        raw_filename = os.path.basename(str(data.get("filename") or "upload.bin"))
         b64_data = data.get("fileData", "")
         if b64_data:
             if "," in b64_data:
@@ -1327,10 +1332,9 @@ def api_proactive_trigger():
         data = request.get_json(silent=True) or {}
         level = data.get("level") or "info"
         message = data.get("message")
-        sent = get_proactive_intelligence().trigger_notification(
-            message if isinstance(message, str) else None,
-            str(level),
-        )
+        if not isinstance(message, str):
+            message = ""
+        sent = get_proactive_intelligence().trigger_notification(message, level)
         return jsonify({"success": True, "message": sent, "level": level})
     except Exception as e:
         return jsonify({"error": str(e)}), 500

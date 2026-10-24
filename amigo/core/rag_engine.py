@@ -26,7 +26,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any
 
 logger = logging.getLogger("amigo.rag_engine_v2")
 
@@ -183,7 +183,7 @@ class NomicEmbeddingFunction:
                 extended = extended.to(dtype=dtype)
                 return (1.0 - extended) * -10000.0
 
-            setattr(PreTrainedModel, "get_extended_attention_mask", _get_extended_attention_mask)
+            PreTrainedModel.get_extended_attention_mask = _get_extended_attention_mask
 
         self.target_model = target_model
         self.tokenizer = AutoTokenizer.from_pretrained(target_model)
@@ -194,31 +194,6 @@ class NomicEmbeddingFunction:
 
     def name(self) -> str:
         return "nomic_embed_text_v1_5"
-
-    def default_space(self) -> str:
-        return "cosine"
-
-    def supported_spaces(self) -> list[str]:
-        return ["cosine"]
-
-    def embed_with_retries(self, input: list[str]) -> list[list[float]]:
-        return self(input)
-
-    def get_config(self) -> dict[str, str]:
-        return {"target_model": self.target_model}
-
-    @staticmethod
-    def build_from_config(config: dict[str, Any]) -> "NomicEmbeddingFunction":
-        return NomicEmbeddingFunction(str(config["target_model"]))
-
-    def validate_config_update(self, old_config: dict[str, Any], new_config: dict[str, Any]) -> None:
-        if old_config != new_config:
-            raise ValueError("Nomic embedding configuration is immutable")
-
-    @staticmethod
-    def validate_config(config: dict[str, Any]) -> None:
-        if not isinstance(config.get("target_model"), str):
-            raise ValueError("Embedding configuration must include a target_model")
 
     def _mean_pooling(self, model_output, attention_mask):
         import torch
@@ -307,12 +282,10 @@ def _init_chroma() -> None:
             _embedding_fn = NomicEmbeddingFunction(EMBEDDING_MODEL)
             _recreate_collections_if_needed(client, _embedding_fn)
 
-            from chromadb.api.types import EmbeddingFunction
-
             for name in ALL_COLLECTIONS:
                 _collections[name] = client.get_or_create_collection(
                     name=name,
-                    embedding_function=cast(EmbeddingFunction, _embedding_fn),
+                    embedding_function=_embedding_fn,
                     metadata={"hnsw:space": "cosine", "embedding_model": _embedding_fn.name()},
                 )
 
@@ -571,9 +544,9 @@ def load_profile() -> dict:
 def _persist_profile_sync(profile_snapshot: dict) -> None:
     global _profile_mtime
     with _profile_lock:
-        tmp = PROFILE_FILE + ".tmp"
         for attempt in range(3):
             try:
+                tmp = PROFILE_FILE + ".tmp"
                 with open(tmp, "w", encoding="utf-8") as f:
                     json.dump(profile_snapshot, f, indent=2)
                 os.replace(tmp, PROFILE_FILE)
@@ -651,11 +624,7 @@ def update_active_state(slot: str, data: dict | list | None) -> None:
                 _ACTIVE_STATE[slot] = None
         return
 
-    slot_data: dict[str, Any] = (
-        {"items": data}
-        if isinstance(data, list)
-        else (dict(data) if isinstance(data, dict) else {})
-    )
+    slot_data = {"items": data} if isinstance(data, list) else (dict(data) if isinstance(data, dict) else {})
     if not slot_data:
         return
     slot_data["timestamp"] = datetime.datetime.now().isoformat()
@@ -1028,47 +997,6 @@ def search(
             _SEARCH_CACHE.popitem(last=False)
 
     return dict_results
-
-
-def build_document_evidence(
-    query: str,
-    top_k: int = 6,
-) -> tuple[str, list[dict[str, Any]]]:
-    """Build answer context and citations only from sufficiently relevant document passages."""
-    results = search(
-        query,
-        target_collections=[DOCUMENTS],
-        top_k=top_k,
-        query_type="document_qa",
-    )
-    evidence_blocks: list[str] = []
-    sources: list[dict[str, Any]] = []
-
-    for result in results:
-        score = result.get("score")
-        text = result.get("text")
-        metadata = result.get("metadata")
-        if (
-            result.get("source") != DOCUMENTS
-            or not isinstance(score, (int, float))
-            or score < 0.2
-            or not isinstance(text, str)
-            or not text.strip()
-            or not isinstance(metadata, dict)
-        ):
-            continue
-
-        filepath = metadata.get("filepath")
-        filename = metadata.get("filename")
-        if not isinstance(filename, str) or not filename:
-            filename = os.path.basename(filepath) if isinstance(filepath, str) else "Unknown file"
-        chunk_index = metadata.get("chunk_index")
-        location = f"passage {chunk_index + 1}" if isinstance(chunk_index, int) else "document"
-        source_id = len(sources) + 1
-        sources.append({"id": source_id, "file": filename, "location": location})
-        evidence_blocks.append(f"[Source {source_id}: {filename}, {location}]\n{text.strip()}")
-
-    return "\n\n".join(evidence_blocks), sources
 
 
 def should_skip_rag_for_tool(tool: str) -> bool:
@@ -1522,12 +1450,10 @@ def clear_conversations() -> None:
 
     try:
         if _chroma_client:
-            from chromadb.api.types import EmbeddingFunction
-
             _chroma_client.delete_collection(CONVERSATIONS)
             _collections[CONVERSATIONS] = _chroma_client.get_or_create_collection(
                 name=CONVERSATIONS,
-                embedding_function=cast(EmbeddingFunction, _embedding_fn) if _embedding_fn is not None else None,
+                embedding_function=_embedding_fn,
                 metadata={"hnsw:space": "cosine", "embedding_model": _embedding_fn.name() if _embedding_fn else ""},
             )
     except Exception:
@@ -1733,15 +1659,10 @@ def _extract_pdf_enhanced(filepath: str) -> str:
 def _extract_docx_enhanced(filepath: str) -> str:
     import docx
     doc = docx.Document(filepath)
-    parts = []
-    for paragraph in doc.paragraphs:
-        text = paragraph.text.strip()
-        if not text:
-            continue
-        style_name = paragraph.style.name if paragraph.style else ""
-        if not isinstance(style_name, str):
-            style_name = ""
-        parts.append(f"\n## {text}\n" if style_name.startswith("Heading") else text)
+    parts = [
+        f"\n## {p.text.strip()}\n" if p.style.name.startswith("Heading") else p.text.strip()
+        for p in doc.paragraphs if p.text.strip()
+    ]
     for table in doc.tables:
         md = _format_table_as_markdown([[c.text for c in r.cells] for r in table.rows])
         if md:
@@ -1776,12 +1697,10 @@ def _extract_pptx_enhanced(filepath: str) -> str:
     for i, slide in enumerate(prs.slides):
         s_parts = [f"## Slide {i+1}"]
         for shape in slide.shapes:
-            text_frame = getattr(shape, "text_frame", None)
-            table = getattr(shape, "table", None)
-            if shape.has_text_frame and text_frame is not None:
-                s_parts.extend(p.text.strip() for p in text_frame.paragraphs if p.text.strip())
-            elif shape.has_table and table is not None:
-                md = _format_table_as_markdown([[c.text for c in r.cells] for r in table.rows])
+            if shape.has_text_frame:
+                s_parts.extend(p.text.strip() for p in shape.text_frame.paragraphs if p.text.strip())
+            elif shape.has_table:
+                md = _format_table_as_markdown([[c.text for c in r.cells] for r in shape.table.rows])
                 if md:
                     s_parts.append(md)
         if len(s_parts) > 1:
@@ -2097,10 +2016,7 @@ def get_active_context_prompt() -> str:
 
 
 def get_index_stats() -> dict:
-    stats = {}
-    for name in ALL_COLLECTIONS:
-        collection = _col(name)
-        stats[name] = collection.count() if collection is not None else 0
+    stats = {name: (_col(name).count() if _col(name) else 0) for name in ALL_COLLECTIONS}
     stats["total"] = sum(stats.values())
     return stats
 

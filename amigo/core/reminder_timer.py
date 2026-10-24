@@ -294,7 +294,7 @@ def handle_list_reminders() -> str:
     return "Here are your active schedules: " + ", ".join(items) + "."
 
 
-def handle_cancel_reminder(params: dict | None = None) -> str:
+def handle_cancel_reminder(params: dict = None) -> str:
     """Cancels active timers and reminders (single by id, or all)."""
     params = params if isinstance(params, dict) else {}
     target_id = str(params.get("id") or params.get("reminder_id") or "").strip()

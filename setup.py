@@ -4,7 +4,7 @@ import subprocess
 import shutil
 import json
 
-def run_step(desc: str, cmd: list, cwd: str | None = None, check: bool = True):
+def run_step(desc: str, cmd: list, cwd: str = None, check: bool = True):
     print(f"\n[+] {desc}...")
     try:
         subprocess.run(cmd, cwd=cwd, check=check)
@@ -67,12 +67,27 @@ def main():
         print(" -> Initialized default amigo_profile.json.")
 
     # 5. Download AI Models
-    print("\n[+] Checking AI Models...")
+    print("\n[+] Downloading AI Models...")
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError:
+        print("    huggingface_hub is required. Installing...")
+        subprocess.run([sys.executable, "-m", "pip", "install", "huggingface-hub"])
+        from huggingface_hub import hf_hub_download
+
+    # Supertonic 3 ONNX TTS Engine & Models (Primary)
+    try:
+        from supertonic import TTS as SupertonicTTS
+        print(" -> Checking Supertonic 3 Neural TTS engine (44.1kHz)...")
+        _stts = SupertonicTTS(model="supertonic-3", auto_download=True)
+        print("    Supertonic 3 Neural TTS engine is ready (44.1kHz).")
+    except Exception as e:
+        print(f"    Supertonic 3 check note: {e}")
     # Vosk Offline STT Model Check
     try:
         from amigo.utils.tts import get_stt_recognizer, is_stt_available
         print(" -> Checking Vosk Offline STT engine...")
-        get_stt_recognizer()
+        rec = get_stt_recognizer()
         if is_stt_available():
             print("    Vosk Offline STT engine is ready.")
         else:
@@ -104,7 +119,7 @@ def main():
     print("=" * 60)
     print("\nActive Engine Stack:")
     print(f"  Agent Engine  — {model_name_display} : high-accuracy formal logic & agentic execution")
-    print("  Speech Engine — Pocket TTS    : on-device neural speech synthesis")
+    print("  Speech Engine — Supertonic-3  : 44.1kHz studio on-device neural speech synthesis")
     print("  Voice Input   — Vosk          : offline high-accuracy speech recognition")
     print("\nHow to launch Amigo:")
     print("  1. Web Dashboard (Recommended):")

@@ -117,27 +117,23 @@ def build_temporal_and_user_context() -> str:
     try:
         profile = rag_engine.load_profile()
         if isinstance(profile, dict) and profile:
-            identity_value = profile.get("identity")
-            identity = identity_value if isinstance(identity_value, dict) else {}
-            preferences: dict = profile.get("preferences") or {}
-            if not isinstance(preferences, dict):
-                preferences = {}
+            identity = profile.get("identity") if isinstance(profile.get("identity"), dict) else {}
             name = (
                 identity.get("name")
                 or profile.get("name")
                 or profile.get("user_name")
-                or preferences.get("name", "")
+                or profile.get("preferences", {}).get("name", "")
             )
             role = (
                 identity.get("role")
                 or profile.get("role")
-                or preferences.get("role", "")
+                or profile.get("preferences", {}).get("role", "")
             )
             # Exclude internal assistant/UI settings like TTS voice ("chloe") or theme from being mistaken as the user's name
             ignored_keys = {"voice", "theme", "colorTheme", "visualizerMode", "autoSpeech", "soundEnabled"}
             details = [
                 f"{k}: {v}"
-                for k, v in preferences.items()
+                for k, v in profile.get("preferences", {}).items()
                 if v and k not in ignored_keys
             ]
             if name:
@@ -496,3 +492,4 @@ def type_text(params: Any, query: str, spoken: str) -> Tuple[str, Optional[str],
 
     app_desc = f" into {app}" if app else ""
     return (f"Typed content{app_desc}." if text else "Typed text."), None, {}
+

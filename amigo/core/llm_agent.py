@@ -193,8 +193,12 @@ def get_static_system_prompt() -> str:
         except Exception:
             pass
     try:
-        from amigo.utils.tool_registry import get_static_master_prompt
-        return get_static_master_prompt()
+        from amigo.utils import tool_registry
+        prompt_provider = getattr(tool_registry, "get_static_master_prompt", None)
+        if callable(prompt_provider):
+            prompt = prompt_provider()
+            if isinstance(prompt, str):
+                return prompt
     except Exception:
         pass
     return _STATIC_VOICE_SYSTEM_PROMPT
@@ -360,7 +364,7 @@ def get_ai_response_stream(
         is_voice=is_voice,
     )
     thinking_active = is_thinking_enabled()
-    max_tokens = 1024 if thinking_active else (220 if is_voice else 512)
+    max_tokens = 1024 if thinking_active else 512
     sampling = get_sampling_params()
     token_gen = query_local_llm_stream(
         messages,

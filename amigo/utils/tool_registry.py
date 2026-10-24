@@ -591,7 +591,11 @@ def _tool_ask_document(params, query, spoken, conversation_history=None):
     question = str(params.get("question") or params.get("query") or query or "").strip() or query
 
     resolved_question = rag_engine.resolve_contextual_query(question, conv_history)
-    evidence, sources = rag_engine.build_document_evidence(resolved_question, top_k=6)
+    evidence = rag_engine.build_rag_context(
+        resolved_question,
+        top_k=6,
+        conversation_history=conv_history,
+    )
     if not evidence:
         return (
             "I couldn't find enough relevant information in your indexed documents.",
@@ -600,11 +604,7 @@ def _tool_ask_document(params, query, spoken, conversation_history=None):
         )
 
     response = get_ai_response(question, doc_context=evidence, conversation_history=conv_history)
-    citations = "\n\nSources: " + "; ".join(
-        f"[{source['id']}] {source['file']} — {source['location']}"
-        for source in sources
-    )
-    return f"{response}{citations}", None, {"sources": sources}
+    return response, None, {"sources": []}
 
 
 def _tool_summarize_document(params, query, spoken):
@@ -1740,7 +1740,7 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
             messages,
             system_prompt="",
             max_tokens=220,
-            temperature=0.5,
+            temperature=0.1,
             repeat_penalty=1.0,
             thinking=False,
             sanitize=False,
