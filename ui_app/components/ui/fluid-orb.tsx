@@ -133,7 +133,11 @@ const FluidOrb = ({
     let vert: WebGLShader | null = null;
     let frag: WebGLShader | null = null;
     let buffer: WebGLBuffer | null = null;
+    let uResolutionLoc: WebGLUniformLocation | null = null;
+    let uTimeLoc: WebGLUniformLocation | null = null;
+    let uColorLoc: WebGLUniformLocation | null = null;
     let isInitialized = false;
+    const rgb = hexToRgb(color);
 
     const initWebGL = () => {
       if (isInitialized) return;
@@ -166,6 +170,10 @@ const FluidOrb = ({
       gl.enableVertexAttribArray(aPos);
       gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
 
+      uResolutionLoc = gl.getUniformLocation(program, 'u_resolution');
+      uTimeLoc = gl.getUniformLocation(program, 'u_time');
+      uColorLoc = gl.getUniformLocation(program, 'u_color');
+
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const px = Math.round(size * dpr);
       canvas.width = px;
@@ -178,20 +186,18 @@ const FluidOrb = ({
     const start = performance.now();
     const render = (now: number) => {
       if (!isVisible.current) {
-        raf = requestAnimationFrame(render);
+        raf = 0;
         return;
       }
 
       if (!isInitialized) initWebGL();
 
       if (gl && program) {
-        const uResolution = gl.getUniformLocation(program, 'u_resolution');
-        const uTime = gl.getUniformLocation(program, 'u_time');
         const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
         
-        gl.uniform2f(uResolution, canvas.width, canvas.height);
-        gl.uniform3f(gl.getUniformLocation(program, 'u_color'), ...hexToRgb(color));
-        gl.uniform1f(uTime, reduce ? 0 : (now - start) / 1000);
+        if (uResolutionLoc) gl.uniform2f(uResolutionLoc, canvas.width, canvas.height);
+        if (uColorLoc) gl.uniform3f(uColorLoc, rgb[0], rgb[1], rgb[2]);
+        if (uTimeLoc) gl.uniform1f(uTimeLoc, reduce ? 0 : (now - start) / 1000);
         
         gl.drawArrays(gl.TRIANGLES, 0, 6);
       }
@@ -199,23 +205,28 @@ const FluidOrb = ({
       raf = requestAnimationFrame(render);
     };
 
-    // Use Intersection Observer to only render when visible (bypasses context limit bottlenecks & saves CPU)
+    // Use Intersection Observer to only render when visible (saves GPU & CPU)
     const observer = new IntersectionObserver(([entry]) => {
-      isVisible.current = entry.isIntersecting;
-    }, { threshold: 0.1 });
+      const visible = Boolean(entry.isIntersecting);
+      isVisible.current = visible;
+      if (visible && !raf) {
+        raf = requestAnimationFrame(render);
+      } else if (!visible && raf) {
+        cancelAnimationFrame(raf);
+        raf = 0;
+      }
+    }, { threshold: 0.05 });
     
     observer.observe(container);
-    raf = requestAnimationFrame(render);
 
     return () => {
       observer.disconnect();
-      cancelAnimationFrame(raf);
+      if (raf) cancelAnimationFrame(raf);
       if (gl && program) {
         gl.deleteProgram(program);
         if (vert) gl.deleteShader(vert);
         if (frag) gl.deleteShader(frag);
         if (buffer) gl.deleteBuffer(buffer);
-        // Do NOT call WEBGL_lose_context here, it breaks React StrictMode's remount behavior
       }
     };
   }, [size, color]);

@@ -123,7 +123,6 @@ function AiStatus({
         return () => window.clearInterval(id)
     }, [active, counting])
 
-    const [measureRef, bounds] = useMeasure()
     const seconds = elapsed ?? (hasRun ? counted : undefined)
     const time = timer && seconds !== undefined ? formatElapsed(Math.max(0, Math.floor(seconds))) : undefined
     const text = label ?? (typeof config.label === 'function' ? config.label(time) : (config.label ?? titleCase(state)))
@@ -135,11 +134,11 @@ function AiStatus({
             data-state={state}
             data-active={active || undefined}
             role="status"
-            className={cn('flex h-7 w-fit items-center gap-2 font-medium text-[13px] text-slate-800 dark:text-slate-200', className)}
+            className={cn('flex h-7 w-fit items-center gap-2 font-medium text-[13px] text-slate-800 dark:text-slate-200 select-none', className)}
             {...props}
         >
             <span data-slot="ai-status-icon" className="relative flex size-5 shrink-0 items-center justify-center">
-                <AnimatePresence initial={false} mode="popLayout">
+                <AnimatePresence initial={false} mode="wait">
                     <motion.span
                         key={state}
                         aria-hidden
@@ -155,67 +154,59 @@ function AiStatus({
                 </AnimatePresence>
             </span>
 
-            <motion.div
-                className="relative overflow-x-clip"
-                initial={false}
-                animate={{ width: bounds.width || 'auto' }}
-                transition={SWAP}
-                style={{ willChange: 'width' }}
-            >
-                <div ref={measureRef} className="flex w-max items-center gap-2 whitespace-nowrap">
-                    <span className="relative grid">
-                        <AnimatePresence initial={false} mode="popLayout">
-                            <motion.span
-                                key={text}
-                                variants={swapVariants}
-                                initial="enter"
-                                animate="center"
-                                exit="exit"
-                                transition={SWAP}
-                                data-slot="ai-status-label"
-                                className="font-semibold text-slate-700 dark:text-slate-200"
-                            >
-                                {shimmering ? <Shimmer>{text}</Shimmer> : text}
-                            </motion.span>
-                        </AnimatePresence>
-                    </span>
-                    <AnimatePresence initial={false} mode="popLayout">
-                        {detail && (
-                            <motion.span
-                                key={detail}
-                                data-slot="ai-status-detail"
-                                variants={swapVariants}
-                                initial="enter"
-                                animate="center"
-                                exit="exit"
-                                transition={SWAP}
-                                className="flex min-w-0 items-center gap-1.5 font-normal text-slate-500 dark:text-slate-400"
-                            >
-                                <span className="opacity-40">•</span>
-                                {typeof favicon === 'string' ? (
-                                    <img
-                                        src={favicon}
-                                        alt=""
-                                        draggable={false}
-                                        onError={(event) => {
-                                            event.currentTarget.style.display = 'none'
-                                        }}
-                                        className="size-3.5 shrink-0 rounded-[3px] object-contain"
-                                    />
-                                ) : (
-                                    favicon && <span className="flex size-3.5 shrink-0 items-center justify-center">{favicon}</span>
-                                )}
-                                <span className="max-w-64 truncate">{detail}</span>
-                            </motion.span>
-                        )}
+            <div className="flex items-center gap-2 whitespace-nowrap">
+                <span className="relative inline-flex items-center">
+                    <AnimatePresence initial={false} mode="wait">
+                        <motion.span
+                            key={text}
+                            variants={swapVariants}
+                            initial="enter"
+                            animate="center"
+                            exit="exit"
+                            transition={SWAP}
+                            data-slot="ai-status-label"
+                            className="font-semibold text-slate-700 dark:text-slate-200"
+                        >
+                            {shimmering ? <Shimmer>{text}</Shimmer> : text}
+                        </motion.span>
                     </AnimatePresence>
-                    {time && active && (
-                        <span data-slot="ai-status-timer" aria-hidden className="font-mono text-xs tabular-nums text-slate-400 dark:text-slate-500">
-                            {time}
-                        </span>
+                </span>
+                <AnimatePresence initial={false} mode="wait">
+                    {detail && (
+                        <motion.span
+                            key={detail}
+                            data-slot="ai-status-detail"
+                            variants={swapVariants}
+                            initial="enter"
+                            animate="center"
+                            exit="exit"
+                            transition={SWAP}
+                            className="flex min-w-0 items-center gap-1.5 font-normal text-slate-500 dark:text-slate-400"
+                        >
+                            <span className="opacity-40">•</span>
+                            {typeof favicon === 'string' ? (
+                                <img
+                                    src={favicon}
+                                    alt=""
+                                    draggable={false}
+                                    onError={(event) => {
+                                        event.currentTarget.style.display = 'none'
+                                    }}
+                                    className="size-3.5 shrink-0 rounded-[3px] object-contain"
+                                />
+                            ) : (
+                                favicon && <span className="flex size-3.5 shrink-0 items-center justify-center">{favicon}</span>
+                            )}
+                            <span className="max-w-64 truncate">{detail}</span>
+                        </motion.span>
                     )}
-                </div>
-            </motion.div>
+                </AnimatePresence>
+                {time && active && (
+                    <span data-slot="ai-status-timer" aria-hidden className="font-mono text-xs tabular-nums text-slate-400 dark:text-slate-500">
+                        {time}
+                    </span>
+                )}
+            </div>
         </div>
     )
 }
@@ -232,14 +223,14 @@ function AiStatusIcon({ state }: AiStatusIconProps) {
                     <motion.path
                         d={SPARKLE_PATH}
                         fill="currentColor"
-                        style={{ transformOrigin: '11px 13px' }}
-                        animate={{ rotate: [0, 90, 180, 270, 360], scale: [1, 0.85, 1] }}
+                        style={{ transformOrigin: 'center', transformBox: 'fill-box' }}
+                        animate={{ rotate: 360, scale: [1, 0.85, 1] }}
                         transition={{ duration: 3.5, repeat: Infinity, ease: 'linear' }}
                     />
                     <motion.path
                         d={TWINKLE_PATH}
                         fill="currentColor"
-                        style={{ transformOrigin: '18px 5px' }}
+                        style={{ transformOrigin: 'center', transformBox: 'fill-box' }}
                         animate={{ scale: [0.3, 1, 0.3], opacity: [0.2, 1, 0.2] }}
                         transition={{ duration: 1.4, repeat: Infinity, ease: 'easeInOut' }}
                     />
@@ -253,10 +244,10 @@ function AiStatusIcon({ state }: AiStatusIconProps) {
                         animate={{
                             x: [0, 2, 0, -2, 0],
                             y: [-1.5, 0, 1.5, 0, -1.5],
-                            rotate: [0, 4, 0, -4, 0],
+                            rotate: [0, 8, 0, -8, 0],
                         }}
-                        transition={{ duration: 2.2, repeat: Infinity, ease: 'easeInOut' }}
-                        style={{ transformOrigin: '12px 12px' }}
+                        transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
+                        style={{ transformOrigin: 'center', transformBox: 'fill-box' }}
                     >
                         <circle {...STROKE} cx={10.5} cy={10.5} r={5.5} strokeWidth={2.25} />
                         <path {...STROKE} d="M14.75 14.75L19 19" strokeWidth={2.5} />
@@ -265,45 +256,37 @@ function AiStatusIcon({ state }: AiStatusIconProps) {
             )
         case 'analyzing':
             return (
-                <svg viewBox="0 0 24 24" width={18} height={18} className="text-indigo-400 overflow-visible">
-                    {[6, 12, 18].map((x, i) => (
-                        <motion.line
-                            key={x}
-                            {...STROKE}
-                            x1={x}
-                            x2={x}
-                            y1={10}
-                            y2={19}
-                            strokeWidth={2.5}
-                            animate={{ y1: [15, 6, 15] }}
-                            transition={{ duration: 0.8, delay: i * 0.18, repeat: Infinity, ease: 'easeInOut' }}
-                        />
-                    ))}
-                </svg>
+                <div className="flex items-end justify-center gap-0.5 w-[18px] h-[18px] text-indigo-400 py-0.5">
+                    <motion.span
+                        className="w-1 bg-current rounded-full"
+                        animate={{ height: ['35%', '100%', '35%'] }}
+                        transition={{ duration: 0.8, repeat: Infinity, ease: 'easeInOut' }}
+                    />
+                    <motion.span
+                        className="w-1 bg-current rounded-full"
+                        animate={{ height: ['75%', '25%', '75%'] }}
+                        transition={{ duration: 0.8, delay: 0.2, repeat: Infinity, ease: 'easeInOut' }}
+                    />
+                    <motion.span
+                        className="w-1 bg-current rounded-full"
+                        animate={{ height: ['25%', '90%', '25%'] }}
+                        transition={{ duration: 0.8, delay: 0.4, repeat: Infinity, ease: 'easeInOut' }}
+                    />
+                </div>
             )
         case 'writing':
             return (
-                <svg viewBox="0 0 24 24" width={18} height={18} className="text-pink-400 overflow-visible">
-                    <g transform="translate(-1.2 -2)">
-                        <motion.path
-                            {...STROKE}
-                            d={WAVE_PATH}
-                            strokeWidth={2.25}
-                            style={{ pathSpacing: 2 }}
-                            animate={{ pathLength: [...WAVE_PROGRESS, 1, 1], opacity: [...WAVE_PROGRESS.map(() => 1), 1, 0] }}
-                            transition={SCRIBBLE}
-                        />
-                        <motion.g
-                            animate={{
-                                x: [...WAVE_X, WAVE_X.at(-1)!, WAVE_X[0]],
-                                y: [...WAVE_Y, WAVE_Y.at(-1)!, WAVE_Y[0]],
-                            }}
-                            transition={SCRIBBLE}
-                        >
-                            <path d={PEN_PATH} fill="currentColor" transform="scale(0.66) translate(-3 -21)" />
-                        </motion.g>
-                    </g>
-                </svg>
+                <div className="relative flex items-center justify-center w-[18px] h-[18px] text-pink-400">
+                    <motion.svg
+                        viewBox="0 0 24 24"
+                        width={18}
+                        height={18}
+                        animate={{ rotate: [-8, 8, -8], x: [-1, 1, -1] }}
+                        transition={{ duration: 1.2, repeat: Infinity, ease: 'easeInOut' }}
+                    >
+                        <path d={PEN_PATH} fill="currentColor" transform="scale(0.8) translate(1, 0)" />
+                    </motion.svg>
+                </div>
             )
         case 'done':
             return (
@@ -314,7 +297,7 @@ function AiStatusIcon({ state }: AiStatusIconProps) {
                         strokeWidth={2.5}
                         initial={{ pathLength: 0 }}
                         animate={{ pathLength: 1 }}
-                        transition={{ type: 'spring', duration: 0.6, bounce: 0, delay: 0.1 }}
+                        transition={{ duration: 0.4, ease: 'easeOut' }}
                     />
                 </svg>
             )
@@ -325,8 +308,8 @@ function AiStatusIcon({ state }: AiStatusIconProps) {
                         {...STROKE}
                         d="M7 7L17 17M17 7L7 17"
                         strokeWidth={2.5}
-                        animate={{ x: [0, -2, 2, -1, 1, 0] }}
-                        transition={{ duration: 0.45, delay: 0.1 }}
+                        animate={{ rotate: [-6, 6, -6] }}
+                        transition={{ duration: 0.3, repeat: 2 }}
                     />
                 </svg>
             )
@@ -343,20 +326,17 @@ function AiStatusIcon({ state }: AiStatusIconProps) {
 
 function Shimmer({ children }: { children: React.ReactNode }) {
     return (
-        <motion.span
-            className="inline-block"
+        <span
+            className="inline-block animate-ai-shimmer font-semibold"
             style={{
-                backgroundImage: 'linear-gradient(90deg, currentColor 20%, #38bdf8 50%, currentColor 80%)',
+                backgroundImage: 'linear-gradient(90deg, currentColor 15%, #38bdf8 50%, currentColor 85%)',
                 backgroundSize: '200% 100%',
                 WebkitBackgroundClip: 'text',
                 WebkitTextFillColor: 'transparent',
-                willChange: 'background-position',
             }}
-            animate={{ backgroundPosition: ['200% 0', '-200% 0'] }}
-            transition={{ duration: 2.2, ease: 'linear', repeat: Infinity }}
         >
             {children}
-        </motion.span>
+        </span>
     )
 }
 

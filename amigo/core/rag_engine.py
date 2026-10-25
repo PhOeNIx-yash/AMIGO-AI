@@ -89,10 +89,10 @@ LOW_VALUE_TOOLS = {
     "stop", "stop_speaking",
 }
 
-MAX_VOICE_CONTEXT_CHARS = 1200
+MAX_VOICE_CONTEXT_CHARS = 3500
 MAX_FILE_SIZE = 50 * 1024 * 1024
-CHUNK_SIZE = 600
-CHUNK_OVERLAP = 150
+CHUNK_SIZE = 950
+CHUNK_OVERLAP = 180
 EMBEDDING_MODEL = os.getenv(
     "AMIGO_EMBEDDING_MODEL",
     "nomic-ai/nomic-embed-text-v1.5",
@@ -1164,14 +1164,14 @@ def build_rag_context(
         grounded = [r for r in results if _is_chunk_grounded(r, floor)]
         if grounded:
             top_score = grounded[0].get("score", 0.0)
-            margin = max(floor, top_score * 0.70)
+            margin = max(floor, top_score * 0.55)
             relevant = [r for r in grounded if r.get("score", 0.0) >= margin]
 
-            k_limit = min(top_k, 3) if for_voice else max(top_k, 8)
+            k_limit = min(top_k, 5) if for_voice else max(top_k, 8)
             for r in relevant[:k_limit]:
                 src = r.get("source", "")
                 meta = r.get("metadata", {})
-                chunk_text = (r.get("text") or "").strip()[:900]
+                chunk_text = (r.get("text") or "").strip()[:1400]
                 if not chunk_text or total_chars + len(chunk_text) > max_chars:
                     continue
 
@@ -1212,8 +1212,9 @@ def build_rag_context(
     body = "\n\n".join(parts)
     return (
         "<supplementary_context>\n"
-        "NOTE: Use the retrieved context below ONLY if it is directly relevant to answering the user's request. "
-        "If it is unrelated, ignore it completely and do not mention it.\n\n"
+        "NOTE: Use the verified local information below to answer the user's request thoroughly, directly, and naturally. "
+        "State all necessary facts, numbers, dates, and key details cleanly without robotic filler, citation markers, or mentioning context tags. "
+        "If the information is completely unrelated to the user's question, ignore it and rely on your knowledge.\n\n"
         f"{body}\n"
         "</supplementary_context>"
     )

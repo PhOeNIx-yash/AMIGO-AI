@@ -371,6 +371,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const [isListening, setIsListening] = useState(false);
   const [liveTranscript, setLiveTranscript] = useState("");
   const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [pendingPrompt, setPendingPrompt] = useState<string>("");
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -587,16 +588,17 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     return {
       state: "thinking" as AiStatusState,
       label: "Thinking",
-      detail: activePrompt
-        ? activePrompt.length > 38
-          ? activePrompt.slice(0, 38) + "..."
-          : activePrompt
+      detail: (pendingPrompt || activePrompt)
+        ? (pendingPrompt || activePrompt).length > 38
+          ? (pendingPrompt || activePrompt).slice(0, 38) + "..."
+          : (pendingPrompt || activePrompt)
         : undefined,
     };
-  }, [isLoading, liveIntent, liveParams, activePrompt, inputText]);
+  }, [isLoading, liveIntent, liveParams, activePrompt, pendingPrompt, inputText]);
 
   useEffect(() => {
     if (!isLoading) {
+      setPendingPrompt("");
       setRetryingId(null);
     }
   }, [isLoading]);
@@ -609,7 +611,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
         behavior: "smooth",
       });
     }
-  }, [history, isLoading]);
+  }, [history, isLoading, statusInfo, pendingPrompt]);
 
   // Handle command submit
   const handleSubmit = (e?: React.FormEvent) => {
@@ -617,6 +619,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     const prompt = inputText.trim();
     if (!prompt && !attachment) return;
 
+    const currentTaskPrompt = prompt || (attachment ? `Analyze ${attachment.filename}` : "");
+    setPendingPrompt(currentTaskPrompt);
     sfx.playSubmit();
     onProcessCommand(prompt, attachment || undefined);
     setInputText("");
@@ -779,19 +783,9 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
         className="flex-1 min-h-0 overflow-y-auto px-4 py-6 space-y-6 smooth-scroll-container bg-transparent"
       >
         <div className="max-w-4xl lg:max-w-5xl mx-auto w-full space-y-6">
-          {/* Top Status Bar: AiStatus Badge & Clear Conversation Button */}
-          <div className="flex items-center justify-between pb-1 px-1">
-            <div className="flex items-center space-x-2">
-              <AiStatus
-                state={isLoading ? statusInfo.state : "done"}
-                label={isLoading ? statusInfo.label : "Amigo Ready"}
-                detail={isLoading ? statusInfo.detail : undefined}
-                timer={isLoading}
-                shimmer={isLoading}
-                className="scale-90 origin-left text-xs"
-              />
-            </div>
-            {messages.length > 0 && (
+          {/* Top Bar: Clear Conversation Button */}
+          {messages.length > 0 && (
+            <div className="flex justify-end pb-1 px-1">
               <button
                 type="button"
                 onClick={() => {
@@ -806,10 +800,10 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                 <Trash2 className="w-3 h-3" />
                 <span>Clear chat</span>
               </button>
-            )}
-          </div>
+            </div>
+          )}
           {/* Empty State / Welcome Screen */}
-          {messages.length === 0 && (
+          {messages.length === 0 && !isLoading && !pendingPrompt && (
             <div className="py-8 flex flex-col items-center justify-center text-center space-y-6">
               <div
                 className="w-16 h-16 rounded-2xl flex items-center justify-center text-white shadow-xl relative"
@@ -852,7 +846,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                     type="button"
                     onClick={() => {
                       sfx.playClick?.();
-                      setInputText(q.prompt);
+                      setPendingPrompt(q.prompt);
                       onProcessCommand(q.prompt);
                     }}
                     className={`p-3.5 rounded-xl border text-left transition-all duration-200 group flex items-start space-x-3 ${
@@ -1088,22 +1082,43 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
             );
           })}
 
-          {/* Thinking / Searching / AI Status Indicator (Rare UI ai-status) */}
+          {/* Optimistic Pending User Message during loading */}
+          {isLoading && (pendingPrompt || activePrompt) && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.2 }}
+              className="space-y-4"
+            >
+              <div className="flex justify-end">
+                <div
+                  className="max-w-[85%] sm:max-w-[75%] rounded-2xl px-4 py-2.5 shadow-sm text-sm text-white"
+                  style={{ background: theme.gradient }}
+                >
+                  <p className="whitespace-pre-wrap leading-relaxed select-text font-normal">
+                    {pendingPrompt || activePrompt}
+                  </p>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {/* Thinking / Searching / AI Status Indicator (Inline in Chat Stream) */}
           {isLoading && (
             <motion.div
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
-              style={{ willChange: "transform, opacity", transform: "translate3d(0, 0, 0)" }}
-              className="flex items-center space-x-3 py-2 text-sm"
+              transition={{ duration: 0.25 }}
+              className="flex items-start space-x-3 py-2 text-sm"
             >
               <div
-                className="w-7 h-7 rounded-full flex items-center justify-center text-white shrink-0 shadow-sm animate-pulse transform-gpu"
+                className="w-7 h-7 rounded-full flex items-center justify-center text-white shrink-0 shadow-sm animate-pulse transform-gpu mt-0.5"
                 style={{ background: theme.gradient }}
               >
                 <Sparkles className="w-3.5 h-3.5" />
               </div>
               <div
-                className={`px-3.5 py-1.5 rounded-full border backdrop-blur-md shadow-sm transition-all duration-300 ${
+                className={`inline-flex items-center px-3.5 py-1.5 rounded-2xl border backdrop-blur-md shadow-sm transition-all duration-300 ${
                   isDark
                     ? "bg-slate-900/90 border-slate-800 text-slate-100 shadow-cyan-950/20"
                     : "bg-white/95 border-slate-200 text-slate-800 shadow-slate-200/50"

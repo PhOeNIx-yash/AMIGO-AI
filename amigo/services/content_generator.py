@@ -18,19 +18,35 @@ from amigo.services.app_opener import open_windows_app
 
 logger = logging.getLogger("amigo.content_generator")
 
+# Configuration Constants
+DEFAULT_MAX_TOKENS = 2000
+DEFAULT_TEMPERATURE = 0.2
+DEFAULT_FOCUS_DELAY = 0.35
+MAX_REVISION_HISTORY = 5
+
+NON_ROUTABLE_DESTINATIONS = {"none", "panel", "screen", "ui", "chat", "ask", "response", "output"}
+CLIPBOARD_DESTINATIONS = {"clipboard", "copy"}
+ACTIVE_WINDOW_DESTINATIONS = {"here", "current window", "active window", "current app", "active app"}
+
+DRAFT_PATTERN = re.compile(
+    r"^(?:an?\s+)?(email|e-mail|letter|message|note|essay|application|poem|code|"
+    r"script|function|story|post|proposal|report|article|speech|document|summary|draft)\b",
+    re.IGNORECASE,
+)
+
 
 def _get_ai_response(
     prompt: str,
     use_memory: bool = False,
     is_voice: bool = False,
-    max_tokens: int = 350,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
 ) -> str:
     """
     Direct, fast LLM generation for content drafting and rewriting.
     Uses query_local_llm directly with thinking=False to avoid multi-minute reasoning loops on CPU.
     """
     try:
-        from amigo.core.llm_agent import query_local_llm
+        from amigo.core.llm_agent import query_local_llm, _strip_reasoning, _RE_SPEAKER_PREFIX
         messages = [
             {
                 "role": "system",
@@ -44,13 +60,12 @@ def _get_ai_response(
         res = query_local_llm(
             messages,
             system_prompt="",
-            max_tokens=max_tokens or 350,
-            temperature=0.2,
+            max_tokens=max_tokens or DEFAULT_MAX_TOKENS,
+            temperature=DEFAULT_TEMPERATURE,
             thinking=False,
             sanitize=False,
         )
         if res and not res.startswith("I'm having trouble"):
-            from amigo.core.llm_agent import _strip_reasoning, _RE_SPEAKER_PREFIX
             clean, _ = _strip_reasoning(res)
             clean = _RE_SPEAKER_PREFIX.sub("", clean).strip()
             # Strip outer markdown code fences (```python ... ```) if present
@@ -58,20 +73,8 @@ def _get_ai_response(
             clean = re.sub(r"\n?```\s*$", "", clean)
             return clean.strip()
     except Exception as e:
-        logger.warning(f"[Content Generator] Fast LLM query failed, falling back: {e}")
-
-    try:
-        from amigo.core.llm_agent import get_ai_response
-        out = get_ai_response(prompt, use_memory=use_memory, is_voice=is_voice, max_tokens=max_tokens or 350)
-        if out:
-            out = re.sub(r"^```[a-zA-Z0-9_-]*\s*\n?", "", out.strip())
-            out = re.sub(r"\n?```\s*$", "", out)
-            return out.strip()
-        return ""
-    except Exception as e:
-        logger.error(f"[Content Generator] LLM generation error: {e}")
-        return ""
-
+        logger.warning(f"[Content Generator] LLM generation error: {e}")
+    return ""
 
 
 def _is_app_running(app_name: str) -> bool:
@@ -90,6 +93,14 @@ def _is_app_running(app_name: str) -> bool:
     return False
 
 
+def _extract_subject_and_body(content: str, fallback_subject: str = "") -> Tuple[str, str]:
+    """Extracts email Subject: line if present; otherwise returns fallback."""
+    lines = content.strip().splitlines()
+    if lines and lines[0].lower().startswith("subject:"):
+        return lines[0].split(":", 1)[1].strip(), "\n".join(lines[1:]).strip()
+    return fallback_subject, content.strip()
+
+
 def build_temporal_and_user_context() -> str:
     """
     Dynamically builds real-time date/calendar context and user identity from RAG profile.
@@ -100,10 +111,10 @@ def build_temporal_and_user_context() -> str:
     day_after = now + datetime.timedelta(days=2)
     next_week = now + datetime.timedelta(days=7)
 
-    upcoming_days = []
-    for i in range(1, 8):
-        future_date = now + datetime.timedelta(days=i)
-        upcoming_days.append(f"{future_date.strftime('%A')}: {future_date.strftime('%B %d, %Y')}")
+    upcoming_days = [
+        f"{(now + datetime.timedelta(days=i)).strftime('%A')}: {(now + datetime.timedelta(days=i)).strftime('%B %d, %Y')}"
+        for i in range(1, 8)
+    ]
 
     temporal_ctx = (
         f"Current Date & Time: {now.strftime('%A, %B %d, %Y at %I:%M %p')}\n"
@@ -129,7 +140,6 @@ def build_temporal_and_user_context() -> str:
                 or profile.get("role")
                 or profile.get("preferences", {}).get("role", "")
             )
-            # Exclude internal assistant/UI settings like TTS voice ("chloe") or theme from being mistaken as the user's name
             ignored_keys = {"voice", "theme", "colorTheme", "visualizerMode", "autoSpeech", "soundEnabled"}
             details = [
                 f"{k}: {v}"
@@ -162,7 +172,7 @@ def route_content_to_destination(
     dest_clean = (destination or "").strip()
     dest_low = dest_clean.lower()
 
-    if not dest_clean or dest_low in ("none", "panel", "screen", "ui", "chat", "ask"):
+    if not dest_clean or dest_low in NON_ROUTABLE_DESTINATIONS:
         return False, ""
 
     import pyperclip
@@ -174,18 +184,12 @@ def route_content_to_destination(
         logger.warning(f"[Content Router] Clipboard copy warning: {e}")
 
     # 1. Pure Clipboard Destination
-    if any(k in dest_low for k in ("clipboard", "copy")):
+    if any(k in dest_low for k in CLIPBOARD_DESTINATIONS):
         return True, "Copied the content to your clipboard."
 
     # 2. Gmail / Webmail Compose via URL Scheme
     if "gmail" in dest_low or "google mail" in dest_low:
-        lines = content.strip().splitlines()
-        extracted_subj = subject
-        body_text = content.strip()
-        if lines and lines[0].lower().startswith("subject:"):
-            extracted_subj = lines[0].split(":", 1)[1].strip()
-            body_text = "\n".join(lines[1:]).strip()
-
+        extracted_subj, body_text = _extract_subject_and_body(content, subject)
         gmail_url = (
             f"https://mail.google.com/mail/?view=cm&fs=1"
             f"&to={urllib.parse.quote(recipient)}"
@@ -200,30 +204,25 @@ def route_content_to_destination(
         try:
             from amigo.services.mail_integration import draft_email, is_outlook_available
             if is_outlook_available():
-                lines = content.strip().splitlines()
-                extracted_subj = subject
-                body_text = content.strip()
-                if lines and lines[0].lower().startswith("subject:"):
-                    extracted_subj = lines[0].split(":", 1)[1].strip()
-                    body_text = "\n".join(lines[1:]).strip()
+                extracted_subj, body_text = _extract_subject_and_body(content, subject)
                 draft_email(to=recipient, subject=extracted_subj, body=body_text)
                 return True, "Created the draft in Microsoft Outlook."
         except Exception as e:
             logger.warning(f"[Content Router] Outlook draft fallback: {e}")
 
-        # When Outlook COM is disabled or unavailable, copy draft to clipboard and return cleanly without blind window typing
+        # When Outlook COM is disabled or unavailable, copy draft to clipboard
         return True, "I copied your email draft to the clipboard. (Set AMIGO_ENABLE_OUTLOOK_MAIL=1 if you'd like drafts created directly inside Outlook.)"
 
     # 4. Current Active Window
-    if dest_low in ("here", "current window", "active window", "current app", "active app"):
-        time.sleep(0.3)
+    if dest_low in ACTIVE_WINDOW_DESTINATIONS:
+        time.sleep(DEFAULT_FOCUS_DELAY)
         os_automation.type_text(content)
         return True, "Inserted the content into your active window."
 
     # 5. Any Desktop Application (Notepad, Word, VS Code, Slack, Discord, etc.)
     opened = open_windows_app(dest_clean)
     if opened or _is_app_running(dest_clean):
-        time.sleep(0.35)  # Quick focus delay
+        time.sleep(DEFAULT_FOCUS_DELAY)
         os_automation.type_text(content)
         return True, f"Opened {dest_clean.title()} and inserted your {content_type}."
 
@@ -243,6 +242,7 @@ def generate_content(params: Any, query: str, spoken: str) -> Tuple[str, Optiona
     destination = str(params.get("destination") or "").strip()
     recipient = str(params.get("recipient") or "").strip()
     extra_context = str(params.get("context") or "").strip()
+    max_tokens = int(params.get("max_tokens") or DEFAULT_MAX_TOKENS)
 
     sys_context = build_temporal_and_user_context()
 
@@ -265,7 +265,7 @@ def generate_content(params: Any, query: str, spoken: str) -> Tuple[str, Optiona
         generation_prompt,
         use_memory=False,
         is_voice=False,
-        max_tokens=350,
+        max_tokens=max_tokens,
     ).strip()
 
     if not generated_content:
@@ -320,6 +320,7 @@ def regenerate_content(params: Any, query: str, spoken: str) -> Tuple[str, Optio
     params = params if isinstance(params, dict) else {}
     feedback = str(params.get("feedback") or params.get("instructions") or params.get("tone") or query).strip()
     new_destination = str(params.get("destination") or "").strip()
+    max_tokens = int(params.get("max_tokens") or DEFAULT_MAX_TOKENS)
 
     state = rag_engine.get_active_state(clean_expired=False) or {}
     gen_state = state.get("generated_content") if isinstance(state, dict) else None
@@ -351,7 +352,7 @@ def regenerate_content(params: Any, query: str, spoken: str) -> Tuple[str, Optio
         regen_prompt,
         use_memory=False,
         is_voice=False,
-        max_tokens=350,
+        max_tokens=max_tokens,
     ).strip()
 
     if not updated_content:
@@ -367,7 +368,7 @@ def regenerate_content(params: Any, query: str, spoken: str) -> Tuple[str, Optio
         "type": content_type,
         "tone": feedback,
         "destination": target_dest,
-        "history": history[-5:],
+        "history": history[-MAX_REVISION_HISTORY:],
         "timestamp": time.time(),
     }
     try:
@@ -470,12 +471,7 @@ def type_text(params: Any, query: str, spoken: str) -> Tuple[str, Optional[str],
     text = str(params.get("text", "")).strip()
     app = str(params.get("app", "")).strip()
 
-    # Capture the actual content type (group 1) without 'a' or 'an'
-    m_draft = re.match(
-        r"^(?:an?\s+)?(email|e-mail|letter|message|note|essay|application|poem|code|script|function|story|post)\b",
-        text,
-        re.IGNORECASE,
-    )
+    m_draft = DRAFT_PATTERN.match(text)
     if m_draft:
         return generate_content(
             {"type": m_draft.group(1).lower(), "topic": query or text, "destination": app},
@@ -485,11 +481,10 @@ def type_text(params: Any, query: str, spoken: str) -> Tuple[str, Optional[str],
 
     if app:
         open_windows_app(app)
-        time.sleep(1.2)
+        time.sleep(DEFAULT_FOCUS_DELAY)
 
     if text:
         os_automation.type_text(text)
 
     app_desc = f" into {app}" if app else ""
     return (f"Typed content{app_desc}." if text else "Typed text."), None, {}
-

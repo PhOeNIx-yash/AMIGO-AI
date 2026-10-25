@@ -66,11 +66,6 @@ def get_ai_response(*args, **kwargs):
     return _impl(*args, **kwargs)
 
 
-def get_quick_feedback(*args, **kwargs):
-    from amigo.core.llm_agent import get_quick_feedback as _impl
-    return _impl(*args, **kwargs)
-
-
 def query_local_llm(*args, **kwargs):
     from amigo.core.llm_agent import query_local_llm as _impl
     return _impl(*args, **kwargs)
@@ -595,16 +590,17 @@ def _tool_ask_document(params, query, spoken, conversation_history=None):
         resolved_question,
         top_k=6,
         conversation_history=conv_history,
+        for_voice=False,
     )
     if not evidence:
         return (
             "I couldn't find enough relevant information in your indexed documents.",
             None,
-            {"status": "insufficient_evidence", "sources": []},
+            {"status": "insufficient_evidence"},
         )
 
-    response = get_ai_response(question, doc_context=evidence, conversation_history=conv_history)
-    return response, None, {"sources": []}
+    response = get_ai_response(question, doc_context=evidence, conversation_history=conv_history, max_tokens=350)
+    return response, None, {"status": "success"}
 
 
 def _tool_summarize_document(params, query, spoken):
@@ -667,7 +663,7 @@ def _tool_chat(params, query, spoken, conversation_history=None):
                     top_k=4,
                     conversation_history=conv_history,
                     for_voice=True,
-                    min_score=0.72,
+                    min_score=0.45,
                 )
                 if rag_ctx:
                     doc_context = rag_ctx
@@ -1490,9 +1486,9 @@ TOOL_DEFINITIONS = [
           ["query"]),
     _tool("resume_media", "Resume paused audio/video playback."),
     _tool("pause_media", "Pause currently playing audio/video."),
-    _tool("next_track", "Skip to next track."),
+    _tool("next_track", "Advance active media playback."),
     _tool("prev_track", "Go to previous track."),
-    _tool("current_media", "Check what media, song, video, or live stream is currently playing or paused on the PC."),
+    _tool("current_media", "Report the title and playback state of currently playing or paused media on the PC."),
     _tool("set_volume", "Control system audio volume (mute, unmute, volume_up, volume_down, set_volume).",
           {"action": _p("string", "mute | unmute | volume_up | volume_down | set_volume"), "level": _p("integer", "0-100")}),
     _tool("set_brightness", "Adjust screen brightness.", {"level": _p("integer", "0-100")}, ["level"]),
@@ -1579,14 +1575,14 @@ ROUTING RULES:
 - Local Records vs Visual Display:
   * Route to 'document_qa' for retrieving facts, contents, data, or text from the user's local documents, files, and stored records on the computer, regardless of whether a document or viewer is currently open on the desktop.
   * Route to 'read_screen' exclusively when the user asks to inspect the physical display, visual appearance, GUI layout, on-screen errors, or graphical window state.
-- Local Documents vs Web Search: Route to 'document_qa' for information stored in the user's personal files and local PC records. Route to 'web_search' for external information, public facts, current events, or web research.
+- Local Documents vs Web Search: Use document_qa for questions about the user's indexed personal files and local PC records. Route to 'web_search' for external information, public facts, current events, or web research.
 - Do not send every factual question to web search. If uncertain, the subject is unfamiliar or specialized, or current facts are needed, use retrieved results; answer from retrieved results and say so rather than guessing.
 - Spoken Dialogue & Advice ('chat'): Use for conversational dialogue, reasoning, creative writing, translations, opinions, and advice that do not require external lookup or local system inspection. Output direct reply in params['response'].
 - Media & Playback: For media requests ('play_youtube'), pass the exact media title or query requested by the user in params['query'] without extrapolating or inventing metadata. Use 'resume_media', 'pause_media', 'next_track', 'prev_track' for playback controls.
 - Context & Independence: Resolve pronouns and follow-up references ('it', 'that', 'this') naturally using recent conversation turns. If the user initiates a new topic, do not carry over entities, domains, or tool targets from prior unrelated turns.
 - System Actions & Confirmations: If an action is pending user confirmation and the user affirms ('yes', 'sure', 'confirm'), call 'confirm_action'. If the user declines ('no', 'cancel'), call 'cancel_action'.
 
-When outputting tool actions or direct chat responses, output ONLY valid JSON:
+When outputting tool actions or direct chat responses, Return only valid JSON:
 {"actions": [{"tool": "<tool_name>", "params": {<parameters>}}]}"""
 
 _MASTER_PROMPT_CACHE: str | None = None
@@ -1643,7 +1639,14 @@ def _build_router_messages(query: str, conversation_history: list | None = None)
 
 
 _JSON_DECODER = json.JSONDecoder()
-_ROUTER_STOP = ["<|im_end|>", "<|endoftext|>", "<|im_start|>"]
+_ROUTER_STOP = ["<|endoftext|>", "<｜end of sentence｜>", "<|im_end|>", "<|im_start|>"]
+
+
+def _clean_json_text(text: str) -> str:
+    clean = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.I).strip()
+    clean = re.sub(r"<think>[\s\S]*$", "", clean, flags=re.I).strip()
+    clean = re.sub(r"```(?:json)?\s*", "", clean).replace("```", "").strip()
+    return re.sub(r",\s*([\]}])", r"\1", clean)
 
 
 def _iter_json_objects(text: str):
@@ -1694,10 +1697,7 @@ def _call_from_obj(obj) -> list[dict]:
 
 
 def _parse_tool_calls(response: str) -> list[dict]:
-    clean = re.sub(r"<think>[\s\S]*?</think>", "", response, flags=re.I).strip()
-    clean = re.sub(r"<think>[\s\S]*$", "", clean, flags=re.I).strip()
-    clean = re.sub(r"```(?:json)?\s*", "", clean).replace("```", "").strip()
-    clean = re.sub(r",\s*([\]}])", r"\1", clean)
+    clean = _clean_json_text(response)
     calls: list[dict] = []
     for _, _, obj in _iter_json_objects(clean):
         calls.extend(_call_from_obj(obj))
@@ -1705,8 +1705,7 @@ def _parse_tool_calls(response: str) -> list[dict]:
 
 
 def _extract_final_response(response: str, tool_calls: list) -> str:
-    clean = re.sub(r"<think>[\s\S]*?</think>", "", response, flags=re.I).strip()
-    clean = re.sub(r",\s*([\]}])", r"\1", clean).replace("```json", "").replace("```", "").strip()
+    clean = _clean_json_text(response)
     if clean.startswith("{") or clean.startswith("["):
         m = re.search(r'"(?:response|speak|reply)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"?', clean)
         if m:
@@ -2049,8 +2048,6 @@ def build_action_cards(tool: str, params: dict, result_metadata: dict, url: str 
                 "snippet": result_metadata.get("text_snippet", ""),
             },
         })
-
-
 
     elif tool == "clarification" or result_metadata.get("requires_clarification"):
         candidates = result_metadata.get("candidates") or params.get("candidate_tools") or ["chat", "web_search"]

@@ -567,23 +567,37 @@ def _token_specificity(token: str) -> float:
 
 def _build_query_variants(raw_query: str) -> list[str]:
     """
-    Decomposes complex multi-clause queries into up to 2 complementary search queries:
+    Decomposes queries into complementary, search-grounded queries:
       1. Clean natural-language query
-      2. High-specificity content-word skeleton (strips syntactic glue).
+      2. Temporally grounded query with current year if query requests live/current information
+      3. High-specificity content-word skeleton (strips syntactic glue).
     """
     clean_q = clean_search_query(raw_query) or raw_query.strip()
     words = _WORD_RE.findall(clean_q)
-    if len(words) <= 4:
-        return [clean_q]
-
-    skeleton_tokens = [
-        w for w in words
-        if w.lower() not in _SYNTAX_FUNCTION_WORDS and (len(w) > 1 or w.isdigit())
-    ]
-    skeleton = " ".join(skeleton_tokens)
     variants = [clean_q]
-    if skeleton and skeleton.lower() != clean_q.lower() and len(skeleton_tokens) >= 2:
-        variants.append(skeleton)
+
+    # Temporal query grounding: if query asks about "current", "latest", "now", "present", "minister", etc.
+    # append current year to help search engines prioritize active records over stale SEO test-prep coaching sites
+    curr_year = str(datetime.now().year)
+    low_q = clean_q.lower()
+    temporal_cues = (
+        "current", "latest", "present", "now", "today", "recent", "new",
+        "who is", "who's", "minister", "president", "prime minister", "governor",
+        "ceo", "chief", "chairman", "cabinet", "price", "stock", "rate"
+    )
+    if any(cue in low_q for cue in temporal_cues) and curr_year not in clean_q:
+        variants.append(f"{clean_q} {curr_year}")
+
+    if len(words) > 4:
+        skeleton_tokens = [
+            w for w in words
+            if w.lower() not in _SYNTAX_FUNCTION_WORDS and (len(w) > 1 or w.isdigit())
+        ]
+        skeleton = " ".join(skeleton_tokens)
+        if skeleton and skeleton.lower() != clean_q.lower() and len(skeleton_tokens) >= 2:
+            if len(variants) < 3:
+                variants.append(skeleton)
+
     return variants
 
 

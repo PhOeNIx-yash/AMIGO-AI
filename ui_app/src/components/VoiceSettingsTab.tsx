@@ -442,11 +442,26 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
                 <div className="flex items-start justify-between mb-2.5">
                   <div className="flex items-center space-x-2.5">
                     <div className="relative flex items-center justify-center p-0.5 flex-shrink-0">
-                      <FluidOrb
-                        size={36}
-                        color={voice.color || theme.primary}
-                        isSpeaking={isPlaying}
-                      />
+                      <div
+                        className={`w-9 h-9 rounded-full bg-gradient-to-tr ${voice.avatarGradient} flex items-center justify-center relative shadow-sm transition-all duration-300 ${
+                          isPlaying ? "scale-105 shadow-md ring-2 ring-white/40" : "group-hover:scale-105"
+                        }`}
+                        style={{
+                          boxShadow: isPlaying
+                            ? `0 0 16px ${voice.color || theme.primary}80`
+                            : `0 0 8px ${voice.color || theme.primary}25`,
+                        }}
+                      >
+                        {isPlaying ? (
+                          <div className="flex items-center justify-center space-x-0.5">
+                            <span className="w-0.5 h-3 bg-white rounded-full animate-pulse" />
+                            <span className="w-0.5 h-4 bg-white rounded-full animate-pulse [animation-delay:150ms]" />
+                            <span className="w-0.5 h-2.5 bg-white rounded-full animate-pulse [animation-delay:300ms]" />
+                          </div>
+                        ) : (
+                          <div className="w-2.5 h-2.5 rounded-full bg-white/80 shadow-sm transition-transform duration-300 group-hover:scale-110" />
+                        )}
+                      </div>
                     </div>
                     <div>
                       <div className="text-xs font-semibold tracking-tight flex items-center space-x-1.5">

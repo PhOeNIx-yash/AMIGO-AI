@@ -419,3 +419,17 @@ input[type="search"]::-webkit-search-results-decoration {
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
 }
+
+@keyframes aiStatusShimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.animate-ai-shimmer {
+  background-size: 200% 100% !important;
+  animation: aiStatusShimmer 2.4s linear infinite !important;
+}
