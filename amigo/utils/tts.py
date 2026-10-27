@@ -305,6 +305,46 @@ _RE_WHITESPACE = re.compile(r'\s+')
 _RE_SPECIAL_CHARS = re.compile(r'[*_~`#<>{}[\]\\]')
 
 
+def _extract_text_from_json(text: str) -> str:
+    """Safely extract human-readable text from a JSON payload if raw router/tool JSON is passed to TTS."""
+    if not text or not isinstance(text, str):
+        return ""
+    s = text.strip()
+    if (s.startswith("{") or s.startswith("[")) and any(k in s for k in ('"tool"', '"actions"', '"params"', '"response"', '"reply"', '"speak"')):
+        try:
+            parsed = json.loads(s)
+            if isinstance(parsed, dict):
+                for k in ("response", "reply", "speak", "text", "message", "answer"):
+                    val = parsed.get(k)
+                    if isinstance(val, str) and val.strip():
+                        return val.strip()
+                if isinstance(parsed.get("actions"), list) and parsed["actions"]:
+                    first = parsed["actions"][0]
+                    if isinstance(first, dict):
+                        for k in ("speak", "response", "reply"):
+                            val = first.get(k)
+                            if isinstance(val, str) and val.strip():
+                                return val.strip()
+                        params = first.get("params", {})
+                        if isinstance(params, dict):
+                            for k in ("response", "reply", "speak", "text", "message"):
+                                val = params.get(k)
+                                if isinstance(val, str) and val.strip():
+                                    return val.strip()
+                return ""
+            elif isinstance(parsed, list) and parsed:
+                first = parsed[0]
+                if isinstance(first, dict):
+                    for k in ("response", "reply", "speak", "text"):
+                        val = first.get(k)
+                        if isinstance(val, str) and val.strip():
+                            return val.strip()
+                return ""
+        except Exception:
+            pass
+    return text
+
+
 def normalize_text_for_tts(text: str) -> str:
     """
     Normalizes raw text into clean, phonetically expressive speech:
@@ -319,7 +359,7 @@ def normalize_text_for_tts(text: str) -> str:
     """
     if not text:
         return ""
-    t = text
+    t = _extract_text_from_json(text)
 
     # 1. Markdown tables to natural conversational speech
     t = re.sub(r'\|\s*\|+', '|\n|', t)

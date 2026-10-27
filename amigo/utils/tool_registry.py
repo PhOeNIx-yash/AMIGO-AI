@@ -1077,6 +1077,8 @@ def resolve_document_path(query_or_target: str) -> str | None:
         cand = m_doc.group(1).strip()
         if cand and cand.lower() not in _REFERENT_WORDS and cand.lower() not in _ORDINAL_WORDS:
             search_terms.append(cand)
+    if raw and len(raw) >= 3 and raw.lower() not in _REFERENT_WORDS and raw not in search_terms:
+        search_terms.append(raw)
 
     for term in search_terms:
         if len(term) >= 2:
@@ -1571,6 +1573,7 @@ ROUTING RULES:
 1. INTENT-BASED ROUTING:
 - Route by understanding the user's intent, not by matching fixed words or memorized example phrases.
 - Navigation vs Search: When the user asks to launch, open, or visit an application, file, or website, route to navigation tools ('open_website', 'open_app', 'open_file'). When the user asks a question, requests information, searches, or checks details, route to information retrieval tools ('web_search', 'document_qa'), even if a specific website or platform is mentioned.
+- Opening Files: When the user asks to open, view, or launch a file, document, or resume, route to 'open_file' with params['path']. When the user asks a question about facts or contents inside documents, route to 'document_qa'.
 - Use dedicated tools for information that must come from the current PC, such as the local clock, system state, media, or installed applications.
 - Local Records vs Visual Display:
   * Route to 'document_qa' for retrieving facts, contents, data, or text from the user's local documents, files, and stored records on the computer, regardless of whether a document or viewer is currently open on the desktop.
@@ -1596,12 +1599,6 @@ def get_static_master_prompt() -> str:
 
 
 get_static_router_prefix = get_static_master_prompt
-
-try:
-    from amigo.core.llm_agent import set_master_prompt_provider
-    set_master_prompt_provider(get_static_master_prompt)
-except Exception:
-    pass
 
 
 def build_agent_system_prompt(query: str = "", conversation_history: list | None = None) -> str:
@@ -1646,7 +1643,15 @@ def _clean_json_text(text: str) -> str:
     clean = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.I).strip()
     clean = re.sub(r"<think>[\s\S]*$", "", clean, flags=re.I).strip()
     clean = re.sub(r"```(?:json)?\s*", "", clean).replace("```", "").strip()
-    return re.sub(r",\s*([\]}])", r"\1", clean)
+    clean = re.sub(r",\s*([\]}])", r"\1", clean)
+    # Auto-balance braces and brackets if output was cleanly cut off at stop token
+    open_b = clean.count("{") - clean.count("}")
+    open_k = clean.count("[") - clean.count("]")
+    if open_k > 0:
+        clean += "]" * open_k
+    if open_b > 0:
+        clean += "}" * open_b
+    return clean
 
 
 def _iter_json_objects(text: str):
@@ -1738,12 +1743,11 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
         response = query_local_llm(
             messages,
             system_prompt="",
-            max_tokens=220,
-            temperature=0.1,
+            max_tokens=128,
+            temperature=0.0,
             repeat_penalty=1.0,
             thinking=False,
             sanitize=False,
-            response_format={"type": "json_object"},
             stop=_ROUTER_STOP,
             raise_on_error=True,
         )

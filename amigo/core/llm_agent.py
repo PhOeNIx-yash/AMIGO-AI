@@ -1,6 +1,6 @@
 """
 LLM-Based Agent for Amigo Voice Assistant.
-Clean, streamlined inference engine for Spark-X2.6 4B:
+Clean, streamlined inference engine for Qwen3.5 4B:
 - Direct GGUF inference via llama-cpp-python on RTX 3050 GPU (with CPU fallback)
 - Fast KV-cache reuse with unified system prompt prefix
 - Multi-turn conversation context and RAG profile integration
@@ -115,16 +115,7 @@ def set_master_prompt_provider(fn) -> None:
 
 
 def get_static_system_prompt() -> str:
-    if callable(_master_prompt_provider):
-        try:
-            return _master_prompt_provider()
-        except Exception:
-            pass
-    try:
-        from amigo.utils.tool_registry import get_static_master_prompt
-        return get_static_master_prompt()
-    except Exception:
-        pass
+    """Conversational assistant system prompt for natural speech and text responses."""
     return _STATIC_VOICE_SYSTEM_PROMPT
 
 
@@ -268,26 +259,27 @@ def _build_ai_messages(
 # ── Model Configuration & Lifecycle ────────────────────────────
 
 MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "models"))
-MODEL_NAME = "Spark-X2.6 4B"
-MODEL_FILENAME = "Spark-X2.6-4B-Q4_K_M.gguf"
+MODEL_NAME = "Qwen3.5 4B"
+MODEL_FILENAME = "Qwen3.5-4B-Q4_K_M.gguf"
 MODEL_PATH = os.path.join(MODEL_DIR, MODEL_FILENAME)
-MODEL_TARGETS = [("abenzerps/Spark-X2.6-4B-Quantized", "Spark-X2.6-4B-Q4_K_M.gguf")]
+MODEL_TARGETS = [("unsloth/Qwen3.5-4B-GGUF", "Qwen3.5-4B-Q4_K_M.gguf")]
 
-STOP_TOKENS = ["<|endoftext|>", "<｜end of sentence｜>"]
+STOP_TOKENS = ["<|im_end|>", "<|endoftext|>", "<|im_start|>", "<|eot_id|>", "<eos>"]
 
 AVAILABLE_MODELS = {
-    "spark-x2.6-4b": {
-        "key": "spark-x2.6-4b",
-        "name": "Spark-X2.6 4B",
-        "filename": "Spark-X2.6-4B-Q4_K_M.gguf",
-        "path": os.path.join(MODEL_DIR, "Spark-X2.6-4B-Q4_K_M.gguf"),
-        "targets": [("abenzerps/Spark-X2.6-4B-Quantized", "Spark-X2.6-4B-Q4_K_M.gguf")],
-        "downloaded": os.path.exists(os.path.join(MODEL_DIR, "Spark-X2.6-4B-Q4_K_M.gguf")) and os.path.getsize(os.path.join(MODEL_DIR, "Spark-X2.6-4B-Q4_K_M.gguf")) > 500_000_000,
-        "size_gb": 2.47,
+    "qwen3.5-4b": {
+        "key": "qwen3.5-4b",
+        "name": "Qwen3.5 4B",
+        "repo": "unsloth/Qwen3.5-4B-GGUF",
+        "filename": "Qwen3.5-4B-Q4_K_M.gguf",
+        "path": os.path.join(MODEL_DIR, "Qwen3.5-4B-Q4_K_M.gguf"),
+        "targets": [("unsloth/Qwen3.5-4B-GGUF", "Qwen3.5-4B-Q4_K_M.gguf")],
+        "downloaded": os.path.exists(os.path.join(MODEL_DIR, "Qwen3.5-4B-Q4_K_M.gguf")) and os.path.getsize(os.path.join(MODEL_DIR, "Qwen3.5-4B-Q4_K_M.gguf")) > 500_000_000,
+        "size_gb": 2.55,
     },
 }
 
-_active_model_key = "spark-x2.6-4b"
+_active_model_key = "qwen3.5-4b"
 _local_llm_instance = None
 _model_load_failed = False
 _model_load_error = None
@@ -391,12 +383,27 @@ def _download_hf_file(targets: list[tuple[str, str]], target_path: str, min_size
 
 def get_model_path() -> str:
     active_info = AVAILABLE_MODELS.get(_active_model_key, next(iter(AVAILABLE_MODELS.values())))
-    return _download_hf_file(
+    target_path = active_info["path"]
+    if os.path.exists(target_path) and os.path.getsize(target_path) >= 500_000_000:
+        return target_path
+
+    # Try downloading the active model
+    downloaded = _download_hf_file(
         active_info.get("targets", MODEL_TARGETS),
-        active_info["path"],
+        target_path,
         500_000_000,
         active_info["name"],
     )
+    if os.path.exists(downloaded) and os.path.getsize(downloaded) >= 500_000_000:
+        return downloaded
+
+    # Fallback to any already downloaded model if available on disk
+    for m in AVAILABLE_MODELS.values():
+        if os.path.exists(m["path"]) and os.path.getsize(m["path"]) >= 500_000_000:
+            logger.info("[Local AI Engine] Falling back to available model on disk: %s", m["name"])
+            return m["path"]
+
+    return target_path
 
 
 def is_vision_ready() -> bool:
@@ -404,7 +411,31 @@ def is_vision_ready() -> bool:
 
 
 def ensure_model_downloaded() -> str:
-    return get_model_path()
+    path = get_model_path()
+    if os.path.exists(path) and os.path.getsize(path) > 500_000_000:
+        return path
+    m_info = AVAILABLE_MODELS.get(_active_model_key, {})
+    repo = m_info.get("repo", "unsloth/Qwen3.5-4B-GGUF")
+    filename = m_info.get("filename", MODEL_FILENAME)
+    logger.info("Downloading %s (%s) to %s...", m_info.get("name", "Model"), filename, path)
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    try:
+        import subprocess
+        url = f"https://huggingface.co/{repo}/resolve/main/{filename}"
+        subprocess.run(
+            ["curl.exe", "-4", "-L", "-C", "-", "--retry", "5", "--retry-delay", "2", "-o", path, url],
+            check=True
+        )
+        return path
+    except Exception as e:
+        logger.warning("curl download failed (%s), trying hf_hub_download...", e)
+        from huggingface_hub import hf_hub_download
+        return hf_hub_download(
+            repo_id=repo,
+            filename=filename,
+            local_dir=MODELS_DIR,
+            local_dir_use_symlinks=False,
+        )
 
 
 def _setup_chat_formatter(llm) -> None:
@@ -469,10 +500,11 @@ def init_local_llm(force_reload: bool = False):
                 "numa": False,
                 "verbose": False,
             }
+            active_info = AVAILABLE_MODELS.get(_active_model_key, next(iter(AVAILABLE_MODELS.values())))
             try:
                 _local_llm_instance = Llama(**kwargs)
-                logger.info("[Local AI Engine] Initialized %s on GPU (n_gpu_layers=%s, n_ctx=%s)", MODEL_NAME, kwargs["n_gpu_layers"], kwargs["n_ctx"])
-                print(f"[Local AI Engine] Spark-X2.6 is running on GPU: NVIDIA GeForce RTX 3050 (n_gpu_layers={kwargs['n_gpu_layers']}, n_ctx={kwargs['n_ctx']}, flash_attn={kwargs['flash_attn']})", flush=True)
+                logger.info("[Local AI Engine] Initialized %s on GPU (n_gpu_layers=%s, n_ctx=%s)", active_info["name"], kwargs["n_gpu_layers"], kwargs["n_ctx"])
+                print(f"[Local AI Engine] {active_info['name']} is running on GPU: NVIDIA GeForce RTX 3050 (n_gpu_layers={kwargs['n_gpu_layers']}, n_ctx={kwargs['n_ctx']}, flash_attn={kwargs['flash_attn']})", flush=True)
             except Exception as gpu_err:
                 logger.warning("[Local AI Engine] GPU load failed (%s), falling back to CPU", gpu_err)
                 kwargs["n_gpu_layers"] = 0
@@ -500,7 +532,7 @@ def get_available_models() -> dict:
     return AVAILABLE_MODELS
 
 
-def set_active_model(model_key: str = "spark-x2.6-4b") -> bool:
+def set_active_model(model_key: str = "qwen3.5-4b") -> bool:
     global _active_model_key, _local_llm_instance, _LLM_CONFIG
     if model_key not in AVAILABLE_MODELS:
         return False
@@ -588,7 +620,6 @@ def query_local_llm(
     temperature: float | None = None,
     thinking: bool | None = None,
     sanitize: bool = True,
-    response_format: dict | None = None,
     stop: list[str] | None = None,
     raise_on_error: bool = False,
     repeat_penalty: float | None = None,
@@ -611,8 +642,6 @@ def query_local_llm(
             "repeat_penalty": 1.05 if repeat_penalty is None else repeat_penalty,
             "stop": STOP_TOKENS if stop is None else stop,
         }
-        if response_format:
-            kwargs["response_format"] = response_format
 
         with _inference_lock:
             try:

@@ -105,6 +105,7 @@ from amigo.utils.tool_registry import (
     set_ui_broadcast_callback,
 )
 from amigo.utils.tts import (
+    _extract_text_from_json,
     get_active_voice,
     get_tts_engine_name,
     get_voice_catalog,
@@ -221,8 +222,8 @@ def get_active_model_info() -> dict:
         models = get_llm_available_models() or {}
         info = next(iter(models.values()), {})
 
-    name = info.get("name", "Spark-X2.6 4B")
-    key = info.get("key", "spark-x2.6-4b")
+    name = info.get("name", "Qwen3.5 4B")
+    key = info.get("key", "qwen3.5-4b")
     vision_ok = is_vision_ready()
     ctx_len = int(os.getenv("AMIGO_LLM_N_CTX", "8192"))
     return {
@@ -243,7 +244,7 @@ def get_active_model_info() -> dict:
 
 def get_available_models() -> list[dict]:
     try:
-        active_key = get_active_model_info().get("key", "spark-x2.6-4b")
+        active_key = get_active_model_info().get("key", "qwen3.5-4b")
         return [
             {
                 "key": k,
@@ -255,7 +256,7 @@ def get_available_models() -> list[dict]:
         ]
     except Exception:
         return [
-            {"key": "spark-x2.6-4b", "name": "Spark-X2.6 4B", "status": "active", "type": "local"},
+            {"key": "nemotron-3.5-bolt-e4b", "name": "NVIDIA Nemotron 3.5 Bolt E4B", "status": "active", "type": "local"},
         ]
 
 
@@ -436,6 +437,7 @@ def _process_query(
     primary_tool = "multi_command" if len(actions) > 1 else last_tool
     final_reply = "\n\n".join(combined_spoken).strip()
     if final_reply:
+        final_reply = _extract_text_from_json(final_reply)
         final_reply = _normalize_llm_markdown(final_reply)
     elif primary_tool not in _SILENT_TOOLS:
         final_reply = get_quick_feedback(f"finished {primary_tool.replace('_', ' ')}")
@@ -539,7 +541,7 @@ def index():
     return jsonify({
         "status": "online",
         "service": "Amigo AI Engine & Windows 11 Voice Assistant Backend",
-        "model": info.get("name", "Spark-X2.6 4B"),
+        "model": info.get("name", "Qwen3.5 4B"),
     })
 
 
@@ -646,7 +648,7 @@ def api_assistant_process():
         return jsonify({
             "status": "online",
             "message": "Amigo AI Engine online",
-            "model": info.get("name", "Spark-X2.6 4B"),
+            "model": info.get("name", "Qwen3.5 4B"),
             "version": "Windows 11 Voice Assistant",
         })
 
@@ -703,7 +705,9 @@ def api_assistant_process():
         )
     )
 
+    response_text = _extract_text_from_json(response_text)
     speech_reply = response_text or (get_quick_feedback(f"starting {tool.replace('_', ' ')}") if tool not in _SILENT_TOOLS else "")
+    speech_reply = _extract_text_from_json(speech_reply)
     if "matching file" in speech_reply and "\n" in speech_reply:
         m_count = _RE_FILE_MATCH_COUNT.search(speech_reply)
         c_num = m_count.group(1) if m_count else "some"
@@ -995,8 +999,8 @@ def handle_settings():
         "user_profile": u_prof,
         "user_name": get_current_user_name(),
         "voice": curr_voice,
-        "model": info.get("key", "spark-x2.6-4b"),
-        "model_name": info.get("name", "Spark-X2.6 4B"),
+        "model": info.get("key", "qwen3.5-4b"),
+        "model_name": info.get("name", "Qwen3.5 4B"),
         "thinking_enabled": is_thinking_enabled(),
         "available_models": get_available_models(),
         "available_voices": get_voice_catalog(),
@@ -1386,7 +1390,6 @@ def _load_llm_background():
             temperature=0.0,
             thinking=False,
             sanitize=False,
-            response_format={"type": "json_object"},
             stop=_ROUTER_STOP,
         )
         logger.info("[Local AI Engine] Router KV prefix cache pre-warmed.")
