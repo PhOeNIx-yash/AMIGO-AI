@@ -795,7 +795,7 @@ def get_ai_response(
         is_voice=is_voice,
     )
     thinking_active = is_thinking_enabled()
-    limit = max_tokens or (1024 if thinking_active else (220 if is_voice else 512))
+    limit = max_tokens or (1024 if thinking_active else 512)
     sampling = get_sampling_params()
 
     response = query_local_llm(

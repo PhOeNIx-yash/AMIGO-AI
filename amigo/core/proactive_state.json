@@ -1,13 +1,13 @@
 {
   "last_weather_check": 1793109434.5620432,
-  "last_calendar_check": 1793109556.6261783,
-  "last_system_check": 1793110036.637123,
+  "last_calendar_check": 1793110456.6619043,
+  "last_system_check": 1793110876.7105348,
   "last_notification_time": 1793081288.7210577,
   "last_priority_alert_time": 0,
   "suggestions_this_hour": 0,
   "last_hour_reset": 1793107633.2375438,
-  "active_window_start": 1793107573.2358975,
-  "current_window_title": "Windows Default Lock Screen",
+  "active_window_start": 1793110876.7105348,
+  "current_window_title": "amigo-main - Antigravity IDE - llm_agent.py",
   "recent_suggestions": [
     {
       "id": "wellness_break",

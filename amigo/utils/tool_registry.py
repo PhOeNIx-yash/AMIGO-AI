@@ -642,9 +642,10 @@ def _tool_chat(params, query, spoken, conversation_history=None):
     doc_used = bool(doc_context)
     direct_reply = (spoken or params.get("reply") or params.get("response") or "").strip()
 
-    # Fast path: If the router already produced a quality conversational response
+    # Fast path: If the router already produced a complete conversational response
     # and no attached document requires re-reading, return immediately (avoids slow 2nd LLM round-trip)
-    if direct_reply and not doc_context and len(direct_reply) >= 3:
+    is_complete = bool(direct_reply and direct_reply.rstrip()[-1:] in ('.', '!', '?', '"', "'", '`', '}', '\n'))
+    if direct_reply and not doc_context and len(direct_reply) >= 3 and is_complete:
         return direct_reply, None, ({"doc_context_used": False})
 
     if not query or not query.strip():
@@ -1743,7 +1744,7 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
         response = query_local_llm(
             messages,
             system_prompt="",
-            max_tokens=128,
+            max_tokens=512,
             temperature=0.0,
             repeat_penalty=1.0,
             thinking=False,
