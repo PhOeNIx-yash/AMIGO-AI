@@ -17,7 +17,7 @@ def main():
 
     print("=" * 60)
     print("   AMIGO VOICE ASSISTANT v1.3 — ONE-CLICK EASY SETUP")
-    print("   Agentic Voice Assistant powered by Qwen 3.8 2B Distill")
+    print("   Agentic Voice Assistant powered by Nemotron 3.5 Bolt")
     print("=" * 60)
 
     # 1. Check Python & Git Environment
@@ -97,11 +97,11 @@ def main():
 
 
     # Local LLM GGUF Model Check
-    model_name_display = "Qwen3.5 4B"
+    model_name_display = "Nemotron 3.5 Bolt"
     try:
         from amigo.core.llm_agent import get_active_model_info, get_model_path, ensure_model_downloaded
         model_info = get_active_model_info()
-        model_name_display = model_info.get("name", "Qwen3.5 4B")
+        model_name_display = model_info.get("name", "Nemotron 3.5 Bolt")
         print(f" -> Checking Agent LLM (System 2): {model_name_display} (~{model_info.get('size_gb', 2.60)}GB)...")
         model_path = get_model_path()
         if os.path.exists(model_path) and os.path.getsize(model_path) > 500_000_000:

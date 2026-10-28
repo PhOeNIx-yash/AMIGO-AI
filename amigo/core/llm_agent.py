@@ -259,27 +259,27 @@ def _build_ai_messages(
 # ── Model Configuration & Lifecycle ────────────────────────────
 
 MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "models"))
-MODEL_NAME = "Qwen3.5 4B"
-MODEL_FILENAME = "Qwen3.5-4B-Q4_K_M.gguf"
+MODEL_NAME = "Nemotron 3.5 Bolt"
+MODEL_FILENAME = "NVIDIA-Nemotron-3.5-Bolt-E4B-UD-IQ2_M.gguf"
 MODEL_PATH = os.path.join(MODEL_DIR, MODEL_FILENAME)
-MODEL_TARGETS = [("unsloth/Qwen3.5-4B-GGUF", "Qwen3.5-4B-Q4_K_M.gguf")]
+MODEL_TARGETS = [("bartowski/NVIDIA-Nemotron-3.5-Bolt-E4B-UD-GGUF", "NVIDIA-Nemotron-3.5-Bolt-E4B-UD-IQ2_M.gguf")]
 
-STOP_TOKENS = ["<|im_end|>", "<|endoftext|>", "<|im_start|>", "<|eot_id|>", "<eos>"]
+STOP_TOKENS = ["<eos>", "<turn|>", "<|turn|>", "<|endoftext|>", "<|im_end|>", "<|im_start|>", "<|eot_id|>"]
 
 AVAILABLE_MODELS = {
-    "qwen3.5-4b": {
-        "key": "qwen3.5-4b",
-        "name": "Qwen3.5 4B",
-        "repo": "unsloth/Qwen3.5-4B-GGUF",
-        "filename": "Qwen3.5-4B-Q4_K_M.gguf",
-        "path": os.path.join(MODEL_DIR, "Qwen3.5-4B-Q4_K_M.gguf"),
-        "targets": [("unsloth/Qwen3.5-4B-GGUF", "Qwen3.5-4B-Q4_K_M.gguf")],
-        "downloaded": os.path.exists(os.path.join(MODEL_DIR, "Qwen3.5-4B-Q4_K_M.gguf")) and os.path.getsize(os.path.join(MODEL_DIR, "Qwen3.5-4B-Q4_K_M.gguf")) > 500_000_000,
-        "size_gb": 2.55,
+    "nemotron-3.5-bolt": {
+        "key": "nemotron-3.5-bolt",
+        "name": "Nemotron 3.5 Bolt",
+        "repo": "bartowski/NVIDIA-Nemotron-3.5-Bolt-E4B-UD-GGUF",
+        "filename": "NVIDIA-Nemotron-3.5-Bolt-E4B-UD-IQ2_M.gguf",
+        "path": os.path.join(MODEL_DIR, "NVIDIA-Nemotron-3.5-Bolt-E4B-UD-IQ2_M.gguf"),
+        "targets": [("bartowski/NVIDIA-Nemotron-3.5-Bolt-E4B-UD-GGUF", "NVIDIA-Nemotron-3.5-Bolt-E4B-UD-IQ2_M.gguf")],
+        "downloaded": os.path.exists(os.path.join(MODEL_DIR, "NVIDIA-Nemotron-3.5-Bolt-E4B-UD-IQ2_M.gguf")) and os.path.getsize(os.path.join(MODEL_DIR, "NVIDIA-Nemotron-3.5-Bolt-E4B-UD-IQ2_M.gguf")) > 500_000_000,
+        "size_gb": 3.29,
     },
 }
 
-_active_model_key = "qwen3.5-4b"
+_active_model_key = "nemotron-3.5-bolt"
 _local_llm_instance = None
 _model_load_failed = False
 _model_load_error = None
@@ -415,7 +415,7 @@ def ensure_model_downloaded() -> str:
     if os.path.exists(path) and os.path.getsize(path) > 500_000_000:
         return path
     m_info = AVAILABLE_MODELS.get(_active_model_key, {})
-    repo = m_info.get("repo", "unsloth/Qwen3.5-4B-GGUF")
+    repo = m_info.get("repo", "bartowski/NVIDIA-Nemotron-3.5-Bolt-E4B-UD-GGUF")
     filename = m_info.get("filename", MODEL_FILENAME)
     logger.info("Downloading %s (%s) to %s...", m_info.get("name", "Model"), filename, path)
     os.makedirs(MODEL_DIR, exist_ok=True)
@@ -532,7 +532,7 @@ def get_available_models() -> dict:
     return AVAILABLE_MODELS
 
 
-def set_active_model(model_key: str = "qwen3.5-4b") -> bool:
+def set_active_model(model_key: str = "nemotron-3.5-bolt") -> bool:
     global _active_model_key, _local_llm_instance, _LLM_CONFIG
     if model_key not in AVAILABLE_MODELS:
         return False

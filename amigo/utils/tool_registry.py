@@ -40,6 +40,7 @@ from amigo.services.content_generator import (
     generate_content as _tool_generate_content,
     insert_content as _tool_insert_content,
     regenerate_content as _tool_regenerate_content,
+    revert_content as _tool_revert_content,
     type_text as _tool_type_text,
 )
 from amigo.services.weather import get_weather_data, weather_command
@@ -1435,6 +1436,7 @@ UI_TOOL_HANDLERS = {
     "chat":               _tool_chat,
     "generate_content":   _tool_generate_content,
     "regenerate_content": _tool_regenerate_content,
+    "revert_content":     _tool_revert_content,
     "insert_content":     _tool_insert_content,
     "empty_recycle_bin":  _tool_empty_recycle_bin,
     "lock_pc":            _tool_lock_pc,
@@ -1528,6 +1530,7 @@ TOOL_DEFINITIONS = [
     _tool("generate_content", "Write/draft content (email, code, letter, essay).",
           {"type": _p("string", "Content type"), "topic": _p("string", "Topic"), "tone": _p("string", "Tone"), "destination": _p("string", "App")}, ["type", "topic"]),
     _tool("regenerate_content", "Modify or rewrite the last generated draft.", {"feedback": _p("string", "Modification instructions")}, ["feedback"]),
+    _tool("revert_content", "Undo or restore the previous version of the last generated draft."),
     _tool("insert_content", "Insert/paste last generated content into a destination app.", {"destination": _p("string", "Target app")}, ["destination"]),
     _tool("type_text", "Type text into an app.", {"text": _p("string", "Text"), "app": _p("string", "App")}, ["text"]),
     _tool("press_key", "Send a keyboard shortcut.", {"keys": _p("string", "Shortcut e.g. ctrl+c")}, ["keys"]),
@@ -1637,7 +1640,7 @@ def _build_router_messages(query: str, conversation_history: list | None = None)
 
 
 _JSON_DECODER = json.JSONDecoder()
-_ROUTER_STOP = ["<|endoftext|>", "<｜end of sentence｜>", "<|im_end|>", "<|im_start|>"]
+_ROUTER_STOP = ["<|endoftext|>", "<｜end of sentence｜>", "<|im_end|>", "<|im_start|>", "<eos>", "<turn|>", "<|turn|>"]
 
 
 def _clean_json_text(text: str) -> str:

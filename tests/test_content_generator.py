@@ -8,8 +8,11 @@ from unittest.mock import MagicMock, patch
 from amigo.services.content_generator import (
     build_temporal_and_user_context,
     route_content_to_destination,
+    route_content,
+    RouteResult,
     generate_content,
     regenerate_content,
+    revert_content,
     insert_content,
     type_text,
 )
@@ -213,6 +216,27 @@ class TestContentGenerator(unittest.TestCase):
         mock_run.return_value.returncode = 0
         self.assertTrue(restart_pc("45"))
         mock_run.assert_called_with(["shutdown", "/r", "/t", "45"], check=True)
+
+    def test_revert_content_undoes_last_revision(self):
+        rag_engine.update_active_state("generated_content", {
+            "content": "Second Version",
+            "type": "email",
+            "topic": "status",
+            "history": ["Original Version", "Second Version"],
+            "timestamp": 1234567.0,
+        })
+        spoken, link, meta = revert_content({}, "revert", "")
+        self.assertIn("restored", spoken.lower())
+        self.assertEqual(meta["generated_content"], "Original Version")
+        self.assertTrue(meta.get("is_reverted"))
+
+    @patch("pyperclip.copy")
+    def test_route_content_returns_route_result(self, mock_copy):
+        res = route_content("Hello from route_content", "clipboard")
+        self.assertIsInstance(res, RouteResult)
+        self.assertTrue(res.handled)
+        self.assertTrue(res.delivered)
+        self.assertEqual(res.method, "clipboard")
 
 
 if __name__ == "__main__":
