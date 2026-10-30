@@ -18,6 +18,8 @@ import json
 import logging
 import math
 import os
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 import pickle
 import re
 import sys
@@ -186,8 +188,16 @@ class NomicEmbeddingFunction:
             PreTrainedModel.get_extended_attention_mask = _get_extended_attention_mask
 
         self.target_model = target_model
-        self.tokenizer = AutoTokenizer.from_pretrained(target_model)
-        self.model = AutoModel.from_pretrained(target_model, trust_remote_code=True)
+        try:
+            self.tokenizer = AutoTokenizer.from_pretrained(target_model, local_files_only=True)
+            self.model = AutoModel.from_pretrained(target_model, trust_remote_code=True, local_files_only=True, use_safetensors=True)
+        except Exception:
+            try:
+                self.tokenizer = AutoTokenizer.from_pretrained(target_model, local_files_only=True)
+                self.model = AutoModel.from_pretrained(target_model, trust_remote_code=True, local_files_only=True)
+            except Exception:
+                self.tokenizer = AutoTokenizer.from_pretrained(target_model)
+                self.model = AutoModel.from_pretrained(target_model, trust_remote_code=True)
         self.model.eval()
         self._lock = threading.Lock()
         self._query_cache: collections.OrderedDict[str, list[float]] = collections.OrderedDict()

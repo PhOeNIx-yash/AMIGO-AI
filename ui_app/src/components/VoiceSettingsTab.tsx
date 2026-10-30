@@ -12,9 +12,9 @@ import { saveAssistantSettings } from "../services/assistantApi";
 export interface VoiceOption {
   id: string;
   name: string;
-  engine: "Pocket TTS";
+  engine: "Kokoro ONNX" | "Edge Neural TTS";
   gender: "Female" | "Male" | "Robot";
-  accent: "US" | "GB";
+  accent: "US" | "GB" | "IN" | "AU";
   desc: string;
   previewText: string;
   avatarGradient: string;
@@ -24,118 +24,118 @@ export interface VoiceOption {
 import FluidOrb from "../../components/ui/fluid-orb";
 
 export const VOICES_CATALOG: VoiceOption[] = [
-  // 5 Best Studio Female Neural Voices (Pocket TTS - 24kHz)
+  // 5 Best Flagship Female Studio Voices (Kokoro v1.0 ONNX - 24kHz Studio Offline)
   {
-    id: "alba",
-    name: "Alba",
-    engine: "Pocket TTS",
+    id: "af_heart",
+    name: "Heart",
+    engine: "Kokoro ONNX",
     gender: "Female",
     accent: "US",
-    desc: "Smooth, articulate & studio-clean neural female (Recommended)",
-    previewText: "Hello! I am Alba, your clear and articulate studio voice.",
+    desc: "Flagship studio female — #1 natural human cadence (Recommended / Default)",
+    previewText: "Hello! I am Heart, clear, natural and articulate.",
     avatarGradient: "from-rose-500 to-pink-600",
     color: "#f43f5e",
   },
   {
-    id: "cosette",
-    name: "Cosette",
-    engine: "Pocket TTS",
+    id: "af_bella",
+    name: "Bella",
+    engine: "Kokoro ONNX",
     gender: "Female",
     accent: "US",
-    desc: "Soft, natural & warm conversational female delivery",
-    previewText: "Hello! I am Cosette, soft, warm and conversational.",
+    desc: "Bright, crisp & articulate conversational female",
+    previewText: "Hey there! I am Bella, bright, clear and ready to help.",
     avatarGradient: "from-fuchsia-500 to-rose-600",
     color: "#ec4899",
   },
   {
-    id: "fantine",
-    name: "Fantine",
-    engine: "Pocket TTS",
+    id: "af_sarah",
+    name: "Sarah",
+    engine: "Kokoro ONNX",
     gender: "Female",
     accent: "US",
-    desc: "Warm, expressive and friendly conversational tone",
-    previewText: "Hi there! I am Fantine, warm, expressive and natural.",
+    desc: "Warm, confident and expressive conversational female",
+    previewText: "Hi! I am Sarah, warm, confident and easy to talk to.",
+    avatarGradient: "from-amber-400 to-rose-500",
+    color: "#f59e0b",
+  },
+  {
+    id: "af_nicole",
+    name: "Nicole",
+    engine: "Kokoro ONNX",
+    gender: "Female",
+    accent: "US",
+    desc: "Soft, gentle and calm conversational female",
+    previewText: "Hello, I am Nicole, calm, gentle and articulate.",
     avatarGradient: "from-violet-500 to-purple-600",
     color: "#8b5cf6",
   },
   {
-    id: "anna",
-    name: "Anna",
-    engine: "Pocket TTS",
+    id: "bf_emma",
+    name: "Emma",
+    engine: "Kokoro ONNX",
     gender: "Female",
-    accent: "US",
-    desc: "Bright, friendly & clear neural female delivery",
-    previewText: "Hey! I am Anna, bright, friendly and clear.",
+    accent: "GB",
+    desc: "Crisp, refined & elegant British female",
+    previewText: "Good day! I am Emma, crisp, elegant and articulate.",
     avatarGradient: "from-sky-400 to-blue-500",
     color: "#0ea5e9",
   },
-  {
-    id: "eve",
-    name: "Eve",
-    engine: "Pocket TTS",
-    gender: "Female",
-    accent: "US",
-    desc: "Crisp, energetic and articulate female delivery",
-    previewText: "Hi there! I am Eve, crisp, energetic and ready to help.",
-    avatarGradient: "from-amber-400 to-rose-500",
-    color: "#f59e0b",
-  },
 
-  // 5 Best Studio Male Neural Voices (Pocket TTS - 24kHz)
+  // 5 Best Flagship Male Studio Voices (Kokoro v1.0 ONNX - 24kHz Studio Offline)
   {
-    id: "marius",
-    name: "Marius",
-    engine: "Pocket TTS",
+    id: "am_adam",
+    name: "Adam",
+    engine: "Kokoro ONNX",
     gender: "Male",
     accent: "US",
-    desc: "Warm, relatable and conversational companion",
-    previewText: "Hey there! I am Marius, warm and easy to talk to.",
-    avatarGradient: "from-emerald-500 to-teal-700",
-    color: "#10b981",
-  },
-  {
-    id: "javert",
-    name: "Javert",
-    engine: "Pocket TTS",
-    gender: "Male",
-    accent: "US",
-    desc: "Deep, calm and grounded baritone resonance",
-    previewText: "Hello, I am Javert. Deep, calm and ready to assist you.",
+    desc: "Warm, relatable and conversational companion (Recommended)",
+    previewText: "Hey there! I am Adam, your personal voice assistant.",
     avatarGradient: "from-blue-600 to-indigo-700",
     color: "#3b82f6",
   },
   {
-    id: "jean",
-    name: "Jean",
-    engine: "Pocket TTS",
+    id: "am_michael",
+    name: "Michael",
+    engine: "Kokoro ONNX",
     gender: "Male",
     accent: "US",
-    desc: "Professional, crisp and articulate executive tone",
-    previewText: "Greetings! I am Jean. Professional, clear and articulate.",
+    desc: "Deep, confident and crisp executive male",
+    previewText: "Greetings! I am Michael, clear, confident and articulate.",
     avatarGradient: "from-cyan-600 to-blue-700",
     color: "#06b6d4",
   },
   {
-    id: "michael",
-    name: "Michael",
-    engine: "Pocket TTS",
+    id: "bm_george",
+    name: "George",
+    engine: "Kokoro ONNX",
     gender: "Male",
-    accent: "US",
-    desc: "Young, natural, and modern male delivery",
-    previewText: "Hey! I am Michael, young, natural and fast.",
+    accent: "GB",
+    desc: "Polished, distinguished British gentleman",
+    previewText: "Good day! I am George, speaking polished British English.",
+    avatarGradient: "from-amber-600 to-orange-700",
+    color: "#ea580c",
+  },
+  {
+    id: "bm_lewis",
+    name: "Lewis",
+    engine: "Kokoro ONNX",
+    gender: "Male",
+    accent: "GB",
+    desc: "Warm, natural and friendly British conversational male",
+    previewText: "Hello there! I am Lewis, friendly, natural and fast.",
     avatarGradient: "from-teal-500 to-cyan-600",
     color: "#14b8a6",
   },
   {
-    id: "george",
-    name: "George",
-    engine: "Pocket TTS",
-    gender: "Male",
+    id: "af_sky",
+    name: "Sky",
+    engine: "Kokoro ONNX",
+    gender: "Female",
     accent: "US",
-    desc: "Distinguished, articulate gentleman delivery",
-    previewText: "Good day! I am George, speaking distinguished studio English.",
-    avatarGradient: "from-amber-600 to-orange-700",
-    color: "#ea580c",
+    desc: "Youthful, energetic and upbeat female delivery",
+    previewText: "Hey! I am Sky, energetic and ready whenever you are.",
+    avatarGradient: "from-emerald-500 to-teal-700",
+    color: "#10b981",
   },
 ];
 
@@ -482,7 +482,7 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
                   <span
                     className="text-[9px] font-mono px-2 py-0.5 rounded-full font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/20"
                   >
-                    Pocket TTS 24kHz
+                    Kokoro 24kHz ONNX
                   </span>
                 </div>
 

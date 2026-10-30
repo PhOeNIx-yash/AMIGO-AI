@@ -1,30 +1,52 @@
 """
 Unified Speech Engine Module for Amigo Voice Assistant.
-Handles both Offline Neural Text-to-Speech (TTS via Kyutai Pocket TTS 24kHz)
+Handles both Neural Text-to-Speech (TTS via Microsoft Edge Neural Voices - Azure Studio 24kHz)
 and Offline Neural Speech-to-Text (STT via Vosk Neural Recognizer).
 """
 
+import asyncio
 import io
 import json
 import logging
 import os
 import queue
 import re
+import socket
 import threading
 import time
 import urllib.request
 import numpy as np
 
+# Force IPv4 in socket.getaddrinfo to prevent Windows 11 IPv6 connection reset error [WinError 10054]
+try:
+    _orig_getaddrinfo = socket.getaddrinfo
+    def _ipv4_getaddrinfo(*args, **kwargs):
+        res = _orig_getaddrinfo(*args, **kwargs)
+        ipv4 = [r for r in res if r[0] == socket.AF_INET]
+        return ipv4 if ipv4 else res
+    socket.getaddrinfo = _ipv4_getaddrinfo
+except Exception:
+    pass
+
+try:
+    import aiohttp
+    _orig_connector_init = aiohttp.TCPConnector.__init__
+    def _ipv4_connector_init(self, *args, **kwargs):
+        kwargs['family'] = socket.AF_INET
+        _orig_connector_init(self, *args, **kwargs)
+    aiohttp.TCPConnector.__init__ = _ipv4_connector_init
+except ImportError:
+    aiohttp = None
+
+try:
+    import av
+except ImportError:
+    av = None
+
 try:
     import num2words
 except ImportError:
     num2words = None
-
-# Silence verbose third-party pocket_tts generation timers and step logs
-for _pkg in ("pocket_tts", "pocket_tts.models.tts_model", "pocket_tts.utils.utils", "pocket_tts.models", "pocket_tts.utils"):
-    _pl = logging.getLogger(_pkg)
-    _pl.setLevel(logging.ERROR)
-    _pl.propagate = False
 
 logger = logging.getLogger("amigo.speech")
 
@@ -33,68 +55,94 @@ _MODELS_ROOT = os.path.join(_PROJECT_ROOT, "models")
 
 try:
     import sounddevice as _sd
-    from pocket_tts import TTSModel
-
-    _USE_POCKET_TTS = True
-    logger.info("[TTS] Kyutai Pocket TTS Engine available (24kHz).")
 except ImportError:
-    _USE_POCKET_TTS = False
-    logger.warning("[TTS] pocket-tts package not available.")
+    _sd = None
 
-# ── 10 Curated Best Offline Studio Neural Voices (Kyutai Pocket TTS - 24kHz Studio) ────────
+# ── Kokoro v1.0 ONNX Offline Neural Engine ─────────────────────────────────
+_KOKORO_MODEL_PATH = None
+for _cand in (
+    os.path.join(_MODELS_ROOT, "kokoro", "kokoro-v1.0.onnx"),
+    os.path.join(_MODELS_ROOT, "kokoro", "kokoro-v1.0.int8.onnx"),
+    os.path.join(_MODELS_ROOT, "kokoro-v1.0.onnx"),
+):
+    if os.path.exists(_cand) and os.path.getsize(_cand) > 10_000_000:
+        _KOKORO_MODEL_PATH = _cand
+        break
+
+_KOKORO_VOICES_PATH = None
+for _cand in (
+    os.path.join(_MODELS_ROOT, "kokoro", "voices-v1.0.bin"),
+    os.path.join(_MODELS_ROOT, "voices-v1.0.bin"),
+):
+    if os.path.exists(_cand) and os.path.getsize(_cand) > 1_000_000:
+        _KOKORO_VOICES_PATH = _cand
+        break
+
+try:
+    import kokoro_onnx
+    import onnxruntime as _ort
+    _USE_KOKORO_ONNX = bool(_KOKORO_MODEL_PATH and _KOKORO_VOICES_PATH)
+    if _USE_KOKORO_ONNX:
+        logger.info("[TTS] Kokoro v1.0 ONNX Offline Neural engine available (24kHz Studio, 54 voices).")
+except ImportError:
+    kokoro_onnx = None
+    _ort = None
+    _USE_KOKORO_ONNX = False
+
+# ── Microsoft Edge Neural Fallback Engine ──────────────────────────────────
+try:
+    import edge_tts
+    _USE_EDGE_TTS = True
+except ImportError:
+    edge_tts = None
+    _USE_EDGE_TTS = False
+
+_USE_TTS = _USE_KOKORO_ONNX or _USE_EDGE_TTS
+
+# ── Curated Voice Catalog ───────────────────────────────────────────────────
 CURATED_VOICES = {
-    # 5 Best Female Neural Voices (Pocket TTS)
-    "alba":    {"engine": "pocket_tts", "id": "alba",    "name": "Alba",    "gender": "Female", "accent": "US", "desc": "Smooth, articulate & studio-clean neural female (Recommended)"},
-    "cosette": {"engine": "pocket_tts", "id": "cosette", "name": "Cosette", "gender": "Female", "accent": "US", "desc": "Soft, natural & warm conversational female"},
-    "fantine": {"engine": "pocket_tts", "id": "fantine", "name": "Fantine", "gender": "Female", "accent": "US", "desc": "Warm, expressive and friendly conversational tone"},
-    "anna":    {"engine": "pocket_tts", "id": "anna",    "name": "Anna",    "gender": "Female", "accent": "US", "desc": "Bright, friendly & clear female delivery"},
-    "eve":     {"engine": "pocket_tts", "id": "eve",     "name": "Eve",     "gender": "Female", "accent": "US", "desc": "Energetic, crisp and articulate female delivery"},
+    # Kokoro v1.0 Flagship Studio Voices (Primary / Offline)
+    "af_heart":    {"engine": "kokoro", "id": "af_heart",    "name": "Heart",    "gender": "Female", "accent": "US", "desc": "Flagship studio female — #1 natural human cadence (Default)"},
+    "af_bella":    {"engine": "kokoro", "id": "af_bella",    "name": "Bella",    "gender": "Female", "accent": "US", "desc": "Bright, crisp & articulate assistant female"},
+    "af_sarah":    {"engine": "kokoro", "id": "af_sarah",    "name": "Sarah",    "gender": "Female", "accent": "US", "desc": "Warm, confident & clear conversational female"},
+    "af_nicole":   {"engine": "kokoro", "id": "af_nicole",   "name": "Nicole",   "gender": "Female", "accent": "US", "desc": "Soft, pleasant & relatable conversational female"},
+    "af_sky":      {"engine": "kokoro", "id": "af_sky",      "name": "Sky",      "gender": "Female", "accent": "US", "desc": "Expressive, youthful & upbeat female"},
+    "am_adam":     {"engine": "kokoro", "id": "am_adam",     "name": "Adam",     "gender": "Male",   "accent": "US", "desc": "Warm, relatable conversational male"},
+    "am_michael":  {"engine": "kokoro", "id": "am_michael",  "name": "Michael",  "gender": "Male",   "accent": "US", "desc": "Deep, confident & crisp male"},
+    "bm_george":   {"engine": "kokoro", "id": "bm_george",   "name": "George",   "gender": "Male",   "accent": "GB", "desc": "Polished & distinguished British gentleman"},
+    "bf_emma":     {"engine": "kokoro", "id": "bf_emma",     "name": "Emma",     "gender": "Female", "accent": "GB", "desc": "Crisp, elegant British female"},
 
-    # 5 Best Male Neural Voices (Pocket TTS)
-    "marius":  {"engine": "pocket_tts", "id": "marius",  "name": "Marius",  "gender": "Male",   "accent": "US", "desc": "Warm, relatable and conversational companion"},
-    "javert":  {"engine": "pocket_tts", "id": "javert",  "name": "Javert",  "gender": "Male",   "accent": "US", "desc": "Deep, calm and grounded baritone resonance"},
-    "jean":    {"engine": "pocket_tts", "id": "jean",    "name": "Jean",    "gender": "Male",   "accent": "US", "desc": "Professional, crisp and articulate executive tone"},
-    "michael": {"engine": "pocket_tts", "id": "michael", "name": "Michael", "gender": "Male",   "accent": "US", "desc": "Young, natural, and modern male delivery"},
-    "george":  {"engine": "pocket_tts", "id": "george",  "name": "George",  "gender": "Male",   "accent": "US", "desc": "Distinguished, articulate gentleman delivery"},
+    # Edge TTS Studio Voices (Cloud / Fallback)
+    "aria":        {"engine": "edge_tts", "id": "en-US-AriaNeural",        "name": "Aria",        "gender": "Female", "accent": "US", "desc": "Clear, natural studio female (Edge TTS)"},
+    "jenny":       {"engine": "edge_tts", "id": "en-US-JennyNeural",       "name": "Jenny",       "gender": "Female", "accent": "US", "desc": "Conversational studio female (Edge TTS)"},
+    "guy":         {"engine": "edge_tts", "id": "en-US-GuyNeural",         "name": "Guy",         "gender": "Male",   "accent": "US", "desc": "Conversational studio male (Edge TTS)"},
+    "christopher": {"engine": "edge_tts", "id": "en-US-ChristopherNeural", "name": "Christopher", "gender": "Male",   "accent": "US", "desc": "Narrative studio male (Edge TTS)"},
+    "sonia":       {"engine": "edge_tts", "id": "en-GB-SoniaNeural",       "name": "Sonia",       "gender": "Female", "accent": "GB", "desc": "Crisp British female (Edge TTS)"},
+    "ryan":        {"engine": "edge_tts", "id": "en-GB-RyanNeural",        "name": "Ryan",        "gender": "Male",   "accent": "GB", "desc": "Crisp British male (Edge TTS)"},
+    "neerja":      {"engine": "edge_tts", "id": "en-IN-NeerjaNeural",      "name": "Neerja",      "gender": "Female", "accent": "IN", "desc": "Natural Indian English female (Edge TTS)"},
 
-    # Backward compatibility with legacy Supertonic voice names
-    "nova":    {"engine": "pocket_tts", "id": "alba",    "name": "Alba",    "gender": "Female", "accent": "US", "desc": "Smooth, articulate female"},
-    "aria":    {"engine": "pocket_tts", "id": "cosette", "name": "Cosette", "gender": "Female", "accent": "US", "desc": "Soft, natural & warm female"},
-    "serena":  {"engine": "pocket_tts", "id": "fantine", "name": "Fantine", "gender": "Female", "accent": "US", "desc": "Warm, expressive female"},
-    "chloe":   {"engine": "pocket_tts", "id": "alba",    "name": "Alba",    "gender": "Female", "accent": "US", "desc": "Studio-clean conversational female"},
-    "luna":    {"engine": "pocket_tts", "id": "eve",     "name": "Eve",     "gender": "Female", "accent": "US", "desc": "Energetic and crisp female"},
-    "orion":   {"engine": "pocket_tts", "id": "javert",  "name": "Javert",  "gender": "Male",   "accent": "US", "desc": "Deep calm baritone male"},
-    "atlas":   {"engine": "pocket_tts", "id": "jean",    "name": "Jean",    "gender": "Male",   "accent": "US", "desc": "Professional executive male"},
-    "leo":     {"engine": "pocket_tts", "id": "marius",  "name": "Marius",  "gender": "Male",   "accent": "US", "desc": "Warm & conversational male"},
-    "felix":   {"engine": "pocket_tts", "id": "michael", "name": "Michael", "gender": "Male",   "accent": "US", "desc": "Young & natural modern male"},
-    "ethan":   {"engine": "pocket_tts", "id": "george",  "name": "George",  "gender": "Male",   "accent": "US", "desc": "Distinguished gentleman male"},
-
-    "f1":      {"engine": "pocket_tts", "id": "alba",    "name": "Alba",    "gender": "Female", "accent": "US", "desc": "Smooth studio female"},
-    "f2":      {"engine": "pocket_tts", "id": "cosette", "name": "Cosette", "gender": "Female", "accent": "US", "desc": "Soft warm female"},
-    "f3":      {"engine": "pocket_tts", "id": "fantine", "name": "Fantine", "gender": "Female", "accent": "US", "desc": "Warm expressive female"},
-    "f4":      {"engine": "pocket_tts", "id": "anna",    "name": "Anna",    "gender": "Female", "accent": "US", "desc": "Bright clear female"},
-    "f5":      {"engine": "pocket_tts", "id": "eve",     "name": "Eve",     "gender": "Female", "accent": "US", "desc": "Energetic crisp female"},
-    "m1":      {"engine": "pocket_tts", "id": "javert",  "name": "Javert",  "gender": "Male",   "accent": "US", "desc": "Deep baritone male"},
-    "m2":      {"engine": "pocket_tts", "id": "jean",    "name": "Jean",    "gender": "Male",   "accent": "US", "desc": "Executive male"},
-    "m3":      {"engine": "pocket_tts", "id": "marius",  "name": "Marius",  "gender": "Male",   "accent": "US", "desc": "Conversational male"},
-    "m4":      {"engine": "pocket_tts", "id": "michael", "name": "Michael", "gender": "Male",   "accent": "US", "desc": "Modern male"},
-    "m5":      {"engine": "pocket_tts", "id": "george",  "name": "George",  "gender": "Male",   "accent": "US", "desc": "Distinguished gentleman"},
+    # Compatibility Aliases (Route to best available engine/voice with zero hardcoding)
+    "default":     {"engine": "kokoro" if _USE_KOKORO_ONNX else "edge_tts", "id": "af_heart" if _USE_KOKORO_ONNX else "en-US-AriaNeural", "name": "Heart",   "gender": "Female", "accent": "US", "desc": "Default Assistant Voice"},
+    "amigo":       {"engine": "kokoro" if _USE_KOKORO_ONNX else "edge_tts", "id": "am_adam" if _USE_KOKORO_ONNX else "en-US-GuyNeural",   "name": "Amigo",   "gender": "Male",   "accent": "US", "desc": "Warm companion male"},
+    "clara":       {"engine": "kokoro" if _USE_KOKORO_ONNX else "edge_tts", "id": "af_bella" if _USE_KOKORO_ONNX else "en-US-JennyNeural", "name": "Clara",   "gender": "Female", "accent": "US", "desc": "Crisp conversational female"},
+    "sophia":      {"engine": "kokoro" if _USE_KOKORO_ONNX else "edge_tts", "id": "af_sarah" if _USE_KOKORO_ONNX else "en-US-AriaNeural",  "name": "Sophia",  "gender": "Female", "accent": "US", "desc": "Studio female"},
+    "leo":         {"engine": "kokoro" if _USE_KOKORO_ONNX else "edge_tts", "id": "am_michael" if _USE_KOKORO_ONNX else "en-US-ChristopherNeural", "name": "Leo", "gender": "Male", "accent": "US", "desc": "Narrative male"},
+    "alba":        {"engine": "kokoro" if _USE_KOKORO_ONNX else "edge_tts", "id": "af_heart" if _USE_KOKORO_ONNX else "en-US-AriaNeural", "name": "Alba",    "gender": "Female", "accent": "US", "desc": "Studio female"},
+    "cosette":     {"engine": "kokoro" if _USE_KOKORO_ONNX else "edge_tts", "id": "af_bella" if _USE_KOKORO_ONNX else "en-US-JennyNeural", "name": "Cosette", "gender": "Female", "accent": "US", "desc": "Conversational female"},
+    "marius":      {"engine": "kokoro" if _USE_KOKORO_ONNX else "edge_tts", "id": "am_adam" if _USE_KOKORO_ONNX else "en-US-GuyNeural",   "name": "Marius",  "gender": "Male",   "accent": "US", "desc": "Conversational male"},
+    "en-us":       {"engine": "kokoro" if _USE_KOKORO_ONNX else "edge_tts", "id": "af_heart" if _USE_KOKORO_ONNX else "en-US-AriaNeural", "name": "Default", "gender": "Female", "accent": "US", "desc": "Default Assistant Voice"},
+    "en-default":  {"engine": "kokoro" if _USE_KOKORO_ONNX else "edge_tts", "id": "af_heart" if _USE_KOKORO_ONNX else "en-US-AriaNeural", "name": "Default", "gender": "Female", "accent": "US", "desc": "Default Assistant Voice"},
 }
 
 _PROFILE_PATH = os.path.join(_PROJECT_ROOT, "amigo_profile.json")
 if not os.path.exists(_PROFILE_PATH):
     _PROFILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "amigo_profile.json")
 
-ACTIVE_VOICE = "alba"
-POCKET_TTS_SAMPLE_RATE = 24000
+ACTIVE_VOICE = "none"
 
 _tts_lock = threading.Lock()
-_pocket_tts_init_lock = threading.Lock()
-_pocket_tts_instance = None
 _active_stream = None
 _active_stream_lock = threading.Lock()
-_voice_state_cache = {}
-_voice_state_lock = threading.Lock()
 _current_stop_event = threading.Event()
 _profile_mtime_tts = 0.0
 
@@ -132,15 +180,12 @@ def set_voice(voice_name: str) -> str:
     """Sets the active voice, updates engine settings, and immediately persists to user profile atomically."""
     global ACTIVE_VOICE, _profile_mtime_tts
     key = voice_name.lower().strip()
-    display_name = voice_name
     if key in CURATED_VOICES:
         ACTIVE_VOICE = key
-        info = CURATED_VOICES[key]
-        display_name = info["name"]
-        logger.info(f"[TTS] Active voice switched to: {info['name']} (Pocket TTS {info['id']})")
+        display_name = CURATED_VOICES[key]["name"]
     else:
-        ACTIVE_VOICE = "alba"
-        display_name = "Alba"
+        ACTIVE_VOICE = key
+        display_name = voice_name
 
     # Persist to profile atomically so voice selection is remembered across restarts
     try:
@@ -174,8 +219,27 @@ def set_voice(voice_name: str) -> str:
 
 
 def get_voice_catalog() -> dict:
-    """Returns dictionary of all curated voices with metadata."""
-    return CURATED_VOICES
+    """Returns dictionary of all curated voices with metadata, augmented dynamically from Kokoro voices."""
+    catalog = dict(CURATED_VOICES)
+    if _USE_KOKORO_ONNX:
+        try:
+            k = _get_kokoro()
+            if k:
+                for v in k.get_voices():
+                    if v not in catalog:
+                        gender = "Female" if v.startswith(("af_", "bf_", "ef_", "ff_", "if_", "jf_", "zf_")) else "Male"
+                        accent = "GB" if v.startswith("b") else "US"
+                        catalog[v] = {
+                            "engine": "kokoro",
+                            "id": v,
+                            "name": v.replace("_", " ").title(),
+                            "gender": gender,
+                            "accent": accent,
+                            "desc": f"Kokoro v1.0 Studio voice ({v})",
+                        }
+        except Exception:
+            pass
+    return catalog
 
 
 def get_active_voice() -> str:
@@ -198,72 +262,122 @@ def set_tts_callbacks(state_cb=None, broadcast_cb=None):
 
 
 def get_tts_engine_name() -> str:
-    voice_info = CURATED_VOICES.get(ACTIVE_VOICE)
-    vname = voice_info["name"] if voice_info else "Alba"
-    if _USE_POCKET_TTS:
-        return f"Pocket TTS 24kHz ({vname})"
-    return f"Pocket TTS ({vname})"
+    if _USE_KOKORO_ONNX:
+        return "Kokoro v1.0 ONNX Offline Neural TTS (24kHz Studio)"
+    elif _USE_EDGE_TTS:
+        return "Microsoft Edge Neural TTS (24kHz)"
+    return "TTS Disabled"
 
 
-def _get_pocket_tts():
-    """Lazy-load Kyutai Pocket TTS model - thread-safe and 100% offline capable."""
-    global _pocket_tts_instance
-    if _pocket_tts_instance is None:
-        with _pocket_tts_init_lock:
-            if _pocket_tts_instance is None:
-                logger.info("[TTS] Initializing Kyutai Pocket TTS Neural Engine (24kHz)...")
-                from pocket_tts import TTSModel
+_kokoro_instance = None
+_kokoro_init_lock = threading.Lock()
+
+
+def _get_kokoro():
+    """Lazy-loads and warms up Kokoro v1.0 ONNX inference engine with optimized multi-threading."""
+    global _kokoro_instance
+    if _kokoro_instance is None and _USE_KOKORO_ONNX:
+        with _kokoro_init_lock:
+            if _kokoro_instance is None and _KOKORO_MODEL_PATH and _KOKORO_VOICES_PATH:
                 try:
-                    _pocket_tts_instance = TTSModel.load_model()
-                except Exception:
-                    # Fallback to strict offline mode if network is unavailable or blocked
-                    old_offline = os.environ.get("HF_HUB_OFFLINE")
-                    try:
-                        os.environ["HF_HUB_OFFLINE"] = "1"
-                        _pocket_tts_instance = TTSModel.load_model()
-                    finally:
-                        if old_offline is None:
-                            os.environ.pop("HF_HUB_OFFLINE", None)
-                        else:
-                            os.environ["HF_HUB_OFFLINE"] = old_offline
-                logger.info("[TTS] Kyutai Pocket TTS ready.")
-    return _pocket_tts_instance
+                    so = _ort.SessionOptions()
+                    so.intra_op_num_threads = min(6, os.cpu_count() or 4)
+                    so.inter_op_num_threads = 2
+                    so.graph_optimization_level = _ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                    session = _ort.InferenceSession(_KOKORO_MODEL_PATH, sess_options=so, providers=["CPUExecutionProvider"])
+                    _kokoro_instance = kokoro_onnx.Kokoro.from_session(session, _KOKORO_VOICES_PATH)
+                    logger.info("[Kokoro] Kokoro v1.0 ONNX Engine loaded and ready.")
+                except Exception as e:
+                    logger.warning(f"[Kokoro] Init note: {e}")
+    return _kokoro_instance
 
 
-def _get_voice_state(model, voice_name: str):
-    """Retrieves and caches voice conditioning state vector for instant 0ms reuse."""
-    v_key = voice_name.lower().strip()
-    voice_info = CURATED_VOICES.get(v_key)
-    prompt_id = voice_info["id"] if voice_info else "alba"
+def _fetch_kokoro_audio(text: str, voice_id: str = "af_heart", stop_evt: threading.Event | None = None, speed: float = 1.05) -> tuple[np.ndarray | None, int]:
+    """Generates ultra-fast 24kHz studio audio via Kokoro v1.0 ONNX with zero cloud latency."""
+    kokoro = _get_kokoro()
+    if kokoro is None:
+        return None, 24000
+    try:
+        if stop_evt and stop_evt.is_set():
+            return None, 24000
+        # Determine language prefix from voice (e.g. bf_emma -> en-gb, af_heart -> en-us)
+        lang = "en-gb" if voice_id.startswith("b") else "en-us"
+        samples, sr = kokoro.create(text, voice=voice_id, speed=speed, lang=lang)
+        if samples is None or len(samples) == 0:
+            return None, 24000
+        audio = np.ascontiguousarray(samples, dtype=np.float32)
+        return audio, sr
+    except Exception as e:
+        logger.warning(f"[Kokoro] Synthesis error: {e}")
+        return None, 24000
 
-    with _voice_state_lock:
-        if prompt_id in _voice_state_cache:
-            return _voice_state_cache[prompt_id]
-        try:
-            st = model.get_state_for_audio_prompt(prompt_id)
-            _voice_state_cache[prompt_id] = st
-            return st
-        except Exception as e:
-            logger.warning(f"[TTS] Failed to load voice state for '{prompt_id}': {e}. Falling back to 'alba'.")
-            if "alba" in _voice_state_cache:
-                return _voice_state_cache["alba"]
-            st = model.get_state_for_audio_prompt("alba")
-            _voice_state_cache["alba"] = st
-            return st
+
+def _fetch_edge_tts_audio(text: str, voice_id: str, stop_evt: threading.Event | None = None, rate: str = "+8%", pitch: str = "+0Hz") -> tuple[np.ndarray | None, int]:
+    """Fetches and decodes MP3 audio bytes from Edge TTS into float32 samples with assistant pacing tuning."""
+    if not edge_tts or not av:
+        return None, 24000
+
+    async def _async_fetch():
+        comm = edge_tts.Communicate(text, voice_id, rate=rate, pitch=pitch)
+        buf = io.BytesIO()
+        async for chunk in comm.stream():
+            if stop_evt and stop_evt.is_set():
+                return None
+            if chunk["type"] == "audio":
+                buf.write(chunk["data"])
+        buf.seek(0)
+        return buf
+
+    loop = asyncio.new_event_loop()
+    try:
+        mp3_buf = loop.run_until_complete(_async_fetch())
+    except Exception as e:
+        logger.warning(f"[Edge TTS] Fetch error: {e}")
+        return None, 24000
+    finally:
+        loop.close()
+
+    if mp3_buf is None or mp3_buf.getbuffer().nbytes == 0:
+        return None, 24000
+
+    try:
+        container = av.open(mp3_buf)
+        frames = []
+        sr = 24000
+        for frame in container.decode(audio=0):
+            sr = frame.sample_rate
+            frames.append(frame.to_ndarray())
+        container.close()
+
+        if not frames:
+            return None, sr
+
+        audio = np.concatenate(frames, axis=1)
+        if audio.ndim > 1:
+            audio = audio.mean(axis=0)
+        audio = np.ascontiguousarray(audio.astype(np.float32) / 32768.0, dtype=np.float32)
+        return audio, sr
+    except Exception as e:
+        logger.warning(f"[Edge TTS] Decode error: {e}")
+        return None, 24000
 
 
 def _warmup_tts():
-    """Warms up Kyutai Pocket TTS in a background thread so initial speech is instant."""
+    """Warms up TTS engine in a background thread so first generation has zero delay."""
     def _warm():
         try:
-            if _USE_POCKET_TTS:
-                model = _get_pocket_tts()
-                _get_voice_state(model, "alba")
-                logger.info("[TTS] Kyutai Pocket TTS primed and cached.")
+            if _USE_KOKORO_ONNX:
+                kokoro = _get_kokoro()
+                if kokoro:
+                    kokoro.create("Ready.", voice="af_heart")
+                    logger.info("[TTS] Kokoro v1.0 ONNX Engine primed and ready.")
+            elif _USE_EDGE_TTS:
+                _fetch_edge_tts_audio("Ready.", "en-US-AriaNeural")
+                logger.info("[TTS] Microsoft Edge Neural TTS initialized and connected.")
         except Exception as e:
             logger.debug(f"[TTS Warmup] {e}")
 
-    threading.Thread(target=_warm, daemon=True, name="PocketTTS-Warmup").start()
+    threading.Thread(target=_warm, daemon=True, name="TTS-Warmup").start()
 
 
 _warmup_tts()
@@ -420,6 +534,32 @@ def normalize_text_for_tts(text: str) -> str:
     # 7. Number ranges & scores BEFORE hyphens are touched (3-1 -> 3 to 1, 2024-2025 -> 2024 to 2025)
     t = re.sub(r'(\d+)\s*[-–—]\s*(\d+)', r'\1 to \2', t)
 
+    # 7.5 Currency normalization BEFORE decimal substitution ($50.25 -> fifty dollars and twenty-five cents)
+    if num2words is not None:
+        def _curr_cents_repl(m):
+            try:
+                dollars = int(m.group(1))
+                cents = int(m.group(2))
+                d_str = num2words.num2words(dollars)
+                d_unit = "dollar" if dollars == 1 else "dollars"
+                if cents > 0:
+                    c_str = num2words.num2words(cents)
+                    c_unit = "cent" if cents == 1 else "cents"
+                    return f"{d_str} {d_unit} and {c_str} {c_unit}"
+                return f"{d_str} {d_unit}"
+            except Exception:
+                return m.group(0)
+        t = re.sub(r'\$(\d+)\.(\d{1,2})\b', _curr_cents_repl, t)
+
+        def _curr_whole_repl(m):
+            try:
+                val = int(m.group(1))
+                unit = "dollar" if val == 1 else "dollars"
+                return f"{num2words.num2words(val)} {unit}"
+            except Exception:
+                return m.group(0)
+        t = re.sub(r'\$(\d+)\b', _curr_whole_repl, t)
+
     # 8. Phone numbers (e.g. +1-800-555-0199 or 98765 43210 or 123-456-7890) -> digit by digit
     def _phone_repl(m):
         cleaned = re.sub(r'\D', '', m.group(0))
@@ -476,11 +616,22 @@ def normalize_text_for_tts(text: str) -> str:
     t = _RE_SPECIAL_CHARS.sub(' ', t)
     t = re.sub(r'[/|]', ' ', t)
 
-    # 18. Currency and percentages
-    t = re.sub(r'\$(\d+(?:\.\d{2})?)', r'\1 dollars', t)
-    t = re.sub(r'(\d+)%', r'\1 percent', t)
-
+    # 18. Percentages, dates, and comprehensive number-to-words normalization
     if num2words is not None:
+        # Percentages: 50% -> fifty percent, 3.5% -> three point five percent
+        def _percent_repl(m):
+            try:
+                val = m.group(1)
+                if "." in val:
+                    parts = val.split(".")
+                    w = num2words.num2words(int(parts[0]))
+                    d = " ".join(num2words.num2words(int(x)) for x in parts[1])
+                    return f"{w} point {d} percent"
+                return f"{num2words.num2words(int(val))} percent"
+            except Exception:
+                return m.group(0)
+        t = re.sub(r'(\d+(?:\.\d+)?)\s*%', _percent_repl, t)
+
         # Dates: e.g. September 6, 2026
         def _date_repl(m):
             month = m.group(1)
@@ -509,7 +660,7 @@ def normalize_text_for_tts(text: str) -> str:
 
         t = re.sub(r'\b(\d+)(?:st|nd|rd|th)\b', _ord_repl, t, flags=re.I)
 
-        # Four-digit years: only convert to "year" when preceded by year indicators
+        # Four-digit years: convert to "year" when preceded by year indicators
         def _year_repl(m):
             prefix = m.group(1)
             year = int(m.group(2))
@@ -518,7 +669,18 @@ def normalize_text_for_tts(text: str) -> str:
             except Exception:
                 return m.group(0)
 
-        t = re.sub(r'\b(in |since |year |dated |from |circa )(19\d\d|20\d\d)\b', _year_repl, t, flags=re.I)
+        t = re.sub(r'\b(in |since |year |dated |from |circa )(18\d\d|19\d\d|20\d\d)\b', _year_repl, t, flags=re.I)
+
+        # Standalone years between 1900 and 2040
+        def _standalone_year_repl(m):
+            val = int(m.group(0))
+            if 1900 <= val <= 2040:
+                try:
+                    return num2words.num2words(val, to='year')
+                except Exception:
+                    pass
+            return m.group(0)
+        t = re.sub(r'\b(19\d\d|20[0-3]\d)\b', _standalone_year_repl, t)
 
         # Other standalone numbers (cardinals)
         def _num_repl(m):
@@ -528,6 +690,9 @@ def normalize_text_for_tts(text: str) -> str:
                 return m.group(0)
 
         t = re.sub(r'\b(\d+)\b', _num_repl, t)
+    else:
+        t = re.sub(r'\$(\d+(?:\.\d{2})?)', r'\1 dollars', t)
+        t = re.sub(r'(\d+)%', r'\1 percent', t)
 
     # 19. Acronyms vs common pronounceable capitalized words
     PRONOUNCEABLE = {'NASA', 'CHAT', 'OPEN', 'PLAY', 'HELP', 'STOP', 'DONE', 'ASAP', 'PIN', 'STEM', 'NATO', 'AIDS', 'RAM', 'ROM', 'LASER', 'MUTE', 'NEXT', 'QUIT', 'EXIT'}
@@ -795,13 +960,14 @@ def _speech_worker():
             if broadcast_chat and _on_broadcast:
                 _on_broadcast("chat_message", {"sender": "assistant", "text": text})
 
-            if not _USE_POCKET_TTS:
-                logger.warning("[TTS] Pocket TTS neural engine not available.")
+            if not _USE_TTS:
+                _update_state("idle")
                 continue
 
-            model = _get_pocket_tts()
             target_voice = voice_override.lower().strip() if voice_override else sync_voice_from_profile()
-            voice_state = _get_voice_state(model, target_voice)
+            v_info = CURATED_VOICES.get(target_voice, CURATED_VOICES.get("af_heart" if _USE_KOKORO_ONNX else "aria"))
+            engine_type = v_info.get("engine", "kokoro" if _USE_KOKORO_ONNX else "edge_tts") if v_info else "edge_tts"
+            voice_id = v_info.get("id", "af_heart" if engine_type == "kokoro" else "en-US-AriaNeural") if v_info else "af_heart"
 
             clean_text = _compact_tts_text(text)
             if not clean_text:
@@ -825,34 +991,25 @@ def _speech_worker():
                     with _tts_lock:
                         if not _speech_is_current(generation) or stop_evt.is_set():
                             break
-                        # Stream audio tensor chunks (each 80ms / 1920 samples @ 24kHz)
-                        audio_stream = model.generate_audio_stream(voice_state, spoken_chunk, stop=stop_evt)
+                        if engine_type == "kokoro" and _USE_KOKORO_ONNX:
+                            samples, sr = _fetch_kokoro_audio(spoken_chunk, voice_id, stop_evt)
+                        else:
+                            samples, sr = _fetch_edge_tts_audio(spoken_chunk, voice_id, stop_evt)
 
-                        for chunk_tensor in audio_stream:
-                            if not _speech_is_current(generation) or stop_evt.is_set():
-                                break
-
-                            samples = chunk_tensor.cpu().numpy()
-                            if samples is not None and samples.size > 0:
-                                samples = np.ascontiguousarray(samples, dtype=np.float32)
-                                while _speech_is_current(generation) and not stop_evt.is_set():
-                                    try:
-                                        _playback_queue.put((samples, POCKET_TTS_SAMPLE_RATE, generation, False), timeout=0.1)
-                                        first_chunk_emitted = True
-                                        break
-                                    except queue.Full:
-                                        continue
+                    if samples is not None and len(samples) > 0 and _speech_is_current(generation) and not stop_evt.is_set():
+                        is_last = (idx == total_chunks - 1)
+                        _playback_queue.put((samples, sr, generation, is_last))
+                        first_chunk_emitted = True
 
                 except Exception as chunk_err:
-                    logger.error(f"[Pocket TTS Chunk Error] {chunk_err} on chunk: {chunk[:60]}")
+                    logger.error(f"[TTS Chunk Error] {chunk_err} on chunk: {chunk[:60]}")
                     continue
 
             # Signal utterance completion if still current
             if _speech_is_current(generation) and not stop_evt.is_set() and first_chunk_emitted:
                 try:
-                    # Trailing silence cushion (60ms) to allow hardware buffer to play out cleanly
-                    tail_silence = np.zeros(int(0.06 * POCKET_TTS_SAMPLE_RATE), dtype=np.float32)
-                    _playback_queue.put((tail_silence, POCKET_TTS_SAMPLE_RATE, generation, True), timeout=0.2)
+                    tail_silence = np.zeros(int(0.06 * 24000), dtype=np.float32)
+                    _playback_queue.put((tail_silence, 24000, generation, True), timeout=0.2)
                 except Exception:
                     pass
 

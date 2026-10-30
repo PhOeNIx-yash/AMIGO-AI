@@ -1575,22 +1575,34 @@ TOOLS AVAILABLE:
 
 ROUTING RULES:
 1. INTENT-BASED ROUTING:
-- Route by understanding the user's intent, not by matching fixed words or memorized example phrases.
-- Navigation vs Search: When the user asks to launch, open, or visit an application, file, or website, route to navigation tools ('open_website', 'open_app', 'open_file'). When the user asks a question, requests information, searches, or checks details, route to information retrieval tools ('web_search', 'document_qa'), even if a specific website or platform is mentioned.
-- Opening Files: When the user asks to open, view, or launch a file, document, or resume, route to 'open_file' with params['path']. When the user asks a question about facts or contents inside documents, route to 'document_qa'.
-- Use dedicated tools for information that must come from the current PC, such as the local clock, system state, media, or installed applications.
-- Local Records vs Visual Display:
-  * Route to 'document_qa' for retrieving facts, contents, data, or text from the user's local documents, files, and stored records on the computer, regardless of whether a document or viewer is currently open on the desktop.
-  * Route to 'read_screen' exclusively when the user asks to inspect the physical display, visual appearance, GUI layout, on-screen errors, or graphical window state.
-- Local Documents vs Web Search: Use document_qa for questions about the user's indexed personal files and local PC records. Route to 'web_search' for external information, public facts, current events, or web research.
-- Do not send every factual question to web search. If uncertain, the subject is unfamiliar or specialized, or current facts are needed, use retrieved results; answer from retrieved results and say so rather than guessing.
-- Spoken Dialogue & Advice ('chat'): Use for conversational dialogue, reasoning, creative writing, translations, opinions, and advice that do not require external lookup or local system inspection. Output direct reply in params['response'].
-- Media & Playback: For media requests ('play_youtube'), pass the exact media title or query requested by the user in params['query'] without extrapolating or inventing metadata. Use 'resume_media', 'pause_media', 'next_track', 'prev_track' for playback controls.
-- Context & Independence: Resolve pronouns and follow-up references ('it', 'that', 'this') naturally using recent conversation turns. If the user initiates a new topic, do not carry over entities, domains, or tool targets from prior unrelated turns.
-- System Actions & Confirmations: If an action is pending user confirmation and the user affirms ('yes', 'sure', 'confirm'), call 'confirm_action'. If the user declines ('no', 'cancel'), call 'cancel_action'.
+- Route by understanding the user's intent.
+- Launching Apps vs Websites: When the user asks to open or launch an application or program (e.g. Chrome, Notepad, Spotify, Calculator), route to 'open_app'. Route to 'open_website' only when the user explicitly requests to visit a web URL or domain (e.g. https://...).
+- Information Retrieval vs Navigation: When the user asks a question, requests information, searches, or checks details, route to information retrieval tools ('web_search', 'document_qa', 'get_weather', 'get_time').
+- Opening Files: When the user asks to open, view, or launch a file or document, route to 'open_file' with params['path']. When the user asks a question about facts or contents inside documents, route to 'document_qa'.
+- Screen & Display: Route to 'read_screen' exclusively when the user asks to inspect the physical display, visual appearance, GUI layout, or on-screen errors.
+- Spoken Dialogue & Advice ('chat'): Use 'chat' for conversational greetings, chit-chat, opinions, advice, and quick math that do not require external lookup or PC tools. Output direct reply in params['response'].
+- Media & Playback: For media requests ('play_youtube'), pass the exact media title or query in params['query']. Use 'resume_media', 'pause_media', 'next_track', 'prev_track' for playback controls.
+- System Actions & Confirmations: If an action is pending user confirmation and the user affirms ('yes', 'sure'), call 'confirm_action'. If the user declines ('no', 'cancel'), call 'cancel_action'.
 
-When outputting tool actions or direct chat responses, Return only valid JSON:
-{"actions": [{"tool": "<tool_name>", "params": {<parameters>}}]}"""
+OUTPUT FORMAT:
+Always output ONLY valid JSON matching this schema:
+{"actions": [{"tool": "<tool_name>", "params": {<parameters>}}]}
+
+EXAMPLES:
+User: Open chrome
+{"actions": [{"tool": "open_app", "params": {"name": "chrome"}}]}
+
+User: What's the weather in Tokyo?
+{"actions": [{"tool": "get_weather", "params": {"city": "Tokyo"}}]}
+
+User: Play some jazz on youtube
+{"actions": [{"tool": "play_youtube", "params": {"query": "jazz music"}}]}
+
+User: What time is it?
+{"actions": [{"tool": "get_time", "params": {}}]}
+
+User: Hello, how are you?
+{"actions": [{"tool": "chat", "params": {"response": "Hello! I am doing well, ready to help."}}]}"""
 
 _MASTER_PROMPT_CACHE: str | None = None
 
@@ -1646,6 +1658,9 @@ _ROUTER_STOP = ["<|endoftext|>", "<｜end of sentence｜>", "<|im_end|>", "<|im_
 def _clean_json_text(text: str) -> str:
     clean = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.I).strip()
     clean = re.sub(r"<think>[\s\S]*$", "", clean, flags=re.I).strip()
+    if "</think>" in clean:
+        after_think = clean.split("</think>")[-1].strip()
+        clean = after_think if after_think else clean.replace("</think>", "").strip()
     clean = re.sub(r"```(?:json)?\s*", "", clean).replace("```", "").strip()
     clean = re.sub(r",\s*([\]}])", r"\1", clean)
     # Auto-balance braces and brackets if output was cleanly cut off at stop token
@@ -1690,11 +1705,12 @@ def _call_from_obj(obj) -> list[dict]:
         for item in obj["actions"]:
             calls.extend(_call_from_obj(item))
         return calls
-    tool_cand = obj.get("tool") or obj.get("action") or (obj.get("name") if obj.get("name") in VALID_TOOL_NAMES else None)
+    tool_cand = obj.get("tool") or obj.get("action") or obj.get("name")
     if not isinstance(tool_cand, str) or tool_cand.strip().lower() not in VALID_TOOL_NAMES:
         return []
     t_name = tool_cand.strip().lower()
-    params = _coerce_params(obj.get("params") if "params" in obj else obj.get("arguments"))
+    raw_params = obj.get("params") or obj.get("arguments") or obj.get("parameters") or {}
+    params = _coerce_params(raw_params)
     speak = obj.get("speak") or (params.get("reply") or params.get("response") if t_name == "chat" else "")
     if t_name == "chat":
         reply_val = params.get("reply") or params.get("response") or speak
@@ -1706,23 +1722,77 @@ def _call_from_obj(obj) -> list[dict]:
 
 
 def _parse_tool_calls(response: str) -> list[dict]:
-    clean = _clean_json_text(response)
     calls: list[dict] = []
+
+    # 1. Native XML tool-calling blocks: <tool_call>, <invoke>, <function_call>
+    # Supports LiquidAI (<function=...>), Hermes/Qwen (<tool_call>{JSON}</tool_call>), and Claude (<invoke>)
+    xml_blocks = re.findall(
+        r'<(?:tool_call|invoke|function_call)(?:[^>]*)>([\s\S]*?)</(?:tool_call|invoke|function_call)>',
+        response,
+        flags=re.I,
+    )
+    for m in re.finditer(r'<invoke\s+name=["\']([^"\']+)["\']\s*>([\s\S]*?)</invoke>', response, flags=re.I):
+        fn_name = m.group(1).strip().lower()
+        body = m.group(2)
+        params = {}
+        for p in re.finditer(r'<parameter\s+name=["\']([^"\']+)["\']\s*>([\s\S]*?)</parameter>', body, flags=re.I):
+            params[p.group(1).strip()] = p.group(2).strip()
+        if fn_name in VALID_TOOL_NAMES:
+            calls.append({"tool": fn_name, "params": params, "speak": ""})
+
+    for block in xml_blocks:
+        block_str = block.strip()
+        # Case A: JSON within XML wrapper
+        if "{" in block_str:
+            for _, _, obj in _iter_json_objects(block_str):
+                calls.extend(_call_from_obj(obj))
+        # Case B: LiquidAI / parameter tag format
+        fn_match = re.search(r'<function=([a-zA-Z0-9_]+)>([\s\S]*?)</function>', block_str, flags=re.I)
+        if fn_match:
+            fn_name = fn_match.group(1).strip().lower()
+            body = fn_match.group(2)
+            params = {}
+            for p in re.finditer(r'<parameter=([a-zA-Z0-9_]+)>\s*([\s\S]*?)\s*</parameter>', body, flags=re.I):
+                params[p.group(1).strip()] = p.group(2).strip()
+            if fn_name in VALID_TOOL_NAMES:
+                calls.append({"tool": fn_name, "params": params, "speak": ""})
+
+    # 2. Standard JSON objects anywhere in text (Amigo JSON, ChatML, OpenAI format)
+    clean = _clean_json_text(response)
     for _, _, obj in _iter_json_objects(clean):
         calls.extend(_call_from_obj(obj))
-    return [c for c in calls if c["tool"] in VALID_TOOL_NAMES]
+
+    # 3. Filter valid tools and deduplicate identical consecutive calls
+    valid = [c for c in calls if c["tool"] in VALID_TOOL_NAMES]
+    deduped: list[dict] = []
+    for c in valid:
+        if not any(c["tool"] == d["tool"] and c.get("params") == d.get("params") for d in deduped):
+            deduped.append(c)
+    return deduped
 
 
 def _extract_final_response(response: str, tool_calls: list) -> str:
     clean = _clean_json_text(response)
-    if clean.startswith("{") or clean.startswith("["):
+    if "{" in clean:
         m = re.search(r'"(?:response|speak|reply)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"?', clean)
         if m:
             try:
                 return sanitize_for_tts(json.loads(f'"{m.group(1)}"'))
             except Exception:
                 return sanitize_for_tts(m.group(1))
-        return ""
+
+    # Strip XML tool calls and markdown code blocks
+    non_tool = re.sub(
+        r'<(?:tool_call|invoke|function_call)(?:[^>]*)>[\s\S]*?</(?:tool_call|invoke|function_call)>',
+        '',
+        clean,
+        flags=re.I,
+    ).strip()
+    non_tool = re.sub(r'```(?:json|xml)?\s*', '', non_tool).replace('```', '').strip()
+
+    # If no tool calls were made and plain text dialogue remains, treat as direct spoken response
+    if not tool_calls and non_tool and not non_tool.startswith("{") and not non_tool.startswith("["):
+        return sanitize_for_tts(non_tool)
     return ""
 
 

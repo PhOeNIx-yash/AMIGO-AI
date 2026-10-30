@@ -1,6 +1,6 @@
 """
 LLM-Based Agent for Amigo Voice Assistant.
-Clean, streamlined inference engine for Qwen3.5 4B:
+Clean, streamlined inference engine for LFM 3 1.7B:
 - Direct GGUF inference via llama-cpp-python on RTX 3050 GPU (with CPU fallback)
 - Fast KV-cache reuse with unified system prompt prefix
 - Multi-turn conversation context and RAG profile integration
@@ -11,6 +11,7 @@ import datetime
 import json
 import logging
 import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import re
 import sys
 import threading
@@ -38,13 +39,18 @@ for _cand in (_PROJECT_ROOT, _PROJECT_ROOT / "amigo"):
         sys.path.insert(0, str(_cand))
 
 
+_cuda_dirs_setup: bool = False
+
+
 def _setup_cuda_dll_directory() -> None:
-    """Ensure CUDA and cuBLAS runtime DLLs are accessible on Windows."""
-    if sys.platform != "win32":
+    """Ensure CUDA and cuBLAS runtime DLLs as well as llama_cpp backends are accessible on Windows."""
+    global _cuda_dirs_setup
+    if _cuda_dirs_setup or sys.platform != "win32":
         return
+    _cuda_dirs_setup = True
     try:
         import site
-        sp_list = [*(site.getsitepackages() or []), site.getusersitepackages()]
+        sp_list = [*(site.getsitepackages() or []), site.getusersitepackages(), sys.prefix, os.path.join(sys.prefix, "Lib", "site-packages")]
         cuda_dirs = [
             os.path.join(sp, "nvidia", sub, "bin")
             for sp in sp_list if isinstance(sp, str)
@@ -53,6 +59,23 @@ def _setup_cuda_dll_directory() -> None:
         for env_key in ("CUDA_PATH", "CUDA_HOME", "CUDA_PATH_V12_4", "CUDA_PATH_V12_5", "CUDA_PATH_V12_0", "CUDA_PATH_V11_8"):
             if cuda_home := os.environ.get(env_key):
                 cuda_dirs.append(os.path.join(cuda_home, "bin"))
+
+        # Prioritize bundled modern llama.cpp binary directory (supports lfm3 architecture)
+        bundled_llama = os.path.join(str(_PROJECT_ROOT), "amigo", "lib", "llama")
+        if not os.path.isdir(bundled_llama):
+            bundled_llama = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib", "llama")
+
+        if os.path.isdir(bundled_llama):
+            os.environ["LLAMA_CPP_LIB_PATH"] = bundled_llama
+            cuda_dirs.insert(0, bundled_llama)
+        else:
+            try:
+                import llama_cpp
+                lib_dir = os.path.join(os.path.dirname(llama_cpp.__file__), "lib")
+                if os.path.isdir(lib_dir):
+                    cuda_dirs.append(lib_dir)
+            except Exception:
+                pass
 
         path_env = os.environ.get("PATH", "")
         for d in cuda_dirs:
@@ -64,6 +87,30 @@ def _setup_cuda_dll_directory() -> None:
                 if d not in path_env:
                     path_env = d + os.pathsep + path_env
         os.environ["PATH"] = path_env
+
+        # Pre-load ggml backend plugins so llama.cpp doesn't report 'no backends are loaded'
+        try:
+            active_lib = os.environ.get("LLAMA_CPP_LIB_PATH")
+            if not active_lib:
+                import llama_cpp
+                active_lib = os.path.join(os.path.dirname(llama_cpp.__file__), "lib")
+            base_dll = os.path.join(active_lib, "ggml-base.dll")
+            if os.path.exists(base_dll):
+                try:
+                    import ctypes
+                    ctypes.CDLL(base_dll)
+                except Exception:
+                    pass
+            ggml_dll = os.path.join(active_lib, "ggml.dll")
+            if os.path.exists(ggml_dll):
+                import ctypes
+                ggml = ctypes.CDLL(ggml_dll)
+                if hasattr(ggml, "ggml_backend_load_all_from_path"):
+                    ggml.ggml_backend_load_all_from_path(active_lib.encode("utf-8"))
+                elif hasattr(ggml, "ggml_backend_load_all"):
+                    ggml.ggml_backend_load_all()
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -259,27 +306,33 @@ def _build_ai_messages(
 # ── Model Configuration & Lifecycle ────────────────────────────
 
 MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "models"))
-MODEL_NAME = "Nemotron 3.5 Bolt"
-MODEL_FILENAME = "NVIDIA-Nemotron-3.5-Bolt-E4B-UD-IQ2_M.gguf"
+MODEL_NAME = "LFM 3 1.7B"
+MODEL_FILENAME = "LFM3-1.7B-Q4_K_M.gguf"
 MODEL_PATH = os.path.join(MODEL_DIR, MODEL_FILENAME)
-MODEL_TARGETS = [("bartowski/NVIDIA-Nemotron-3.5-Bolt-E4B-UD-GGUF", "NVIDIA-Nemotron-3.5-Bolt-E4B-UD-IQ2_M.gguf")]
+MODEL_TARGETS = [
+    ("LiquidAI/LFM3-1.7B-GGUF", "LFM3-1.7B-Q4_K_M.gguf"),
+    ("bartowski/LFM-3-1.7B-GGUF", "LFM-3-1.7B-Q4_K_M.gguf"),
+]
 
 STOP_TOKENS = ["<eos>", "<turn|>", "<|turn|>", "<|endoftext|>", "<|im_end|>", "<|im_start|>", "<|eot_id|>"]
 
 AVAILABLE_MODELS = {
-    "nemotron-3.5-bolt": {
-        "key": "nemotron-3.5-bolt",
-        "name": "Nemotron 3.5 Bolt",
-        "repo": "bartowski/NVIDIA-Nemotron-3.5-Bolt-E4B-UD-GGUF",
-        "filename": "NVIDIA-Nemotron-3.5-Bolt-E4B-UD-IQ2_M.gguf",
-        "path": os.path.join(MODEL_DIR, "NVIDIA-Nemotron-3.5-Bolt-E4B-UD-IQ2_M.gguf"),
-        "targets": [("bartowski/NVIDIA-Nemotron-3.5-Bolt-E4B-UD-GGUF", "NVIDIA-Nemotron-3.5-Bolt-E4B-UD-IQ2_M.gguf")],
-        "downloaded": os.path.exists(os.path.join(MODEL_DIR, "NVIDIA-Nemotron-3.5-Bolt-E4B-UD-IQ2_M.gguf")) and os.path.getsize(os.path.join(MODEL_DIR, "NVIDIA-Nemotron-3.5-Bolt-E4B-UD-IQ2_M.gguf")) > 500_000_000,
-        "size_gb": 3.29,
+    "lfm-3-1.7b": {
+        "key": "lfm-3-1.7b",
+        "name": "LFM 3 1.7B",
+        "repo": "LiquidAI/LFM3-1.7B-GGUF",
+        "filename": "LFM3-1.7B-Q4_K_M.gguf",
+        "path": os.path.join(MODEL_DIR, "LFM3-1.7B-Q4_K_M.gguf"),
+        "targets": [
+            ("LiquidAI/LFM3-1.7B-GGUF", "LFM3-1.7B-Q4_K_M.gguf"),
+            ("bartowski/LFM-3-1.7B-GGUF", "LFM-3-1.7B-Q4_K_M.gguf"),
+        ],
+        "downloaded": os.path.exists(os.path.join(MODEL_DIR, "LFM3-1.7B-Q4_K_M.gguf")) and os.path.getsize(os.path.join(MODEL_DIR, "LFM3-1.7B-Q4_K_M.gguf")) > 500_000_000,
+        "size_gb": 1.10,
     },
 }
 
-_active_model_key = "nemotron-3.5-bolt"
+_active_model_key = "lfm-3-1.7b"
 _local_llm_instance = None
 _model_load_failed = False
 _model_load_error = None
@@ -415,7 +468,7 @@ def ensure_model_downloaded() -> str:
     if os.path.exists(path) and os.path.getsize(path) > 500_000_000:
         return path
     m_info = AVAILABLE_MODELS.get(_active_model_key, {})
-    repo = m_info.get("repo", "bartowski/NVIDIA-Nemotron-3.5-Bolt-E4B-UD-GGUF")
+    repo = m_info.get("repo", "LiquidAI/LFM3-1.7B-GGUF")
     filename = m_info.get("filename", MODEL_FILENAME)
     logger.info("Downloading %s (%s) to %s...", m_info.get("name", "Model"), filename, path)
     os.makedirs(MODEL_DIR, exist_ok=True)
@@ -532,7 +585,7 @@ def get_available_models() -> dict:
     return AVAILABLE_MODELS
 
 
-def set_active_model(model_key: str = "nemotron-3.5-bolt") -> bool:
+def set_active_model(model_key: str = "lfm-3-1.7b") -> bool:
     global _active_model_key, _local_llm_instance, _LLM_CONFIG
     if model_key not in AVAILABLE_MODELS:
         return False
@@ -926,3 +979,16 @@ def get_last_played_song(conversation_history: list | None = None):
 def format_clarification_prompt(tool_a: str, tool_b: str, query: str) -> str:
     from amigo.utils.tool_registry import format_clarification_prompt as _fn
     return _fn(tool_a, tool_b, query)
+
+
+if __name__ == "__main__":
+    from amigo.ui.server import launch_server, get_active_model_info, initialize_amigo_async
+
+    _info = get_active_model_info()
+    print("==================================================")
+    print("   AMIGO VOICE ASSISTANT - UI DASHBOARD SERVER   ")
+    print(f"   [ {_info['name'].upper()} | {_info['tts_engine'].upper()} | RAG + AGENTIC ]")
+    print("==================================================")
+    initialize_amigo_async()
+    launch_server(port=5000, open_browser=True)
+

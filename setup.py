@@ -17,7 +17,7 @@ def main():
 
     print("=" * 60)
     print("   AMIGO VOICE ASSISTANT v1.3 — ONE-CLICK EASY SETUP")
-    print("   Agentic Voice Assistant powered by Nemotron 3.5 Bolt")
+    print("   Agentic Voice Assistant powered by LFM 3 1.7B")
     print("=" * 60)
 
     # 1. Check Python & Git Environment
@@ -75,14 +75,6 @@ def main():
         subprocess.run([sys.executable, "-m", "pip", "install", "huggingface-hub"])
         from huggingface_hub import hf_hub_download
 
-    # Supertonic 3 ONNX TTS Engine & Models (Primary)
-    try:
-        from supertonic import TTS as SupertonicTTS
-        print(" -> Checking Supertonic 3 Neural TTS engine (44.1kHz)...")
-        _stts = SupertonicTTS(model="supertonic-3", auto_download=True)
-        print("    Supertonic 3 Neural TTS engine is ready (44.1kHz).")
-    except Exception as e:
-        print(f"    Supertonic 3 check note: {e}")
     # Vosk Offline STT Model Check
     try:
         from amigo.utils.tts import get_stt_recognizer, is_stt_available
@@ -97,11 +89,11 @@ def main():
 
 
     # Local LLM GGUF Model Check
-    model_name_display = "Nemotron 3.5 Bolt"
+    model_name_display = "LFM 3 1.7B"
     try:
         from amigo.core.llm_agent import get_active_model_info, get_model_path, ensure_model_downloaded
         model_info = get_active_model_info()
-        model_name_display = model_info.get("name", "Nemotron 3.5 Bolt")
+        model_name_display = model_info.get("name", "LFM 3 1.7B")
         print(f" -> Checking Agent LLM (System 2): {model_name_display} (~{model_info.get('size_gb', 2.60)}GB)...")
         model_path = get_model_path()
         if os.path.exists(model_path) and os.path.getsize(model_path) > 500_000_000:
@@ -119,7 +111,7 @@ def main():
     print("=" * 60)
     print("\nActive Engine Stack:")
     print(f"  Agent Engine  — {model_name_display} : high-accuracy formal logic & agentic execution")
-    print("  Speech Engine — Supertonic-3  : 44.1kHz studio on-device neural speech synthesis")
+    print("  Speech Engine — Kokoro v1.0 ONNX : 24kHz ultra-fast offline neural speech synthesis (af_heart flagship)")
     print("  Voice Input   — Vosk          : offline high-accuracy speech recognition")
     print("\nHow to launch Amigo:")
     print("  1. Web Dashboard (Recommended):")

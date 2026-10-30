@@ -11,9 +11,10 @@ av>=11.0.0                     # PyAV offline audio container decoding (WebM, Op
 soundfile>=0.12.1              # Audio file buffer reading
 num2words>=0.5.13              # Phonetic text expansion for neural TTS
 
-# ── Neural Text-to-Speech (TTS) ───────────────────────────────
-pocket-tts>=3.3.0              # Ultra-fast CPU neural TTS engine — Kyutai Pocket TTS (24kHz studio)
-sounddevice>=0.4.6             # Real-time audio playback backend
+# ── Audio Playback & Speech Synthesis (TTS) ───────────────────
+kokoro-onnx>=0.6.1             # Ultra-fast offline ONNX Neural TTS engine (24kHz Studio, 50+ voices)
+edge-tts>=7.0.0                # Microsoft Edge Neural Speech engine (Azure Studio 24kHz fallback)
+sounddevice>=0.4.6             # Audio device playback backend
 numpy>=1.24.0                  # Audio array processing
 pywin32>=306                   # Windows shell integrations
 

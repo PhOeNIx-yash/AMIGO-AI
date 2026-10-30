@@ -8,8 +8,9 @@ env/
 venv/
 .venv/
 
-# ── Large AI Models (Auto-downloaded by setup.py) ──────────────
+# ── Large AI Models & Local Libraries ───────────────────────────
 models/
+amigo/lib/
 *.gguf
 *.onnx
 *.bin

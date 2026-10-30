@@ -12,6 +12,7 @@ import base64
 import json
 import logging
 import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import queue
 import re
 import signal
@@ -47,7 +48,6 @@ for _noisy_logger in (
     "pdfminer", "pdfminer.pdffont", "pdfminer.pdfinterp", "pdfminer.pdfpage",
     "pdfminer.pdfdocument", "pypdf", "pdfplumber",
     "httpx", "httpcore", "sentence_transformers", "transformers", "huggingface_hub",
-    "pocket_tts", "pocket_tts.models.tts_model", "pocket_tts.utils.utils", "pocket_tts.models", "pocket_tts.utils",
 ):
     _l = logging.getLogger(_noisy_logger)
     _l.setLevel(logging.ERROR)
@@ -222,8 +222,8 @@ def get_active_model_info() -> dict:
         models = get_llm_available_models() or {}
         info = next(iter(models.values()), {})
 
-    name = info.get("name", "Nemotron 3.5 Bolt")
-    key = info.get("key", "nemotron-3.5-bolt")
+    name = info.get("name", "LFM 3 1.7B")
+    key = info.get("key", "lfm-3-1.7b")
     vision_ok = is_vision_ready()
     ctx_len = int(os.getenv("AMIGO_LLM_N_CTX", "8192"))
     return {
@@ -244,7 +244,7 @@ def get_active_model_info() -> dict:
 
 def get_available_models() -> list[dict]:
     try:
-        active_key = get_active_model_info().get("key", "nemotron-3.5-bolt")
+        active_key = get_active_model_info().get("key", "lfm-3-1.7b")
         return [
             {
                 "key": k,
@@ -256,7 +256,7 @@ def get_available_models() -> list[dict]:
         ]
     except Exception:
         return [
-            {"key": "nemotron-3.5-bolt-e4b", "name": "NVIDIA Nemotron 3.5 Bolt E4B", "status": "active", "type": "local"},
+            {"key": "lfm-3-1.7b", "name": "LFM 3 1.7B", "status": "active", "type": "local"},
         ]
 
 
@@ -541,7 +541,7 @@ def index():
     return jsonify({
         "status": "online",
         "service": "Amigo AI Engine & Windows 11 Voice Assistant Backend",
-        "model": info.get("name", "Nemotron 3.5 Bolt"),
+        "model": info.get("name", "LFM 3 1.7B"),
     })
 
 
@@ -648,7 +648,7 @@ def api_assistant_process():
         return jsonify({
             "status": "online",
             "message": "Amigo AI Engine online",
-            "model": info.get("name", "Nemotron 3.5 Bolt"),
+            "model": info.get("name", "LFM 3 1.7B"),
             "version": "Windows 11 Voice Assistant",
         })
 
@@ -999,8 +999,8 @@ def handle_settings():
         "user_profile": u_prof,
         "user_name": get_current_user_name(),
         "voice": curr_voice,
-        "model": info.get("key", "nemotron-3.5-bolt"),
-        "model_name": info.get("name", "Nemotron 3.5 Bolt"),
+        "model": info.get("key", "lfm-3-1.7b"),
+        "model_name": info.get("name", "LFM 3 1.7B"),
         "thinking_enabled": is_thinking_enabled(),
         "available_models": get_available_models(),
         "available_voices": get_voice_catalog(),

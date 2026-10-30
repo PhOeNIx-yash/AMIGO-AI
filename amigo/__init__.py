@@ -2,6 +2,9 @@
 Amigo Voice Assistant - Main Package
 """
 
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
 from amigo.core.llm_agent import (
     get_ai_response,
     get_ai_response_stream,

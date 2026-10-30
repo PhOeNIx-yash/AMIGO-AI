@@ -1,10 +1,11 @@
 #!/usr/bin/env python
 """
 Amigo Voice Assistant - Main Entry Point
-Coordinates voice/type input, LLM agent action dispatching, and Supertonic-3 Neural TTS / Vosk Offline STT.
+Coordinates voice/type input, LLM agent action dispatching, and Kokoro v1.0 ONNX TTS / Vosk Offline STT.
 """
 
 import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import queue
 import re
 import sys

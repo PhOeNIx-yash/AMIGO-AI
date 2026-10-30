@@ -1,7 +1,7 @@
 """
 task_agent.py — Autonomous Task Agent for Amigo Assistant.
 Executes high-speed Windows desktop automation, browser control, and multi-step action chains.
-Leverages sequential action execution and Qwen 3.8 2B for natural synthesis.
+Leverages sequential action execution and LFM 3 1.7B for natural synthesis.
 """
 
 import logging
