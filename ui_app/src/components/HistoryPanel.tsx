@@ -34,6 +34,101 @@ import { HistoryEntry, ColorTheme } from "../types";
 import { COLOR_THEMES } from "../data/presets";
 import { sfx } from "../utils/audio";
 
+function renderInlineFormatting(text: string): React.ReactNode {
+  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/g);
+  return parts.map((part, index) => {
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return (
+        <strong key={index} className="font-semibold text-white/95">
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+    if (part.startsWith("`") && part.endsWith("`")) {
+      return (
+        <code key={index} className="px-1 py-0.5 rounded bg-white/10 font-mono text-[10px] text-cyan-300">
+          {part.slice(1, -1)}
+        </code>
+      );
+    }
+    if (part.startsWith("*") && part.endsWith("*")) {
+      return <em key={index}>{part.slice(1, -1)}</em>;
+    }
+    return part;
+  });
+}
+
+function renderHistoryMarkdown(content: string, isDark: boolean): React.ReactNode {
+  if (!content) return "Command executed successfully.";
+  const lines = content.split("\n");
+  return (
+    <div className="space-y-1.5 leading-relaxed text-[11px]">
+      {lines.map((line, idx) => {
+        const trimmed = line.trim();
+        if (!trimmed) return <div key={idx} className="h-1" />;
+
+        // Headers
+        if (trimmed.startsWith("### ")) {
+          return (
+            <h5 key={idx} className="font-semibold text-white/95 text-[11px] mt-1.5 pt-0.5">
+              {trimmed.replace(/^###\s+/, "")}
+            </h5>
+          );
+        }
+        if (trimmed.startsWith("## ")) {
+          return (
+            <h4 key={idx} className="font-bold text-white text-[12px] mt-2 pt-0.5 border-b border-white/10 pb-0.5">
+              {trimmed.replace(/^##\s+/, "")}
+            </h4>
+          );
+        }
+        if (trimmed.startsWith("# ")) {
+          return (
+            <h3 key={idx} className="font-bold text-white text-[13px] mt-2.5 pt-0.5">
+              {trimmed.replace(/^#\s+/, "")}
+            </h3>
+          );
+        }
+
+        // Sub-bullets with indentation
+        if (/^\s+[-*•]\s+/.test(line)) {
+          return (
+            <div key={idx} className="flex items-start space-x-1.5 pl-3.5 opacity-90">
+              <span className="w-1 h-1 rounded-full bg-slate-400 mt-1.5 shrink-0" />
+              <span className="leading-snug">{renderInlineFormatting(line.trim().replace(/^[-*•]\s+/, ""))}</span>
+            </div>
+          );
+        }
+
+        // Bullet points
+        if (/^[-*•]\s+/.test(trimmed)) {
+          return (
+            <div key={idx} className="flex items-start space-x-1.5 pl-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 mt-1.5 shrink-0" />
+              <span className="leading-snug">{renderInlineFormatting(trimmed.replace(/^[-*•]\s+/, ""))}</span>
+            </div>
+          );
+        }
+
+        // Numbered list
+        const numMatch = trimmed.match(/^(\d+)\.\s+(.+)$/);
+        if (numMatch) {
+          return (
+            <div key={idx} className="flex items-start space-x-1.5 pl-1">
+              <span className="font-mono text-[10px] font-semibold text-indigo-400 mt-0.5 shrink-0">
+                {numMatch[1]}.
+              </span>
+              <span className="leading-snug">{renderInlineFormatting(numMatch[2])}</span>
+            </div>
+          );
+        }
+
+        return <p key={idx} className="leading-snug">{renderInlineFormatting(trimmed)}</p>;
+      })}
+    </div>
+  );
+}
+
 function cn(...classes: (string | undefined | null | false)[]) {
   return classes.filter(Boolean).join(" ");
 }
@@ -800,10 +895,10 @@ const HistoryPanelComponent: React.FC<HistoryPanelProps> = ({
                         className="mt-2.5 pt-2.5 border-t border-white/10 text-xs space-y-2"
                       >
                         <div
-                          className="p-2.5 rounded-lg bg-black/20 dark:bg-white/5 border leading-relaxed text-[11px] opacity-90"
+                          className="p-2.5 rounded-lg bg-black/20 dark:bg-white/5 border leading-relaxed text-[11px] opacity-95 max-h-96 overflow-y-auto"
                           style={{ borderColor: isDark ? `${theme.primary}20` : `${theme.primary}15` }}
                         >
-                          {detailsText || "Command executed successfully."}
+                          {renderHistoryMarkdown(detailsText, isDark)}
                         </div>
 
                         <div className="flex items-center justify-between pt-1">

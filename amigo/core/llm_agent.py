@@ -297,7 +297,10 @@ def _build_ai_messages(
         messages.extend(build_unified_history_messages(conversation_history=conversation_history, max_turns=history_count))
 
     runtime_ctx = build_turn_runtime_context(query, web_context=web_context, doc_context=doc_context)
-    mode_tag = "[Mode: Voice | Output: Direct Spoken Answer]" if is_voice else "[Mode: Text | Output: Direct Formatted Answer]"
+    if doc_context:
+        mode_tag = "[Mode: Document Analysis | Output: Structured, Well-Organized Markdown with Bullets, Clear Sections, and Exact Figures/Dates]"
+    else:
+        mode_tag = "[Mode: Voice | Output: Direct Spoken Answer]" if is_voice else "[Mode: Text | Output: Direct Formatted Answer]"
     user_content = f"{runtime_ctx}\n\nUser Question: {query}\n{mode_tag}" if runtime_ctx else f"{query}\n{mode_tag}"
     messages.append({"role": "user", "content": user_content})
     return messages
@@ -486,7 +489,7 @@ def ensure_model_downloaded() -> str:
         return hf_hub_download(
             repo_id=repo,
             filename=filename,
-            local_dir=MODELS_DIR,
+            local_dir=MODEL_DIR,
             local_dir_use_symlinks=False,
         )
 
@@ -672,7 +675,7 @@ def query_local_llm(
     max_tokens: int = 512,
     temperature: float | None = None,
     thinking: bool | None = None,
-    sanitize: bool = True,
+    sanitize: bool = False,
     stop: list[str] | None = None,
     raise_on_error: bool = False,
     repeat_penalty: float | None = None,
@@ -709,7 +712,8 @@ def query_local_llm(
         if not isinstance(res, dict):
             raise TypeError("LLM returned stream for non-streaming query")
         output = (res["choices"][0]["message"]["content"] or "").strip()
-        return (sanitize_for_tts(output) or output) if sanitize else output
+        clean = _RE_SPEAKER_PREFIX.sub("", output).strip()
+        return (sanitize_for_tts(clean) or clean) if sanitize else clean
     except Exception as e:
         logger.error("[LLM Query Error]: %s", e)
         if raise_on_error:
@@ -816,12 +820,14 @@ def stream_sentence_chunks(
             for s in splits[:-1]:
                 cand = s.strip()
                 if cand and not _RE_ABBREV.search(cand):
-                    if clean := sanitize_for_tts(cand):
+                    clean = _RE_SPEAKER_PREFIX.sub("", cand).strip()
+                    if clean:
                         yield clean
             buffer = splits[-1]
 
     if buffer.strip() and not in_think and not (interruption_event and interruption_event.is_set()):
-        if clean := sanitize_for_tts(buffer.strip()):
+        clean = _RE_SPEAKER_PREFIX.sub("", buffer.strip()).strip()
+        if clean:
             yield clean
 
 
@@ -862,8 +868,8 @@ def get_ai_response(
     response = _RE_SPEAKER_PREFIX.sub("", response).strip()
     response, thought = _strip_reasoning(response, fallback_to_thought=True)
     _thread_local.last_thought = thought
-    if is_voice:
-        response = sanitize_for_tts(response) or response
+    # Return pristine response with full formatting for UI display and memory.
+    # Note: TTS speech is normalized separately inside tts.speak() on its own copy.
     return response.strip() or "How can I help you today?"
 
 
@@ -982,12 +988,12 @@ def format_clarification_prompt(tool_a: str, tool_b: str, query: str) -> str:
 
 
 if __name__ == "__main__":
-    from amigo.ui.server import launch_server, get_active_model_info, initialize_amigo_async
+    from amigo.ui.server import launch_server, initialize_amigo_async
 
     _info = get_active_model_info()
     print("==================================================")
     print("   AMIGO VOICE ASSISTANT - UI DASHBOARD SERVER   ")
-    print(f"   [ {_info['name'].upper()} | {_info['tts_engine'].upper()} | RAG + AGENTIC ]")
+    print(f"   [ {_info['name'].upper()} | {_info.get('tts_engine', 'KOKORO ONNX').upper()} | RAG + AGENTIC ]")
     print("==================================================")
     initialize_amigo_async()
     launch_server(port=5000, open_browser=True)

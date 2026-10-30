@@ -584,24 +584,40 @@ def _tool_ask_document(params, query, spoken, conversation_history=None):
     """Unified RAG Q&A handler with full follow-up context and cross-corpus retrieval."""
     params = params if isinstance(params, dict) else {}
     conv_history = _get_conv_history(conversation_history)
+    filepath = str(params.get("filepath") or "").strip()
     question = str(params.get("question") or params.get("query") or query or "").strip() or query
 
     resolved_question = rag_engine.resolve_contextual_query(question, conv_history)
-    evidence = rag_engine.build_rag_context(
+    target_path = resolve_document_path(filepath) if filepath else None
+
+    # 1. Primary: Grounded document evidence with passage citations
+    evidence, sources = rag_engine.build_document_evidence(
         resolved_question,
         top_k=6,
         conversation_history=conv_history,
-        for_voice=False,
+        filepath=target_path if target_path and os.path.exists(target_path) else None,
     )
-    if not evidence:
+
+    if not evidence or not sources:
         return (
             "I couldn't find enough relevant information in your indexed documents.",
             None,
             {"status": "insufficient_evidence"},
         )
 
-    response = get_ai_response(question, doc_context=evidence, conversation_history=conv_history, max_tokens=350)
-    return response, None, {"status": "success"}
+    response = get_ai_response(
+        question,
+        doc_context=evidence,
+        conversation_history=conv_history,
+        is_voice=False,
+        max_tokens=650,
+    )
+    source_list = "; ".join(
+        f"[{source['id']}] {source['file']} — {source['location']}"
+        for source in sources
+    )
+    response = f"{response.rstrip()}\n\nSources: {source_list}".strip()
+    return response, None, {"status": "success", "doc_context_used": True, "sources": sources}
 
 
 def _tool_summarize_document(params, query, spoken):
@@ -620,9 +636,11 @@ def _tool_summarize_document(params, query, spoken):
         if text:
             update_active_state("active_file", {"path": target_path, "name": os.path.basename(target_path)})
             summary = get_ai_response(
-                f"Summarize this document clearly:\n\n{text[:6000]}",
+                f"Summarize this document clearly with structured bullet points and key takeaways:\n\n{text[:6000]}",
                 conversation_history=conv_history,
                 use_memory=False,
+                is_voice=False,
+                max_tokens=650,
             )
             return summary, None, {"status": "completed", "file": target_path}
 
@@ -632,8 +650,8 @@ def _tool_summarize_document(params, query, spoken):
 def _tool_search_knowledge(params, query, spoken):
     conv_history = _get_conv_history()
     q = (params or {}).get("query", query).strip()
-    ctx = rag_engine.build_rag_context(q, top_k=5, conversation_history=conv_history)
-    return get_ai_response(q, doc_context=ctx, conversation_history=conv_history), None
+    ctx = rag_engine.build_rag_context(q, top_k=5, conversation_history=conv_history, for_voice=False)
+    return get_ai_response(q, doc_context=ctx, conversation_history=conv_history, is_voice=False, max_tokens=650), None
 
 
 def _tool_chat(params, query, spoken, conversation_history=None):
@@ -1771,15 +1789,25 @@ def _parse_tool_calls(response: str) -> list[dict]:
     return deduped
 
 
+def _clean_final_dialogue(text: str) -> str:
+    if not text:
+        return ""
+    # Strip thoughts and speaker prefixes while preserving markdown, lists, and numbers
+    t = re.sub(r'<think>[\s\S]*?</think>', '', text, flags=re.I)
+    t = re.sub(r'^(?:Amigo|Assistant|AI):\s*', '', t, flags=re.I).strip()
+    return t
+
+
 def _extract_final_response(response: str, tool_calls: list) -> str:
     clean = _clean_json_text(response)
     if "{" in clean:
         m = re.search(r'"(?:response|speak|reply)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"?', clean)
         if m:
             try:
-                return sanitize_for_tts(json.loads(f'"{m.group(1)}"'))
+                val = json.loads(f'"{m.group(1)}"')
             except Exception:
-                return sanitize_for_tts(m.group(1))
+                val = m.group(1)
+            return _clean_final_dialogue(val)
 
     # Strip XML tool calls and markdown code blocks
     non_tool = re.sub(
@@ -1789,10 +1817,11 @@ def _extract_final_response(response: str, tool_calls: list) -> str:
         flags=re.I,
     ).strip()
     non_tool = re.sub(r'```(?:json|xml)?\s*', '', non_tool).replace('```', '').strip()
+    non_tool = re.sub(r'<think>[\s\S]*?</think>', '', non_tool, flags=re.I).strip()
 
     # If no tool calls were made and plain text dialogue remains, treat as direct spoken response
     if not tool_calls and non_tool and not non_tool.startswith("{") and not non_tool.startswith("["):
-        return sanitize_for_tts(non_tool)
+        return _clean_final_dialogue(non_tool)
     return ""
 
 

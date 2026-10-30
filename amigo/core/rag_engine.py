@@ -1222,12 +1222,93 @@ def build_rag_context(
     body = "\n\n".join(parts)
     return (
         "<supplementary_context>\n"
-        "NOTE: Use the verified local information below to answer the user's request thoroughly, directly, and naturally. "
-        "State all necessary facts, numbers, dates, and key details cleanly without robotic filler, citation markers, or mentioning context tags. "
+        "NOTE: Use the verified local information below to answer the user's request thoroughly, directly, and naturally.\n"
+        "- Structure multi-item or multi-role information using clean Markdown: use bullet points (`- `) for roles, projects, or items, and bold key organization/company names or section titles.\n"
+        "- Preserve all exact dates, years (e.g. 2023), numbers, acronyms (e.g. CA, PSU, GST, TDS, ITR-7), and technical terminology directly as written in the source.\n"
+        "- Do not output table extraction artifacts (such as 'from the table, :' or '| |'). Synthesize tabular data into readable bullet points.\n"
+        "- Present answers professionally, cleanly, and without run-on sentences.\n"
         "If the information is completely unrelated to the user's question, ignore it and rely on your knowledge.\n\n"
         f"{body}\n"
         "</supplementary_context>"
     )
+
+
+def build_document_evidence(
+    query: str,
+    top_k: int = 6,
+    conversation_history: list | None = None,
+    filepath: str | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Return grounded document passages and source locations for document Q&A."""
+    if not query or not query.strip() or _is_conversational_filler(query):
+        return "", []
+
+    metadata_filter = None
+    if filepath:
+        metadata_filter = {"filepath": os.path.realpath(os.path.abspath(filepath))}
+
+    history = conversation_history if conversation_history is not None else get_recent_conversations(count=4)
+    results = search(
+        query,
+        target_collections=[DOCUMENTS],
+        top_k=top_k,
+        metadata_filter=metadata_filter,
+        conversation_history=history,
+    )
+    grounded = [result for result in results if _is_chunk_grounded(result, 0.20)]
+    if not grounded:
+        return "", []
+
+    top_score = max(float(result.get("score", 0.0) or 0.0) for result in grounded)
+    score_floor = max(0.20, top_score * 0.70)
+    relevant = [
+        result for result in grounded
+        if float(result.get("score", 0.0) or 0.0) >= score_floor
+    ][:max(1, top_k)]
+
+    passages: list[str] = []
+    sources: list[dict[str, Any]] = []
+    source_ids: dict[tuple[str, int], int] = {}
+
+    for result in relevant:
+        text = str(result.get("text") or "").strip()
+        metadata = result.get("metadata") or {}
+        if not text or not isinstance(metadata, dict):
+            continue
+
+        source_path = str(metadata.get("filepath") or "")
+        filename = str(metadata.get("filename") or os.path.basename(source_path))
+        chunk_index = metadata.get("chunk_index")
+        if not filename or not isinstance(chunk_index, int) or isinstance(chunk_index, bool) or chunk_index < 0:
+            continue
+
+        source_key = (source_path or filename, chunk_index)
+        source_id = source_ids.get(source_key)
+        if source_id is None:
+            source_id = len(sources) + 1
+            source_ids[source_key] = source_id
+            sources.append({
+                "id": source_id,
+                "file": filename,
+                "location": f"passage {chunk_index + 1}",
+            })
+
+        passages.append(
+            f"[Source {source_id}: {filename}, passage {chunk_index + 1}]\n{text[:900]}"
+        )
+
+    if not passages:
+        return "", []
+
+    instructions = (
+        "Answer using the verified document passages below.\n"
+        "- Structure your answer with clean Markdown: bullet points (`- `) for roles, projects, or items, and bold key organization/role names.\n"
+        "- Preserve all exact dates (e.g. 2023), numbers, acronyms (e.g. CA, PSU, GST, TDS, ITR-7), and terminology directly as written in the source.\n"
+        "- Do not output table extraction artifacts (such as 'from the table, :' or '| |'). Synthesize tabular data into clean bulleted highlights.\n"
+        "- Present the answer professionally, cleanly, and without run-on sentences."
+    )
+    context = f"{instructions}\n\n" + "\n\n".join(passages)
+    return context, sources
 
 
 def build_file_context(filepath: str, question: str, max_chars: int = 2500) -> str:

@@ -265,7 +265,8 @@ def _handle_wake_action():
         if not reply:
             reply = llm_agent.query_local_llm(query, max_tokens=250)
 
-        clean_reply = llm_agent.sanitize_for_tts(reply) or reply
+        # Clean speaker prefixes/thoughts while preserving Markdown and numbers
+        clean_reply = llm_agent._strip_reasoning(reply)[0].strip() or reply.strip()
         logger.info(f"[Hotkey Wake] Amigo responding: '{clean_reply}'")
 
         # Step 6: Save interaction to RAG memory (CRUCIAL for History Tab & Vector Recall)
