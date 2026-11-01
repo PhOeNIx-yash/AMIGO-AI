@@ -96,7 +96,7 @@ def update_active_state(slot: str, data: Any) -> None:
     rag_engine.update_active_state(slot, data)
 
 
-def get_active_state(clean_expired: bool = True) -> dict:
+def get_active_state(clean_expired: bool = False) -> dict:
     return rag_engine.get_active_state(clean_expired=clean_expired)
 
 
@@ -104,7 +104,8 @@ def get_active_state(clean_expired: bool = True) -> dict:
 
 _RE_URLS = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]*[^\s<>"{}|\\^`\[\].,;:!?]')
 _RE_MEDIA_CLEAN_TITLE = re.compile(r"^(?:play|playing)\s*:\s*", re.IGNORECASE)
-_RE_WAKE_WORD = re.compile(r"^(?:(?:hey|hi|hello|ok|okay)\s+)?amigo\b[\s,.:;!-]*", re.IGNORECASE)
+_RE_WAKE_WORD_START = re.compile(r"^(?:(?:hey|hi|hello|ok|okay)\s+)?amigo\b[\s,.:;!-]*", re.IGNORECASE)
+_RE_WAKE_WORD_END = re.compile(r"[\s,.:;!-]+(?:amigo)\s*$", re.IGNORECASE)
 
 _media_update_cb = None
 _ui_broadcast_cb = None
@@ -262,24 +263,21 @@ def _tool_open_website(params, query, spoken):
             if not title and last_link_data.get("title"):
                 title = str(last_link_data["title"])
 
-    if raw_url:
-        if re.match(r"^https?://", raw_url, re.I):
-            url = raw_url
-        elif "://" in raw_url or raw_url.lower().startswith(("javascript:", "file:", "data:")):
-            return "I can only open regular web addresses.", None
-        else:
-            url = f"https://{raw_url}"
-        webbrowser.open(url)
-        label = title or url
-        update_active_state("active_subject", {"name": label, "category": "website", "url": url})
-        update_active_state("last_link", {"name": label, "url": url, "title": label})
-        return f"Opening {label}.", url, {"url": url, "title": label}
-    if prior_url:
-        webbrowser.open(prior_url)
-        label = last_link_data.get("title") or prior_url
-        return f"Opening {label}.", prior_url, {"url": prior_url, "title": label}
-    searchGoogle(query)
-    return "Searched the web.", None, {"query": query}
+    has_valid_target = bool(raw_url and ("." in raw_url or "://" in raw_url))
+    if not has_valid_target:
+        return "Which website would you like me to open?", None, {"status": "missing_url"}
+
+    if re.match(r"^https?://", raw_url, re.I):
+        url = raw_url
+    elif "://" in raw_url or raw_url.lower().startswith(("javascript:", "file:", "data:")):
+        return "I can only open regular web addresses.", None
+    else:
+        url = f"https://{raw_url}"
+    webbrowser.open(url)
+    label = title or url
+    update_active_state("active_subject", {"name": label, "category": "website", "url": url})
+    update_active_state("last_link", {"name": label, "url": url, "title": label})
+    return f"Opening {label}.", url, {"url": url, "title": label}
 
 
 def _tool_play_youtube(params, query, spoken):
@@ -587,18 +585,23 @@ def _tool_ask_document(params, query, spoken, conversation_history=None):
     filepath = str(params.get("filepath") or "").strip()
     question = str(params.get("question") or params.get("query") or query or "").strip() or query
 
-    resolved_question = rag_engine.resolve_contextual_query(question, conv_history)
     target_path = resolve_document_path(filepath) if filepath else None
+    if not target_path:
+        act_f = (rag_engine.get_active_state(clean_expired=False) or {}).get("active_file")
+        if isinstance(act_f, dict) and act_f.get("path") and os.path.exists(act_f["path"]):
+            target_path = act_f["path"]
 
     # 1. Primary: Grounded document evidence with passage citations
     evidence, sources = rag_engine.build_document_evidence(
-        resolved_question,
+        question,
         top_k=6,
         conversation_history=conv_history,
         filepath=target_path if target_path and os.path.exists(target_path) else None,
     )
 
     if not evidence or not sources:
+        if not filepath and is_internet_connected():
+            return _tool_web_search({"query": question}, question, spoken)
         return (
             "I couldn't find enough relevant information in your indexed documents.",
             None,
@@ -625,9 +628,8 @@ def _tool_summarize_document(params, query, spoken):
     conv_history = _get_conv_history()
     filepath = str(params.get("filepath") or "").strip()
     target_path = resolve_document_path(filepath) if filepath else None
-
     if not target_path:
-        act_f = (get_active_state(clean_expired=True) or {}).get("active_file")
+        act_f = (rag_engine.get_active_state(clean_expired=False) or {}).get("active_file")
         if isinstance(act_f, dict) and act_f.get("path") and os.path.exists(act_f["path"]):
             target_path = act_f["path"]
 
@@ -655,44 +657,34 @@ def _tool_search_knowledge(params, query, spoken):
 
 
 def _tool_chat(params, query, spoken, conversation_history=None):
-    """Conversational reply with full multi-turn memory and automatic RAG context."""
+    """Conversational reply with clean multi-turn dialogue context."""
     params = params if isinstance(params, dict) else {}
     doc_context = str(params.get("context") or params.get("doc_context") or "").strip()
-    doc_used = bool(doc_context)
     direct_reply = (spoken or params.get("reply") or params.get("response") or "").strip()
-
-    # Fast path: If the router already produced a complete conversational response
-    # and no attached document requires re-reading, return immediately (avoids slow 2nd LLM round-trip)
-    is_complete = bool(direct_reply and direct_reply.rstrip()[-1:] in ('.', '!', '?', '"', "'", '`', '}', '\n'))
-    if direct_reply and not doc_context and len(direct_reply) >= 3 and is_complete:
-        return direct_reply, None, ({"doc_context_used": False})
-
-    if not query or not query.strip():
-        if direct_reply:
-            return direct_reply, None
 
     conv_history = _get_conv_history(conversation_history)
 
-    if not doc_context and query and not rag_engine._is_conversational_filler(query):
-        active_state = get_active_state(clean_expired=True) or {}
-        has_active_file = bool(active_state.get("active_file", {}).get("path"))
-        if has_active_file:
-            try:
-                rag_ctx = rag_engine.build_rag_context(
-                    query,
-                    top_k=4,
-                    conversation_history=conv_history,
-                    for_voice=True,
-                    min_score=0.45,
-                )
-                if rag_ctx:
-                    doc_context = rag_ctx
-                    doc_used = True
-            except Exception as e:
-                logger.debug("[Chat RAG Lookup]: %s", e)
+    # Check for repetitive echo: if direct_reply repeats the previous assistant turn, discard it
+    is_repetition = False
+    if direct_reply and conv_history:
+        last_turn = conv_history[-1]
+        last_assistant = str(last_turn.get("assistant") or last_turn.get("assistant_reply") or last_turn.get("response") or "").strip()
+        if last_assistant and len(direct_reply) > 10:
+            if direct_reply in last_assistant or last_assistant in direct_reply:
+                is_repetition = True
+
+    # Fast path: If the router produced a unique, complete conversational response
+    # and no attached document requires re-reading, return immediately (avoids slow 2nd LLM round-trip)
+    is_complete = bool(direct_reply and direct_reply.rstrip()[-1:] in ('.', '!', '?', '"', "'", '`', '}', '\n'))
+    if direct_reply and not doc_context and len(direct_reply) >= 3 and is_complete and not is_repetition:
+        return direct_reply, None, {"doc_context_used": False}
+
+    if not query or not query.strip():
+        if direct_reply and not is_repetition:
+            return direct_reply, None
 
     ai_reply = get_ai_response(query, doc_context=doc_context, conversation_history=conv_history)
-    return ai_reply, None, ({"doc_context_used": True} if doc_used else {})
+    return ai_reply, None, ({"doc_context_used": True} if doc_context else {})
 
 
 # ── OS & Media Controls ────────────────────────────────────────
@@ -1495,9 +1487,8 @@ def _tool(name: str, description: str, props: dict | None = None, required: list
 
 
 TOOL_DEFINITIONS = [
-    _tool("chat", "Conversational dialogue: greetings, casual conversation, opinions, advice, creative writing, or quick math that do not require external lookup or local system inspection.",
-          {"response": _p("string", "Your direct, natural spoken or written reply to the user (1 to 2 concise sentences)")},
-          ["response"]),
+    _tool("chat", "Conversational dialogue, questions, opinions, advice, creative writing, riddles, logic puzzles, hypothetical scenarios, and casual chit-chat.",
+          {"response": _p("string", "Your direct spoken reply if known")}),
     _tool("web_search", "Search the web for external information, current events, public facts, online lookups, or live web research.",
           {"query": _p("string", "Self-contained search query with pronouns resolved from conversation history"),
            "show_in_browser": _p("boolean", "True if user asked to open search results in a browser")}, ["query"]),
@@ -1516,9 +1507,9 @@ TOOL_DEFINITIONS = [
           {"action": _p("string", "mute | unmute | volume_up | volume_down | set_volume"), "level": _p("integer", "0-100")}),
     _tool("set_brightness", "Adjust screen brightness.", {"level": _p("integer", "0-100")}, ["level"]),
     _tool("take_screenshot", "Capture a screenshot of the screen."),
-    _tool("read_screen", "Inspect the visual display, active window, or graphical user interface on the screen (UI layout, visual errors, dialogs, visible window state). Do not use for querying information from indexed documents or files.", {"question": _p("string", "Question about the screen or active window")}),
+    _tool("read_screen", "Inspect the computer monitor, active window GUI, or visual display on screen. NEVER use for word problems, physical logic puzzles, riddles, or general questions.", {"question": _p("string", "Question about the on-screen UI or window")}),
     _tool("open_app", "Launch an installed desktop app.", {"name": _p("string", "App name")}, ["name"]),
-    _tool("close_app", "Close an application or active window.", {"name": _p("string", "App name")}),
+    _tool("close_app", "Close an external application or window (e.g. Chrome, Notepad, Spotify). NEVER use to stop speech or close Amigo.", {"name": _p("string", "App name")}),
     _tool("window_mgmt", "Manage windows (minimize_all, maximize, restore, switch_window, close_window).",
           {"action": _p("string", "Action"), "name": _p("string", "Window title")}, ["action"]),
     _tool("system_control", "System power/control (lock, sleep, restart, shutdown, cancel_shutdown, empty_bin).",
@@ -1537,7 +1528,7 @@ TOOL_DEFINITIONS = [
     _tool("cancel_reminder", "Cancel one or all reminders.", {"query": _p("string", "'all' or reminder title")}, ["query"]),
     _tool("find_file", "Find local files or folders by name or topic.", {"query": _p("string", "Search pattern")}, ["query"]),
     _tool("open_file", "Open a local file by path, name, or ordinal ('number 1', 'it').", {"path": _p("string", "File reference")}, ["path"]),
-    _tool("document_qa", "Search and answer questions using the user's indexed local files, personal documents, and saved records on this PC.",
+    _tool("document_qa", "Search and answer questions about the user's indexed local files, personal documents, and saved records on this PC (only use when user asks about their files).",
           {"query": _p("string", "Self-contained question or lookup query"), "filepath": _p("string", "Optional filename")}, ["query"]),
     _tool("memory_recall", "Save a new personal fact ('remember that...') or recall saved user facts/preferences.",
           {"query": _p("string", "Question about saved memory"), "fact": _p("string", "Fact to save if user asked to remember")}),
@@ -1554,11 +1545,11 @@ TOOL_DEFINITIONS = [
     _tool("press_key", "Send a keyboard shortcut.", {"keys": _p("string", "Shortcut e.g. ctrl+c")}, ["keys"]),
     _tool("confirm_action", "Confirm a pending action when user says yes/go ahead."),
     _tool("cancel_action", "Cancel a pending action when user says no/cancel."),
-    _tool("open_website", "Open or navigate to a website or URL in the default browser when the user explicitly requests to launch or visit a site. Do not use for searching or querying information.",
+    _tool("open_website", "Open or navigate to a website or URL in the default browser ONLY when the user explicitly commands to visit, launch, or open a website. NEVER use for conversational questions, invitations, or opinions ('want to watch?', 'do you want to see it?').",
           {"url": _p("string", "Website URL or domain to open in browser"),
            "title": _p("string", "Short title of the site")}, ["url"]),
-    _tool("stop", "Stop active speech or playback."),
-    _tool("exit", "Close Amigo."),
+    _tool("stop", "Stop active speech, responses, or media playback. Use when user says 'stop', 'quiet', 'pause', 'stop talking', or 'stop amigo'. Do not close or exit Amigo."),
+    _tool("exit", "Permanently quit or exit the Amigo assistant process. Only use when user explicitly commands 'exit amigo', 'quit amigo', or 'shut down amigo'. NEVER use for 'stop'."),
 ]
 
 VALID_TOOL_NAMES = {tool["name"] for tool in TOOL_DEFINITIONS} | set(UI_TOOL_HANDLERS.keys())
@@ -1595,11 +1586,19 @@ ROUTING RULES:
 1. INTENT-BASED ROUTING:
 - Route by understanding the user's intent.
 - Launching Apps vs Websites: When the user asks to open or launch an application or program (e.g. Chrome, Notepad, Spotify, Calculator), route to 'open_app'. Route to 'open_website' only when the user explicitly requests to visit a web URL or domain (e.g. https://...).
-- Information Retrieval vs Navigation: When the user asks a question, requests information, searches, or checks details, route to information retrieval tools ('web_search', 'document_qa', 'get_weather', 'get_time').
-- Opening Files: When the user asks to open, view, or launch a file or document, route to 'open_file' with params['path']. When the user asks a question about facts or contents inside documents, route to 'document_qa'.
-- Screen & Display: Route to 'read_screen' exclusively when the user asks to inspect the physical display, visual appearance, GUI layout, or on-screen errors.
-- Spoken Dialogue & Advice ('chat'): Use 'chat' for conversational greetings, chit-chat, opinions, advice, and quick math that do not require external lookup or PC tools. Output direct reply in params['response'].
+- Information Retrieval vs Navigation:
+  * Questions about People, Figures, Creators, Online Facts, Companies, Concepts, or General Knowledge: Route to 'web_search' (e.g. "Who is X?", "What is quantum computing?", "Latest news on...", "Tell me about Y").
+  * Questions about Local Documents: Route to 'document_qa' ONLY when the user explicitly asks about their personal files, local documents, invoices, resumes, spreadsheets, or indexed records on this PC (e.g. "what is in my invoice", "check my resume for X", "what does the document say"). Never route general knowledge or people questions to 'document_qa'.
+  * Weather and Time: Route to 'get_weather' and 'get_time'.
+- Opening Files: When the user asks to open, view, or launch a file or document, route to 'open_file' with params['path'].
+- Screen & Display: Route to 'read_screen' ONLY when the user explicitly asks about their computer screen, monitor, active window, GUI, or visual display (e.g. "what's on my screen", "read my screen", "look at this window"). Never route logic riddles, hypothetical scenarios, or physical object questions to 'read_screen'.
+- Spoken Dialogue, Riddles & Logic ('chat'): Use 'chat' for conversational greetings, chit-chat, opinions, advice, math problems, hypothetical physics scenarios, and logic riddles.
+- Conversational Inquiries & Invitations: Questions like "want to watch?", "do you want to watch it?", "what do you think?", or compliments like "what an amazing movie" are conversational dialogue—route to 'chat'. Never route them to 'open_website' or 'open_app'.
 - Media & Playback: For media requests ('play_youtube'), pass the exact media title or query in params['query']. Use 'resume_media', 'pause_media', 'next_track', 'prev_track' for playback controls.
+- Stopping vs Closing vs Exiting:
+  * Halting Speech or Playback ('stop'): When the user asks to stop, be quiet, pause speech, halt audio/music, or stop talking (e.g. "stop", "stop speaking", "be quiet", "pause playback"), route to 'stop'. 'stop' halts speech and pauses media without closing any window or exiting.
+  * Closing Windows & Apps ('close_app'): Use 'close_app' ONLY when the user explicitly commands to close a specific third-party program or window (e.g. "close chrome", "close notepad", "close spotify"). Never use 'close_app' to stop speech or close Amigo.
+  * Exiting the Assistant ('exit'): Use 'exit' ONLY when the user explicitly commands to terminate, quit, or shut down Amigo entirely (e.g. "exit amigo", "quit assistant", "shut down amigo").
 - System Actions & Confirmations: If an action is pending user confirmation and the user affirms ('yes', 'sure'), call 'confirm_action'. If the user declines ('no', 'cancel'), call 'cancel_action'.
 
 OUTPUT FORMAT:
@@ -1619,8 +1618,26 @@ User: Play some jazz on youtube
 User: What time is it?
 {"actions": [{"tool": "get_time", "params": {}}]}
 
+User: stop
+{"actions": [{"tool": "stop", "params": {}}]}
+
+User: be quiet
+{"actions": [{"tool": "stop", "params": {}}]}
+
+User: stop speaking
+{"actions": [{"tool": "stop", "params": {}}]}
+
 User: Hello, how are you?
-{"actions": [{"tool": "chat", "params": {"response": "Hello! I am doing well, ready to help."}}]}"""
+{"actions": [{"tool": "chat", "params": {"response": "Hello! I am doing well, ready to help."}}]}
+
+User: If I place a glass upside down and put a marble on top, then move the glass, where is the marble?
+{"actions": [{"tool": "chat", "params": {}}]}
+
+User: want to watch?
+{"actions": [{"tool": "chat", "params": {}}]}
+
+User: what an amazing movie
+{"actions": [{"tool": "chat", "params": {}}]}"""
 
 _MASTER_PROMPT_CACHE: str | None = None
 
@@ -1674,11 +1691,8 @@ _ROUTER_STOP = ["<|endoftext|>", "<｜end of sentence｜>", "<|im_end|>", "<|im_
 
 
 def _clean_json_text(text: str) -> str:
-    clean = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.I).strip()
-    clean = re.sub(r"<think>[\s\S]*$", "", clean, flags=re.I).strip()
-    if "</think>" in clean:
-        after_think = clean.split("</think>")[-1].strip()
-        clean = after_think if after_think else clean.replace("</think>", "").strip()
+    from amigo.core.llm_agent import _strip_reasoning
+    clean, _ = _strip_reasoning(text)
     clean = re.sub(r"```(?:json)?\s*", "", clean).replace("```", "").strip()
     clean = re.sub(r",\s*([\]}])", r"\1", clean)
     # Auto-balance braces and brackets if output was cleanly cut off at stop token
@@ -1724,9 +1738,11 @@ def _call_from_obj(obj) -> list[dict]:
             calls.extend(_call_from_obj(item))
         return calls
     tool_cand = obj.get("tool") or obj.get("action") or obj.get("name")
-    if not isinstance(tool_cand, str) or tool_cand.strip().lower() not in VALID_TOOL_NAMES:
+    if not isinstance(tool_cand, str):
         return []
-    t_name = tool_cand.strip().lower()
+    t_name = re.sub(r"\(\)$", "", tool_cand.strip()).strip().lower()
+    if t_name not in VALID_TOOL_NAMES:
+        return []
     raw_params = obj.get("params") or obj.get("arguments") or obj.get("parameters") or {}
     params = _coerce_params(raw_params)
     speak = obj.get("speak") or (params.get("reply") or params.get("response") if t_name == "chat" else "")
@@ -1792,10 +1808,9 @@ def _parse_tool_calls(response: str) -> list[dict]:
 def _clean_final_dialogue(text: str) -> str:
     if not text:
         return ""
-    # Strip thoughts and speaker prefixes while preserving markdown, lists, and numbers
-    t = re.sub(r'<think>[\s\S]*?</think>', '', text, flags=re.I)
-    t = re.sub(r'^(?:Amigo|Assistant|AI):\s*', '', t, flags=re.I).strip()
-    return t
+    from amigo.core.llm_agent import _strip_reasoning
+    clean, _ = _strip_reasoning(text)
+    return clean
 
 
 def _extract_final_response(response: str, tool_calls: list) -> str:
@@ -1817,7 +1832,8 @@ def _extract_final_response(response: str, tool_calls: list) -> str:
         flags=re.I,
     ).strip()
     non_tool = re.sub(r'```(?:json|xml)?\s*', '', non_tool).replace('```', '').strip()
-    non_tool = re.sub(r'<think>[\s\S]*?</think>', '', non_tool, flags=re.I).strip()
+    from amigo.core.llm_agent import _strip_reasoning
+    non_tool, _ = _strip_reasoning(non_tool)
 
     # If no tool calls were made and plain text dialogue remains, treat as direct spoken response
     if not tool_calls and non_tool and not non_tool.startswith("{") and not non_tool.startswith("["):
@@ -1830,7 +1846,10 @@ def _chat_action(text: str = "") -> dict:
 
 
 def _strip_wake_word(query: str) -> str:
-    return _RE_WAKE_WORD.sub("", (query or "").strip()).strip()
+    q = (query or "").strip()
+    q = _RE_WAKE_WORD_START.sub("", q).strip()
+    q = _RE_WAKE_WORD_END.sub("", q).strip()
+    return q
 
 
 def parse_user_intent_fast(query: str) -> dict[str, Any] | None:
@@ -1862,31 +1881,21 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
     tool_calls = _parse_tool_calls(response)
     final_response = _extract_final_response(response, tool_calls)
 
-    # Smart Follow-Up Recovery: if router falls back to 'chat' on a follow-up right after
-    # specialized tools (document_qa, web_search), inherit the active tool!
-    if len(tool_calls) == 1 and tool_calls[0]["tool"] == "chat":
-        history = _get_conv_history(conversation_history)
-        resolved = rag_engine.resolve_contextual_query(query, history)
-        if resolved != query.strip() and history:
-            last_turn = history[-1]
-            last_tool = (last_turn.get("tool") or "").strip()
-            if last_tool in ("document_qa", "ask_document"):
-                tool_calls = [{"tool": "document_qa", "params": {"query": resolved}, "speak": ""}]
-            elif last_tool == "web_search" and is_internet_connected():
-                tool_calls = [{"tool": "web_search", "params": {"query": resolved}, "speak": ""}]
-
-    # Disambiguation: if open_website was chosen with a query string in the URL,
-    # route to web_search so Amigo retrieves and synthesizes the answer
+    # Disambiguation & semantic intent normalization (purely structural, language-agnostic)
     for i, call in enumerate(tool_calls):
         if call["tool"] == "open_website":
             raw_url = str((call.get("params") or {}).get("url") or "").strip()
+            # A website navigation target requires a valid domain or URL protocol structure
+            has_valid_url = bool("." in raw_url or "://" in raw_url)
+            if not raw_url or not has_valid_url:
+                tool_calls[i] = {"tool": "chat", "params": {}, "speak": ""}
+                continue
+
             has_query_params = bool(urllib.parse.urlparse(raw_url).query)
             if has_query_params and is_internet_connected():
-                history = _get_conv_history(conversation_history)
-                resolved = rag_engine.resolve_contextual_query(query, history)
                 tool_calls[i] = {
                     "tool": "web_search",
-                    "params": {"query": resolved or query.strip()},
+                    "params": {"query": query.strip()},
                     "speak": "",
                 }
             elif raw_url and "." not in raw_url and "://" not in raw_url and "/" not in raw_url:
@@ -1896,8 +1905,13 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
                     "speak": "",
                 }
 
-    # Ensure chat tool has response/reply parameter
+    # Normalize tool params from local LLM
     for call in tool_calls:
+        if call["tool"] == "set_volume":
+            p = call.setdefault("params", {})
+            if "level" in p and not p.get("action"):
+                p["action"] = "set_volume"
+
         if call["tool"] == "chat":
             reply_val = call["params"].get("reply") or call["params"].get("response") or call.get("speak") or final_response
             if reply_val:

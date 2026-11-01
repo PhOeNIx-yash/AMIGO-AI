@@ -60,7 +60,10 @@ function renderInlineFormatting(text: string): React.ReactNode {
 
 function renderHistoryMarkdown(content: string, isDark: boolean): React.ReactNode {
   if (!content) return "Command executed successfully.";
-  const lines = content.split("\n");
+  const normalized = content
+    .replace(/([^\n])\s+[-*•]\s+/g, "$1\n- ")
+    .replace(/([^\n])\s+(\d+\.)\s+/g, "$1\n$2 ");
+  const lines = normalized.split("\n");
   return (
     <div className="space-y-1.5 leading-relaxed text-[11px]">
       {lines.map((line, idx) => {

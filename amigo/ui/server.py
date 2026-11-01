@@ -44,10 +44,9 @@ logging.basicConfig(
 )
 
 for _noisy_logger in (
-    "werkzeug", "primp", "phonemizer", "urllib3", "chromadb",
-    "pdfminer", "pdfminer.pdffont", "pdfminer.pdfinterp", "pdfminer.pdfpage",
+    "werkzeug", "primp", "phonemizer", "urllib3",     "pdfminer", "pdfminer.pdffont", "pdfminer.pdfinterp", "pdfminer.pdfpage",
     "pdfminer.pdfdocument", "pypdf", "pdfplumber",
-    "httpx", "httpcore", "sentence_transformers", "transformers", "huggingface_hub",
+    "httpx", "httpcore", "huggingface_hub",
 ):
     _l = logging.getLogger(_noisy_logger)
     _l.setLevel(logging.ERROR)
@@ -61,6 +60,7 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 import amigo.core.rag_engine as rag_engine
 from amigo.core.llm_agent import (
     _get_internet_status,
+    _strip_reasoning,
     add_to_memory,
     clear_conversations_memory,
     get_active_model_info as get_llm_model_info,
@@ -270,70 +270,15 @@ def _apply_voice_preference(memory: dict, target_voice: str) -> str:
     return v_name
 
 
-_CONTRACTIONS = [
-    (re.compile(r"\bI have\b", re.I), "I've"),
-    (re.compile(r"\bIt is\b", re.I), "It's"),
-    (re.compile(r"\bThat is\b", re.I), "That's"),
-    (re.compile(r"\bHere is\b", re.I), "Here's"),
-    (re.compile(r"\bThere is\b", re.I), "There's"),
-    (re.compile(r"\bDo not\b", re.I), "Don't"),
-    (re.compile(r"\bCannot\b", re.I), "Can't"),
-    (re.compile(r"\bWill not\b", re.I), "Won't"),
-    (re.compile(r"\bYou will\b", re.I), "You'll"),
-    (re.compile(r"\bWe have\b", re.I), "We've"),
-]
-
-
-def format_conversational_speech(text: str) -> str:
-    """Transforms structured/table/list output into natural spoken speech."""
-    if not text or len(text.strip()) < 35:
-        return text
-
-    spoken = text
-    for pat, rep in _CONTRACTIONS:
-        spoken = pat.sub(rep, spoken)
-
-    if "|" in spoken and ("|---" in spoken or spoken.count("|") >= 4):
-        table_raw = re.sub(r"\|\s*\|+", "|\n|", spoken)
-        lines = [ln.strip() for ln in table_raw.split("\n") if ln.strip()]
-        title, entities, found_sep = "", [], False
-        for line in lines:
-            if "|" not in line:
-                clean_l = re.sub(r"#{1,6}\s*", "", line).strip()
-                if clean_l and not title:
-                    title = clean_l
-            elif re.search(r"[\-:]\s*\|", line):
-                found_sep = True
-            elif found_sep:
-                cells = [c.strip() for c in line.split("|") if c.strip()]
-                if cells:
-                    entities.append(cells[0])
-
-        clean_title = re.sub(r"(\(.*?\)|##.*|:$)", "", title).replace("->", "to").strip() or "details"
-        if entities:
-            return f"Here are the {clean_title.lower()} for {', '.join(entities[:4])}. I've displayed the full comparison on your screen."
-        return f"Here are the {clean_title.lower()}. I've displayed the full breakdown on your screen."
-
-    raw_items = re.findall(r"(?:^|\n|\s)\d+\.\s+[\"'*]*([^\"'\n\–\-:]{3,40})[\"'*]*\s*[\–\-:]", spoken)
-    clean_items = [it.strip().strip("\"'") for it in raw_items if it.strip()]
-    if len(clean_items) >= 3:
-        intro_m = re.match(r"^(.*?)(?=\s*\d+\.|\n\d+\.)", spoken, re.DOTALL)
-        intro = re.sub(r"[:.]+$", "", intro_m.group(1).strip() if intro_m else "Here are a few options").strip()
-        items_str = ", ".join(clean_items[:-1]) + f", and {clean_items[-1]}"
-        return f"{intro}: {items_str}. Take a look at the cards on screen to see each one!"
-
-    return spoken
-
-
 def _normalize_llm_markdown(t: str) -> str:
-    if not t or ("|" not in t and " - " not in t and " #" not in t):
+    if not t:
         return t
     t = t.replace("\r\n", "\n")
     t = re.sub(r"\|\s*\|+", "|\n|", t)
     t = re.sub(r"^([^|\n]+?)\s*(\|\s*[^|\n]+\|)", r"\1\n\n\2", t, flags=re.MULTILINE)
     t = re.sub(r"(\|\s*)(#{1,6}\s+)", r"\1\n\n\2", t)
     t = re.sub(r"(\|)\s*([A-Za-z*#][^|\n]*)$", r"\1\n\n\2", t, flags=re.MULTILINE)
-    t = re.sub(r"([^\n])\s+-\s+([A-Za-z0-9*])", r"\1\n- \2", t)
+    t = re.sub(r"([^\n])\s+[-*•]\s+([A-Za-z0-9*])", r"\1\n- \2", t)
     t = re.sub(r"([^\n])\s+(\d+\.)\s+([A-Za-z0-9*])", r"\1\n\2 \3", t)
     return t
 
@@ -438,7 +383,14 @@ def _process_query(
     final_reply = "\n\n".join(combined_spoken).strip()
     if final_reply:
         final_reply = _extract_text_from_json(final_reply)
+        final_reply, reply_thought = _strip_reasoning(final_reply, fallback_to_thought=True)
         final_reply = _normalize_llm_markdown(final_reply)
+        if "</think>" in final_reply.lower() or "<think>" in final_reply.lower():
+            final_reply, extra_thought = _strip_reasoning(final_reply)
+            if extra_thought and not reply_thought:
+                reply_thought = extra_thought
+        if reply_thought and not last_thought:
+            last_thought = reply_thought
     elif primary_tool not in _SILENT_TOOLS:
         final_reply = get_quick_feedback(f"finished {primary_tool.replace('_', ' ')}")
 
@@ -468,8 +420,7 @@ def _process_query(
 
     # Trigger TTS speech
     if final_reply:
-        speech_to_voice = format_conversational_speech(final_reply)
-        speak(speech_to_voice, request_id=request_id)
+        speak(final_reply, request_id=request_id)
 
     return {
         "tool": primary_tool,
@@ -775,6 +726,9 @@ def api_action_execute():
             add_to_memory(str(query_text), spoken or f"Executed {tool}", tool=tool, params=payload)
 
             if spoken:
+                spoken, _ = _strip_reasoning(spoken)
+                spoken = _extract_text_from_json(spoken)
+                spoken = _normalize_llm_markdown(spoken)
                 speak(spoken)
                 broadcaster.broadcast("chat_message", {
                     "sender": "assistant",

@@ -147,9 +147,11 @@ _STATIC_VOICE_SYSTEM_PROMPT = (
     "Core Instructions:\n"
     "- State the direct answer or solution immediately in the first sentence.\n"
     "- Keep responses conversational and concise (1-3 spoken sentences) unless the user specifically asks for detailed explanations, lists, or steps.\n"
+    "- Answer ONLY the user's current question. Never bring up past topics, previous commands, active links, or background media unless the user specifically asks about them.\n"
     "- Speak naturally and confidently. Never use robotic filler phrases like 'Certainly!', 'Sure thing!', 'As an AI', or 'According to my knowledge'.\n"
     "- Never deflect with multi-choice question menus. Answer directly with what you know.\n"
     "- Only reference 'available documents' or 'in your files' if the user specifically asked about their personal files.\n"
+    "- For riddles, physics puzzles, and logical word problems, reason carefully through physical space, geometry, and real-world mechanics before giving the direct answer.\n"
     "- Resolve pronouns ('it', 'that', 'they', 'he', 'she', 'there') and follow-up questions naturally from conversation history and active environment state."
 )
 
@@ -249,7 +251,7 @@ def build_turn_runtime_context(
     if active_ctx := rag_engine.get_active_context_prompt():
         ctx_blocks.append(active_ctx)
 
-    state = rag_engine.get_active_state(clean_expired=True) or {}
+    state = rag_engine.get_active_state(clean_expired=False) or {}
     if gen_info := state.get("generated_content"):
         if isinstance(gen_info, dict) and gen_info.get("content"):
             ctx_blocks.append(f"[Active Draft: {gen_info.get('type', 'content')} about '{gen_info.get('topic', '')}']")
@@ -627,8 +629,25 @@ def get_active_model_info() -> dict:
 def _strip_reasoning(text: str, fallback_to_thought: bool = False) -> tuple[str, str]:
     if not text:
         return "", ""
-    thoughts = [m.strip() for m in _RE_THINK.findall(text) if m.strip()]
-    clean = _RE_THINK.sub("", text).strip()
+    thoughts: list[str] = []
+    clean = text
+
+    # 1. Handle orphan </think> or standard <think>...</think> blocks
+    if "</think>" in clean.lower():
+        parts = re.split(r"</think>", clean, flags=re.IGNORECASE)
+        for part in parts[:-1]:
+            t = re.sub(r"<think>", "", part, flags=re.IGNORECASE).strip()
+            if t:
+                thoughts.append(t)
+        clean = parts[-1].strip()
+    elif "<think>" in clean.lower():
+        parts = re.split(r"<think>", clean, flags=re.IGNORECASE)
+        clean = parts[0].strip()
+        for part in parts[1:]:
+            t = part.strip()
+            if t:
+                thoughts.append(t)
+
     clean = _RE_SPEAKER_PREFIX.sub("", clean).strip()
     if not clean and fallback_to_thought and thoughts:
         clean = thoughts[-1]
@@ -797,7 +816,7 @@ def stream_sentence_chunks(
 ) -> Generator[str, None, None]:
     """Yield sentence-level chunks suitable for real-time TTS and UI streaming."""
     buffer = ""
-    in_think = False
+    in_think = thinking_enabled
 
     for token in token_generator:
         if interruption_event and interruption_event.is_set():
@@ -814,6 +833,8 @@ def stream_sentence_chunks(
                 in_think = False
             else:
                 continue
+        elif "</think>" in buffer:
+            buffer = buffer.split("</think>", 1)[1]
 
         splits = _RE_SENTENCE_SPLIT.split(buffer)
         if len(splits) > 1:
@@ -825,9 +846,11 @@ def stream_sentence_chunks(
                         yield clean
             buffer = splits[-1]
 
-    if buffer.strip() and not in_think and not (interruption_event and interruption_event.is_set()):
+    if buffer.strip() and not (interruption_event and interruption_event.is_set()):
         clean = _RE_SPEAKER_PREFIX.sub("", buffer.strip()).strip()
-        if clean:
+        if "</think>" in clean:
+            clean = clean.split("</think>")[-1].strip()
+        if clean and not (in_think and not clean):
             yield clean
 
 

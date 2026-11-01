@@ -1,7 +1,7 @@
 """
 RAG Background Indexer for Amigo Voice Assistant.
 Crawls user directories, deduplicates symlinked/OneDrive paths via canonical resolution,
-indexes new/modified files into ChromaDB, and periodically re-indexes on a background thread.
+indexes new/modified files into the single-file Memvid memory capsule, and periodically re-indexes on a background thread.
 """
 
 import hashlib
@@ -40,7 +40,7 @@ SKIP_DIRS = {
 
 
 class RAGIndexer:
-    """Background file indexer that crawls directories and indexes into ChromaDB."""
+    """Background file indexer that crawls directories and indexes into Memvid memory."""
 
     def __init__(self, rag_engine=None):
         self._rag = rag_engine
@@ -190,11 +190,11 @@ class RAGIndexer:
         errors = 0
 
         try:
-            if self._rag and hasattr(self._rag, "_col") and hasattr(self._rag, "DOCUMENTS"):
+            if self._rag:
                 try:
-                    col = self._rag._col(self._rag.DOCUMENTS)
-                    if col is not None and col.count() == 0 and self._file_hashes:
-                        logger.warning("[Indexer] Chroma is empty but hash cache isn't; forcing re-index")
+                    stats = self._rag.get_index_stats()
+                    if stats.get("documents", 0) == 0 and self._file_hashes:
+                        logger.warning("[Indexer] Memory store has 0 documents but hash cache exists; forcing re-index")
                         self._file_hashes.clear()
                         force = True
                 except Exception:

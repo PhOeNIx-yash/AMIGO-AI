@@ -35,6 +35,7 @@ import {
   saveAssistantSettings,
   fetchAssistantHistory,
   clearAssistantHistory,
+  stripReasoningTags,
 } from "./services/assistantApi";
 import { Sparkles, ChevronUp, Shuffle, Copy, Check, Volume2, X } from "lucide-react";
 import { ErrorState } from "@/components/ui/error-state";
@@ -811,12 +812,13 @@ export default function App() {
               } else if (data.sender === "assistant" || data.sender === "amigo") {
                 const userPrompt = data.user_query || activePromptRef.current || "Voice Command";
                 const cleanUser = cleanHistoryPrompt(userPrompt);
+                const cleanReply = stripReasoningTags(data.text || "");
                 setActivePrompt(cleanUser);
                 activePromptRef.current = cleanUser;
-                setDisplayText(data.text);
+                setDisplayText(cleanReply);
                 if (data.actionCards && data.actionCards.length > 0) {
                   setAssistantData({
-                    speechReply: data.text,
+                    speechReply: cleanReply,
                     displayTitle: cleanUser,
                     intent: data.tool || "chat",
                     requiresDisambiguation: false,
@@ -824,7 +826,7 @@ export default function App() {
                     executionSummary: {
                       status: "completed",
                       headline: "Executed with Amigo",
-                      details: data.text,
+                      details: cleanReply,
                     },
                   });
                   setState("action_card");
@@ -1067,7 +1069,7 @@ export default function App() {
 
       // Update center stage with the full real assistant response text
       const resultText = data.speechReply || data.executionSummary?.details || data.displayTitle || effectivePrompt;
-      setDisplayText(resultText);
+      setDisplayText(stripReasoningTags(resultText));
 
       // Append to command history
       const newEntry: HistoryEntry = {

@@ -46,7 +46,7 @@ def main():
             print(" -> Pre-built Web UI distribution is present and ready.")
 
     # 4. Create RAG Data Directories & Default Profile
-    rag_dir = os.path.join(base_dir, "rag_data", "chroma")
+    rag_dir = os.path.join(base_dir, "rag_data")
     os.makedirs(rag_dir, exist_ok=True)
 
     profile_path = os.path.join(base_dir, "amigo_profile.json")

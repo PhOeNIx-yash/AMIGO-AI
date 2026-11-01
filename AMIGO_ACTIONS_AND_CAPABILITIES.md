@@ -9,7 +9,7 @@ This document provides a comprehensive, transparent inventory of everything **Am
 | Area | Rating | Status Details |
 |---|:---:|---|
 | **Local AI Models** | 🟢 **Healthy** | `LFM 3 1.7B` (Q4_K_M GGUF), `Edge Neural TTS` / `Supertonic 3`, and `Vosk` (Offline STT) are configured. |
-| **Dependencies** | 🟢 **Healthy** | Core packages (`chromadb`, `sentence-transformers`, `CrossEncoder`, `rank_bm25`, `pdfplumber`, `winocr`, `psutil`) are installed and functional on Python 3.12. |
+| **Dependencies** | 🟢 **Healthy** | Core packages (`memvid-sdk`, `pdfplumber`, `winocr`, `psutil`) are installed and functional on Python 3.12. |
 | **Web Dashboard UI** | 🟢 **Healthy** | React + Vite frontend in `ui_app/dist` is compiled, including live audio visualizers, countdown timers, stopwatches, weather widgets, and settings. |
 | **OS Automation** | 🟢 **Healthy** | Audio volume, screen capture, app launching, brightness, keyboard shortcuts, window minimizing, and ms-settings URIs are fully operational. |
 | **Intent Routing** | 🟢 **Healthy** | Native `llm_agent.py` using LFM 3 1.7B Q4_K_M for formal logic, function calling, and structured tool dispatching. |

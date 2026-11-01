@@ -43,6 +43,23 @@ export async function transcribeAudio(
   return data.transcription || data.text || data.transcript || "";
 }
 
+export function stripReasoningTags(text: string): string {
+  if (!text) return "";
+  let clean = text;
+  if (clean.toLowerCase().includes("</think>")) {
+    const parts = clean.split(/<\/think>/i);
+    const candidate = parts[parts.length - 1].trim();
+    if (candidate) {
+      clean = candidate;
+    } else {
+      clean = parts[0].replace(/<think>/gi, "").trim();
+    }
+  } else if (clean.toLowerCase().includes("<think>")) {
+    clean = clean.split(/<think>/i)[0].trim();
+  }
+  return clean.replace(/^(?:Amigo|Assistant|AI):\s*/i, "").trim();
+}
+
 function isSecureOrLocalEndpoint(url: string): boolean {
   if (url.startsWith("/")) return true;
   try {
@@ -357,8 +374,9 @@ export function normalizeBackendResponse(raw: any, originalPrompt: string): Assi
       ];
     }
 
+    const cleanSpeech = stripReasoningTags(raw.speechReply || raw.text || raw.message || raw.reply || "");
     return {
-      speechReply: raw.speechReply || raw.text || raw.message || raw.reply || "",
+      speechReply: cleanSpeech,
       displayTitle: raw.displayTitle || originalPrompt,
       intent: raw.intent || "general_task",
       params: raw.params || raw.metadata?.params,
@@ -369,7 +387,7 @@ export function normalizeBackendResponse(raw: any, originalPrompt: string): Assi
       executionSummary: {
         status: raw.executionSummary?.status || "completed",
         headline: raw.executionSummary?.headline || "Executed Task",
-        details: raw.executionSummary?.details || raw.speechReply || raw.reply || "Task processed successfully.",
+        details: stripReasoningTags(raw.executionSummary?.details || cleanSpeech || "Task processed successfully."),
         secondaryDetails: raw.executionSummary?.secondaryDetails,
         rawOutput: raw.executionSummary?.rawOutput || raw,
       },
@@ -379,7 +397,7 @@ export function normalizeBackendResponse(raw: any, originalPrompt: string): Assi
   }
 
   // 2. Generic LLM / Agent format ({ response, actions, result, text, message })
-  const speech = raw.response || raw.reply || raw.text || raw.message || raw.output || raw.answer || "";
+  const speech = stripReasoningTags(raw.response || raw.reply || raw.text || raw.message || raw.output || raw.answer || "");
   const actionsList: ActionCardItem[] = [];
 
   if (Array.isArray(raw.actions) || Array.isArray(raw.tools) || Array.isArray(raw.intent_actions)) {

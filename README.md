@@ -27,7 +27,7 @@ Amigo provides desktop automation, browser & window control, document intelligen
 - **Cross-collection search** — Search conversations, documents, emails, calendar simultaneously
 - **Background incremental indexer** — Auto-indexes Documents, Downloads, Desktop every 30 minutes
 - **File upload & instant analysis** — Drag-drop PDFs/images for immediate Q&A
-- **ChromaDB vector store** with sentence-transformers embeddings
+- **Memvid single-file memory** with instant Tantivy lexical & semantic retrieval
 
 ### 🌐 **Global System-Wide Hotkey** (NEW)
 - **Alt+V anywhere** — Wake Amigo from any Windows app (VS Code, games, browser, Word)
@@ -120,7 +120,7 @@ User Voice / Text Input
 
 ## 🧠 RAG & Adaptive Memory Architecture
 
-Amigo features a modular vector-embedded long-term memory system powered by **ChromaDB** and **sentence-transformers**:
+Amigo features a high-performance, single-file memory layer powered by **Memvid** and **Tantivy**:
 
 ### 1. Vector Memory Collections
 - **`conversations`** — Every conversation turn is embedded and semantically retrievable across sessions.
@@ -148,7 +148,7 @@ amigo-main/
 │   │   ├── __init__.py
 │   │   ├── ai.py                   # RAG memory bridge & voice prompt constructor
 │   │   ├── llm_agent.py            # LFM 3 1.7B GGUF engine & agentic reasoning pipeline
-│   │   ├── rag_engine.py           # ChromaDB vector store, semantic search & prompt injection
+│   │   ├── rag_engine.py           # Memvid memory capsule, instant retrieval & prompt injection
 │   │   ├── rag_indexer.py          # Background file crawling & incremental hash indexer
 │   │   ├── reminder_timer.py       # Background timer & reminder scheduling engine
 │   │   ├── proactive_intelligence.py # Proactive suggestions & adaptive learning engine
@@ -177,7 +177,7 @@ amigo-main/
 │   ├── LFM3-1.7B-Q4_K_M.gguf       # LFM 3 1.7B GGUF weights
 │   └── vosk/                       # Vosk offline STT model
 ├── rag_data/               # RAG vector database & uploads
-│   ├── chroma/             # ChromaDB persistent storage
+│   ├── amigo_memory.mv2    # Single-file serverless memory capsule
 │   └── uploads/            # User uploaded files for analysis
 ├── ui_app/                 # Modern React + Vite frontend source code
 │   ├── src/

@@ -1348,7 +1348,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                         <span>Knowledge Base & Document Index</span>
                       </div>
                       <div className="text-[11px] opacity-60 mt-0.5">
-                        Local offline ChromaDB vector store for fast document search
+                        Single-file Memvid memory capsule with instant Tantivy search
                       </div>
                     </div>
                     <button

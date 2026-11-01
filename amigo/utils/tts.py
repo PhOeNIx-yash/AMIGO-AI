@@ -473,6 +473,11 @@ def normalize_text_for_tts(text: str) -> str:
     """
     if not text:
         return ""
+    try:
+        from amigo.core.llm_agent import _strip_reasoning
+        text, _ = _strip_reasoning(text)
+    except Exception:
+        pass
     t = _extract_text_from_json(text)
 
     # 1. Markdown tables to natural conversational speech
