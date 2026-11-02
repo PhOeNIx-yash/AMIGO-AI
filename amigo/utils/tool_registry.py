@@ -594,7 +594,7 @@ def _tool_ask_document(params, query, spoken, conversation_history=None):
     # 1. Primary: Grounded document evidence with passage citations
     evidence, sources = rag_engine.build_document_evidence(
         question,
-        top_k=6,
+        top_k=5,
         conversation_history=conv_history,
         filepath=target_path if target_path and os.path.exists(target_path) else None,
     )

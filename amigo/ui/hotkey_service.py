@@ -131,11 +131,11 @@ def _play_searching_sound():
 def _handle_wake_action():
     """Handles the Alt+V wake event: captures screen first, updates UI state, then listens and executes."""
     global _is_processing
-    with _lock:
-        if _is_processing:
-            logger.debug("[Hotkey] Already processing an active request, ignoring duplicate trigger.")
-            return
-        _is_processing = True
+    query = ""
+    tool_name = "hotkey"
+    last_tool_params = {}
+    last_tool_metadata = {}
+    res_url = None
 
     try:
         # Step 1: Note active window title immediately (<1ms)

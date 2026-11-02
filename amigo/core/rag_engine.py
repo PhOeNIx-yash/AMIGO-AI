@@ -1,40 +1,28 @@
 """
-Streamlined, High-Precision RAG & Working Memory Engine for Amigo Voice Assistant.
-Key Architectural Fixes:
-1. Information-Theoretic (IDF + Entropy) salient term extraction (zero hardcoded word lists).
-2. Calibrated Hybrid Fusion (Cosine + IDF-weighted lexical overlap) preventing false-positive matches.
-3. Strict Anti-Pollution Context Gatekeeping so RAG never contaminates unrelated LLM answers.
-4. Overlap-preserving sentence window chunking + CSV/table structure preservation.
-5. Sub-20ms cached query embeddings & parallel multi-collection retrieval.
+Pure Memvid (Rust Tantivy) RAG & Working Memory Engine for Amigo Voice Assistant.
+Zero ChromaDB, zero vector/embedding bloat, zero hardcoded stopword lists.
 """
 
 import atexit
 import collections
 import csv
 import datetime
-import hashlib
 import io
 import json
 import logging
 import math
 import os
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-import pickle
 import re
-import sys
 import threading
 import time
-import uuid
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
 from typing import Any
 
 import memvid_sdk
 
-logger = logging.getLogger("amigo.rag_engine_v2")
+logger = logging.getLogger("amigo.rag_engine")
 
 for _log_name in (
-    "httpx", "httpcore", "huggingface_hub",
     "urllib3", "pdfminer", "pdfminer.pdffont", "pdfminer.pdfinterp",
     "pdfminer.pdfpage", "pdfminer.pdfdocument", "pypdf", "pdfplumber",
 ):
@@ -42,27 +30,28 @@ for _log_name in (
 
 
 class RAGEngineError(Exception):
-    """Custom exception for RAG engine initialization and runtime errors."""
+    """Custom exception for Memvid RAG engine initialization and runtime errors."""
     def __init__(self, message: str, original_error: Exception | None = None):
         super().__init__(message)
         self.original_error = original_error
 
 
 # ── Pre-compiled Regex Patterns ────────────────────────────────
-_RE_PDF_NEWLINES = re.compile(r"(?<=[a-zA-Z0-9])\r\n(?=[a-zA-Z0-9])")
+_RE_PDF_NEWLINES = re.compile(r"(?<=[a-zA-Z0-9])\r?\n(?=[a-zA-Z0-9])")
 _RE_PDF_ADJACENT = re.compile(r"([A-Z0-9]{2,})([A-Z][a-z]+)")
 _RE_CHUNK_WHITESPACE = re.compile(r"\s+")
 _RE_CHUNK_SENTENCES = re.compile(r"(?<=[.!?])\s+")
 _RE_MARKDOWN_HEADERS = re.compile(r"^(#{1,6})\s+(.*)$", re.MULTILINE)
 _RE_WORDS = re.compile(r"\b[\w'-]{2,}\b", re.UNICODE)
+_RE_PARAGRAPH_SPLIT = re.compile(r"(?:\r?\n){2,}")
 
 # ── Paths & Constants ──────────────────────────────────────────
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.abspath(os.path.join(_BASE_DIR, "..", ".."))
 
 RAG_DATA_DIR = os.path.join(_PROJECT_ROOT, "rag_data")
-
 PROFILE_FILE = os.path.join(_PROJECT_ROOT, "amigo_profile.json")
+MEMVID_PATH = os.path.join(RAG_DATA_DIR, "amigo_memory.mv2")
 
 CONVERSATIONS = "conversations"
 USER_FACTS = "user_facts"
@@ -70,8 +59,6 @@ DOCUMENTS = "documents"
 EMAILS = "emails"
 CALENDAR = "calendar"
 ALL_COLLECTIONS = [CONVERSATIONS, USER_FACTS, DOCUMENTS, EMAILS, CALENDAR]
-
-MEMVID_PATH = os.path.join(RAG_DATA_DIR, "amigo_memory.mv2")
 
 _TAG_TO_COLLECTION = {
     "conversation": CONVERSATIONS,
@@ -89,11 +76,7 @@ _COLLECTION_TO_TAG = {
     CALENDAR: "calendar",
 }
 
-_WORD_PATTERN = re.compile(r"\b[\w'-]{2,}\b", re.UNICODE)
-_mv_instance: memvid_sdk.Memvid | None = None
-_mv_lock = threading.RLock()
-
-SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt", ".xlsx", ".csv", ".pptx"}
+SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt", ".xlsx", ".csv", ".pptx", ".md"}
 
 SKIP_RAG_TOOLS = {
     "play_youtube", "pause", "resume", "stop", "volume", "mute", "unmute",
@@ -116,29 +99,17 @@ MAX_FILE_SIZE = 50 * 1024 * 1024
 CHUNK_SIZE = 950
 CHUNK_OVERLAP = 180
 
-STATE_TTLS = {
-    "current_media": 1800,
-    "active_app": 1800,
-    "last_search": 900,
-    "active_subject": 600,
-    "active_file": 1800,
-}
-
 # ── Runtime State & Locks ──────────────────────────────────────
-_init_lock = threading.Lock()
+_mv_instance: memvid_sdk.Memvid | None = None
+_mv_lock = threading.RLock()
 _initialized = False
-_init_failed = False
 _init_error: Exception | None = None
 
-_bm25_index = None
-_bm25_doc_map: dict[int, dict] = {}
-_bm25_lock = threading.Lock()
-_bm25_rebuild_timer: threading.Timer | None = None
-_bm25_timer_lock = threading.Lock()
-
-# Online token frequency tracker for dynamic IDF estimation when BM25 is empty or warming up
+# Live Memvid corpus document-frequency tracker for IDF calculation
+_idf_lock = threading.Lock()
 _token_doc_freq: collections.Counter = collections.Counter()
-_total_tracked_chunks: int = 1
+_total_tracked_frames: int = 0
+_corpus_bootstrapped: bool = False
 
 _profile_cache: dict | None = None
 _profile_mtime: float = 0.0
@@ -157,28 +128,75 @@ _SEARCH_CACHE_LOCK = threading.Lock()
 _extracted_text_cache: collections.OrderedDict[tuple[str, float], str] = collections.OrderedDict()
 _extracted_text_lock = threading.Lock()
 
-_executor = ThreadPoolExecutor(max_workers=6, thread_name_prefix="AmigoRAG")
-
-
-@dataclass
-class SearchResult:
-    text: str
-    source: str
-    score: float
-    metadata: dict = field(default_factory=dict)
-    rerank_score: float = 0.0
-    keyword_score: float = 0.0
-    lexical_overlap: float = 0.0
-    raw_semantic: float = 0.0
-    importance: float = 1.0
+_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="AmigoMemvid")
 
 
 # ═══════════════════════════════════════════════════════════════
-#  1. Memvid Engine Initialization & Storage
+#  1. Memvid Capsule Initialization & Corpus IDF Statistics
 # ═══════════════════════════════════════════════════════════════
+
+def _record_frame_tokens(text: str) -> None:
+    """Update live token document-frequency statistics when a frame is stored in Memvid."""
+    global _total_tracked_frames
+    if not text:
+        return
+    unique_tokens = set(_RE_WORDS.findall(text.lower()))
+    if not unique_tokens:
+        return
+    with _idf_lock:
+        _total_tracked_frames += 1
+        for tok in unique_tokens:
+            _token_doc_freq[tok] += 1
+
+
+def _reset_memvid() -> None:
+    """Closes and resets the Memvid instance so a corrupted/poisoned Tantivy writer can cleanly recover."""
+    global _mv_instance, _initialized
+    with _mv_lock:
+        if _mv_instance is not None:
+            try:
+                if hasattr(_mv_instance, "close"):
+                    _mv_instance.close()
+            except Exception:
+                pass
+            _mv_instance = None
+            _initialized = False
+
+
+def _bootstrap_idf_from_memvid(mv: memvid_sdk.Memvid) -> None:
+    """Scan existing Memvid frames once on startup to build accurate token IDF weights."""
+    global _corpus_bootstrapped
+    with _idf_lock:
+        if _corpus_bootstrapped:
+            return
+        _corpus_bootstrapped = True
+
+    try:
+        with _mv_lock:
+            st = mv.stats() if hasattr(mv, "stats") else {}
+            total = int(st.get("active_frame_count") or st.get("frame_count") or 0)
+            if total <= 0:
+                return
+            timeline = mv.timeline(limit=min(total, 1500)) or []
+            frame_items = [(item.get("uri"), item.get("preview") or "") for item in timeline]
+
+        for uri, preview in frame_items:
+            text_sample = preview
+            if uri:
+                try:
+                    with _mv_lock:
+                        frame_data = mv.frame(uri)
+                    text_sample = frame_data.get("text") or text_sample
+                except Exception:
+                    pass
+            if text_sample:
+                _record_frame_tokens(text_sample)
+    except Exception as e:
+        logger.debug("[Memvid] Corpus IDF bootstrap note: %s", e)
+
 
 def init_memvid() -> memvid_sdk.Memvid:
-    """Initialize or open the single-file Memvid memory capsule with auto-recovery."""
+    """Initialize or open the single-file Memvid memory capsule."""
     global _mv_instance, _initialized
     with _mv_lock:
         if _mv_instance is not None:
@@ -186,56 +204,49 @@ def init_memvid() -> memvid_sdk.Memvid:
         try:
             os.makedirs(RAG_DATA_DIR, exist_ok=True)
             if os.path.exists(MEMVID_PATH) and os.path.getsize(MEMVID_PATH) > 0:
-                logger.info("[RAG Memvid] Opening memory file: %s", MEMVID_PATH)
                 mv = None
-                for attempt in range(4):
+                for attempt in range(6):
                     try:
                         mv = memvid_sdk.use("basic", MEMVID_PATH, enable_lex=True)
                         break
                     except Exception as open_err:
-                        err_str = str(open_err).lower()
-                        is_lock = any(k in err_str for k in ("locked", "lock", "os error 33", "sharing", "busy", "unavailable"))
-                        if is_lock:
-                            if attempt < 3:
-                                time.sleep(0.15 * (attempt + 1))
-                                continue
-                            raise
-                        logger.warning("[RAG Memvid] Capsule corrupted (%s). Recreating clean memory capsule.", open_err)
+                        if attempt < 5:
+                            time.sleep(0.20 * (attempt + 1))
+                            continue
+                        logger.warning("[Memvid] Could not open memory capsule: %s; recreating fresh capsule", open_err)
                         try:
-                            os.remove(MEMVID_PATH)
-                        except Exception:
-                            pass
-                        mv = memvid_sdk.create(MEMVID_PATH, enable_lex=True)
-                        break
+                            corrupt_bak = f"{MEMVID_PATH}.corrupt.{int(time.time())}"
+                            os.replace(MEMVID_PATH, corrupt_bak)
+                            mv = memvid_sdk.create(MEMVID_PATH, enable_lex=True)
+                        except Exception as rec_err:
+                            logger.error("[Memvid] Failed to recover memory capsule: %s", rec_err)
+                            raise open_err
             else:
-                logger.info("[RAG Memvid] Creating new single-file memory: %s", MEMVID_PATH)
                 mv = memvid_sdk.create(MEMVID_PATH, enable_lex=True)
             _mv_instance = mv
             _initialized = True
-            logger.info("[RAG Memvid] Initialized successfully.")
+            _executor.submit(_bootstrap_idf_from_memvid, mv)
             return mv
         except Exception as e:
-            logger.error("[RAG Memvid] Failed to initialize: %s", e)
+            logger.error("[Memvid] Failed to initialize: %s", e)
             raise
 
 
 def is_memvid_ready() -> bool:
-    """Check if the Memvid memory engine is active and ready."""
     return _initialized and _mv_instance is not None
 
 
 def is_rag_ready() -> bool:
-    """Compatibility check for whether the memory/RAG engine is active."""
     try:
         if not is_memvid_ready():
             init_memvid()
         return is_memvid_ready()
     except Exception:
-        return True
+        return False
 
 
 def commit() -> None:
-    """Commit pending memory and Tantivy index changes to disk with retry if writer is busy."""
+    """Commit pending Memvid frames and Tantivy lexical index changes to disk."""
     mv = init_memvid()
     with _mv_lock:
         for attempt in range(5):
@@ -243,130 +254,150 @@ def commit() -> None:
                 mv.commit()
                 return
             except Exception as e:
-                if "unavailable" in str(e).lower() and attempt < 4:
-                    time.sleep(0.08 * (attempt + 1))
+                err_msg = str(e).lower()
+                if any(k in err_msg for k in ("unavailable", "access is denied", "os error 5", "locked", "sharing")) and attempt < 4:
+                    _reset_memvid()
+                    time.sleep(0.12 * (attempt + 1))
+                    mv = init_memvid()
                     continue
-                logger.debug("[RAG Memvid] Commit note: %s", e)
+                logger.debug("[Memvid] Commit note: %s", e)
                 break
 
 
-def _format_search_query(query: str) -> str:
-    """
-    Format query into an escaped Tantivy search string.
-    Language-agnostic: tokenizes any Unicode word characters and prioritizes
-    high-information salient terms over low-information functional particles.
-    No hardcoded stopwords or language-specific rules.
-    """
-    q = query.strip()
-    if not q:
-        return ""
-    words = _WORD_PATTERN.findall(q)
-    if not words:
-        return q
-
-    # Rank tokens by dynamic information density (morphology + casing)
-    scored_tokens = [(_token_information_weight(w, context_text=q), w) for w in words]
-    max_w = max((w for w, _ in scored_tokens), default=0.5)
-    salient = [tok for w, tok in scored_tokens if w >= max(0.40, max_w * 0.65)]
-    target_words = salient if salient else words
-
-    escaped_words = [re.sub(r'([+\-!(){}[\]^"~*?:\\/])', r'\\\1', w) for w in target_words]
-    return " OR ".join(escaped_words)
-
-
-def _col(name: str):
-    """Backwards-compatibility stub for legacy callers."""
-    return None
-
-
 # ═══════════════════════════════════════════════════════════════
-#  2. Fast BM25 Keyword Index & Dynamic Token IDF
+#  2. Dynamic Information-Theoretic Token Weighting & Lexical Gate
 # ═══════════════════════════════════════════════════════════════
 
-def _init_bm25_index() -> None:
-    pass
-
-
-def _rebuild_bm25_index() -> None:
-    pass
-
-
-def _schedule_bm25_rebuild(delay: float = 3.0) -> None:
-    pass
-
-
-def _token_information_weight(token: str, context_text: str = "") -> float:
+def _token_specificity(token: str, context_text: str = "") -> float:
     """
-    Compute the information weight (specificity) of a token dynamically without hardcoded stopword lists.
-    Combines:
-    1. Live corpus Inverse Document Frequency (IDF) from BM25 / tracked chunks when available.
-    2. Morphological specificity (sub-linear character length + digit/mixed-case indicators).
+    Compute token specificity in [0.0, 1.0] using live Memvid corpus IDF and morphology.
+    Zero hardcoded stopwords.
     """
     low = token.lower()
     if len(low) < 2:
         return 0.0
 
-    # If entire context is uppercase, casing is uniform and does not indicate an acronym
     is_context_all_caps = bool(context_text and context_text.isupper())
     has_digit = any(c.isdigit() for c in token)
-    is_acronym = (len(token) >= 2 and token.isupper() and not is_context_all_caps)
-    length_factor = min(1.0, max(0.10, (len(low) - 2.0) / 5.0))
-    if has_digit or is_acronym:
-        length_factor = max(length_factor, 0.85)
+    has_sep = any(c in token for c in ("_", "-"))
+    is_acronym = len(token) >= 2 and token.isupper() and not is_context_all_caps
+    is_mixed = not token.isupper() and not token.islower() and any(c.isupper() for c in token[1:])
 
-    # Corpus IDF factor if BM25 index is populated
-    bm25 = _bm25_index
-    if bm25 is not None and hasattr(bm25, "idf") and isinstance(bm25.idf, dict):
-        idf_val = bm25.idf.get(low)
-        if idf_val is not None:
-            # Normalize positive BM25 IDF into [0.1, 1.0]; common words across all chunks have near-0 or negative IDF
-            idf_norm = min(1.0, max(0.1, float(idf_val) / 5.0))
-            return round(0.6 * idf_norm + 0.4 * length_factor, 4)
+    morph_score = min(0.85, 0.20 + 0.06 * max(0, len(low) - 3))
+    if has_digit or is_acronym or is_mixed or has_sep:
+        morph_score = max(morph_score, 0.90)
 
-    if _total_tracked_chunks > 5 and low in _token_doc_freq:
-        df = _token_doc_freq[low]
-        idf_est = math.log(1.0 + (_total_tracked_chunks - df + 0.5) / (df + 0.5))
-        idf_norm = min(1.0, max(0.1, idf_est / 4.0))
-        return round(0.6 * idf_norm + 0.4 * length_factor, 4)
+    with _idf_lock:
+        n_frames = _total_tracked_frames
+        df = _token_doc_freq.get(low, 0)
 
-    return round(length_factor, 4)
+    if n_frames >= 3:
+        if df > 0:
+            raw_idf = math.log(1.0 + (n_frames - df + 0.5) / (df + 0.5))
+            max_idf = math.log(1.0 + (n_frames + 0.5) / 0.5)
+            idf_norm = min(1.0, max(0.05, raw_idf / max(1.0, max_idf)))
+        else:
+            idf_norm = 0.78 if (len(low) >= 3 or has_digit or is_acronym) else 0.25
+        return round(0.68 * idf_norm + 0.32 * morph_score, 4)
+
+    return round(morph_score, 4)
 
 
-def _compute_lexical_overlap(query_tokens: list[str], doc_text: str) -> float:
+def _format_tantivy_query(query: str) -> str:
+    """Build a safe Tantivy lexical query string without dropping short domain keywords."""
+    q = query.strip()
+    if not q:
+        return ""
+    words = _RE_WORDS.findall(q)
+    if not words:
+        return ""
+
+    scored: list[tuple[float, str]] = []
+    seen: set[str] = set()
+    for w in words:
+        low = w.lower()
+        if low in seen:
+            continue
+        seen.add(low)
+        scored.append((_token_specificity(w, context_text=q), w))
+
+    max_w = max((w for w, _ in scored), default=0.5)
+    cutoff = min(0.32, max_w * 0.45)
+    target_words = [tok for w, tok in scored if w >= cutoff] or [tok for _, tok in scored]
+
+    escaped = [re.sub(r'([+\-!(){}[\]^"~*?:\\/])', r"\\\1", w) for w in target_words]
+    return " OR ".join(escaped)
+
+
+def _evaluate_lexical_match(query: str, frame_text: str) -> tuple[float, float, float]:
     """
-    Compute information-weighted lexical overlap in [0.0, 1.0] between query tokens and candidate chunk.
-    Prevents high-frequency functional words from falsely validating an irrelevant chunk.
+    Evaluate how well a Memvid frame matches the query:
+    Returns (idf_weighted_overlap, salient_term_coverage, bigram_phrase_bonus).
     """
-    if not query_tokens or not doc_text:
-        return 0.0
+    if not query or not frame_text:
+        return 0.0, 0.0, 0.0
 
-    doc_tokens = set(_RE_WORDS.findall(doc_text.lower()))
+    query_tokens = _RE_WORDS.findall(query)
+    if not query_tokens:
+        return 0.0, 0.0, 0.0
+
+    doc_lower = frame_text.lower()
+    doc_tokens = set(_RE_WORDS.findall(doc_lower))
     if not doc_tokens:
-        return 0.0
+        return 0.0, 0.0, 0.0
 
-    total_weight = 0.0
-    matched_weight = 0.0
+    token_scores: list[tuple[float, float]] = []
+    seen_q: set[str] = set()
+
     for qt in query_tokens:
         low_q = qt.lower()
-        w = _token_information_weight(qt)
-        if w < 0.25:
+        if low_q in seen_q:
             continue
-        total_weight += w
-        if low_q in doc_tokens:
-            matched_weight += w
-        elif len(low_q) >= 5:
-            # Prefix stem match (e.g., "indexing" <-> "indexed") without hardcoded stemmers
-            stem = low_q[: max(4, len(low_q) - 2)]
-            if any(dt.startswith(stem) for dt in doc_tokens if len(dt) >= 4):
-                matched_weight += w * 0.75
+        seen_q.add(low_q)
 
-    if total_weight <= 1e-6:
-        return 0.0
-    return round(min(1.0, matched_weight / total_weight), 4)
+        spec = _token_specificity(qt, context_text=query)
+        if spec < 0.20:
+            continue
+
+        matched = 0.0
+        if low_q in doc_tokens:
+            matched = 1.0
+        elif len(low_q) >= 5:
+            prefix = low_q[: max(4, len(low_q) - 2)]
+            if any(dt.startswith(prefix) for dt in doc_tokens if len(dt) >= 4):
+                matched = 0.75
+
+        token_scores.append((spec, matched))
+
+    if not token_scores:
+        return 0.0, 0.0, 0.0
+
+    total_w = sum(w for w, _ in token_scores)
+    matched_w = sum(w * m for w, m in token_scores)
+    weighted_overlap = matched_w / total_w if total_w > 1e-6 else 0.0
+
+    # Salient coverage: verify the top 1-2 most specific tokens in the query are present
+    token_scores.sort(key=lambda x: x[0], reverse=True)
+    top_n = max(1, min(2, len(token_scores)))
+    top_w = sum(w for w, _ in token_scores[:top_n])
+    top_m = sum(w * m for w, m in token_scores[:top_n])
+    salient_coverage = top_m / top_w if top_w > 1e-6 else 0.0
+
+    q_seq = [t.lower() for t in query_tokens if len(t) >= 2]
+    phrase_bonus = 0.0
+    if len(q_seq) >= 2:
+        bigrams = [f"{q_seq[i]} {q_seq[i + 1]}" for i in range(len(q_seq) - 1)]
+        phrase_bonus = sum(1 for bg in bigrams if bg in doc_lower) / len(bigrams)
+
+    return (
+        round(min(1.0, weighted_overlap), 4),
+        round(min(1.0, salient_coverage), 4),
+        round(min(1.0, phrase_bonus), 4),
+    )
 
 
 # ═══════════════════════════════════════════════════════════════
-#  3. Profile & Active Environment State
+#  3. User Profile & Active Session State
 # ═══════════════════════════════════════════════════════════════
 
 def _default_profile() -> dict:
@@ -420,24 +451,9 @@ def _persist_profile_sync(profile_snapshot: dict) -> None:
                 os.replace(tmp, PROFILE_FILE)
                 _profile_mtime = os.path.getmtime(PROFILE_FILE)
                 return
-            except (PermissionError, OSError) as pe:
-                time.sleep(0.05)
-                try:
-                    with open(PROFILE_FILE, "w", encoding="utf-8") as f:
-                        json.dump(profile_snapshot, f, indent=2)
-                    _profile_mtime = os.path.getmtime(PROFILE_FILE)
-                    if os.path.exists(tmp):
-                        try:
-                            os.remove(tmp)
-                        except Exception:
-                            pass
-                    return
-                except Exception:
-                    if attempt == 2:
-                        logger.warning("[RAG v2] Profile save fallback failed: %s", pe)
             except Exception as e:
                 if attempt == 2:
-                    logger.error("[RAG v2] Profile save error: %s", e)
+                    logger.error("[Memvid] Profile save error: %s", e)
                 time.sleep(0.05)
 
 
@@ -456,18 +472,11 @@ _ACTIVE_STATE: dict[str, Any] = {
 }
 
 
-def _is_expired(ts_str: str | None, ttl: int = 0) -> bool:
-    """Time expiry disabled: memory and session state persist across turns without arbitrary clock timeouts."""
-    return False
-
-
 def get_active_state(clean_expired: bool = False) -> dict:
-    """Return active session state without clock-based time expiry."""
     return _ACTIVE_STATE
 
 
 def update_active_state(slot: str, data: dict | list | None) -> None:
-    """Update or reset an active-state slot in memory."""
     if not slot:
         return
     if data is None:
@@ -489,65 +498,90 @@ def update_active_state(slot: str, data: dict | list | None) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  4. Context-Aware Follow-Up Resolution (Information-Theoretic)
+#  4. Context-Aware Follow-Up Resolution
 # ═══════════════════════════════════════════════════════════════
 
 def _extract_salient_terms(text: str, max_terms: int = 5) -> list[str]:
-    """
-    Rank and extract the highest-information content tokens from text dynamically
-    using corpus IDF, token length, and casing—without hardcoded stopword lists.
-    """
     if not text:
         return []
     tokens = _RE_WORDS.findall(text)
     if not tokens:
         return []
 
-    scored_candidates: list[tuple[float, int, str]] = []
+    scored: list[tuple[float, int, str]] = []
     seen: set[str] = set()
 
     for idx, t in enumerate(tokens):
         low = t.lower()
-        if len(low) < 3 or low.isdigit() or low in seen:
+        if len(low) < 2 or low.isdigit() or low in seen:
             continue
         seen.add(low)
 
-        weight = _token_information_weight(t)
-        # Boost mid-sentence capitalized proper nouns / technical identifiers
+        w = _token_specificity(t, context_text=text)
         if idx > 0 and t[0].isupper() and not t.isupper():
-            weight += 0.25
-        elif t.isupper() and len(t) >= 2:
-            weight += 0.30
+            w += 0.20
+        elif t.isupper() and len(t) >= 2 and not text.isupper():
+            w += 0.25
 
-        # Only retain tokens with meaningful information density
-        if weight >= 0.45:
-            scored_candidates.append((weight, idx, t))
+        scored.append((w, idx, t))
 
-    # Sort by information weight descending, preserving original order on ties
-    scored_candidates.sort(key=lambda x: (-x[0], x[1]))
-    top_selected = sorted(scored_candidates[:max_terms], key=lambda x: x[1])
+    if not scored:
+        return []
+
+    max_w = max(item[0] for item in scored)
+    # Dynamic information cutoff: tokens that carry at least 70% of peak query specificity
+    # and have a minimum specificity above generic function baseline (0.30)
+    threshold = max(0.30, max_w * 0.70)
+    top_candidates = [item for item in scored if item[0] >= threshold]
+
+    top_candidates.sort(key=lambda x: (-x[0], x[1]))
+    top_selected = sorted(top_candidates[:max_terms], key=lambda x: x[1])
     return [item[2] for item in top_selected]
 
 
 def resolve_contextual_query(query: str, conversation_history: list[dict] | None = None) -> str:
-    """
-    Returns clean user query without Frankenstein token pollution.
-    Conversational context is handled natively by the LLM via dialogue history turns.
-    """
-    if not query:
+    """Augments short follow-up queries with salient entities from the previous turn."""
+    if not query or not query.strip():
         return ""
-    return query.strip()
+    clean_q = query.strip()
+    tokens = _RE_WORDS.findall(clean_q)
+    if not tokens:
+        return clean_q
+
+    salient_now = _extract_salient_terms(clean_q, max_terms=4)
+    # If the current query already has salient entities/terms, it is self-contained
+    if len(salient_now) >= 1:
+        return clean_q
+
+    context_terms: list[str] = []
+    history = conversation_history if conversation_history is not None else get_recent_conversations(count=2)
+    if history:
+        prev_user = str(history[-1].get("user") or "")
+        context_terms = _extract_salient_terms(prev_user, max_terms=3)
+
+    if not context_terms:
+        subj = (_ACTIVE_STATE.get("active_subject") or {}).get("name") or ""
+        if subj:
+            context_terms = _extract_salient_terms(subj, max_terms=3)
+
+    if not context_terms:
+        return clean_q
+
+    existing_low = {t.lower() for t in tokens}
+    added = [t for t in context_terms if t.lower() not in existing_low]
+    return f"{clean_q} {' '.join(added[:3])}".strip() if added else clean_q
 
 
 def expand_query(query: str, conversation_history: list | None = None) -> list[str]:
-    """Return clean query for search without token pollution."""
     if not query or not query.strip():
-        return [query]
-    return [query.strip()]
+        return []
+    clean = query.strip()
+    resolved = resolve_contextual_query(clean, conversation_history)
+    return [clean, resolved] if resolved != clean else [clean]
 
 
 # ═══════════════════════════════════════════════════════════════
-#  5. Parallel Hybrid Search & Calibrated Relevance Scoring
+#  5. Memvid Tantivy Search & Precision Scoring
 # ═══════════════════════════════════════════════════════════════
 
 def clear_search_cache() -> None:
@@ -561,83 +595,10 @@ def _is_conversational_filler(query: str) -> bool:
     clean = query.strip()
     tokens = _RE_WORDS.findall(clean)
     if not tokens:
-        return len(clean) < 2
+        return True
     if len(tokens) == 1 and len(tokens[0]) <= 2 and not any(ch in clean for ch in ("?", "!", "$", "%")):
         return True
     return False
-
-
-def _score_and_rank(
-    candidates: list[SearchResult],
-    query: str,
-    top_k: int,
-) -> list[SearchResult]:
-    """
-    Calibrated Hybrid Scoring Pipeline:
-    1. Deduplicates chunks across vector & BM25 retrievers.
-    2. Computes information-weighted lexical overlap with the query.
-    3. Applies non-linear cosine calibration (suppresses Nomic's 0.45-0.58 baseline noise floor).
-    4. Prevents ungrounded vector matches or isolated single-word BM25 hits from ranking high.
-    """
-    query_tokens = _RE_WORDS.findall(query)
-    deduped: dict[str, SearchResult] = {}
-
-    for r in candidates:
-        norm_prefix = _RE_CHUNK_WHITESPACE.sub(" ", r.text.strip()[:200]).lower()
-        key = f"{r.source}::{norm_prefix}"
-        if key not in deduped:
-            deduped[key] = r
-        else:
-            existing = deduped[key]
-            existing.score = max(existing.score, r.score)
-            existing.raw_semantic = max(existing.raw_semantic, r.raw_semantic)
-            existing.keyword_score = max(existing.keyword_score, r.keyword_score)
-
-    now_dt = datetime.datetime.now()
-    scored_results: list[SearchResult] = []
-
-    for r in deduped.values():
-        sem_raw = max(0.0, min(1.0, r.raw_semantic if r.raw_semantic > 0 else r.score))
-        r.raw_semantic = sem_raw
-
-        lex_overlap = _compute_lexical_overlap(query_tokens, r.text)
-        r.lexical_overlap = lex_overlap
-
-        # Calibrate Nomic cosine similarity: map [0.35, 0.90] -> [0.0, 1.0]
-        sem_calibrated = max(0.0, min(1.0, (sem_raw - 0.35) / 0.50))
-
-        # Normalize BM25 score with saturation
-        kw_norm = min(1.0, r.keyword_score / 15.0) if r.keyword_score > 0 else 0.0
-
-        if sem_raw > 0 and kw_norm > 0:
-            # True hybrid hit (found by both dense vector and BM25)
-            combined = 0.55 * sem_calibrated + 0.30 * kw_norm + 0.15 * lex_overlap
-        elif sem_raw > 0:
-            if lex_overlap > 0.08:
-                combined = 0.70 * sem_calibrated + 0.30 * lex_overlap
-            else:
-                combined = sem_calibrated * 0.85
-        else:
-            # BM25-only hit
-            combined = 0.50 * kw_norm + 0.50 * lex_overlap
-
-        # Recency decay for episodic conversations (half-life = 14 days)
-        recency_mult = 1.0
-        if r.source == CONVERSATIONS:
-            ts_str = r.metadata.get("timestamp") if isinstance(r.metadata, dict) else None
-            if ts_str:
-                try:
-                    age_days = max(0.0, (now_dt - datetime.datetime.fromisoformat(ts_str)).total_seconds() / 86400.0)
-                    recency_mult = 0.82 + 0.18 * (0.5 ** (age_days / 14.0))
-                except Exception:
-                    pass
-
-        imp_mult = 1.0 + 0.08 * ((r.importance or 1.0) - 0.5)
-        r.score = round(min(1.0, max(0.0, combined * imp_mult * recency_mult)), 4)
-        scored_results.append(r)
-
-    scored_results.sort(key=lambda x: x.score, reverse=True)
-    return scored_results[:top_k]
 
 
 def search(
@@ -651,10 +612,7 @@ def search(
     **kwargs,
 ) -> list[dict[str, Any]]:
     """
-    Unified, low-latency search powered by Memvid (Rust Tantivy):
-    - Sub-2ms retrieval latency with zero PyTorch cold-start penalty
-    - 100% language-agnostic / multilingual Unicode token indexing (no hardcoded stopwords)
-    - Zero-hallucination lexical & semantic gating (abstains when no relevant matches exist)
+    Search the Memvid capsule using Tantivy BM25 + live IDF lexical verification.
     """
     if skip_rag or not query or not query.strip() or _is_conversational_filler(query):
         return []
@@ -670,8 +628,12 @@ def search(
     if not target_collections:
         return []
 
-    # Check search cache
-    cache_key = f"{query.strip().lower()}::{sorted(target_collections)}::{top_k}::{json.dumps(metadata_filter or {}, sort_keys=True)}"
+    effective_query = resolve_contextual_query(query, conversation_history)
+
+    cache_key = (
+        f"{effective_query.lower()}::{sorted(target_collections)}::{top_k}::"
+        f"{json.dumps(metadata_filter or {}, sort_keys=True)}"
+    )
     now = time.monotonic()
     with _SEARCH_CACHE_LOCK:
         if cache_key in _SEARCH_CACHE:
@@ -682,30 +644,30 @@ def search(
     try:
         mv = init_memvid()
     except Exception as e:
-        logger.error("[RAG Memvid] Cannot search, init failed: %s", e)
+        logger.error("[Memvid] Cannot search, init failed: %s", e)
         return []
 
-    formatted_q = _format_search_query(query)
-    if not formatted_q:
+    tantivy_q = _format_tantivy_query(effective_query)
+    if not tantivy_q:
         return []
 
-    target_tags = set()
-    for col in target_collections:
-        tag = _COLLECTION_TO_TAG.get(col)
-        if tag:
-            target_tags.add(tag)
-    if not target_tags:
-        target_tags = set(_TAG_TO_COLLECTION.keys())
+    target_tags = {
+        _COLLECTION_TO_TAG[col]
+        for col in target_collections
+        if col in _COLLECTION_TO_TAG
+    } or set(_TAG_TO_COLLECTION.keys())
 
     with _mv_lock:
         try:
-            res = mv.find(formatted_q, k=min(100, max(top_k * 10, 50)))
+            res = mv.find(tantivy_q, k=min(100, max(top_k * 10, 50)))
             hits = res.get("hits") or []
         except Exception as e:
-            logger.debug("[RAG Memvid] Search note on '%s': %s", formatted_q, e)
+            logger.debug("[Memvid] Search note on '%s': %s", tantivy_q, e)
             hits = []
 
-    results: list[dict[str, Any]] = []
+    now_dt = datetime.datetime.now()
+    deduped: dict[str, dict[str, Any]] = {}
+
     for hit in hits:
         tags = set(hit.get("tags") or [])
         matched_tags = tags.intersection(target_tags)
@@ -715,12 +677,31 @@ def search(
         primary_tag = next(iter(matched_tags)) if matched_tags else "document"
         col_name = _TAG_TO_COLLECTION.get(primary_tag, DOCUMENTS)
 
-        # Retrieve extra metadata via frame lookup
+        text_content = (hit.get("text") or hit.get("snippet") or "").strip()
+        if not text_content:
+            continue
+        if "extractous_metadata:" in text_content:
+            text_content = text_content.split("extractous_metadata:")[0].strip()
+
+        lex_orig, sal_orig, phrase_orig = _evaluate_lexical_match(query, text_content)
+        if effective_query != query.strip():
+            lex_res, sal_res, phrase_res = _evaluate_lexical_match(effective_query, text_content)
+            lex_overlap = max(lex_orig, lex_res * 0.90)
+            salient_cov = max(sal_orig, sal_res * 0.90)
+            phrase_bonus = max(phrase_orig, phrase_res * 0.90)
+        else:
+            lex_overlap, salient_cov, phrase_bonus = lex_orig, sal_orig, phrase_orig
+
+        # Reject noise hits that only matched low-information filler words
+        if lex_overlap < 0.12 and salient_cov < 0.20:
+            continue
+
         meta: dict[str, Any] = {}
         uri = hit.get("uri")
         if uri:
             try:
-                frame_data = mv.frame(uri)
+                with _mv_lock:
+                    frame_data = mv.frame(uri)
                 for k, v in (frame_data.get("extra_metadata") or {}).items():
                     try:
                         meta[k] = json.loads(v)
@@ -729,36 +710,55 @@ def search(
             except Exception:
                 pass
 
-        # Apply metadata filters (e.g. specific filepath or filename)
         if metadata_filter and isinstance(metadata_filter, dict):
-            mismatch = False
-            for fk, fv in metadata_filter.items():
-                if fk in meta and meta[fk] != fv:
-                    mismatch = True
-                    break
-            if mismatch:
+            if any(fk in meta and meta[fk] != fv for fk, fv in metadata_filter.items()):
                 continue
 
         raw_score = float(hit.get("score") or 0.0)
-        # Normalize Tantivy BM25 score to [0.0, 1.0] range
-        calibrated_score = min(1.0, max(0.05, raw_score / 6.0))
+        bm25_norm = raw_score / (raw_score + 4.5)
 
-        text_content = hit.get("text") or hit.get("snippet") or ""
-        # Clean internal indexing headers if present
-        if "extractous_metadata:" in text_content:
-            text_content = text_content.split("extractous_metadata:")[0].strip()
+        combined = (
+            0.42 * bm25_norm
+            + 0.33 * lex_overlap
+            + 0.17 * salient_cov
+            + 0.08 * phrase_bonus
+        )
 
-        results.append({
+        # Penalize hits where the query's highest-IDF terms are missing from the frame
+        if salient_cov < 0.35:
+            combined *= 0.65
+
+        if col_name == CONVERSATIONS:
+            ts_str = meta.get("timestamp")
+            if isinstance(ts_str, str) and ts_str:
+                try:
+                    age_days = max(0.0, (now_dt - datetime.datetime.fromisoformat(ts_str)).total_seconds() / 86400.0)
+                    combined *= 0.82 + 0.18 * (0.5 ** (age_days / 14.0))
+                except Exception:
+                    pass
+
+        calibrated_score = round(min(1.0, max(0.0, combined)), 4)
+
+        norm_prefix = _RE_CHUNK_WHITESPACE.sub(" ", text_content[:200]).lower()
+        dedup_key = f"{col_name}::{norm_prefix}"
+        candidate = {
             "text": text_content,
             "source": col_name,
             "score": calibrated_score,
-            "raw_semantic": calibrated_score,
-            "lexical_overlap": min(1.0, float(hit.get("matches") or 1) / 5.0),
+            "raw_score": raw_score,
+            "lexical_overlap": lex_overlap,
+            "salient_coverage": salient_cov,
             "metadata": meta,
-        })
+        }
 
-    # Sort descending by score
-    results.sort(key=lambda x: x["score"], reverse=True)
+        if dedup_key not in deduped or calibrated_score > deduped[dedup_key]["score"]:
+            deduped[dedup_key] = candidate
+
+    results = sorted(
+        deduped.values(),
+        key=lambda x: (float(x.get("score") or 0.0), float(x.get("raw_score") or 0.0)),
+        reverse=True,
+    )
     final_results = results[:top_k]
 
     with _SEARCH_CACHE_LOCK:
@@ -798,7 +798,7 @@ def search_files_by_context(query: str, top_k: int = 10) -> list[dict]:
     seen: set[str] = set()
     unique: list[dict] = []
     for r in results:
-        if r.get("score", 0.0) < 0.42:
+        if not _is_chunk_grounded(r, floor=0.38):
             continue
         fp = r.get("metadata", {}).get("filepath", "")
         if fp and fp not in seen:
@@ -821,61 +821,47 @@ def debug_search(query: str, target_collections: list[str] | None = None, top_k:
     return {
         "query": query,
         "resolved_query": resolve_contextual_query(query),
+        "tantivy_query": _format_tantivy_query(resolve_contextual_query(query)),
         "target_collections": target_collections or [DOCUMENTS, USER_FACTS, CONVERSATIONS],
         "top_k": top_k,
         "count": len(results),
         "results": results,
         "duration_ms": round((time.perf_counter() - t0) * 1000, 2),
-        "reranker_active": False,
-        "bm25_active": _bm25_index is not None,
+        "tracked_frames": _total_tracked_frames,
         "stats": get_index_stats(),
     }
 
 
-def reinitialize_reranker() -> bool:
-    return False
-
-
 # ═══════════════════════════════════════════════════════════════
-#  6. Anti-Pollution Smart Context Builder
+#  6. Anti-Pollution Context Gatekeeper & Builders
 # ═══════════════════════════════════════════════════════════════
 
 def _is_chunk_grounded(r: dict, floor: float) -> bool:
     """
-    Source-specific gatekeeper that verifies a retrieved chunk is genuinely
-    grounded in the query before allowing it into the LLM prompt.
+    Strict lexical & specificity gatekeeper so ungrounded Memvid frames
+    never pollute the LLM prompt.
     """
     score = float(r.get("score", 0.0) or 0.0)
-    raw_sem = float(r.get("raw_semantic", score) or 0.0)
     lex = float(r.get("lexical_overlap", 0.0) or 0.0)
-    kw = float(r.get("keyword_score", 0.0) or 0.0)
+    salient = float(r.get("salient_coverage", lex) or 0.0)
     src = r.get("source", "")
 
     if score < floor:
         return False
 
     if src == DOCUMENTS:
-        # Require genuine relevance: if zero lexical/keyword match, require strong semantic similarity
-        if lex == 0.0 and kw == 0.0:
-            return raw_sem >= 0.70 and score >= 0.45
-        return (
-            raw_sem >= 0.55
-            or (raw_sem >= 0.42 and (lex >= 0.08 or kw >= 1.0))
-            or kw >= 2.0
-            or (lex >= 0.15 and score >= 0.35)
-        )
+        return score >= max(floor, 0.34) and lex >= 0.25 and salient >= 0.45
 
     if src == CONVERSATIONS:
-        # Past conversations are filtered strictly so old chat doesn't pollute new turns
-        return (raw_sem >= 0.65 and lex >= 0.20) or raw_sem >= 0.75 or score >= 0.45
+        return score >= max(floor, 0.48) and lex >= 0.38 and salient >= 0.60
 
     if src == USER_FACTS:
-        return raw_sem >= 0.48 or lex >= 0.15 or score >= 0.25
+        return score >= max(floor, 0.38) and lex >= 0.30 and salient >= 0.50
 
     if src in (EMAILS, CALENDAR):
-        return raw_sem >= 0.48 or lex >= 0.15 or score >= 0.25
+        return score >= max(floor, 0.36) and lex >= 0.28 and salient >= 0.50
 
-    return score >= floor
+    return score >= max(floor, 0.36) and lex >= 0.25
 
 
 def build_rag_context(
@@ -887,11 +873,6 @@ def build_rag_context(
     min_score: float | None = None,
     target_collections: list[str] | None = None,
 ) -> str:
-    """
-    Build high-precision, non-polluting RAG context for LLM prompt injection:
-    - Targets user documents and facts by default, avoiding conversational failure loops.
-    - Filters out ungrounded semantic noise using source-specific lexical + calibrated score gates.
-    """
     if not query or not query.strip() or _is_conversational_filler(query):
         return ""
 
@@ -902,7 +883,11 @@ def build_rag_context(
     if search_results is not None:
         results = search_results
     else:
-        collections_to_search = target_collections if target_collections is not None else [DOCUMENTS, USER_FACTS, EMAILS, CALENDAR]
+        collections_to_search = (
+            target_collections
+            if target_collections is not None
+            else [DOCUMENTS, USER_FACTS, EMAILS, CALENDAR]
+        )
         results = search(
             query,
             target_collections=collections_to_search,
@@ -913,18 +898,16 @@ def build_rag_context(
     parts: list[str] = []
     total_chars = 0
     max_chars = MAX_VOICE_CONTEXT_CHARS if for_voice else 8000
-
-    # Grounding verification before adding any chunk
-    floor = min_score if min_score is not None else 0.20
+    floor = min_score if min_score is not None else 0.34
 
     if results:
         grounded = [r for r in results if _is_chunk_grounded(r, floor)]
         if grounded:
-            top_score = grounded[0].get("score", 0.0)
-            margin = max(floor, top_score * 0.55)
-            relevant = [r for r in grounded if r.get("score", 0.0) >= margin]
+            top_score = float(grounded[0].get("score", 0.0) or 0.0)
+            margin = max(floor, top_score * 0.65)
+            relevant = [r for r in grounded if float(r.get("score", 0.0) or 0.0) >= margin]
 
-            k_limit = min(top_k, 5) if for_voice else max(top_k, 8)
+            k_limit = min(top_k, 4) if for_voice else max(top_k, 8)
             for r in relevant[:k_limit]:
                 src = r.get("source", "")
                 meta = r.get("metadata", {})
@@ -936,9 +919,11 @@ def build_rag_context(
                     fname = meta.get("filename", "document")
                     parts.append(f"[From document '{fname}']:\r\n{chunk_text}")
                 elif src == CONVERSATIONS:
-                    # Never inject past failure disclaimers as evidence
                     low_chunk = chunk_text.lower()
-                    if not any(f in low_chunk for f in ("couldn't find", "could not find", "don't have access", "cannot access")):
+                    if not any(
+                        f in low_chunk
+                        for f in ("couldn't find", "could not find", "don't have access", "cannot access")
+                    ):
                         parts.append(f"[Past conversation]:\r\n{chunk_text}")
                 elif src == EMAILS:
                     parts.append(f"[Email]:\r\n{chunk_text}")
@@ -949,7 +934,7 @@ def build_rag_context(
 
                 total_chars += len(chunk_text)
 
-    # 3. Fallback: if follow-up refers to an active file that wasn't caught by general search
+    active_fp = str((_ACTIVE_STATE.get("active_file") or {}).get("path") or "")
     if (
         not any("[From document" in p for p in parts)
         and active_fp
@@ -966,13 +951,11 @@ def build_rag_context(
     body = "\r\n\r\n".join(parts)
     return (
         "<supplementary_context>\r\n"
-        "NOTE: Verified local reference passages from the user's indexed records:\r\n"
-        "- Answer the query using explicit facts directly attributed to the subject or entity requested.\r\n"
-        "- Do not attribute background descriptions, organizational overviews, or third-party details to a different entity or person.\r\n"
-        "- Structure multi-item information cleanly using Markdown bullet points (`- `) and bold key identifiers.\r\n"
-        "- Preserve all exact dates, codes, numerical values, and domain terminology directly as written in the source.\r\n"
-        "- Synthesize tabular or structured data into clean bullet highlights without raw table formatting artifacts.\r\n"
-        "- If the retrieved records do not contain information relevant to the user's request, ignore them.\r\n\r\n"
+        "NOTE: Verified local reference passages from the user's Memvid records:\r\n"
+        "- Use ONLY passages that directly answer the user's specific question and entity.\r\n"
+        "- Do not blend facts from different entities, documents, or unrelated records.\r\n"
+        "- Preserve exact dates, codes, numbers, and terminology as written.\r\n"
+        "- If none of the passages below directly answer the user's question, ignore this block completely.\r\n\r\n"
         f"{body}\r\n"
         "</supplementary_context>"
     )
@@ -984,7 +967,6 @@ def build_document_evidence(
     conversation_history: list | None = None,
     filepath: str | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
-    """Return grounded document passages and source locations for document Q&A."""
     if not query or not query.strip() or _is_conversational_filler(query):
         return "", []
 
@@ -996,30 +978,36 @@ def build_document_evidence(
     results = search(
         query,
         target_collections=[DOCUMENTS],
-        top_k=top_k,
+        top_k=max(top_k * 5, 30),
         metadata_filter=metadata_filter,
         conversation_history=history,
     )
-    grounded = [result for result in results if _is_chunk_grounded(result, 0.35)]
+    grounded = [result for result in results if _is_chunk_grounded(result, 0.34)]
+    if not grounded:
+        return "", []
+
+    max_salient_cov = max((float(r.get("salient_coverage", 0.0) or 0.0) for r in grounded), default=0.0)
+    if max_salient_cov >= 0.50:
+        # If top matching passages contain the query's core salient entities,
+        # eliminate noise chunks that completely miss those entities
+        grounded = [r for r in grounded if float(r.get("salient_coverage", 0.0) or 0.0) >= 0.30]
+
     if not grounded:
         return "", []
 
     top_score = max(float(result.get("score", 0.0) or 0.0) for result in grounded)
-    if top_score < 0.35:
-        return "", []
-    score_floor = max(0.30, top_score * 0.60)
+    score_floor = max(0.35, top_score * 0.75)
     candidate_pool = [
         result for result in grounded
         if float(result.get("score", 0.0) or 0.0) >= score_floor
     ]
 
-    # Enforce document diversity (max 2 chunks per unique file) to prevent a single file monopolizing evidence
     relevant: list[dict[str, Any]] = []
     file_chunk_counts: dict[str, int] = {}
     for r in candidate_pool:
         f_key = str((r.get("metadata") or {}).get("filename") or r.get("source") or "")
         count = file_chunk_counts.get(f_key, 0)
-        if count < 2:
+        if count < 3:
             file_chunk_counts[f_key] = count + 1
             relevant.append(r)
         if len(relevant) >= max(1, top_k):
@@ -1074,8 +1062,7 @@ def build_document_evidence(
         "- Preserve all exact dates, numbers, codes, and domain terminology directly as stated in the source.\r\n"
         "- If the passages do not contain explicit evidence answering the question, state clearly that the indexed documents do not specify this information."
     )
-    context = f"{instructions}\r\n\r\n" + "\r\n\r\n".join(passages)
-    return context, sources
+    return f"{instructions}\r\n\r\n" + "\r\n\r\n".join(passages), sources
 
 
 def build_file_context(filepath: str, question: str, max_chars: int = 2500) -> str:
@@ -1108,7 +1095,7 @@ def build_file_context(filepath: str, question: str, max_chars: int = 2500) -> s
         if results:
             selected, total_len = [], 0
             for r in results:
-                if r.get("score", 0.0) < 0.20:
+                if not _is_chunk_grounded(r, floor=0.30):
                     continue
                 snippet = (r.get("text") or "").strip()[:850]
                 if snippet and total_len + len(snippet) <= max_chars:
@@ -1118,7 +1105,7 @@ def build_file_context(filepath: str, question: str, max_chars: int = 2500) -> s
                 update_active_state("active_file", {"path": canonical_path, "name": filename})
                 return f"[Relevant sections from '{filename}']:\r\n" + "\r\n\r\n".join(selected)
     except Exception as e:
-        logger.debug("[RAG Memvid] build_file_context error: %s", e)
+        logger.debug("[Memvid] build_file_context error: %s", e)
 
     return ""
 
@@ -1133,7 +1120,7 @@ def get_file_summary_context(filepath: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  7. Conversation Memory & User Facts
+#  7. Conversation Memory & User Facts (Memvid Frames)
 # ═══════════════════════════════════════════════════════════════
 
 def _ensure_buffer() -> collections.deque:
@@ -1152,11 +1139,8 @@ def _calculate_importance(user_msg: str, assistant_msg: str, tool: str, base_imp
         "memory_recall": 0.9, "find_file": 0.65, "set_reminder": 0.8,
     }
     imp = max(base_importance * 0.5, tool_weights.get(tool, 0.55))
-    total_len = len(user_msg) + len(assistant_msg)
-    if total_len > 250:
+    if len(user_msg) + len(assistant_msg) > 250:
         imp = min(1.0, imp + 0.15)
-    if any(kw in user_msg.lower() for kw in ("remember", "note", "save", "important", "always", "never")):
-        imp = min(1.0, imp + 0.3)
     return round(imp, 2)
 
 
@@ -1186,7 +1170,6 @@ def add_conversation(
     timestamp = datetime.datetime.now().isoformat()
     importance = _calculate_importance(user_msg, assistant_msg, tool, importance)
 
-    # Track active subject ONLY when high-information content tokens exist
     salient = _extract_salient_terms(user_msg, max_terms=3)
     if salient:
         update_active_state("active_subject", {"name": " ".join(salient), "category": tool, "url": url or ""})
@@ -1242,9 +1225,10 @@ def add_conversation(
                 )
                 commit()
 
+            _record_frame_tokens(text)
             extract_user_profile_updates(user_msg, remember=remember)
         except Exception as e:
-            logger.debug("[RAG Memvid] Background conv persist note: %s", e)
+            logger.debug("[Memvid] Background conv persist note: %s", e)
 
     _executor.submit(_bg_persist)
 
@@ -1265,25 +1249,28 @@ def get_all_conversations(limit: int = 200) -> list[dict]:
 
     try:
         mv = init_memvid()
-        timeline = mv.timeline() or []
-        items = []
-        for item in timeline:
-            preview = item.get("preview") or ""
-            if "tags: conversation" in preview:
-                uri = item.get("uri")
-                if uri:
-                    try:
-                        frame_data = mv.frame(uri)
-                        meta = frame_data.get("extra_metadata") or {}
-                        items.append({
-                            "user": meta.get("user_msg", ""),
-                            "assistant": meta.get("assistant_msg", ""),
-                            "tool": meta.get("tool", "chat"),
-                            "timestamp": meta.get("timestamp", ""),
-                            "importance": float(meta.get("importance", 1.0)),
-                        })
-                    except Exception:
-                        pass
+        with _mv_lock:
+            st = mv.stats() if hasattr(mv, "stats") else {}
+            total = int(st.get("active_frame_count") or st.get("frame_count") or 100)
+            timeline = mv.timeline(limit=total) or []
+            items = []
+            for item in timeline:
+                preview = item.get("preview") or ""
+                if "tags: conversation" in preview:
+                    uri = item.get("uri")
+                    if uri:
+                        try:
+                            frame_data = mv.frame(uri)
+                            meta = frame_data.get("extra_metadata") or {}
+                            items.append({
+                                "user": meta.get("user_msg", ""),
+                                "assistant": meta.get("assistant_msg", ""),
+                                "tool": meta.get("tool", "chat"),
+                                "timestamp": meta.get("timestamp", ""),
+                                "importance": float(meta.get("importance", 1.0)),
+                            })
+                        except Exception:
+                            pass
         if items:
             with _conv_cache_lock:
                 _all_conversations_cache = collections.deque(items, maxlen=200)
@@ -1291,8 +1278,6 @@ def get_all_conversations(limit: int = 200) -> list[dict]:
     except Exception:
         pass
     return []
-
-
 
 
 def get_important_conversations(min_importance: float = 0.7, limit: int = 20) -> list[dict]:
@@ -1330,7 +1315,9 @@ def clear_conversations() -> None:
     try:
         mv = init_memvid()
         with _mv_lock:
-            for item in (mv.timeline() or []):
+            st = mv.stats() if hasattr(mv, "stats") else {}
+            total = int(st.get("active_frame_count") or st.get("frame_count") or 100)
+            for item in (mv.timeline(limit=total) or []):
                 fid = item.get("frame_id")
                 if fid is None:
                     continue
@@ -1341,13 +1328,11 @@ def clear_conversations() -> None:
                 except Exception:
                     pass
             commit()
-        logger.info("[RAG Memvid] Cleared conversations from memory capsule.")
     except Exception as e:
-        logger.error("[RAG Memvid] Error clearing conversations from Memvid: %s", e)
+        logger.error("[Memvid] Error clearing conversations: %s", e)
 
 
 def add_user_fact(fact: str, category: str = "user_profile", importance: float = 1.0) -> str | None:
-    """Store a personal user preference or fact into the Memvid memory."""
     if not fact or len(fact.strip()) < 5:
         return None
     clean_fact = fact.strip()
@@ -1368,20 +1353,19 @@ def add_user_fact(fact: str, category: str = "user_profile", importance: float =
                 metadata=metadata,
             )
             commit()
+        _record_frame_tokens(clean_fact)
         clear_search_cache()
         return str(frame_id)
     except Exception as e:
-        logger.error("[RAG Memvid] Error adding user fact: %s", e)
+        logger.error("[Memvid] Error adding user fact: %s", e)
         return None
 
 
 def get_all_user_facts(min_importance: float = 0.0) -> list[str]:
-    """Retrieve all stored user facts and preferences from the Memvid memory."""
     facts: list[str] = []
     try:
         p = load_profile()
-        profile_facts = p.get("user_profile", {}).get("custom_facts", [])
-        for f in profile_facts:
+        for f in p.get("user_profile", {}).get("custom_facts", []):
             txt = f.get("text") if isinstance(f, dict) else str(f)
             if txt and txt not in facts:
                 facts.append(txt)
@@ -1391,30 +1375,29 @@ def get_all_user_facts(min_importance: float = 0.0) -> list[str]:
     try:
         mv = init_memvid()
         with _mv_lock:
-            timeline = mv.timeline() or []
-            for item in timeline:
+            for item in (mv.timeline() or []):
                 uri = item.get("uri")
-                if uri:
-                    try:
-                        frame_data = mv.frame(uri)
-                        tags = frame_data.get("tags") or []
-                        if "user_fact" in tags:
-                            meta = frame_data.get("extra_metadata") or {}
-                            raw_fact = meta.get("fact")
-                            if raw_fact:
-                                try:
-                                    fact = json.loads(raw_fact)
-                                except Exception:
-                                    fact = raw_fact
-                            else:
-                                fact = frame_data.get("text") or ""
-                            clean = str(fact).strip().strip('"')
-                            if clean and clean not in facts:
-                                facts.append(clean)
-                    except Exception:
-                        pass
+                if not uri:
+                    continue
+                try:
+                    frame_data = mv.frame(uri)
+                    if "user_fact" in (frame_data.get("tags") or []):
+                        meta = frame_data.get("extra_metadata") or {}
+                        raw_fact = meta.get("fact")
+                        if raw_fact:
+                            try:
+                                fact = json.loads(raw_fact)
+                            except Exception:
+                                fact = raw_fact
+                        else:
+                            fact = frame_data.get("text") or ""
+                        clean = str(fact).strip().strip('"')
+                        if clean and clean not in facts:
+                            facts.append(clean)
+                except Exception:
+                    pass
     except Exception as e:
-        logger.debug("[RAG Memvid] Error retrieving user facts: %s", e)
+        logger.debug("[Memvid] Error retrieving user facts: %s", e)
     return facts
 
 
@@ -1428,7 +1411,9 @@ def clear_user_facts() -> None:
 
         mv = init_memvid()
         with _mv_lock:
-            for item in (mv.timeline() or []):
+            st = mv.stats() if hasattr(mv, "stats") else {}
+            total = int(st.get("active_frame_count") or st.get("frame_count") or 100)
+            for item in (mv.timeline(limit=total) or []):
                 fid = item.get("frame_id")
                 if fid is None:
                     continue
@@ -1439,30 +1424,37 @@ def clear_user_facts() -> None:
                 except Exception:
                     pass
             commit()
-        logger.info("[RAG Memvid] Cleared user facts from memory capsule.")
     except Exception as e:
-        logger.error("[RAG Memvid] Error clearing user facts: %s", e)
+        logger.error("[Memvid] Error clearing user facts: %s", e)
         clear_search_cache()
 
 
 def clear_all_memory() -> None:
-    """Completely resets the Memvid memory capsule and caches."""
-    global _mv_instance
+    global _mv_instance, _total_tracked_frames, _corpus_bootstrapped
     clear_conversations()
     clear_user_facts()
+    with _idf_lock:
+        _token_doc_freq.clear()
+        _total_tracked_frames = 0
+        _corpus_bootstrapped = False
     with _mv_lock:
         try:
             if os.path.exists(MEMVID_PATH):
                 os.remove(MEMVID_PATH)
         except Exception:
             pass
+        try:
+            from amigo.core.rag_indexer import FILE_HASHES_PATH
+            if os.path.exists(FILE_HASHES_PATH):
+                os.remove(FILE_HASHES_PATH)
+        except Exception:
+            pass
         _mv_instance = memvid_sdk.create(MEMVID_PATH, enable_lex=True)
     clear_search_cache()
-    logger.info("[RAG Memvid] Completely reset Memvid memory capsule.")
 
 
 # ═══════════════════════════════════════════════════════════════
-#  8. Document Extraction, Chunking & Indexing
+#  8. Document Extraction, Chunking & Memvid Indexing
 # ═══════════════════════════════════════════════════════════════
 
 def extract_text(filepath: str) -> str:
@@ -1498,7 +1490,7 @@ def extract_text(filepath: str) -> str:
             with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
                 extracted = f.read(MAX_FILE_SIZE)
     except Exception as e:
-        logger.debug("[RAG v2] Extraction error for %s: %s", filepath, e)
+        logger.debug("[Memvid] Extraction error for %s: %s", filepath, e)
 
     if cache_key and extracted and len(extracted) <= 500 * 1024:
         with _extracted_text_lock:
@@ -1515,7 +1507,7 @@ def _format_table_as_markdown(rows: list[list[Any]]) -> str:
     cleaned = []
     max_cols = 0
     for r in rows:
-        cells = [str(c or "").strip().replace("\r\n", " ").replace("|", "\\|") for c in r]
+        cells = [str(c or "").strip().replace("\r\n", " ").replace("\n", " ").replace("|", "\\|") for c in r]
         if any(cells):
             cleaned.append(cells)
             max_cols = max(max_cols, len(cells))
@@ -1650,10 +1642,6 @@ def semantic_chunk(
     overlap: int = CHUNK_OVERLAP,
     document_title: str = "",
 ) -> list[str]:
-    """
-    Section-aware and sentence-window-preserving semantic chunker.
-    Preserves Markdown table headers across splits and maintains sliding sentence overlap.
-    """
     if not text or len(text.strip()) < 30:
         return []
 
@@ -1699,7 +1687,7 @@ def semantic_chunk(
                 current_sents = []
                 current_len = 0
 
-        for raw_p in body.split("\r\n\r\n"):
+        for raw_p in _RE_PARAGRAPH_SPLIT.split(body):
             p = raw_p.strip()
             if not p:
                 continue
@@ -1722,7 +1710,6 @@ def semantic_chunk(
             sentences = [s.strip() for s in _RE_CHUNK_SENTENCES.split(p_norm) if s.strip()]
             for sent in sentences:
                 if len(sent) > avail:
-                    # Hard split ultra-long run-on lines with character overlap
                     _flush_sentences(keep_overlap=False)
                     step = max(60, avail - overlap)
                     for idx in range(0, len(sent), step):
@@ -1752,10 +1739,10 @@ def add_document_chunk(
     total_chunks: int = 1,
     commit: bool = True,
 ) -> str | None:
-    """Store a document passage into the single-file Memvid index."""
     if not text or not text.strip():
         return None
 
+    clean_text = text.strip()
     try:
         mv = init_memvid()
         title = f"{filename} passage {chunk_index + 1}"
@@ -1771,22 +1758,26 @@ def add_document_chunk(
                 try:
                     frame_id = mv.put(
                         title=title,
-                        text=text.strip(),
+                        text=clean_text,
                         tags=["document"],
                         metadata=metadata,
                     )
                     if commit:
                         mv.commit()
+                    _record_frame_tokens(clean_text)
                     return str(frame_id)
                 except Exception as e:
-                    if "unavailable" in str(e).lower() and attempt < 4:
-                        time.sleep(0.08 * (attempt + 1))
+                    err_msg = str(e).lower()
+                    if any(k in err_msg for k in ("unavailable", "access is denied", "os error 5", "locked", "sharing")) and attempt < 4:
+                        _reset_memvid()
+                        time.sleep(0.15 * (attempt + 1))
+                        mv = init_memvid()
                         continue
-                    logger.error("[RAG Memvid] Error adding document chunk: %s", e)
+                    logger.error("[Memvid] Error adding document chunk: %s", e)
                     return None
             return None
     except Exception as e:
-        logger.error("[RAG Memvid] add_document_chunk failed: %s", e)
+        logger.error("[Memvid] add_document_chunk failed: %s", e)
         return None
 
 
@@ -1826,7 +1817,7 @@ def index_document(filepath: str) -> bool:
         clear_search_cache()
         return True
     except Exception as e:
-        logger.error("[RAG Memvid] Error indexing document %s: %s", filepath, e)
+        logger.error("[Memvid] Error indexing document %s: %s", filepath, e)
         return False
 
 
@@ -1850,13 +1841,18 @@ def index_email(subject: str, sender: str, body_preview: str, date: str, is_read
                 metadata=metadata,
             )
             commit()
+        _record_frame_tokens(doc_text)
         clear_search_cache()
     except Exception as e:
-        logger.error("[RAG Memvid] Error indexing email: %s", e)
+        logger.error("[Memvid] Error indexing email: %s", e)
 
 
 def index_calendar_event(subject: str, start: str, end: str, location: str = "", body: str = "") -> None:
-    doc_text = f"Event: {subject}\r\nWhen: {start} to {end}" + (f"\r\nWhere: {location}" if location else "") + (f"\r\n{body[:300]}" if body else "")
+    doc_text = (
+        f"Event: {subject}\r\nWhen: {start} to {end}"
+        + (f"\r\nWhere: {location}" if location else "")
+        + (f"\r\n{body[:300]}" if body else "")
+    )
     metadata = {
         "subject": (subject or "")[:200],
         "start": start,
@@ -1874,17 +1870,17 @@ def index_calendar_event(subject: str, start: str, end: str, location: str = "",
                 metadata=metadata,
             )
             commit()
+        _record_frame_tokens(doc_text)
         clear_search_cache()
     except Exception as e:
-        logger.error("[RAG Memvid] Error indexing calendar event: %s", e)
+        logger.error("[Memvid] Error indexing calendar event: %s", e)
 
 
 # ═══════════════════════════════════════════════════════════════
-#  9. Profile Prompts & Lifecycle Helpers (Non-Polluting)
+#  9. Profile Prompts & Lifecycle Helpers
 # ═══════════════════════════════════════════════════════════════
 
 def _clean_stt_entity(raw: str) -> str:
-    # Stop at punctuation or clause boundaries so STT run-on sentences aren't captured as names/cities
     clause = re.split(r"[.!?,;:]|\b(?:and|but|because|so|right|now|today|please)\b", raw.strip(), maxsplit=1, flags=re.I)[0]
     tokens = [t for t in _RE_WORDS.findall(clause.strip()) if len(t) >= 2]
     return " ".join(tokens[:3]).title() if tokens else ""
@@ -1933,10 +1929,6 @@ def extract_user_profile_updates(user_query: str, remember: str = "") -> None:
 
 
 def get_user_profile_prompt(query: str = "", semantic_search: bool = True) -> str:
-    """
-    Build user profile prompt without forcing the LLM to hallucinate connections
-    to unrelated personal facts.
-    """
     profile = load_profile()
     parts: list[str] = []
     if name := profile.get("identity", {}).get("name"):
@@ -1949,8 +1941,7 @@ def get_user_profile_prompt(query: str = "", semantic_search: bool = True) -> st
             matched = search(query, target_collections=[USER_FACTS], top_k=3)
             for mf in matched:
                 doc = (mf.get("text") or "").strip()
-                # Strict grounding check so random facts don't pollute general queries
-                if doc and _is_chunk_grounded(mf, floor=0.58):
+                if doc and _is_chunk_grounded(mf, floor=0.45):
                     parts.append(f"Relevant user memory: {doc}")
         except Exception:
             pass
@@ -1967,7 +1958,7 @@ def get_user_profile_prompt(query: str = "", semantic_search: bool = True) -> st
 
 
 def get_active_context_prompt() -> str:
-    state = get_active_state(clean_expired=False)
+    state = get_active_state()
     parts: list[str] = []
     if last_link := state.get("last_link"):
         if u := last_link.get("url"):
@@ -1982,29 +1973,35 @@ def get_active_context_prompt() -> str:
 
 
 def get_index_stats() -> dict[str, int]:
-    """Return memory statistics for each collection."""
     counts = {col: 0 for col in ALL_COLLECTIONS}
+    counts["total"] = 0
     try:
         mv = init_memvid()
         with _mv_lock:
-            timeline = mv.timeline() or []
-            for item in timeline:
-                preview = item.get("preview") or ""
-                if "tags: conversation" in preview:
-                    counts[CONVERSATIONS] += 1
-                elif "tags: user_fact" in preview:
-                    counts[USER_FACTS] += 1
-                elif "tags: document" in preview:
-                    counts[DOCUMENTS] += 1
-                elif "tags: email" in preview:
-                    counts[EMAILS] += 1
-                elif "tags: calendar" in preview:
-                    counts[CALENDAR] += 1
-    except Exception as e:
-        logger.debug("[RAG Memvid] Error reading stats: %s", e)
+            st = mv.stats() if hasattr(mv, "stats") else {}
+            total = int(st.get("active_frame_count") or st.get("frame_count") or 0)
+            counts["total"] = total
+            if total == 0:
+                return counts
 
-    counts["total"] = sum(counts.values())
+            for item in (mv.timeline(limit=total) or []):
+                uri = item.get("uri")
+                if not uri:
+                    continue
+                try:
+                    frame_data = mv.frame(uri)
+                    tags = frame_data.get("tags") or []
+                    for col, tag in _COLLECTION_TO_TAG.items():
+                        if tag in tags:
+                            counts[col] += 1
+                            break
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.debug("[Memvid] Error reading stats: %s", e)
+
     return counts
+
 
 get_stats = get_index_stats
 
@@ -2012,7 +2009,7 @@ get_stats = get_index_stats
 def load_memory() -> dict:
     profile = load_profile()
     return {
-        "active_state": get_active_state(clean_expired=True),
+        "active_state": get_active_state(),
         "ui_settings": profile.get("ui_settings", {}),
         "conversations": get_all_conversations(limit=200),
         "user_profile": {
@@ -2035,35 +2032,37 @@ def save_memory(memory: dict) -> None:
             profile["preferences"] = up["preferences"]
         for fact in up.get("custom_facts", []):
             if isinstance(fact, dict):
-                add_user_fact(fact.get("text", ""), category=fact.get("category", "custom"), importance=fact.get("importance", 1.0))
+                add_user_fact(
+                    fact.get("text", ""),
+                    category=fact.get("category", "custom"),
+                    importance=fact.get("importance", 1.0),
+                )
             elif isinstance(fact, str):
                 add_user_fact(fact, category="custom")
     save_profile(profile)
 
 
 def init_rag(background: bool = True) -> None:
-    global _initialized, _init_failed, _init_error
+    global _initialized, _init_error
     if _initialized:
         return
 
     def _worker():
-        global _initialized, _init_failed, _init_error
+        global _initialized, _init_error
         try:
             init_memvid()
             _initialized = True
-            _init_failed = False
             _init_error = None
-            logger.info("[RAG Memvid] Initialized successfully at %s", MEMVID_PATH)
         except Exception as e:
-            _init_failed, _initialized, _init_error = True, False, e
-            logger.error("[RAG Memvid] Initialization failed: %s", e)
+            _initialized, _init_error = False, e
+            logger.error("[Memvid] Initialization failed: %s", e)
 
     if background:
         _executor.submit(_worker)
     else:
         _worker()
         if _init_error:
-            raise RAGEngineError("RAG engine initialization failed", _init_error) from _init_error
+            raise RAGEngineError("Memvid initialization failed", _init_error) from _init_error
 
 
 def get_init_error() -> Exception | None:

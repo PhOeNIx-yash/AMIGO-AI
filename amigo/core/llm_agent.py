@@ -300,7 +300,11 @@ def _build_ai_messages(
 
     runtime_ctx = build_turn_runtime_context(query, web_context=web_context, doc_context=doc_context)
     if doc_context:
-        mode_tag = "[Mode: Document Analysis | Output: Structured, Well-Organized Markdown with Bullets, Clear Sections, and Exact Figures/Dates]"
+        mode_tag = (
+            "[Mode: Document Analysis | Answer the question directly and concisely using ONLY the document that matches the user's specific request. "
+            "If multiple documents are provided in the context, focus strictly on the document relevant to the inquiry and ignore irrelevant files. "
+            "Do NOT include unrelated numbers, IDs, or details from other files.]"
+        )
     else:
         mode_tag = "[Mode: Voice | Output: Direct Spoken Answer]" if is_voice else "[Mode: Text | Output: Direct Formatted Answer]"
     user_content = f"{runtime_ctx}\n\nUser Question: {query}\n{mode_tag}" if runtime_ctx else f"{query}\n{mode_tag}"
