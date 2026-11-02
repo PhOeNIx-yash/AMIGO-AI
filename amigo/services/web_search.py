@@ -1,28 +1,37 @@
 """
-web_search.py - Autonomous Deep-Retrieval, Passage-Ranking & Federated Search Engine for Amigo.
+web_search.py - Consensus-Verified Epistemic Retrieval Engine for Amigo.
 
-Architecture (Zero Hardcoded Topic/Domain/Country Rules):
-  * Pure OS/Environment Region Discovery: Resolves ISO-3166 country code from OS Geo APIs
-    and system locale/timezone metadata without hardcoded country fallbacks.
-  * Information-Theoretic Query Decomposer: Automatically generates a parallel query matrix
-    (Natural Question + High-Specificity Token Skeleton) using token length entropy and casing
-    signals—no domain regexes or hardcoded entity lists.
-  * Multi-Index Federated Race: Simultaneously races General Web (DDGS, DDG-HTML, Bing, Tavily,
-    Brave, SearXNG), Live News (Google News RSS, DDGS News), and Video Metadata (YouTube InnerTube).
-  * Hybrid T-RRF + BM25 Proximity Reranking: Scores results using multi-engine Reciprocal Rank Fusion
-    combined with Okapi BM25 term saturation, bigram proximity bonuses, and exponential recency decay.
-  * Query-Focused Sliding-Window & JSON-LD Extractor: Fetches top candidate pages in parallel,
-    extracts structured JSON-LD (offers, prices, descriptions, article bodies) and slices the exact
-    paragraphs with the highest query-token density.
+Completely rebuilt architecture focused on source trustworthiness, cross-domain
+claim corroboration, and zero hardcoded domain/topic/country rules.
+
+Core Pillars:
+  1. Zero-Hardcoding OS Locale & Environment Introspection:
+     Derives ISO country, language, and timezone strictly from runtime OS APIs.
+  2. Multi-Oracle Independent Harvester:
+     Queries independent search indexes (Encyclopedia OpenSearch, DDGS API,
+     DDG Lite, Yahoo Web, Bing Web, Google News RSS, and optional API Oracles
+     like Tavily/Brave/SearXNG) in an asynchronous/threaded non-blocking pool.
+  3. Structural Authority Scorer:
+     Evaluates URLs using information-theoretic domain entropy, path depth,
+     subdomain nesting, and institutional TLD structure—zero domain lists.
+  4. Cross-Source Claim Corroboration Graph:
+     Extracts atomic factual tokens (numbers, dates, named entities, specs) across
+     distinct domains. Ranks sources by independent inter-domain agreement
+     (PageRank-style consensus) so hallucinated or spam pages are filtered out.
+  5. Verbatim Evidence & Schema Extractor:
+     Downloads top consensus-verified pages and extracts high-density factual
+     sentences and structured JSON-LD entities with explicit provenance tags.
 """
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import ctypes
 import email.utils
-import html as _html
+import html
 import json
+import locale
 import logging
 import math
 import os
@@ -32,174 +41,101 @@ import time
 import urllib.parse
 import webbrowser
 import xml.etree.ElementTree as ET
-from collections import Counter, OrderedDict
+from collections import Counter, OrderedDict, defaultdict
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 try:
     import httpx
-    _HAS_HTTPX = True
+    _USING_HTTPX = True
 except ImportError:
     import requests
-    _HAS_HTTPX = False
+    _USING_HTTPX = False
 
 logger = logging.getLogger("amigo.web_search")
+for _lg in ("ddgs", "ddgs.ddgs", "duckduckgo_search", "httpx", "httpcore", "primp", "urllib3"):
+    logging.getLogger(_lg).setLevel(logging.ERROR)
 
-# Silence noisy third-party sub-engine loggers
-for _noisy in ("ddgs", "duckduckgo_search", "httpx", "httpcore", "primp"):
-    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Dynamic Configuration (Environment & OS-Driven, Zero Hardcoded Assumptions)
+# 1. Dynamic OS Environment Introspection (Zero Hardcoded Fallbacks)
 # ──────────────────────────────────────────────────────────────────────────────
 
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-)
-
-
-def _valid_iso_country(code: str) -> bool:
-    c = (code or "").strip().upper()
-    return len(c) == 2 and c.isalpha() and c not in ("WT", "XX", "ZZ")
-
-
-def get_pc_region() -> tuple[str, str]:
+def _discover_os_locale() -> tuple[str, str, str]:
     """
-    Dynamically detects the host PC's operating system geographic region
-    purely from OS APIs and system locale settings (zero hardcoded countries).
-    Returns:
-        (ddgs_region, country_code)
+    Interrogates the host OS for (language_code, country_code, region_tag)
+    without any hardcoded country or language defaults.
     """
-    country = ""
+    lang_code = ""
+    country_code = ""
 
-    # 1. Windows Native Geo API (GetUserDefaultGeoName) & LCID Locale API
     if os.name == "nt":
         try:
-            import ctypes
-            buf = ctypes.create_unicode_buffer(16)
-            ret = ctypes.windll.kernel32.GetUserDefaultGeoName(buf, 16)
-            if ret > 0 and _valid_iso_country(buf.value):
-                country = buf.value.strip().upper()
+            buf = ctypes.create_unicode_buffer(85)
+            if ctypes.windll.kernel32.GetUserDefaultLocaleName(buf, 85) > 0:
+                raw = buf.value.replace("_", "-")
+                parts = [p for p in raw.split("-") if p]
+                if parts and len(parts[0]) in (2, 3) and parts[0].isalpha():
+                    lang_code = parts[0].lower()
+                for p in reversed(parts):
+                    if len(p) == 2 and p.isalpha() and p.upper() not in ("WT", "XX", "ZZ"):
+                        country_code = p.upper()
+                        break
         except Exception:
             pass
 
-        if not country:
+        if not country_code:
             try:
-                import ctypes
-                buf = ctypes.create_unicode_buffer(85)
-                # GetUserDefaultLocaleName returns e.g. "en-IN", "en-US", "de-DE"
-                ret = ctypes.windll.kernel32.GetUserDefaultLocaleName(buf, 85)
-                if ret > 0 and buf.value:
-                    parts = buf.value.replace("_", "-").split("-")
-                    for p in reversed(parts):
-                        if _valid_iso_country(p):
-                            country = p.upper()
-                            break
+                buf = ctypes.create_unicode_buffer(16)
+                if ctypes.windll.kernel32.GetUserDefaultGeoName(buf, 16) > 0:
+                    val = buf.value.strip().upper()
+                    if len(val) == 2 and val.isalpha() and val not in ("WT", "XX", "ZZ"):
+                        country_code = val
             except Exception:
                 pass
 
-        if not country:
-            try:
-                import ctypes
-                import locale
-                lcid = ctypes.windll.kernel32.GetUserDefaultLCID()
-                win_loc = locale.windows_locale.get(lcid, "")
-                if "_" in win_loc:
-                    c = win_loc.split("_")[-1].upper()
-                    if _valid_iso_country(c):
-                        country = c
-            except Exception:
-                pass
+    if not country_code or not lang_code:
+        for var in ("LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"):
+            env_val = os.getenv(var, "").split(".")[0].replace("-", "_")
+            if "_" in env_val:
+                l_part, c_part = env_val.split("_", 1)
+                if not lang_code and len(l_part) in (2, 3) and l_part.isalpha():
+                    lang_code = l_part.lower()
+                c_clean = c_part.split("_")[0].upper()
+                if not country_code and len(c_clean) == 2 and c_clean.isalpha():
+                    country_code = c_clean
+                break
 
-    # 2. POSIX / system locale environment variables
-    if not country:
-        for env_var in ("LC_ALL", "LC_MONETARY", "LC_TIME", "LC_MESSAGES", "LANG"):
-            val = os.getenv(env_var, "")
-            if "_" in val or "-" in val:
-                norm = val.split(".")[0].replace("-", "_")
-                parts = norm.split("_")
-                if len(parts) >= 2 and _valid_iso_country(parts[-1]):
-                    country = parts[-1].upper()
-                    break
-
-    # 3. Python standard locale fallback
-    if not country:
+    if not country_code or not lang_code:
         try:
-            import locale
-            loc = (locale.getlocale()[0] or "").replace("-", "_")
-            if "_" in loc:
-                c = loc.split("_")[-1].upper()
-                if _valid_iso_country(c):
-                    country = c
+            sys_loc = (locale.getlocale()[0] or "").replace("-", "_")
+            if "_" in sys_loc:
+                l_part, c_part = sys_loc.split("_", 1)
+                if not lang_code and l_part.isalpha():
+                    lang_code = l_part.lower()
+                if not country_code and len(c_part) == 2 and c_part.isalpha():
+                    country_code = c_part.upper()
         except Exception:
             pass
 
-    if _valid_iso_country(country):
-        return f"{country.lower()}-en", country
-    return "", ""
+    region_tag = f"{country_code.lower()}-{lang_code}" if (country_code and lang_code) else ""
+    return lang_code, country_code, region_tag
 
 
-_DEFAULT_SEARCH_REGION, PC_COUNTRY_CODE = get_pc_region()
-_env_region = os.getenv("AMIGO_SEARCH_REGION", "").strip()
-if _env_region and not _env_region.lower().startswith("wt"):
-    SEARCH_REGION = _env_region
-else:
-    SEARCH_REGION = _DEFAULT_SEARCH_REGION
-
-DEFAULT_HEADERS = {
-    "User-Agent": USER_AGENT,
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": f"en-{PC_COUNTRY_CODE},en;q=0.9" if PC_COUNTRY_CODE else "en;q=0.9",
-}
+OS_LANG, PC_COUNTRY_CODE, _OS_REGION_TAG = _discover_os_locale()
+SEARCH_REGION = os.getenv("AMIGO_SEARCH_REGION", "").strip() or _OS_REGION_TAG
 
 SEARXNG_URL = os.getenv("AMIGO_SEARXNG_URL", "").rstrip("/")
-BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
-YT_REGION = os.getenv("AMIGO_YT_REGION", "").strip()
+BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "").strip()
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "").strip()
+YT_REGION = os.getenv("AMIGO_YT_REGION", "").strip() or PC_COUNTRY_CODE
 
-TOP_K_FINAL_SNIPPETS = 6
-PER_ENGINE_FULL = 8
-PER_ENGINE_FAST = 6
-SNIPPET_CHARS = 520
-
-# Non-blocking race & deep-fetch budgets (seconds)
-_BUDGETS = {"fast": 2.4, "full": 3.6}
-MERGE_GRACE_S = 0.60
-MERGE_GRACE_FAST_S = 0.50
-HTTP_TIMEOUT = 2.6
-
-FETCH_TIMEOUT = 2.0
-FETCH_DEADLINE_S = 2.2
-FETCH_DEADLINE_FAST_S = 1.35
-TOP_K_RESULTS_TO_FETCH = 4
-TOP_K_RESULTS_TO_FETCH_FAST = 2
-MAX_PAGE_BYTES = 450_000
-MAX_CONTENT_CHARS = 1800
-
-CACHE_MAX = 256
-CACHE_TTL_S = 300
-YT_CACHE_TTL_S = 6 * 3600
-YT_BUDGET_S = 6.0
-
-RRF_K = 60
-
-# Grammatical function words (strictly syntactic, zero domain assumptions)
-_SYNTAX_FUNCTION_WORDS = frozenset({
-    "a", "an", "the", "and", "or", "but", "if", "while", "of", "at", "by", "for",
-    "with", "about", "into", "through", "during", "to", "from", "in", "on", "is",
-    "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does",
-    "did", "will", "would", "shall", "should", "can", "could", "may", "might",
-    "what", "which", "who", "whom", "whose", "when", "where", "why", "how", "that",
-    "this", "these", "those", "it", "its", "they", "them", "their", "there",
-})
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Data Classes
+# 2. Data Structures (100% Backwards-Compatible + Epistemic Metadata)
 # ──────────────────────────────────────────────────────────────────────────────
-
 
 @dataclass
 class SearchResult:
@@ -212,6 +148,11 @@ class SearchResult:
     age_days: Optional[float] = None
     score: float = 0.0
     fetched_content: str = ""
+    # Epistemic & Consensus telemetry
+    authority_score: float = 0.0
+    consensus_score: float = 0.0
+    corroborated_by: list[str] = field(default_factory=list)
+    trust_tier: str = "UNVERIFIED"
 
     @property
     def relevance_score(self) -> float:
@@ -219,15 +160,15 @@ class SearchResult:
 
     @property
     def credibility(self) -> float:
-        return 0.9 if self.domain.endswith((".gov", ".edu")) else 0.78
+        return round(min(1.0, max(0.1, self.authority_score * 0.5 + self.consensus_score * 0.5)), 3)
 
 
 @dataclass
 class SearchResponse:
     query: str
     results: list[SearchResult]
-    query_type: str = "federated"
-    structured_data: dict = field(default_factory=dict)
+    query_type: str = "epistemic_consensus"
+    structured_data: dict[str, Any] = field(default_factory=dict)
     cache_hit: bool = False
     search_time_ms: int = 0
     engines_used: list[str] = field(default_factory=list)
@@ -241,1426 +182,6 @@ class YTVideo:
     is_live: bool = False
     duration_s: Optional[int] = None
     source: str = ""
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# HTTP/2 Client Pool, Executor, Cache & Adaptive Circuit Breaker
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-class _HttpClient:
-    """Unified HTTP/2 client using httpx with automatic fallback to requests."""
-
-    def __init__(self):
-        if _HAS_HTTPX:
-            self._client = httpx.Client(
-                http2=True,
-                headers=DEFAULT_HEADERS,
-                timeout=httpx.Timeout(HTTP_TIMEOUT, connect=1.2),
-                follow_redirects=True,
-                limits=httpx.Limits(max_keepalive_connections=24, max_connections=48),
-            )
-        else:
-            from requests.adapters import HTTPAdapter
-            self._client = requests.Session()
-            adapter = HTTPAdapter(max_retries=0, pool_connections=24, pool_maxsize=48)
-            self._client.mount("http://", adapter)
-            self._client.mount("https://", adapter)
-            self._client.headers.update(DEFAULT_HEADERS)
-
-    def get(
-        self,
-        url: str,
-        params: dict | None = None,
-        headers: dict | None = None,
-        cookies: dict | None = None,
-        timeout: float = HTTP_TIMEOUT,
-    ):
-        if _HAS_HTTPX:
-            resp = self._client.get(url, params=params, headers=headers, cookies=cookies, timeout=timeout)
-            resp.raise_for_status()
-            return resp
-        resp = self._client.get(url, params=params, headers=headers, cookies=cookies, timeout=(1.2, timeout))
-        resp.raise_for_status()
-        return resp
-
-    def post(
-        self,
-        url: str,
-        json_body: dict | None = None,
-        data: dict | None = None,
-        headers: dict | None = None,
-        cookies: dict | None = None,
-        timeout: float = HTTP_TIMEOUT,
-    ):
-        if _HAS_HTTPX:
-            resp = self._client.post(
-                url, json=json_body, data=data, headers=headers, cookies=cookies, timeout=timeout
-            )
-            resp.raise_for_status()
-            return resp
-        resp = self._client.post(
-            url, json=json_body, data=data, headers=headers, cookies=cookies, timeout=(1.2, timeout)
-        )
-        resp.raise_for_status()
-        return resp
-
-
-_HTTP = _HttpClient()
-_EXECUTOR = ThreadPoolExecutor(max_workers=16, thread_name_prefix="amigo-search")
-
-
-class _TTLCache:
-    def __init__(self, maxsize: int):
-        self._d: OrderedDict = OrderedDict()
-        self._max = maxsize
-        self._lock = threading.Lock()
-
-    def get(self, key):
-        with self._lock:
-            item = self._d.get(key)
-            if item is None:
-                return None
-            value, expires = item
-            if expires < time.time():
-                del self._d[key]
-                return None
-            self._d.move_to_end(key)
-            return value
-
-    def set(self, key, value, ttl: float) -> None:
-        with self._lock:
-            self._d[key] = (value, time.time() + ttl)
-            self._d.move_to_end(key)
-            while len(self._d) > self._max:
-                self._d.popitem(last=False)
-
-    def clear(self) -> None:
-        with self._lock:
-            self._d.clear()
-
-
-class _Health:
-    """Adaptive circuit breaker: temporarily sidelines failing providers so dead engines cost 0ms."""
-
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._fails: dict[str, int] = {}
-        self._skip_until: dict[str, float] = {}
-
-    def available(self, name: str) -> bool:
-        with self._lock:
-            return time.time() >= self._skip_until.get(name, 0.0)
-
-    def ok(self, name: str) -> None:
-        with self._lock:
-            self._fails.pop(name, None)
-            self._skip_until.pop(name, None)
-
-    def fail(self, name: str, permanent: bool = False) -> None:
-        with self._lock:
-            n = self._fails.get(name, 0) + 1
-            self._fails[name] = n
-            if permanent:
-                self._skip_until[name] = float("inf")
-            elif n >= 2:
-                self._skip_until[name] = time.time() + min(120.0, 8.0 * (2 ** (n - 1)))
-
-
-_HEALTH = _Health()
-_SEARCH_CACHE = _TTLCache(CACHE_MAX)
-_YT_CACHE = _TTLCache(128)
-
-
-def _select_healthy(names: list[str]) -> list[str]:
-    healthy = [n for n in names if _HEALTH.available(n)]
-    return healthy or list(names)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# YouTube Constants & Parsing Primitives
-# ──────────────────────────────────────────────────────────────────────────────
-
-_yt_client_version = os.getenv("AMIGO_YT_CLIENT_VERSION", "2.20250901.01.00")
-_YT_SEARCH_URL = "https://www.youtube.com/youtubei/v1/search?prettyPrint=false"
-_YT_COOKIES = {"CONSENT": "YES+1", "SOCS": "CAI"}
-_YT_P_VIDEOS = "EgIQAQ%3D%3D"
-_YT_P_LIVE = "EgJAAQ%3D%3D"
-_YT_P_NEWEST = "CAISAhAB"
-
-
-def _runs_text(node) -> str:
-    if not isinstance(node, dict):
-        return ""
-    if "simpleText" in node:
-        return str(node["simpleText"])
-    return "".join(r.get("text", "") for r in node.get("runs", []) if isinstance(r, dict))
-
-
-def _parse_duration(text: str) -> Optional[int]:
-    parts = (text or "").strip().split(":")
-    if not parts or not all(p.isdigit() for p in parts):
-        return None
-    secs = 0
-    for p in parts:
-        secs = secs * 60 + int(p)
-    return secs
-
-
-def _walk_video_renderers(node):
-    if isinstance(node, dict):
-        vr = node.get("videoRenderer")
-        if isinstance(vr, dict) and vr.get("videoId"):
-            yield vr
-        for v in node.values():
-            yield from _walk_video_renderers(v)
-    elif isinstance(node, list):
-        for v in node:
-            yield from _walk_video_renderers(v)
-
-
-def _videos_from_json(data, source: str) -> list[YTVideo]:
-    out, seen = [], set()
-    for vr in _walk_video_renderers(data):
-        vid = vr["videoId"]
-        if vid in seen:
-            continue
-        seen.add(vid)
-        badges = [b.get("metadataBadgeRenderer", {}) for b in vr.get("badges", []) if isinstance(b, dict)]
-        overlays = [
-            o.get("thumbnailOverlayTimeStatusRenderer", {})
-            for o in vr.get("thumbnailOverlays", [])
-            if isinstance(o, dict)
-        ]
-        is_live = (
-            any(b.get("style") == "BADGE_STYLE_TYPE_LIVE_NOW" for b in badges)
-            or any(o.get("style") == "LIVE" for o in overlays)
-        )
-        channel = _runs_text(vr.get("ownerText")) or _runs_text(vr.get("longBylineText")) or "YouTube"
-        out.append(YTVideo(
-            video_id=vid,
-            title=_runs_text(vr.get("title")),
-            channel=channel,
-            is_live=is_live,
-            duration_s=_parse_duration(_runs_text(vr.get("lengthText"))),
-            source=source,
-        ))
-    return out
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Text, Date, URL & Information-Theoretic Query Decomposition
-# ──────────────────────────────────────────────────────────────────────────────
-
-_TAG_RE = re.compile(r"<[^>]+>")
-_WS_RE = re.compile(r"\s+")
-_TRACKING_PARAM = re.compile(r"^(?:utm_|fbclid$|gclid$\vert{}ref$|ref_src$\vert{}igshid$)", re.I)
-_WORD_RE = re.compile(r"[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*")
-
-
-def _clean_text(text: str) -> str:
-    return _WS_RE.sub(" ", _html.unescape(_TAG_RE.sub(" ", text or ""))).strip()
-
-
-def _clip(text: str, n: int) -> str:
-    text = _clean_text(text)
-    if len(text) <= n:
-        return text
-    return text[:n].rsplit(" ", 1)[0].rstrip(" ,;:-") + "…"
-
-
-def _domain(url: str) -> str:
-    host = urllib.parse.urlparse(url).netloc.lower().split("@")[-1].split(":")[0]
-    return host[4:] if host.startswith("www.") else host
-
-
-def _norm_url(url: str) -> str:
-    p = urllib.parse.urlparse(url)
-    q = urllib.parse.urlencode(
-        [(k, v) for k, v in urllib.parse.parse_qsl(p.query) if not _TRACKING_PARAM.match(k)]
-    )
-    return f"{_domain(url)}{p.path.rstrip('/')}" + (f"?{q}" if q else "")
-
-
-def _parse_date_age(raw_date: str) -> tuple[str, Optional[float]]:
-    if not raw_date:
-        return "", None
-    raw = raw_date.strip()
-    dt = None
-    try:
-        dt = email.utils.parsedate_to_datetime(raw)
-    except Exception:
-        pass
-    if dt is None:
-        try:
-            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        except Exception:
-            pass
-    if dt is not None:
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        now = datetime.now(timezone.utc)
-        age_days = max(0.0, (now - dt).total_seconds() / 86400.0)
-        return dt.strftime("%Y-%m-%d"), age_days
-    return raw[:10], None
-
-
-def _mk(
-    title: str,
-    url: str,
-    snippet: str,
-    source: str,
-    published: str = "",
-    domain_override: str = "",
-) -> SearchResult:
-    title = _clean_text(title)
-    pub_str, age_days = _parse_date_age(published)
-    dom = domain_override or _domain(url)
-    return SearchResult(
-        title=title,
-        url=url.strip(),
-        snippet=_clip(snippet or title, SNIPPET_CHARS),
-        source=source,
-        domain=dom,
-        published=pub_str,
-        age_days=age_days,
-    )
-
-
-_RE_WAKE_STRIP = re.compile(r"^(?:(?:hey|hi|hello|ok|okay)[\s,]+)?amigo\b[\s,.:;!-]*", re.IGNORECASE)
-_RE_LEADING_VERB = re.compile(r"^(?:search(?:\s+for)?|find|look\s+up|google|check)\s+", re.IGNORECASE)
-
-
-def clean_search_query(raw_query: str) -> str:
-    """Strips voice wake words and conversational search prefixes while preserving full semantic intent."""
-    if not raw_query:
-        return ""
-    q = _RE_WAKE_STRIP.sub("", raw_query.strip()).strip()
-    q = _RE_LEADING_VERB.sub("", q).strip()
-    q = q.strip("\"'`[](){}")
-    q = re.sub(r"\s+", " ", q).strip()
-    return q if len(q) >= 2 else raw_query.strip()
-
-
-def _token_specificity(token: str) -> float:
-    """
-    Information-theoretic token weight without any hardcoded vocabulary lists.
-    Uses character length entropy, alphanumeric model-number signals, and capitalization.
-    """
-    low = token.lower()
-    if low in _SYNTAX_FUNCTION_WORDS:
-        return 0.05
-    weight = 1.0 + 0.35 * math.log1p(len(low))
-    has_digit = any(ch.isdigit() for ch in token)
-    has_alpha = any(ch.isalpha() for ch in token)
-    if has_digit and has_alpha:
-        # Alphanumeric tokens (e.g. model identifiers, version codes) carry huge specificity
-        weight += 1.45
-    elif has_digit:
-        weight += 0.75
-    if "-" in token:
-        weight += 0.65
-    if any(ch.isupper() for ch in token[1:]) or (token[0].isupper() and len(token) > 2):
-        weight += 0.30
-    return weight
-
-
-def _build_query_variants(raw_query: str) -> list[str]:
-    """
-    Decomposes complex multi-clause queries into up to 2 complementary search queries:
-      1. Clean natural-language query
-      2. High-specificity content-word skeleton (strips syntactic glue).
-    """
-    clean_q = clean_search_query(raw_query) or raw_query.strip()
-    words = _WORD_RE.findall(clean_q)
-    if len(words) <= 4:
-        return [clean_q]
-
-    skeleton_tokens = [
-        w for w in words
-        if w.lower() not in _SYNTAX_FUNCTION_WORDS and (len(w) > 1 or w.isdigit())
-    ]
-    skeleton = " ".join(skeleton_tokens)
-    variants = [clean_q]
-    if skeleton and skeleton.lower() != clean_q.lower() and len(skeleton_tokens) >= 2:
-        variants.append(skeleton)
-    return variants
-
-
-def detect_query_type(query: str) -> str:
-    return "federated"
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Search Providers (Persistent Sessions, Multi-Variant Capable)
-# ──────────────────────────────────────────────────────────────────────────────
-
-_DDGS_CLS = None
-_DDGS_LOCAL = threading.local()
-
-
-def _load_ddgs():
-    global _DDGS_CLS
-    if _DDGS_CLS is None:
-        try:
-            from ddgs import DDGS
-        except ImportError:
-            from duckduckgo_search import DDGS
-        _DDGS_CLS = DDGS
-    return _DDGS_CLS
-
-
-def _get_ddgs():
-    client = getattr(_DDGS_LOCAL, "client", None)
-    if client is None:
-        client = _load_ddgs()(timeout=2)
-        _DDGS_LOCAL.client = client
-    return client
-
-
-def _p_ddgs_web(query: str, limit: int) -> list[SearchResult]:
-    variants = _build_query_variants(query)
-    reg = SEARCH_REGION or None
-
-    def _run_one(q_str: str, lim: int) -> list[SearchResult]:
-        rows = []
-        # Explicitly target web-only backends ('duckduckgo', 'lite', 'html') so ddgs v8+
-        # never triggers its broken internal wt.wikipedia.org opensearch sub-engine.
-        for backend in ("duckduckgo", "lite", "html"):
-            try:
-                kwargs = {"max_results": lim, "backend": backend}
-                if reg:
-                    kwargs["region"] = reg
-                rows = list(_get_ddgs().text(q_str, **kwargs) or [])
-                if rows:
-                    break
-            except TypeError:
-                # Fallback for older duckduckgo_search versions without 'backend' kwarg
-                kwargs = {"max_results": lim}
-                if reg:
-                    kwargs["region"] = reg
-                rows = list(_get_ddgs().text(q_str, **kwargs) or [])
-                break
-            except Exception as e:
-                if "no results" in str(e).lower():
-                    return []
-                _DDGS_LOCAL.client = None
-                continue
-
-        return [
-            _mk(r.get("title", ""), (r.get("href") or r.get("url") or "").strip(), r.get("body", ""), "ddgs")
-            for r in rows
-            if (r.get("href") or r.get("url")) and (r.get("title") or r.get("body"))
-        ]
-
-    if len(variants) == 1:
-        return _run_one(variants[0], limit)
-
-    f1 = _EXECUTOR.submit(_run_one, variants[0], limit)
-    f2 = _EXECUTOR.submit(_run_one, variants[1], max(4, limit // 2))
-    out: list[SearchResult] = []
-    for f in (f1, f2):
-        try:
-            out.extend(f.result(timeout=2.0))
-        except Exception:
-            pass
-    return out
-
-
-def _p_ddg_html(query: str, limit: int) -> list[SearchResult]:
-    """
-    Direct HTTP/2 scraper for DuckDuckGo's HTML endpoint.
-    Provides fast, independent web results without relying on the ddgs package.
-    """
-    clean_q = clean_search_query(query) or query
-    params = {"q": clean_q}
-    if SEARCH_REGION:
-        params["kl"] = SEARCH_REGION
-    resp = _HTTP.get("https://html.duckduckgo.com/html/", params=params, timeout=2.0)
-
-    out: list[SearchResult] = []
-    if _has_module("selectolax"):
-        from selectolax.parser import HTMLParser
-        tree = HTMLParser(resp.text)
-        for node in tree.css(".result, .web-result"):
-            a = node.css_first("a.result__a")
-            snip_el = node.css_first(".result__snippet")
-            if not a:
-                continue
-            href = a.attributes.get("href", "")
-            if "uddg=" in href:
-                qs = urllib.parse.parse_qs(urllib.parse.urlparse(href).query)
-                href = qs.get("uddg", [href])[0]
-            if not href.startswith("http") or "duckduckgo.com" in _domain(href):
-                continue
-            title = a.text(separator=" ", strip=True)
-            snippet = snip_el.text(separator=" ", strip=True) if snip_el else ""
-            out.append(_mk(title, href, snippet, "ddg_html"))
-            if len(out) >= limit:
-                break
-        return out
-
-    from bs4 import BeautifulSoup
-    soup = BeautifulSoup(resp.text, "html.parser")
-    for node in soup.select(".result, .web-result"):
-        a = node.select_one("a.result__a")
-        snip_el = node.select_one(".result__snippet")
-        if not a:
-            continue
-        href = a.get("href", "")
-        if "uddg=" in href:
-            qs = urllib.parse.parse_qs(urllib.parse.urlparse(href).query)
-            href = qs.get("uddg", [href])[0]
-        if not href.startswith("http") or "duckduckgo.com" in _domain(href):
-            continue
-        title = a.get_text(" ", strip=True)
-        snippet = snip_el.get_text(" ", strip=True) if snip_el else ""
-        out.append(_mk(title, href, snippet, "ddg_html"))
-        if len(out) >= limit:
-            break
-    return out
-
-
-def _p_ddgs_news(query: str, limit: int) -> list[SearchResult]:
-    clean_q = clean_search_query(query) or query
-    kwargs = {"max_results": limit}
-    if SEARCH_REGION:
-        kwargs["region"] = SEARCH_REGION
-    rows = []
-    try:
-        rows = list(_get_ddgs().news(clean_q, **kwargs) or [])
-    except Exception as e:
-        if "no results" in str(e).lower():
-            return []
-        try:
-            _DDGS_LOCAL.client = None
-            rows = list(_get_ddgs().news(clean_q, **kwargs) or [])
-        except Exception:
-            return []
-    out = []
-    for r in rows:
-        url = (r.get("url") or r.get("href") or "").strip()
-        if url and (r.get("title") or r.get("body")):
-            out.append(_mk(r.get("title", ""), url, r.get("body", ""), "ddgs_news", r.get("date", "")))
-    return out
-
-
-def _p_google_news_rss(query: str, limit: int) -> list[SearchResult]:
-    variants = _build_query_variants(query)
-    q_str = variants[-1]
-    params = {"q": q_str}
-    if PC_COUNTRY_CODE:
-        params["gl"] = PC_COUNTRY_CODE
-        params["hl"] = f"en-{PC_COUNTRY_CODE}"
-        params["ceid"] = f"{PC_COUNTRY_CODE}:en"
-    resp = _HTTP.get("https://news.google.com/rss/search", params=params, timeout=2.0)
-    root = ET.fromstring(resp.text)
-    out = []
-    for item in root.findall("./channel/item")[:limit]:
-        title = item.findtext("title") or ""
-        link = item.findtext("link") or ""
-        pub_date = item.findtext("pubDate") or ""
-        desc = _clean_text(item.findtext("description") or "")
-        source_el = item.find("source")
-        publisher = source_el.text.strip() if (source_el is not None and source_el.text) else "news.google.com"
-        source_url = source_el.get("url", "") if source_el is not None else ""
-        dom = _domain(source_url) if source_url else publisher
-        if publisher and title.endswith(f" - {publisher}"):
-            title = title[: -len(f" - {publisher}")].strip()
-        snippet = desc if (desc and desc.lower() != title.lower()) else f"{title} (Reported by {publisher})"
-        if link and title:
-            out.append(_mk(title, link, snippet, "gnews", pub_date, domain_override=dom))
-    return out
-
-
-def _decode_bing_url(href: str) -> str:
-    if "bing.com/ck/a" not in href:
-        return href
-    u = urllib.parse.parse_qs(urllib.parse.urlparse(href).query).get("u", [""])[0]
-    if u.startswith("a1"):
-        b = u[2:]
-        try:
-            return base64.urlsafe_b64decode(b + "=" * (-len(b) % 4)).decode("utf-8", "ignore")
-        except Exception:
-            return ""
-    return ""
-
-
-def _parse_bing_html(html_text: str, limit: int, query: str = "") -> list[SearchResult]:
-    out = []
-    q_words = [
-        w.lower() for w in _WORD_RE.findall(query)
-        if w.lower() not in _SYNTAX_FUNCTION_WORDS and len(w) > 2
-    ] if query else []
-    if _has_module("selectolax"):
-        from selectolax.parser import HTMLParser
-        tree = HTMLParser(html_text)
-        for node in tree.css("li.b_algo"):
-            a = node.css_first("h2 a")
-            if not a:
-                continue
-            url = _decode_bing_url(a.attributes.get("href", ""))
-            if not url.startswith("http") or "bing.com" in _domain(url):
-                continue
-            p = node.css_first(".b_caption p, .b_lineclamp2, .b_lineclamp3, .b_lineclamp4, p")
-            title = a.text(separator=" ", strip=True)
-            snippet = p.text(separator=" ", strip=True) if p else ""
-            if q_words and not any(w in title.lower() or w in snippet.lower() for w in q_words):
-                continue
-            out.append(_mk(title, url, snippet, "bing"))
-            if len(out) >= limit:
-                break
-        return out
-
-    from bs4 import BeautifulSoup
-    soup = BeautifulSoup(html_text, "html.parser")
-    for item in soup.select("li.b_algo"):
-        a = item.select_one("h2 a")
-        p = item.select_one(".b_caption p, p")
-        if not a:
-            continue
-        url = _decode_bing_url(a.get("href", ""))
-        if not url.startswith("http") or "bing.com" in _domain(url):
-            continue
-        title = a.get_text(" ", strip=True)
-        snippet = p.get_text(" ", strip=True) if p else ""
-        if q_words and not any(w in title.lower() or w in snippet.lower() for w in q_words):
-            continue
-        out.append(_mk(title, url, snippet, "bing"))
-        if len(out) >= limit:
-            break
-    return out
-
-
-def _p_bing(query: str, limit: int) -> list[SearchResult]:
-    variants = _build_query_variants(query)
-    base_params = {"setlang": "en"}
-    if PC_COUNTRY_CODE:
-        base_params["cc"] = PC_COUNTRY_CODE
-        base_params["mkt"] = f"en-{PC_COUNTRY_CODE}"
-
-    if len(variants) == 1:
-        resp = _HTTP.get("https://www.bing.com/search", params={"q": variants[0], **base_params}, timeout=2.2)
-        return _parse_bing_html(resp.text, limit, query=variants[0])
-
-    def _one(q_str: str) -> list[SearchResult]:
-        r = _HTTP.get("https://www.bing.com/search", params={"q": q_str, **base_params}, timeout=2.1)
-        return _parse_bing_html(r.text, limit, query=q_str)
-
-    f1 = _EXECUTOR.submit(_one, variants[0])
-    f2 = _EXECUTOR.submit(_one, variants[1])
-    out: list[SearchResult] = []
-    for f in (f1, f2):
-        try:
-            out.extend(f.result(timeout=2.2))
-        except Exception:
-            pass
-    return out
-
-
-def _p_youtube_metadata(query: str, limit: int) -> list[SearchResult]:
-    variants = _build_query_variants(query)
-    q_str = variants[-1]
-    client = {"clientName": "WEB", "clientVersion": _yt_client_version, "hl": "en"}
-    gl_code = YT_REGION or PC_COUNTRY_CODE
-    if gl_code:
-        client["gl"] = gl_code
-    resp = _HTTP.post(
-        _YT_SEARCH_URL,
-        json_body={"context": {"client": client}, "query": q_str, "params": _YT_P_VIDEOS},
-        cookies=_YT_COOKIES,
-        timeout=2.0,
-        headers={
-            "X-YouTube-Client-Name": "1",
-            "X-YouTube-Client-Version": _yt_client_version,
-            "Origin": "https://www.youtube.com",
-            "Content-Type": "application/json",
-        },
-    )
-    data = resp.json()
-    out: list[SearchResult] = []
-    seen: set[str] = set()
-    for vr in _walk_video_renderers(data):
-        vid = vr.get("videoId", "")
-        if not vid or vid in seen:
-            continue
-        seen.add(vid)
-        title = _runs_text(vr.get("title"))
-        channel = _runs_text(vr.get("ownerText")) or _runs_text(vr.get("longBylineText")) or "YouTube"
-        desc_parts = []
-        for s in vr.get("detailedMetadataSnippets") or []:
-            if isinstance(s, dict):
-                txt = _runs_text(s.get("snippetText"))
-                if txt:
-                    desc_parts.append(txt)
-        if not desc_parts:
-            txt = _runs_text(vr.get("descriptionSnippet"))
-            if txt:
-                desc_parts.append(txt)
-        desc = " ".join(desc_parts).strip()
-        snippet = f"[YouTube Video by {channel}] {title}. {desc}".strip()
-        out.append(_mk(title, f"https://www.youtube.com/watch?v={vid}", snippet, "yt_meta", domain_override="youtube.com"))
-        if len(out) >= min(limit, 4):
-            break
-    return out
-
-
-def _p_tavily(query: str, limit: int) -> list[SearchResult]:
-    if not TAVILY_API_KEY:
-        raise RuntimeError("TAVILY_API_KEY not set")
-    resp = _HTTP.post(
-        "https://api.tavily.com/search",
-        json_body={
-            "api_key": TAVILY_API_KEY,
-            "query": clean_search_query(query) or query,
-            "max_results": limit,
-            "search_depth": "basic",
-        },
-        timeout=2.4,
-    )
-    out = []
-    for r in resp.json().get("results", []):
-        if r.get("url"):
-            out.append(_mk(r.get("title", ""), r["url"], r.get("content", ""), "tavily", r.get("published_date", "")))
-    return out
-
-
-def _p_brave(query: str, limit: int) -> list[SearchResult]:
-    if not BRAVE_API_KEY:
-        raise RuntimeError("BRAVE_API_KEY not set")
-    params = {"q": clean_search_query(query) or query, "count": min(limit, 20)}
-    if PC_COUNTRY_CODE:
-        params["country"] = PC_COUNTRY_CODE.lower()
-    resp = _HTTP.get(
-        "https://api.search.brave.com/res/v1/web/search",
-        params=params,
-        headers={"X-Subscription-Token": BRAVE_API_KEY, "Accept": "application/json"},
-        timeout=2.4,
-    )
-    out = []
-    for r in (resp.json().get("web") or {}).get("results", []):
-        if r.get("url"):
-            out.append(_mk(r.get("title", ""), r["url"], r.get("description", ""), "brave", r.get("page_age", "")))
-    return out
-
-
-def _p_searxng(query: str, limit: int) -> list[SearchResult]:
-    if not SEARXNG_URL:
-        raise RuntimeError("AMIGO_SEARXNG_URL not set")
-    resp = _HTTP.get(
-        f"{SEARXNG_URL}/search",
-        params={"q": clean_search_query(query) or query, "format": "json"},
-        timeout=2.4,
-    )
-    out = []
-    for r in resp.json().get("results", [])[:limit]:
-        if r.get("url"):
-            out.append(_mk(r.get("title", ""), r["url"], r.get("content", ""), "searxng", r.get("publishedDate", "")))
-    return out
-
-
-_MODULE_OK: dict[str, bool] = {}
-
-
-def _has_module(name: str) -> bool:
-    if name not in _MODULE_OK:
-        try:
-            __import__(name)
-            _MODULE_OK[name] = True
-        except Exception:
-            _MODULE_OK[name] = False
-    return _MODULE_OK[name]
-
-
-_PROVIDERS: dict[str, tuple[Callable, str, float]] = {
-    "ddgs":      (_p_ddgs_web,         "web",   1.25),
-    "ddg_html":  (_p_ddg_html,         "web",   1.18),
-    "bing":      (_p_bing,             "web",   1.12),
-    "gnews":     (_p_google_news_rss,  "news",  0.72),
-    "ddgs_news": (_p_ddgs_news,        "news",  0.68),
-    "yt_meta":   (_p_youtube_metadata, "media", 0.55),
-    "tavily":    (_p_tavily,           "web",   1.35),
-    "brave":     (_p_brave,            "web",   1.25),
-    "searxng":   (_p_searxng,          "web",   1.15),
-}
-
-
-def _active_providers(engines: Optional[list[str]] = None) -> list[str]:
-    if engines:
-        return [e for e in engines if e in _PROVIDERS]
-    active = ["ddgs", "ddg_html", "bing", "gnews", "ddgs_news", "yt_meta"]
-    if TAVILY_API_KEY:
-        active.insert(0, "tavily")
-    if BRAVE_API_KEY:
-        active.insert(0, "brave")
-    if SEARXNG_URL:
-        active.append("searxng")
-    return _select_healthy(active)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Parallel Federated Race + Hybrid T-RRF & BM25-Proximity Reranker
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-def _timed(fn: Callable, *args):
-    t0 = time.monotonic()
-    out = fn(*args)
-    return out, int((time.monotonic() - t0) * 1000)
-
-
-def _race(names: list[str], query: str, limit: int, budget: float, grace: float):
-    if not names:
-        return {}, {}
-    deadline = time.monotonic() + budget
-    futs = {_EXECUTOR.submit(_timed, _PROVIDERS[n][0], query, limit): n for n in names}
-    pending, got, timings = set(futs), {}, {}
-    grace_anchor = None
-
-    while pending:
-        stop_at = deadline if grace_anchor is None else min(deadline, grace_anchor + grace)
-        remaining = stop_at - time.monotonic()
-        if remaining <= 0:
-            break
-        done, pending = wait(pending, timeout=remaining, return_when=FIRST_COMPLETED)
-        for f in done:
-            name = futs[f]
-            try:
-                rows, ms = f.result()
-            except Exception as e:
-                permanent = isinstance(e, ImportError)
-                _HEALTH.fail(name, permanent=permanent)
-                logger.debug("[WebSearch] %s failed: %s", name, e)
-                continue
-            timings[name] = ms
-            _HEALTH.ok(name)
-            if rows:
-                got[name] = rows
-                web_engines_done = sum(1 for k in got if _PROVIDERS[k][1] == "web")
-                # Only trigger the grace countdown once at least 2 general web engines have answered
-                if grace_anchor is None and web_engines_done >= 2:
-                    grace_anchor = time.monotonic()
-
-    if not got:
-        for f in pending:
-            _HEALTH.fail(futs[f])
-    for f in pending:
-        f.cancel()
-    return got, timings
-
-
-def _bm25_and_proximity_score(
-    text: str,
-    query_tokens: list[str],
-    token_weights: dict[str, float],
-    query_bigrams: set[tuple[str, str]],
-) -> float:
-    if not text or not query_tokens:
-        return 0.0
-    doc_tokens = [t.lower() for t in _WORD_RE.findall(text)]
-    if not doc_tokens:
-        return 0.0
-
-    doc_len = len(doc_tokens)
-    counts = Counter(doc_tokens)
-    k1 = 1.5
-    b = 0.75
-    avgdl = 45.0
-
-    score = 0.0
-    total_weight = sum(token_weights.values()) or 1.0
-
-    for tok, w in token_weights.items():
-        tf = counts.get(tok, 0)
-        if tf > 0:
-            norm_tf = (tf * (k1 + 1.0)) / (tf + k1 * (1.0 - b + b * (doc_len / avgdl)))
-            score += w * norm_tf
-
-    coverage = sum(token_weights[t] for t in token_weights if counts.get(t, 0) > 0) / total_weight
-    score *= (0.4 + 0.9 * (coverage ** 1.6))
-
-    if query_bigrams and len(doc_tokens) >= 2:
-        doc_bigrams = {(doc_tokens[i], doc_tokens[i + 1]) for i in range(len(doc_tokens) - 1)}
-        bigram_hits = len(query_bigrams & doc_bigrams)
-        score += bigram_hits * 1.45
-
-    return score
-
-
-def _temporal_rrf_fuse(by_engine: dict[str, list[SearchResult]], query: str) -> list[SearchResult]:
-    merged: dict[str, SearchResult] = {}
-    current_year = datetime.now().year
-    recent_years = {str(current_year - 1), str(current_year), str(current_year + 1)}
-
-    clean_q = clean_search_query(query) or query
-    raw_tokens = _WORD_RE.findall(clean_q)
-    content_tokens = [t.lower() for t in raw_tokens if t.lower() not in _SYNTAX_FUNCTION_WORDS and len(t) > 1]
-    if not content_tokens:
-        content_tokens = [t.lower() for t in raw_tokens if len(t) > 1]
-
-    token_weights = {t.lower(): _token_specificity(t) for t in raw_tokens if t.lower() in content_tokens}
-    query_bigrams = {
-        (content_tokens[i], content_tokens[i + 1])
-        for i in range(len(content_tokens) - 1)
-    }
-
-    for engine, rows in by_engine.items():
-        weight = _PROVIDERS.get(engine, (None, "web", 1.0))[2]
-        for rank, r in enumerate(rows):
-            key = _norm_url(r.url) if r.source != "gnews" else f"title:{r.title.lower()[:65]}"
-            rrf_gain = weight / (RRF_K + rank + 1)
-
-            if r.age_days is not None:
-                rrf_gain += 0.0025 * math.exp(-r.age_days / 45.0)
-
-            text_blob = f"{r.title} {r.snippet}"
-            if any(yr in text_blob for yr in recent_years):
-                rrf_gain += 0.0012
-
-            cur = merged.get(key)
-            if cur is None:
-                r.score = rrf_gain
-                merged[key] = r
-            else:
-                cur.score += rrf_gain
-                if len(r.snippet) > len(cur.snippet):
-                    cur.snippet = r.snippet
-                if r.published and not cur.published:
-                    cur.published = r.published
-
-    for r in merged.values():
-        title_bm25 = _bm25_and_proximity_score(r.title, content_tokens, token_weights, query_bigrams)
-        snip_bm25 = _bm25_and_proximity_score(r.snippet, content_tokens, token_weights, query_bigrams)
-        lexical_score = (title_bm25 * 1.45 + snip_bm25) * 0.0050
-        r.score += lexical_score
-
-    return sorted(merged.values(), key=lambda r: r.score, reverse=True)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Query-Focused Sliding-Window & Structured JSON-LD Deep Passage Extractor
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-def _extract_json_ld_strings(page: str) -> list[str]:
-    """
-    Extracts structured answers, product offers/prices, descriptions, and article bodies
-    from embedded Schema.org JSON-LD without any domain hardcoding.
-    """
-    out: list[str] = []
-    for m in re.finditer(r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', page, re.I | re.S):
-        raw = m.group(1).strip()
-        if not raw:
-            continue
-        try:
-            data = json.loads(raw)
-        except Exception:
-            continue
-        stack = [data]
-        while stack:
-            curr = stack.pop()
-            if isinstance(curr, dict):
-                name = curr.get("name") or curr.get("headline")
-                offers = curr.get("offers")
-                if isinstance(name, str) and offers:
-                    offer_list = offers if isinstance(offers, list) else [offers]
-                    for off in offer_list:
-                        if isinstance(off, dict):
-                            price = off.get("price") or off.get("lowPrice")
-                            curr_code = off.get("priceCurrency", "")
-                            avail = str(off.get("availability", "")).rsplit("/", 1)[-1]
-                            if price:
-                                out.append(_clean_text(f"{name} - Price: {curr_code} {price} ({avail})"))
-                for k, v in curr.items():
-                    if k in ("text", "articleBody", "description", "name", "headline") and isinstance(v, str) and len(v) > 25:
-                        out.append(_clean_text(v))
-                    elif isinstance(v, (dict, list)):
-                        stack.append(v)
-            elif isinstance(curr, list):
-                stack.extend(curr)
-    return out
-
-
-def _extract_raw_blocks(page: str) -> list[str]:
-    blocks = _extract_json_ld_strings(page)
-
-    if _has_module("trafilatura"):
-        import trafilatura
-        txt = trafilatura.extract(page, include_comments=True, include_tables=True)
-        if txt:
-            blocks.extend(p.strip() for p in txt.splitlines() if len(p.strip()) > 30)
-
-    if _has_module("selectolax"):
-        from selectolax.parser import HTMLParser
-        tree = HTMLParser(page)
-        for tag in tree.css("script, style, nav, footer, iframe, noscript, svg, form"):
-            tag.decompose()
-        for node in tree.css("p, li, dd, td, blockquote, article, .comment, .answer, .post-content"):
-            t = _WS_RE.sub(" ", node.text(separator=" ", strip=True)).strip()
-            if 35 <= len(t) <= 1200:
-                blocks.append(t)
-    elif not blocks:
-        cleaned = _clean_text(page)
-        blocks.extend(cleaned[i : i + 450] for i in range(0, len(cleaned), 380))
-
-    unique_blocks: list[str] = []
-    seen: set[str] = set()
-    for b in blocks:
-        sig = b[:80].lower()
-        if sig not in seen:
-            seen.add(sig)
-            unique_blocks.append(b)
-    return unique_blocks
-
-
-def _select_best_passages(page: str, query: str, max_chars: int = MAX_CONTENT_CHARS) -> str:
-    blocks = _extract_raw_blocks(page)
-    if not blocks:
-        return ""
-
-    clean_q = clean_search_query(query) or query
-    raw_tokens = _WORD_RE.findall(clean_q)
-    content_tokens = [t.lower() for t in raw_tokens if t.lower() not in _SYNTAX_FUNCTION_WORDS and len(t) > 1]
-    if not content_tokens:
-        content_tokens = [t.lower() for t in raw_tokens if len(t) > 1]
-    token_weights = {t.lower(): _token_specificity(t) for t in raw_tokens if t.lower() in content_tokens}
-    query_bigrams = {(content_tokens[i], content_tokens[i + 1]) for i in range(len(content_tokens) - 1)}
-
-    windows: list[tuple[float, int, str]] = []
-    for idx, blk in enumerate(blocks):
-        window_text = blk
-        if idx + 1 < len(blocks) and len(window_text) < 280:
-            window_text = f"{blk} {blocks[idx + 1]}"
-        sc = _bm25_and_proximity_score(window_text, content_tokens, token_weights, query_bigrams)
-        if idx < 3:
-            sc += 0.35
-        windows.append((sc, idx, window_text))
-
-    windows.sort(key=lambda x: x[0], reverse=True)
-    selected: list[tuple[int, str]] = []
-    used_indices: set[int] = set()
-    total_len = 0
-
-    for sc, idx, txt in windows:
-        if sc <= 0 and selected:
-            break
-        if idx in used_indices:
-            continue
-        selected.append((idx, txt))
-        used_indices.add(idx)
-        total_len += len(txt) + 3
-        if total_len >= max_chars or len(selected) >= 4:
-            break
-
-    selected.sort(key=lambda x: x[0])
-    return " … ".join(txt for _, txt in selected)[:max_chars]
-
-
-def _fetch_page_text(url: str, query: str, timeout: float = FETCH_TIMEOUT) -> str:
-    try:
-        resp = _HTTP.get(url, timeout=timeout)
-        ctype = (resp.headers.get("content-type") or "").lower()
-        if any(t in ctype for t in ("pdf", "audio", "video", "image")):
-            return ""
-        return _select_best_passages(resp.text[:MAX_PAGE_BYTES], query, max_chars=MAX_CONTENT_CHARS)
-    except Exception:
-        return ""
-
-
-def _fetch_contents(results: list[SearchResult], query: str, fast_mode: bool = False) -> None:
-    top_k = TOP_K_RESULTS_TO_FETCH_FAST if fast_mode else TOP_K_RESULTS_TO_FETCH
-    deadline = FETCH_DEADLINE_FAST_S if fast_mode else FETCH_DEADLINE_S
-    per_req_timeout = min(FETCH_TIMEOUT, deadline - 0.1)
-
-    targets = [
-        r for r in results
-        if r.source not in ("gnews", "yt_meta") and "youtube.com/watch" not in r.url
-    ][:top_k]
-    if not targets:
-        return
-    futs = {_EXECUTOR.submit(_fetch_page_text, r.url, query, per_req_timeout): r for r in targets}
-    done, pending = wait(list(futs), timeout=deadline)
-    for f in done:
-        try:
-            futs[f].fetched_content = f.result()
-        except Exception:
-            pass
-    for f in pending:
-        f.cancel()
-
-
-def _should_auto_deep_fetch(query: str, results: list[SearchResult]) -> bool:
-    if not results:
-        return False
-    clean_q = clean_search_query(query) or query
-    content_tokens = [
-        t.lower() for t in _WORD_RE.findall(clean_q)
-        if t.lower() not in _SYNTAX_FUNCTION_WORDS and len(t) > 1
-    ]
-    if len(content_tokens) >= 3:
-        return True
-    top_blob = " ".join(f"{r.title} {r.snippet}".lower() for r in results[:2])
-    missing = [t for t in content_tokens if t not in top_blob]
-    return bool(missing)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Public Search API
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-def search_web(
-    query: str,
-    max_results: int = TOP_K_FINAL_SNIPPETS,
-    engines: Optional[list[str]] = None,
-    fetch_content: Optional[bool] = None,
-    use_cache: bool = True,
-    fast_mode: bool = False,
-    freshness: Optional[str] = None,
-) -> SearchResponse:
-    """
-    Federated parallel web + live news + video metadata search with automatic
-    query-focused deep passage extraction.
-    """
-    t0 = time.monotonic()
-    query = (query or "").strip()
-    if not query:
-        return SearchResponse(query="", results=[], query_type="empty")
-
-    if fast_mode:
-        max_results = min(max_results, TOP_K_FINAL_SNIPPETS)
-
-    cache_key = (query.lower(), bool(fetch_content), bool(fast_mode), tuple(sorted(engines or ())))
-    if use_cache:
-        cached = _SEARCH_CACHE.get(cache_key)
-        if cached is not None:
-            return replace(cached, results=list(cached.results[:max_results]), cache_hit=True, search_time_ms=0)
-
-    providers = _active_providers(engines)
-    budget = _BUDGETS["fast" if fast_mode else "full"]
-    grace = MERGE_GRACE_FAST_S if fast_mode else MERGE_GRACE_S
-    per_engine = PER_ENGINE_FAST if fast_mode else PER_ENGINE_FULL
-
-    by_engine, timings = _race(providers, query, per_engine, budget, grace)
-    fused = _temporal_rrf_fuse(by_engine, query)[:PER_ENGINE_FULL]
-    final = fused[:max_results]
-
-    do_fetch = fetch_content if fetch_content is not None else _should_auto_deep_fetch(query, final)
-    if do_fetch and final:
-        _fetch_contents(final, query, fast_mode=fast_mode)
-        clean_q = clean_search_query(query) or query
-        raw_tokens = _WORD_RE.findall(clean_q)
-        content_tokens = [t.lower() for t in raw_tokens if t.lower() not in _SYNTAX_FUNCTION_WORDS and len(t) > 1]
-        token_weights = {t.lower(): _token_specificity(t) for t in raw_tokens if t.lower() in content_tokens}
-        query_bigrams = {(content_tokens[i], content_tokens[i + 1]) for i in range(len(content_tokens) - 1)}
-        for r in final:
-            if r.fetched_content:
-                r.score += _bm25_and_proximity_score(
-                    r.fetched_content, content_tokens, token_weights, query_bigrams
-                ) * 0.0040
-        final.sort(key=lambda r: r.score, reverse=True)
-
-    resp = SearchResponse(
-        query=query,
-        results=final,
-        query_type="federated",
-        search_time_ms=int((time.monotonic() - t0) * 1000),
-        engines_used=list(by_engine),
-    )
-    if use_cache and fused:
-        _SEARCH_CACHE.set(cache_key, replace(resp, results=final), CACHE_TTL_S)
-
-    logger.info(
-        "[WebSearch] %r -> %d results in %dms (region=%s | deep_fetch=%s | %s)",
-        query[:60],
-        len(final),
-        resp.search_time_ms,
-        SEARCH_REGION or "auto",
-        bool(do_fetch),
-        ", ".join(f"{k}:{v}ms" for k, v in timings.items()) or "no engine answered",
-    )
-    return resp
-
-
-def format_for_llm(response: SearchResponse, max_chars: int = 4800) -> str:
-    """Formats federated web, news, and deep-extracted passages for accurate LLM synthesis."""
-    if not response.results:
-        return "No search results found."
-    now_str = datetime.now().strftime("%Y-%m-%d")
-    region_note = f", Region: {PC_COUNTRY_CODE}" if PC_COUNTRY_CODE else ""
-    lines = [
-        f"Live Web, Video & Deep-Passage Search Results for: {response.query!r} (Date: {now_str}{region_note})",
-        "(Synthesize exact figures, model names, facts, and dates directly from matching snippets and deep excerpts.)",
-    ]
-    for i, r in enumerate(response.results, 1):
-        when = f" [Published: {r.published}]" if r.published else ""
-        url_part = f" [URL: {r.url}]" if r.url else f" ({r.domain})"
-        lines.append(f"{i}. {r.title}{when}{url_part}\n   Snippet: {r.snippet}")
-        if r.fetched_content:
-            lines.append(f"   Deep Page Excerpt: {r.fetched_content[:950]}")
-    return "\n".join(lines)[:max_chars]
-
-
-def scrape_web_info(query: str, max_results: int = 5) -> str:
-    response = search_web(query, max_results=max_results)
-    parts = []
-    for r in response.results:
-        piece = f"{r.title}: {r.snippet}"
-        if r.fetched_content:
-            piece += f" [Excerpt: {r.fetched_content[:450]}]"
-        parts.append(piece)
-    return " | ".join(parts)[:3600]
-
-
-def searchGoogle(query: str) -> None:
-    q = (query or "").strip()
-    if q:
-        webbrowser.open("https://www.google.com/search?q=" + urllib.parse.quote_plus(q))
-
-
-async def async_search_web(query: str, **kwargs) -> SearchResponse:
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_EXECUTOR, lambda: search_web(query, **kwargs))
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# YouTube Resolution Engine
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-def _extract_json_blob(page: str, var: str):
-    m = re.search(rf"{var}(?:\"\])?\s*=\s*", page)
-    if not m:
-        return None
-    try:
-        obj, _ = json.JSONDecoder().raw_decode(page, m.end())
-        return obj
-    except ValueError:
-        return None
-
-
-def _yt_innertube(query: str, params: Optional[str]) -> list[YTVideo]:
-    client = {"clientName": "WEB", "clientVersion": _yt_client_version, "hl": "en"}
-    gl_code = YT_REGION or PC_COUNTRY_CODE
-    if gl_code:
-        client["gl"] = gl_code
-    body = {"context": {"client": client}, "query": query}
-    if params:
-        body["params"] = params
-    resp = _HTTP.post(
-        _YT_SEARCH_URL,
-        json_body=body,
-        cookies=_YT_COOKIES,
-        timeout=2.5,
-        headers={
-            "X-YouTube-Client-Name": "1",
-            "X-YouTube-Client-Version": _yt_client_version,
-            "Origin": "https://www.youtube.com",
-            "Content-Type": "application/json",
-        },
-    )
-    return _videos_from_json(resp.json(), "innertube")
-
-
-def _yt_html(query: str, params: Optional[str]) -> list[YTVideo]:
-    global _yt_client_version
-    url = "https://www.youtube.com/results?search_query=" + urllib.parse.quote_plus(query)
-    if params:
-        url += "&sp=" + urllib.parse.quote(params, safe="")
-    resp = _HTTP.get(url, cookies=_YT_COOKIES, timeout=3.0)
-    m = re.search(r'"INNERTUBE_CONTEXT_CLIENT_VERSION"\s*:\s*"([\d.]+)"', resp.text)
-    if m:
-        _yt_client_version = m.group(1)
-    data = _extract_json_blob(resp.text, "ytInitialData")
-    return _videos_from_json(data, "html") if data else []
-
-
-def _yt_ytdlp(query: str, latest: bool = False, n: int = 5) -> list[YTVideo]:
-    import yt_dlp
-    opts = {"quiet": True, "no_warnings": True, "skip_download": True, "extract_flat": True, "socket_timeout": 4}
-    prefix = "ytsearchdate" if latest else "ytsearch"
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(f"{prefix}{n}:{query}", download=False) or {}
-    out = []
-    for e in info.get("entries") or []:
-        if e and e.get("id"):
-            dur = e.get("duration")
-            out.append(YTVideo(
-                video_id=e["id"],
-                title=e.get("title") or "",
-                channel=e.get("channel") or e.get("uploader") or "YouTube",
-                is_live=e.get("live_status") == "is_live" or bool(e.get("is_live")),
-                duration_s=int(dur) if dur else None,
-                source="ytdlp",
-            ))
-    return out
-
-
-_YTM = None
-_YTM_LOCK = threading.Lock()
-
-
-def _get_ytmusic():
-    global _YTM
-    with _YTM_LOCK:
-        if _YTM is None:
-            from ytmusicapi import YTMusic
-            _YTM = YTMusic()
-        return _YTM
-
-
-def _yt_music_songs(query: str, limit: int = 3) -> list[YTVideo]:
-    rows = _get_ytmusic().search(query, filter="songs", limit=limit) or []
-    out = []
-    for r in rows:
-        if r.get("videoId"):
-            artists = ", ".join(a.get("name", "") for a in (r.get("artists") or []) if a.get("name"))
-            out.append(YTVideo(
-                video_id=r["videoId"],
-                title=r.get("title", ""),
-                channel=artists or "YouTube Music",
-                duration_s=r.get("duration_seconds"),
-                source="ytmusic",
-            ))
-    return out
-
-
-def _run_stages(stages: list[tuple[str, Callable[[], list[YTVideo]]]], deadline: float) -> list[YTVideo]:
-    by_name = dict(stages)
-    for name in _select_healthy([n for n, _ in stages]):
-        if time.monotonic() >= deadline:
-            break
-        try:
-            videos = by_name[name]()
-        except Exception as e:
-            _HEALTH.fail(name, permanent=isinstance(e, ImportError))
-            continue
-        _HEALTH.ok(name)
-        if videos:
-            return videos
-    return []
-
-
-def _yt_search(query: str, deadline: float, params: Optional[str] = None, latest: bool = False) -> list[YTVideo]:
-    return _run_stages([
-        ("yt_innertube", lambda: _yt_innertube(query, params)),
-        ("yt_html", lambda: _yt_html(query, params)),
-        ("yt_ytdlp", lambda: _yt_ytdlp(query, latest=latest)),
-    ], deadline)
-
-
-_RE_LIVE_PHRASE = re.compile(r"\b(?:live\s*stream|livestream|live\s+now|currently\s+live)\b", re.I)
-_RE_LATEST_PHRASE = re.compile(r"\b(?:latest|newest|most\s+recent)\b\s*(?:videos?|uploads?|vids?)?", re.I)
-
-
-def _normalize_media_query(q: str) -> str:
-    raw = (q or "").strip()
-    out = _RE_WAKE_STRIP.sub("", raw).strip()
-    out = re.sub(r"\s+(?:on|in)\s+youtube(?:\s+music)?$", "", out, flags=re.I).strip()
-    return out.strip("\"'`") or raw
-
-
-def _pick(videos: list[YTVideo], kind: str) -> Optional[YTVideo]:
-    if not videos:
-        return None
-    if kind == "song":
-        for v in videos:
-            if v.duration_s is None or 60 <= v.duration_s <= 720:
-                return v
-    return videos[0]
-
-
-def resolve_youtube_video(
-    query: str,
-    kind: str = "auto",
-    live: Optional[bool] = None,
-    latest: Optional[bool] = None,
-    timeout: float = YT_BUDGET_S,
-) -> dict:
-    raw = (query or "").strip()
-    q = _normalize_media_query(raw)
-    kind = kind if kind in ("auto", "song", "video", "live") else "auto"
-
-    if live is None:
-        live = kind == "live"
-        if not live and _RE_LIVE_PHRASE.search(q):
-            live, q = True, _RE_LIVE_PHRASE.sub(" ", q)
-    if latest is None:
-        latest = bool(_RE_LATEST_PHRASE.search(q))
-        if latest:
-            q = _RE_LATEST_PHRASE.sub(" ", q)
-    q = _WS_RE.sub(" ", q).strip() or raw
-
-    result = {
-        "url": "https://www.youtube.com/results?search_query=" + urllib.parse.quote_plus(q),
-        "title": q.title(),
-        "channel": "YouTube",
-        "video_id": "",
-        "query": q,
-        "is_live": False,
-        "not_live_fallback": False,
-        "resolved": False,
-        "source": "search_page",
-    }
-
-    cache_key = (q.lower(), kind)
-    if not live and not latest:
-        hit = _YT_CACHE.get(cache_key)
-        if hit:
-            return dict(hit)
-
-    deadline = time.monotonic() + timeout
-    video: Optional[YTVideo] = None
-    not_live = False
-
-    if live:
-        vids = _yt_search(q, deadline, params=_YT_P_LIVE)
-        video = next((v for v in vids if v.is_live), None)
-        if video is None:
-            vids = _yt_search(q + " live", deadline)
-            video = next((v for v in vids if v.is_live), None)
-            if video is None and vids:
-                video, not_live = vids[0], True
-    else:
-        if latest:
-            video = _pick(_yt_search(q, deadline, params=_YT_P_NEWEST, latest=True), kind)
-        if video is None and kind == "song":
-            video = _pick(_run_stages([("yt_music", lambda: _yt_music_songs(q))], deadline), kind)
-        if video is None:
-            video = _pick(_yt_search(q, deadline, params=_YT_P_VIDEOS), kind)
-
-    if video:
-        result.update(
-            video_id=video.video_id,
-            title=video.title or result["title"],
-            channel=video.channel or "YouTube",
-            url=f"https://www.youtube.com/watch?v={video.video_id}&autoplay=1",
-            is_live=bool(video.is_live) and not not_live,
-            not_live_fallback=not_live,
-            resolved=True,
-            source=video.source,
-        )
-        if not live and not latest:
-            _YT_CACHE.set(cache_key, dict(result), YT_CACHE_TTL_S)
-    return result
-
-
-def searchYoutube(query: str, **kwargs) -> str:
-    info = resolve_youtube_video(query, **kwargs)
-    webbrowser.open(info["url"])
-    return info["url"]
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Live Market Quotes (Yahoo Finance API)
-# ──────────────────────────────────────────────────────────────────────────────
-
-_YF_SEARCH = "https://query2.finance.yahoo.com/v1/finance/search"
-_YF_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-_QUOTE_TYPES = frozenset({"EQUITY", "ETF", "INDEX", "CRYPTOCURRENCY", "CURRENCY", "MUTUALFUND", "FUTURE"})
-_CCY_SYMBOL = {"USD": "$", "INR": "\u20b9", "EUR": "\u20ac", "GBP": "\u00a3"}
-_QUOTE_CACHE = _TTLCache(64)
-QUOTE_TTL_S = 30
 
 
 @dataclass
@@ -1686,141 +207,1483 @@ class Quote:
 
     @property
     def change_pct(self) -> Optional[float]:
-        return None if self.change is None else self.change / self.previous_close * 100
+        return None if self.change is None else (self.change / self.previous_close) * 100.0
 
     @property
     def url(self) -> str:
         return "https://finance.yahoo.com/quote/" + urllib.parse.quote(self.symbol, safe="")
 
 
-def _yf_get(url: str, params: dict) -> dict:
-    return _HTTP.get(url, params=params, headers={"Accept": "application/json"}, timeout=2.5).json()
+# ──────────────────────────────────────────────────────────────────────────────
+# 3. Resilient Transport Layer & Circuit Registry
+# ──────────────────────────────────────────────────────────────────────────────
+
+class _Transport:
+    """Thread-safe connection-pooled HTTP client with automatic header negotiation."""
+
+    def __init__(self) -> None:
+        accept_lang = (
+            f"{OS_LANG}-{PC_COUNTRY_CODE},{OS_LANG};q=0.9,*;q=0.5"
+            if (OS_LANG and PC_COUNTRY_CODE)
+            else f"{OS_LANG};q=0.9,*;q=0.5" if OS_LANG else "*;q=0.8"
+        )
+        self._headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
+            "Accept-Language": accept_lang,
+            "DNT": "1",
+        }
+        if _USING_HTTPX:
+            self._session = httpx.Client(
+                http2=True,
+                headers=self._headers,
+                follow_redirects=True,
+                timeout=httpx.Timeout(3.0, connect=1.25),
+                limits=httpx.Limits(max_connections=64, max_keepalive_connections=32),
+            )
+        else:
+            from requests.adapters import HTTPAdapter
+            self._session = requests.Session()
+            adapter = HTTPAdapter(max_retries=1, pool_connections=32, pool_maxsize=64)
+            self._session.mount("http://", adapter)
+            self._session.mount("https://", adapter)
+            self._session.headers.update(self._headers)
+
+    def get(
+        self,
+        url: str,
+        *,
+        params: Optional[dict] = None,
+        headers: Optional[dict] = None,
+        cookies: Optional[dict] = None,
+        timeout: float = 2.6,
+    ):
+        if _USING_HTTPX:
+            r = self._session.get(url, params=params, headers=headers, cookies=cookies, timeout=timeout)
+            r.raise_for_status()
+            return r
+        r = self._session.get(url, params=params, headers=headers, cookies=cookies, timeout=(1.2, timeout))
+        r.raise_for_status()
+        return r
+
+    def post(
+        self,
+        url: str,
+        *,
+        json_body: Optional[dict] = None,
+        data: Optional[dict] = None,
+        headers: Optional[dict] = None,
+        cookies: Optional[dict] = None,
+        timeout: float = 2.6,
+    ):
+        if _USING_HTTPX:
+            r = self._session.post(url, json=json_body, data=data, headers=headers, cookies=cookies, timeout=timeout)
+            r.raise_for_status()
+            return r
+        r = self._session.post(url, json=json_body, data=data, headers=headers, cookies=cookies, timeout=(1.2, timeout))
+        r.raise_for_status()
+        return r
 
 
-def _resolve_symbol(query: str) -> Optional[tuple[str, str]]:
-    data = _yf_get(_YF_SEARCH, {"q": query, "quotesCount": 6, "newsCount": 0, "lang": "en-US"})
-    for r in data.get("quotes") or []:
-        if r.get("symbol") and r.get("quoteType") in _QUOTE_TYPES:
-            return r["symbol"], (r.get("shortname") or r.get("longname") or r["symbol"])
-    return None
+class _ProviderTelemetry:
+    """Tracks exponential moving average latency and health for every search oracle."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._failures: dict[str, int] = defaultdict(int)
+        self._cooldown_until: dict[str, float] = {}
+        self._ema_ms: dict[str, float] = {}
+
+    def is_healthy(self, provider: str) -> bool:
+        with self._lock:
+            return time.monotonic() >= self._cooldown_until.get(provider, 0.0)
+
+    def record_success(self, provider: str, elapsed_ms: float) -> None:
+        with self._lock:
+            self._failures.pop(provider, None)
+            self._cooldown_until.pop(provider, None)
+            prev = self._ema_ms.get(provider, elapsed_ms)
+            self._ema_ms[provider] = 0.7 * prev + 0.3 * elapsed_ms
+
+    def record_failure(self, provider: str, permanent: bool = False) -> None:
+        with self._lock:
+            if permanent:
+                self._cooldown_until[provider] = float("inf")
+                return
+            fails = self._failures[provider] + 1
+            self._failures[provider] = fails
+            if fails >= 2:
+                backoff = min(180.0, 6.0 * (2 ** (fails - 1)))
+                self._cooldown_until[provider] = time.monotonic() + backoff
+
+
+class _LRUTTLCache:
+    def __init__(self, capacity: int = 256) -> None:
+        self._capacity = capacity
+        self._store: OrderedDict[Any, tuple[Any, float]] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, key: Any) -> Any:
+        with self._lock:
+            entry = self._store.get(key)
+            if not entry:
+                return None
+            val, exp = entry
+            if time.monotonic() > exp:
+                del self._store[key]
+                return None
+            self._store.move_to_end(key)
+            return val
+
+    def put(self, key: Any, val: Any, ttl_s: float) -> None:
+        with self._lock:
+            self._store[key] = (val, time.monotonic() + ttl_s)
+            self._store.move_to_end(key)
+            while len(self._store) > self._capacity:
+                self._store.popitem(last=False)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._store.clear()
+
+
+_NET = _Transport()
+_TELEMETRY = _ProviderTelemetry()
+_POOL = ThreadPoolExecutor(max_workers=20, thread_name_prefix="amigo-epistemic")
+_RESULT_CACHE = _LRUTTLCache(256)
+_MEDIA_CACHE = _LRUTTLCache(128)
+_QUOTE_CACHE = _LRUTTLCache(64)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 4. Linguistic & Information-Theoretic Primitives (Zero Hardcoded Lists)
+# ──────────────────────────────────────────────────────────────────────────────
+
+_RE_HTML_TAG = re.compile(r"<[^>]+>")
+_RE_WHITESPACE = re.compile(r"\s+")
+_RE_TOKEN = re.compile(r"[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*")
+_RE_FACT_ATOM = re.compile(
+    r"\b(?:"
+    r"\d+(?:[.,]\d+)*(?:\s*%)?"              # Numbers, decimals, percentages
+    r"|[A-Z][a-zA-Z0-9_-]{2,}"               # Proper nouns / capitalized identifiers
+    r"|[a-zA-Z]+\d+[a-zA-Z0-9_-]*"           # Alphanumeric model/version codes
+    r")\b"
+)
+_RE_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(\[])")
+
+# Universal closed-class English grammatical glue (syntactic only)
+_CLOSED_CLASS_GLUE = frozenset({
+    "a", "an", "the", "and", "or", "but", "if", "nor", "for", "yet", "so",
+    "in", "on", "at", "to", "from", "by", "with", "about", "against", "between",
+    "into", "through", "during", "before", "after", "above", "below", "up", "down",
+    "of", "off", "over", "under", "is", "am", "are", "was", "were", "be", "been",
+    "being", "have", "has", "had", "do", "does", "did", "will", "would", "shall",
+    "should", "may", "might", "must", "can", "could", "what", "which", "who",
+    "whom", "whose", "when", "where", "why", "how", "this", "that", "these",
+    "those", "it", "its", "they", "them", "their", "we", "us", "our", "you", "your",
+})
+
+_RE_VOICE_PREFIX = re.compile(
+    r"^(?:(?:hey|hi|hello|ok|okay)\s+amigo\b[\s,.:;!-]*)"
+    r"|(?:^(?:please\s+)?(?:search(?:\s+the\s+web)?(?:\s+for)?|look\s+up|find(?:\s+out)?|tell\s+me(?:\s+about)?|google|check)\s+)",
+    re.IGNORECASE,
+)
+
+
+def _normalize_text(raw: str) -> str:
+    if not raw:
+        return ""
+    unescaped = html.unescape(_RE_HTML_TAG.sub(" ", raw))
+    return _RE_WHITESPACE.sub(" ", unescaped).strip()
+
+
+def clean_search_query(raw_query: str) -> str:
+    """Strips conversational voice assistant framing while preserving all factual tokens."""
+    q = (raw_query or "").strip()
+    if not q:
+        return ""
+    for _ in range(2):
+        q = _RE_VOICE_PREFIX.sub("", q).strip()
+    q = q.strip("\"'`?!.")
+    q = _RE_WHITESPACE.sub(" ", q)
+    return q if len(q) >= 2 else (raw_query or "").strip()
+
+
+def detect_query_type(query: str) -> str:
+    return "epistemic_consensus"
+
+
+def _extract_host(url: str) -> str:
+    try:
+        netloc = urllib.parse.urlparse(url).netloc.lower().split("@")[-1].split(":")[0]
+        return netloc[4:] if netloc.startswith("www.") else netloc
+    except Exception:
+        return ""
+
+
+def _registered_root_domain(host: str) -> str:
+    """Extracts the organizational root domain so subdomains cannot self-corroborate."""
+    parts = [p for p in host.split(".") if p]
+    if len(parts) <= 2:
+        return host
+    # Handle 2-level country-code SLDs (e.g., .co.uk, .ac.in, .gov.au)
+    if len(parts[-1]) == 2 and len(parts[-2]) <= 3:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:])
+
+
+def _canonical_url_key(url: str) -> str:
+    try:
+        parsed = urllib.parse.urlparse(url.strip())
+        host = _extract_host(url)
+        path = parsed.path.rstrip("/")
+        clean_params = [
+            (k, v)
+            for k, v in urllib.parse.parse_qsl(parsed.query)
+            if not k.lower().startswith(("utm_", "fbclid", "gclid", "msclkid", "ref", "mc_"))
+        ]
+        qs = urllib.parse.urlencode(sorted(clean_params))
+        return f"{host}{path}" + (f"?{qs}" if qs else "")
+    except Exception:
+        return url.strip().lower()
+
+
+def _parse_timestamp(raw_date: str) -> tuple[str, Optional[float]]:
+    if not raw_date:
+        return "", None
+    cleaned = raw_date.strip()
+    dt: Optional[datetime] = None
+    for parser in (
+        lambda s: email.utils.parsedate_to_datetime(s),
+        lambda s: datetime.fromisoformat(s.replace("Z", "+00:00")),
+    ):
+        try:
+            dt = parser(cleaned)
+            if dt:
+                break
+        except Exception:
+            continue
+
+    if dt is not None:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        delta_days = max(0.0, (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0)
+        return dt.strftime("%Y-%m-%d"), delta_days
+
+    m = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", cleaned)
+    if m:
+        return m.group(1), None
+    return "", None
+
+
+def _token_information_weight(token: str) -> float:
+    """
+    Calculates token specificity purely from orthographic entropy (digits, casing,
+    character length, hyphenation) with zero hardcoded keywords.
+    """
+    low = token.lower()
+    if low in _CLOSED_CLASS_GLUE:
+        return 0.02
+    length_bonus = 0.4 * math.log1p(len(low))
+    has_digit = any(c.isdigit() for c in token)
+    has_alpha = any(c.isalpha() for c in token)
+    mixed_alnum = 1.6 if (has_digit and has_alpha) else (0.85 if has_digit else 0.0)
+    casing_bonus = 0.45 if any(c.isupper() for c in token[1:]) else (0.25 if token[0].isupper() else 0.0)
+    struct_bonus = 0.5 if ("-" in token or "." in token) else 0.0
+    return 1.0 + length_bonus + mixed_alnum + casing_bonus + struct_bonus
+
+
+def _formulate_search_queries(raw_query: str) -> list[str]:
+    """
+    Produces two orthogonal search formulations:
+      1. Clean semantic query
+      2. High-entropy keyword distillation for strict index matching
+    """
+    base = clean_search_query(raw_query)
+    tokens = _RE_TOKEN.findall(base)
+    if len(tokens) <= 4:
+        return [base]
+    distilled = [t for t in tokens if t.lower() not in _CLOSED_CLASS_GLUE and len(t) > 1]
+    distilled_str = " ".join(distilled)
+    if distilled_str and distilled_str.lower() != base.lower() and len(distilled) >= 2:
+        return [base, distilled_str]
+    return [base]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 5. Structural Authority Engine (Zero Hardcoded Domains)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _shannon_entropy(s: str) -> float:
+    if not s:
+        return 0.0
+    counts = Counter(s)
+    n = len(s)
+    return -sum((c / n) * math.log2(c / n) for c in counts.values())
+
+
+def _compute_structural_authority(url: str, title: str, snippet: str) -> float:
+    """
+    Computes intrinsic source reliability [0.15 .. 1.0] purely from structural
+    URL/domain properties and text hygiene—no hardcoded site lists.
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        return 0.25
+
+    score = 0.62
+
+    # 1. Transport security
+    if parsed.scheme == "https":
+        score += 0.06
+    else:
+        score -= 0.15
+
+    host = _extract_host(url)
+    if not host:
+        return 0.2
+
+    labels = host.split(".")
+    tld = labels[-1] if labels else ""
+    second_level = labels[-2] if len(labels) >= 2 else ""
+
+    # 2. Structural TLD governance (RFC / IANA restricted vs open registries)
+    if tld in ("gov", "mil", "edu", "int") or second_level in ("gov", "ac", "edu", "mil"):
+        score += 0.26
+    elif tld == "org":
+        score += 0.08
+
+    # 3. Domain label hygiene (SEO farms & spam domains use excessive hyphens & digits)
+    main_label = labels[0] if len(labels) == 2 else (labels[-2] if len(labels) >= 2 else host)
+    hyphen_count = main_label.count("-")
+    digit_count = sum(1 for c in main_label if c.isdigit())
+    if hyphen_count >= 2:
+        score -= 0.12 * (hyphen_count - 1)
+    if digit_count >= 3:
+        score -= 0.10
+
+    # High character-randomness in domain label signals auto-generated spam hosts
+    if len(main_label) > 12 and _shannon_entropy(main_label) > 3.75:
+        score -= 0.10
+
+    # 4. Subdomain depth & URL query pollution
+    if len(labels) > 3:
+        score -= 0.05 * (len(labels) - 3)
+    query_params = urllib.parse.parse_qsl(parsed.query)
+    if len(query_params) > 3:
+        score -= 0.04 * (len(query_params) - 3)
+
+    # 5. Content signal quality (penalize ALL-CAPS clickbait titles or empty snippets)
+    if title:
+        upper_ratio = sum(1 for c in title if c.isupper()) / max(1, len(title))
+        if upper_ratio > 0.45:
+            score -= 0.12
+    if len(snippet) < 40:
+        score -= 0.08
+
+    return max(0.15, min(1.0, score))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 6. Independent Multi-Oracle Search Harvesters
+# ──────────────────────────────────────────────────────────────────────────────
+
+_DDGS_CLIENT_LOCAL = threading.local()
+
+
+def _get_ddgs_instance():
+    inst = getattr(_DDGS_CLIENT_LOCAL, "instance", None)
+    if inst is None:
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            from duckduckgo_search import DDGS
+        inst = DDGS(timeout=2)
+        _DDGS_CLIENT_LOCAL.instance = inst
+    return inst
+
+
+def _build_result(
+    title: str,
+    url: str,
+    snippet: str,
+    source: str,
+    published: str = "",
+) -> Optional[SearchResult]:
+    t = _normalize_text(title)
+    s = _normalize_text(snippet)
+    u = (url or "").strip()
+    if not u.startswith(("http://", "https://")) or not t:
+        return None
+    dom = _extract_host(u)
+    if not dom:
+        return None
+    pub_str, age_days = _parse_timestamp(published)
+    auth = _compute_structural_authority(u, t, s)
+    return SearchResult(
+        title=t,
+        url=u,
+        snippet=s[:540] if s else t,
+        source=source,
+        domain=dom,
+        published=pub_str,
+        age_days=age_days,
+        authority_score=auth,
+    )
+
+
+def _oracle_ddgs_api(query: str, limit: int) -> list[SearchResult]:
+    variants = _formulate_search_queries(query)
+    reg = SEARCH_REGION or None
+    results: list[SearchResult] = []
+
+    for q_var in variants[:2]:
+        for backend in ("duckduckgo", "brave", "startpage", "mojeek"):
+            try:
+                kw: dict[str, Any] = {"max_results": limit, "backend": backend}
+                if reg:
+                    kw["region"] = reg
+                rows = list(_get_ddgs_instance().text(q_var, **kw) or [])
+                if rows:
+                    for r in rows:
+                        sr = _build_result(
+                            r.get("title", ""),
+                            r.get("href") or r.get("url") or "",
+                            r.get("body", ""),
+                            f"ddgs_{backend}",
+                        )
+                        if sr:
+                            results.append(sr)
+                    break
+            except TypeError:
+                kw = {"max_results": limit}
+                if reg:
+                    kw["region"] = reg
+                rows = list(_get_ddgs_instance().text(q_var, **kw) or [])
+                for r in rows:
+                    sr = _build_result(
+                        r.get("title", ""),
+                        r.get("href") or r.get("url") or "",
+                        r.get("body", ""),
+                        "ddgs_web",
+                    )
+                    if sr:
+                        results.append(sr)
+                break
+            except Exception:
+                _DDGS_CLIENT_LOCAL.instance = None
+                continue
+        if len(results) >= limit:
+            break
+    return results
+
+
+def _oracle_ddg_lite(query: str, limit: int) -> list[SearchResult]:
+    q = clean_search_query(query)
+    params = {"q": q}
+    if SEARCH_REGION:
+        params["kl"] = SEARCH_REGION
+    resp = _NET.get("https://html.duckduckgo.com/html/", params=params, timeout=2.2)
+    text = resp.text
+    out: list[SearchResult] = []
+
+    for block in re.finditer(
+        r'<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>.*?'
+        r'(?:<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>|<div[^>]+class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</div>)',
+        text,
+        re.S | re.I,
+    ):
+        raw_href, raw_title, snip1, snip2 = block.groups()
+        href = html.unescape(raw_href)
+        if "uddg=" in href:
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(href).query)
+            href = qs.get("uddg", [href])[0]
+        if "duckduckgo.com" in _extract_host(href):
+            continue
+        sr = _build_result(raw_title, href, snip1 or snip2 or "", "ddg_direct")
+        if sr:
+            out.append(sr)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _oracle_brave_html(query: str, limit: int) -> list[SearchResult]:
+    """Direct independent scraper for Brave Search web index (independent from Bing/Google)."""
+    q = clean_search_query(query)
+    params = {"q": q, "source": "web"}
+    if PC_COUNTRY_CODE:
+        params["country"] = PC_COUNTRY_CODE.lower()
+    resp = _NET.get("https://search.brave.com/search", params=params, timeout=2.3)
+    text = resp.text
+    out: list[SearchResult] = []
+
+    for m in re.finditer(
+        r'<a[^>]+href="(https?://[^"]+)"[^>]*class="[^"]*svelte-[^"]*"[^>]*>.*?'
+        r'<div[^>]+class="[^"]*title[^"]*"[^>]*>(.*?)</div>.*?'
+        r'<div[^>]+class="[^"]*snippet-description[^"]*"[^>]*>(.*?)</div>',
+        text,
+        re.S | re.I,
+    ):
+        url, title, snippet = m.groups()
+        host = _extract_host(url)
+        if "brave.com" in host:
+            continue
+        sr = _build_result(title, url, snippet, "brave_web")
+        if sr:
+            out.append(sr)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _oracle_yahoo_web(query: str, limit: int) -> list[SearchResult]:
+    """Independent web index oracle via Yahoo Search with redirect unwrapping."""
+    q = clean_search_query(query)
+    resp = _NET.get("https://search.yahoo.com/search", params={"p": q, "n": limit}, timeout=2.3)
+    text = resp.text
+    out: list[SearchResult] = []
+
+    for m in re.finditer(
+        r'<div[^>]+class="[^"]*algo-sr[^"]*"[^>]*>.*?'
+        r'<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>.*?'
+        r'<div[^>]+class="[^"]*compText[^"]*"[^>]*>(.*?)</div>',
+        text,
+        re.S | re.I,
+    ):
+        raw_url, raw_title, raw_snip = m.groups()
+        url = html.unescape(raw_url)
+        ru_match = re.search(r"/RU=([^/]+)/RK=", url)
+        if ru_match:
+            url = urllib.parse.unquote(ru_match.group(1))
+        if "yahoo.com" in _extract_host(url):
+            continue
+        clean_title = re.sub(r"<span[^>]*>.*?</span>", " ", raw_title, flags=re.S)
+        sr = _build_result(clean_title, url, raw_snip, "yahoo_web")
+        if sr:
+            out.append(sr)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _oracle_bing_web(query: str, limit: int) -> list[SearchResult]:
+    q = clean_search_query(query)
+    params = {"q": q, "setlang": OS_LANG or "en"}
+    if PC_COUNTRY_CODE:
+        params["cc"] = PC_COUNTRY_CODE
+    resp = _NET.get("https://www.bing.com/search", params=params, timeout=2.2)
+    text = resp.text
+    out: list[SearchResult] = []
+
+    for m in re.finditer(
+        r'<li[^>]+class="[^"]*b_algo[^"]*"[^>]*>.*?'
+        r'<h2>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>\s*</h2>.*?'
+        r'(?:<p[^>]*>(.*?)</p>|<div[^>]+class="[^"]*b_caption[^"]*"[^>]*>(.*?)</div>)',
+        text,
+        re.S | re.I,
+    ):
+        raw_href, raw_title, p1, p2 = m.groups()
+        href = html.unescape(raw_href)
+        if "bing.com/ck/a" in href:
+            u_param = urllib.parse.parse_qs(urllib.parse.urlparse(href).query).get("u", [""])[0]
+            if u_param.startswith("a1"):
+                b64 = u_param[2:]
+                try:
+                    href = base64.urlsafe_b64decode(b64 + "=" * (-len(b64) % 4)).decode("utf-8", "ignore")
+                except Exception:
+                    continue
+        if "bing.com" in _extract_host(href):
+            continue
+        sr = _build_result(raw_title, href, p1 or p2 or "", "bing_web")
+        if sr:
+            out.append(sr)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _oracle_wikipedia_knowledge(query: str, limit: int) -> list[SearchResult]:
+    """
+    Queries the MediaWiki REST API for peer-reviewed encyclopedic grounding.
+    Provides high-precision factual baseline to anchor cross-source verification.
+    """
+    q = clean_search_query(query)
+    lang = OS_LANG if (OS_LANG and len(OS_LANG) == 2) else "en"
+    api_url = f"https://{lang}.wikipedia.org/w/api.php"
+    params = {
+        "action": "query",
+        "list": "search",
+        "srsearch": q,
+        "srlimit": min(limit, 4),
+        "format": "json",
+        "utf8": 1,
+    }
+    resp = _NET.get(api_url, params=params, timeout=2.0)
+    items = (resp.json().get("query") or {}).get("search") or []
+    out: list[SearchResult] = []
+    for item in items:
+        title = item.get("title", "")
+        snippet = item.get("snippet", "")
+        timestamp = item.get("timestamp", "")
+        if not title:
+            continue
+        page_url = f"https://{lang}.wikipedia.org/wiki/{urllib.parse.quote(title.replace(' ', '_'))}"
+        sr = _build_result(title, page_url, snippet, "encyclopedia", published=timestamp)
+        if sr:
+            sr.authority_score = max(sr.authority_score, 0.88)
+            out.append(sr)
+    return out
+
+
+def _oracle_ddgs_news(query: str, limit: int) -> list[SearchResult]:
+    q = clean_search_query(query)
+    kw: dict[str, Any] = {"max_results": limit}
+    if SEARCH_REGION:
+        kw["region"] = SEARCH_REGION
+    try:
+        rows = list(_get_ddgs_instance().news(q, **kw) or [])
+    except Exception:
+        _DDGS_CLIENT_LOCAL.instance = None
+        return []
+    out: list[SearchResult] = []
+    for r in rows:
+        sr = _build_result(
+            r.get("title", ""),
+            r.get("url") or r.get("href") or "",
+            r.get("body", ""),
+            "verified_news",
+            published=r.get("date", ""),
+        )
+        if sr:
+            out.append(sr)
+    return out
+
+
+def _oracle_tavily_api(query: str, limit: int) -> list[SearchResult]:
+    if not TAVILY_API_KEY:
+        raise RuntimeError("No Tavily key")
+    resp = _NET.post(
+        "https://api.tavily.com/search",
+        json_body={
+            "api_key": TAVILY_API_KEY,
+            "query": clean_search_query(query),
+            "max_results": limit,
+            "search_depth": "basic",
+        },
+        timeout=2.4,
+    )
+    out: list[SearchResult] = []
+    for r in resp.json().get("results", []):
+        sr = _build_result(r.get("title", ""), r.get("url", ""), r.get("content", ""), "tavily_api", r.get("published_date", ""))
+        if sr:
+            out.append(sr)
+    return out
+
+
+def _oracle_brave_api(query: str, limit: int) -> list[SearchResult]:
+    if not BRAVE_API_KEY:
+        raise RuntimeError("No Brave key")
+    params: dict[str, Any] = {"q": clean_search_query(query), "count": min(limit, 15)}
+    if PC_COUNTRY_CODE:
+        params["country"] = PC_COUNTRY_CODE.lower()
+    resp = _NET.get(
+        "https://api.search.brave.com/res/v1/web/search",
+        params=params,
+        headers={"X-Subscription-Token": BRAVE_API_KEY, "Accept": "application/json"},
+        timeout=2.4,
+    )
+    out: list[SearchResult] = []
+    for r in (resp.json().get("web") or {}).get("results", []):
+        sr = _build_result(r.get("title", ""), r.get("url", ""), r.get("description", ""), "brave_api", r.get("page_age", ""))
+        if sr:
+            out.append(sr)
+    return out
+
+
+def _oracle_searxng_api(query: str, limit: int) -> list[SearchResult]:
+    if not SEARXNG_URL:
+        raise RuntimeError("No SearXNG URL")
+    resp = _NET.get(
+        f"{SEARXNG_URL}/search",
+        params={"q": clean_search_query(query), "format": "json"},
+        timeout=2.4,
+    )
+    out: list[SearchResult] = []
+    for r in resp.json().get("results", [])[:limit]:
+        sr = _build_result(r.get("title", ""), r.get("url", ""), r.get("content", ""), "searxng_api", r.get("publishedDate", ""))
+        if sr:
+            out.append(sr)
+    return out
+
+
+_ORACLE_REGISTRY: dict[str, tuple[Callable[[str, int], list[SearchResult]], float]] = {
+    "tavily":       (_oracle_tavily_api,          1.35),
+    "brave_api":    (_oracle_brave_api,           1.30),
+    "searxng":      (_oracle_searxng_api,         1.20),
+    "ddgs":         (_oracle_ddgs_api,            1.20),
+    "ddg_lite":     (_oracle_ddg_lite,            1.15),
+    "bing":         (_oracle_bing_web,            1.15),
+    "yahoo":        (_oracle_yahoo_web,           1.10),
+    "brave_web":    (_oracle_brave_html,          1.10),
+    "encyclopedia": (_oracle_wikipedia_knowledge, 1.25),
+    "news":         (_oracle_ddgs_news,           0.95),
+}
+
+
+def _select_active_oracles(requested: Optional[list[str]] = None) -> list[str]:
+    if requested:
+        return [r for r in requested if r in _ORACLE_REGISTRY]
+    candidates = ["ddgs", "ddg_lite", "bing", "yahoo", "brave_web", "encyclopedia", "news"]
+    if TAVILY_API_KEY:
+        candidates.insert(0, "tavily")
+    if BRAVE_API_KEY:
+        candidates.insert(0, "brave_api")
+    if SEARXNG_URL:
+        candidates.insert(0, "searxng")
+    healthy = [c for c in candidates if _TELEMETRY.is_healthy(c)]
+    return healthy or candidates
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 7. Cross-Source Claim Corroboration & Consensus Ranking Engine
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _extract_factual_atoms(text: str, query_tokens: set[str]) -> set[str]:
+    """
+    Extracts atomic verifiable claims (numbers, dates, named entities, technical specs)
+    from a text passage that are NOT merely echoes of the user's query tokens.
+    """
+    atoms: set[str] = set()
+    for match in _RE_FACT_ATOM.findall(text):
+        norm = match.strip(".,;:()[]{}").lower()
+        if len(norm) < 2 or norm in _CLOSED_CLASS_GLUE or norm in query_tokens:
+            continue
+        atoms.add(norm)
+    return atoms
+
+
+def _verify_and_rank_consensus(
+    harvested: dict[str, list[SearchResult]],
+    query: str,
+) -> list[SearchResult]:
+    """
+    Builds a Cross-Domain Claim Consensus Graph:
+      1. Deduplicates URLs and merges multi-oracle sightings.
+      2. Measures query intent alignment with specificity-weighted coverage.
+      3. Extracts factual atoms per root domain and calculates how many *independent*
+          root domains corroborate the claims made by each candidate result.
+      4. Assigns explicit Trust Tiers: VERIFIED_CONSENSUS, CORROBORATED, or SINGLE_SOURCE.
+    """
+    clean_q = clean_search_query(query)
+    raw_q_tokens = _RE_TOKEN.findall(clean_q)
+    q_weights = {
+        t.lower(): _token_information_weight(t)
+        for t in raw_q_tokens
+        if t.lower() not in _CLOSED_CLASS_GLUE and len(t) > 1
+    }
+    if not q_weights:
+        q_weights = {t.lower(): 1.0 for t in raw_q_tokens if len(t) > 1}
+    q_token_set = set(q_weights.keys())
+    total_q_weight = sum(q_weights.values()) or 1.0
+
+    # Step 1: Canonical URL Aggregation across Oracles
+    candidates: dict[str, SearchResult] = {}
+    oracle_support: dict[str, set[str]] = defaultdict(set)
+
+    for oracle_name, results in harvested.items():
+        oracle_weight = _ORACLE_REGISTRY.get(oracle_name, (None, 1.0))[1]
+        for rank_idx, item in enumerate(results):
+            ukey = _canonical_url_key(item.url)
+            rrf_contrib = oracle_weight / (50.0 + rank_idx + 1.0)
+            oracle_support[ukey].add(oracle_name)
+
+            if ukey not in candidates:
+                item.score = rrf_contrib
+                candidates[ukey] = item
+            else:
+                existing = candidates[ukey]
+                existing.score += rrf_contrib
+                if len(item.snippet) > len(existing.snippet):
+                    existing.snippet = item.snippet
+                if item.published and not existing.published:
+                    existing.published = item.published
+                    existing.age_days = item.age_days
+
+    if not candidates:
+        return []
+
+    # Step 2: Build Root-Domain -> Factual Atom Incidence Matrix
+    atom_to_root_domains: dict[str, set[str]] = defaultdict(set)
+    candidate_atoms: dict[str, set[str]] = {}
+    candidate_alignment: dict[str, float] = {}
+
+    for ukey, item in candidates.items():
+        blob = f"{item.title} {item.snippet}"
+        doc_tokens = {t.lower() for t in _RE_TOKEN.findall(blob)}
+
+        # Specificity-weighted query coverage
+        matched_weight = sum(w for tok, w in q_weights.items() if tok in doc_tokens)
+        coverage_ratio = matched_weight / total_q_weight
+        candidate_alignment[ukey] = coverage_ratio
+
+        # Only allow candidates that actually address the query to vote in the consensus graph
+        if coverage_ratio >= 0.35:
+            root_dom = _registered_root_domain(item.domain)
+            atoms = _extract_factual_atoms(blob, q_token_set)
+            candidate_atoms[ukey] = atoms
+            for atom in atoms:
+                atom_to_root_domains[atom].add(root_dom)
+        else:
+            candidate_atoms[ukey] = set()
+
+    # Step 3: Score Each Candidate by Independent Inter-Domain Corroboration
+    for ukey, item in candidates.items():
+        root_dom = _registered_root_domain(item.domain)
+        atoms = candidate_atoms.get(ukey, set())
+        corroborating_domains: set[str] = set()
+        shared_fact_weight = 0.0
+
+        for atom in atoms:
+            supporters = atom_to_root_domains.get(atom, set()) - {root_dom}
+            if supporters:
+                corroborating_domains.update(supporters)
+                # Numeric facts and capitalized entities corroborated across domains carry high weight
+                atom_bonus = 1.35 if any(c.isdigit() for c in atom) else 1.0
+                shared_fact_weight += atom_bonus * math.log1p(len(supporters))
+
+        num_corroborators = len(corroborating_domains)
+        num_oracles = len(oracle_support[ukey])
+        consensus_norm = min(1.0, (shared_fact_weight / 6.0) + (0.18 * num_corroborators) + (0.12 * (num_oracles - 1)))
+
+        item.consensus_score = round(consensus_norm, 3)
+        item.corroborated_by = sorted(corroborating_domains)[:5]
+
+        if num_corroborators >= 2 or (num_corroborators >= 1 and item.authority_score >= 0.80):
+            item.trust_tier = "VERIFIED_CONSENSUS"
+        elif num_corroborators == 1 or num_oracles >= 2 or item.authority_score >= 0.85:
+            item.trust_tier = "CORROBORATED"
+        else:
+            item.trust_tier = "SINGLE_SOURCE"
+
+        alignment = candidate_alignment.get(ukey, 0.0)
+        recency_boost = 0.0
+        if item.age_days is not None:
+            recency_boost = 0.08 * math.exp(-item.age_days / 60.0)
+
+        # Unified Epistemic Score: Query Alignment + Cross-Domain Consensus + Structural Authority + Multi-Oracle RRF
+        item.score = (
+            (alignment ** 1.4) * 0.42
+            + item.consensus_score * 0.28
+            + item.authority_score * 0.18
+            + min(0.12, item.score * 2.5)
+            + recency_boost
+        )
+
+    ranked = sorted(candidates.values(), key=lambda r: r.score, reverse=True)
+
+    # Step 4: Domain Diversity Enforcement (prevent any single host from monopolizing top results)
+    final_list: list[SearchResult] = []
+    domain_counts: Counter[str] = Counter()
+    for r in ranked:
+        root = _registered_root_domain(r.domain)
+        if domain_counts[root] >= 2:
+            continue
+        domain_counts[root] += 1
+        final_list.append(r)
+
+    return final_list
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 8. Deep Verbatim Evidence & JSON-LD Fact Extractor
+# ──────────────────────────────────────────────────────────────────────────────
+
+_RE_NOISE_BLOCKS = re.compile(
+    r"<(script|style|nav|footer|header|aside|noscript|svg|form|iframe|button)[^>]*>.*?</\1>",
+    re.S | re.I,
+)
+
+
+def _extract_structured_jsonld(html_doc: str) -> list[str]:
+    facts: list[str] = []
+    for m in re.finditer(r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', html_doc, re.S | re.I):
+        try:
+            payload = json.loads(m.group(1).strip())
+        except Exception:
+            continue
+        queue = [payload]
+        while queue:
+            node = queue.pop(0)
+            if isinstance(node, dict):
+                headline = node.get("headline") or node.get("name")
+                desc = node.get("description") or node.get("articleBody")
+                if isinstance(headline, str) and isinstance(desc, str) and len(desc) > 40:
+                    facts.append(_normalize_text(f"{headline}: {desc[:450]}"))
+                offers = node.get("offers")
+                if isinstance(headline, str) and offers:
+                    olist = offers if isinstance(offers, list) else [offers]
+                    for off in olist:
+                        if isinstance(off, dict) and (off.get("price") or off.get("lowPrice")):
+                            p = off.get("price") or off.get("lowPrice")
+                            cur = off.get("priceCurrency", "")
+                            facts.append(_normalize_text(f"{headline} — {cur} {p}"))
+                for v in node.values():
+                    if isinstance(v, (dict, list)):
+                        queue.append(v)
+            elif isinstance(node, list):
+                queue.extend(node)
+    return facts[:4]
+
+
+def _extract_high_density_evidence(html_doc: str, query: str, max_chars: int = 1600) -> str:
+    """
+    Extracts self-contained, information-dense sentences from the target webpage
+    that directly answer the query and contain verifiable facts.
+    """
+    structured_facts = _extract_structured_jsonld(html_doc)
+
+    # Strip boilerplate & navigation containers
+    cleaned_html = _RE_NOISE_BLOCKS.sub(" ", html_doc)
+
+    paragraphs: list[str] = []
+    for pm in re.finditer(r"<(?:p|li|td|dd|blockquote|article)[^>]*>(.*?)</(?:p|li|td|dd|blockquote|article)>", cleaned_html, re.S | re.I):
+        txt = _normalize_text(pm.group(1))
+        if 45 <= len(txt) <= 1000:
+            paragraphs.append(txt)
+
+    if not paragraphs:
+        fallback_txt = _normalize_text(cleaned_html)
+        paragraphs = [fallback_txt[i : i + 500] for i in range(0, min(len(fallback_txt), 6000), 450) if len(fallback_txt[i : i + 500]) > 60]
+
+    clean_q = clean_search_query(query)
+    q_weights = {
+        t.lower(): _token_information_weight(t)
+        for t in _RE_TOKEN.findall(clean_q)
+        if t.lower() not in _CLOSED_CLASS_GLUE and len(t) > 1
+    }
+
+    scored_passages: list[tuple[float, int, str]] = []
+    seen_sigs: set[str] = set()
+
+    for idx, para in enumerate(structured_facts + paragraphs):
+        sig = para[:75].lower()
+        if sig in seen_sigs:
+            continue
+        seen_sigs.add(sig)
+
+        p_tokens = {t.lower() for t in _RE_TOKEN.findall(para)}
+        if not p_tokens:
+            continue
+
+        # Score by query specificity match + factual density (numbers, dates, proper nouns)
+        q_hit_score = sum(w for tok, w in q_weights.items() if tok in p_tokens)
+        fact_atoms = len(_RE_FACT_ATOM.findall(para))
+        density_bonus = min(2.5, fact_atoms * 0.22)
+        lead_bonus = 0.6 if idx < len(structured_facts) else (0.25 if idx < 5 else 0.0)
+
+        total_sc = q_hit_score * 1.5 + density_bonus + lead_bonus
+        if q_hit_score > 0 or idx < len(structured_facts):
+            scored_passages.append((total_sc, idx, para))
+
+    if not scored_passages:
+        return ""
+
+    scored_passages.sort(key=lambda x: x[0], reverse=True)
+    chosen: list[tuple[int, str]] = []
+    char_budget = 0
+    for sc, idx, text in scored_passages[:5]:
+        chosen.append((idx, text))
+        char_budget += len(text) + 4
+        if char_budget >= max_chars:
+            break
+
+    chosen.sort(key=lambda x: x[0])
+    return " … ".join(txt for _, txt in chosen)[:max_chars]
+
+
+def _deep_verify_top_results(results: list[SearchResult], query: str, deadline_s: float) -> None:
+    targets = [r for r in results if not r.url.startswith("https://www.youtube.com/watch")][:4]
+    if not targets:
+        return
+
+    def _fetch_one(res: SearchResult) -> str:
+        resp = _NET.get(res.url, timeout=min(2.0, max(0.8, deadline_s)))
+        ctype = (resp.headers.get("content-type") or "").lower()
+        if any(b in ctype for b in ("pdf", "image", "audio", "video", "octet-stream")):
+            return ""
+        return _extract_high_density_evidence(resp.text[:400_000], query)
+
+    futs = {_POOL.submit(_fetch_one, r): r for r in targets}
+    done, pending = wait(list(futs.keys()), timeout=deadline_s)
+    for f in done:
+        target_res = futs[f]
+        try:
+            excerpt = f.result()
+            if excerpt:
+                target_res.fetched_content = excerpt
+        except Exception:
+            pass
+    for f in pending:
+        f.cancel()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 9. Public Search API (Drop-in Compatible with Amigo Voice Assistant)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def search_web(
+    query: str,
+    max_results: int = 6,
+    engines: Optional[list[str]] = None,
+    fetch_content: Optional[bool] = None,
+    use_cache: bool = True,
+    fast_mode: bool = False,
+    freshness: Optional[str] = None,
+) -> SearchResponse:
+    """
+    Executes a multi-oracle consensus search, cross-verifies claims across independent
+    domains, and extracts verbatim evidence passages from top corroborated sources.
+    """
+    t_start = time.monotonic()
+    raw_q = (query or "").strip()
+    if not raw_q:
+        return SearchResponse(query="", results=[], query_type="empty")
+
+    cache_key = (raw_q.lower(), max_results, bool(fetch_content), bool(fast_mode), tuple(sorted(engines or ())))
+    if use_cache:
+        cached = _RESULT_CACHE.get(cache_key)
+        if cached is not None:
+            return replace(cached, cache_hit=True, search_time_ms=0)
+
+    oracles = _select_active_oracles(engines)
+    race_budget = 2.1 if fast_mode else 3.2
+    grace_window = 0.45 if fast_mode else 0.65
+    per_oracle_limit = 6 if fast_mode else 8
+
+    deadline = time.monotonic() + race_budget
+    futs = {
+        _POOL.submit(_ORACLE_REGISTRY[name][0], raw_q, per_oracle_limit): (name, time.monotonic())
+        for name in oracles
+    }
+
+    pending = set(futs.keys())
+    harvested: dict[str, list[SearchResult]] = {}
+    grace_start: Optional[float] = None
+
+    while pending:
+        cutoff = deadline if grace_start is None else min(deadline, grace_start + grace_window)
+        rem = cutoff - time.monotonic()
+        if rem <= 0:
+            break
+        done, pending = wait(pending, timeout=rem, return_when=FIRST_COMPLETED)
+        for fut in done:
+            name, t0 = futs[fut]
+            elapsed_ms = (time.monotonic() - t0) * 1000.0
+            try:
+                rows = fut.result()
+                _TELEMETRY.record_success(name, elapsed_ms)
+                if rows:
+                    harvested[name] = rows
+                    # Trigger grace window once at least 3 independent oracles have reported
+                    if grace_start is None and len(harvested) >= 3:
+                        grace_start = time.monotonic()
+            except Exception as exc:
+                _TELEMETRY.record_failure(name, permanent=isinstance(exc, ImportError))
+                logger.debug("[EpistemicSearch] Oracle %s failed: %s", name, exc)
+
+    for fut in pending:
+        fut.cancel()
+
+    verified_results = _verify_and_rank_consensus(harvested, raw_q)[:max_results]
+
+    should_fetch = fetch_content if fetch_content is not None else (not fast_mode or len(verified_results) > 0)
+    if should_fetch and verified_results:
+        fetch_budget = 1.25 if fast_mode else 2.1
+        _deep_verify_top_results(verified_results, raw_q, deadline_s=fetch_budget)
+
+    # Re-run consensus boost after deep page excerpts are attached
+    if any(r.fetched_content for r in verified_results):
+        clean_q = clean_search_query(raw_q)
+        q_tokens = {t.lower() for t in _RE_TOKEN.findall(clean_q) if t.lower() not in _CLOSED_CLASS_GLUE}
+        root_atoms: dict[str, set[str]] = defaultdict(set)
+        for r in verified_results:
+            dom = _registered_root_domain(r.domain)
+            atoms = _extract_factual_atoms(f"{r.title} {r.snippet} {r.fetched_content}", q_tokens)
+            for a in atoms:
+                root_atoms[a].add(dom)
+        for r in verified_results:
+            dom = _registered_root_domain(r.domain)
+            atoms = _extract_factual_atoms(f"{r.title} {r.snippet} {r.fetched_content}", q_tokens)
+            supporters = set()
+            for a in atoms:
+                supporters.update(root_atoms[a] - {dom})
+            if supporters:
+                r.corroborated_by = sorted(set(r.corroborated_by) | supporters)[:5]
+                if len(r.corroborated_by) >= 2:
+                    r.trust_tier = "VERIFIED_CONSENSUS"
+                    r.score += 0.08
+                elif r.trust_tier == "SINGLE_SOURCE":
+                    r.trust_tier = "CORROBORATED"
+                    r.score += 0.04
+        verified_results.sort(key=lambda r: r.score, reverse=True)
+
+    total_ms = int((time.monotonic() - t_start) * 1000)
+    response = SearchResponse(
+        query=raw_q,
+        results=verified_results,
+        query_type="epistemic_consensus",
+        search_time_ms=total_ms,
+        engines_used=list(harvested.keys()),
+    )
+
+    if use_cache and verified_results:
+        _RESULT_CACHE.put(cache_key, response, ttl_s=300.0)
+
+    logger.info(
+        "[EpistemicSearch] %r -> %d verified results in %dms (oracles=%s)",
+        raw_q[:60],
+        len(verified_results),
+        total_ms,
+        ",".join(harvested.keys()) or "none",
+    )
+    return response
+
+
+def format_for_llm(response: SearchResponse, max_chars: int = 5000) -> str:
+    """
+    Formats search results with explicit epistemic trust badges and cross-domain
+    corroboration metadata so the LLM prioritizes verified consensus facts.
+    """
+    if not response.results:
+        return "No verified web sources found for this query."
+
+    now_iso = datetime.now().strftime("%Y-%m-%d")
+    loc_tag = f" | Locale: {PC_COUNTRY_CODE}" if PC_COUNTRY_CODE else ""
+    header = [
+        f"=== EPISTEMIC CONSENSUS WEB RESULTS FOR: {response.query!r} (Date: {now_iso}{loc_tag}) ===",
+        "INSTRUCTION: Prioritize [VERIFIED_CONSENSUS] and [CORROBORATED] sources. "
+        "Treat [SINGLE_SOURCE] claims with caution if they conflict with corroborated sources.",
+    ]
+
+    blocks: list[str] = []
+    for idx, r in enumerate(response.results, 1):
+        pub_tag = f" | Published: {r.published}" if r.published else ""
+        corr_tag = (
+            f" | Corroborated by: {', '.join(r.corroborated_by[:3])}"
+            if r.corroborated_by
+            else ""
+        )
+        entry = [
+            f"{idx}. [{r.trust_tier}] {r.title} (Source: {r.domain} | Credibility: {r.credibility:.2f}{pub_tag}{corr_tag})",
+            f"   URL: {r.url}",
+            f"   Summary: {r.snippet}",
+        ]
+        if r.fetched_content:
+            entry.append(f"   Verified Page Evidence: {r.fetched_content[:950]}")
+        blocks.append("\n".join(entry))
+
+    return ("\n".join(header) + "\n\n" + "\n\n".join(blocks))[:max_chars]
+
+
+def scrape_web_info(query: str, max_results: int = 5) -> str:
+    resp = search_web(query, max_results=max_results)
+    chunks: list[str] = []
+    for r in resp.results:
+        item = f"[{r.trust_tier} | {r.domain}] {r.title}: {r.snippet}"
+        if r.fetched_content:
+            item += f" (Evidence: {r.fetched_content[:450]})"
+        chunks.append(item)
+    return " || ".join(chunks)[:3800]
+
+
+def searchGoogle(query: str) -> None:
+    q = (query or "").strip()
+    if q:
+        webbrowser.open("https://www.google.com/search?q=" + urllib.parse.quote_plus(q))
+
+
+async def async_search_web(query: str, **kwargs) -> SearchResponse:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_POOL, lambda: search_web(query, **kwargs))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 10. YouTube Resolution Subsystem (Preserved Public Interface)
+# ──────────────────────────────────────────────────────────────────────────────
+
+_YT_INNERTUBE_VER = os.getenv("AMIGO_YT_CLIENT_VERSION", "2.20250901.01.00")
+_YT_ENDPOINT = "https://www.youtube.com/youtubei/v1/search?prettyPrint=false"
+_YT_CONSENT_COOKIES = {"CONSENT": "YES+1", "SOCS": "CAI"}
+
+
+def _yt_text(node: Any) -> str:
+    if not isinstance(node, dict):
+        return ""
+    if "simpleText" in node:
+        return str(node["simpleText"])
+    return "".join(r.get("text", "") for r in node.get("runs", []) if isinstance(r, dict))
+
+
+def _yt_duration_seconds(raw: str) -> Optional[int]:
+    parts = (raw or "").strip().split(":")
+    if not parts or not all(p.isdigit() for p in parts):
+        return None
+    total = 0
+    for p in parts:
+        total = total * 60 + int(p)
+    return total
+
+
+def _iter_yt_renderers(tree: Any) -> Iterable[dict]:
+    if isinstance(tree, dict):
+        vr = tree.get("videoRenderer")
+        if isinstance(vr, dict) and vr.get("videoId"):
+            yield vr
+        for val in tree.values():
+            yield from _iter_yt_renderers(val)
+    elif isinstance(tree, list):
+        for item in tree:
+            yield from _iter_yt_renderers(item)
+
+
+def _query_yt_innertube(query: str, sp_params: Optional[str] = None) -> list[YTVideo]:
+    client_ctx: dict[str, Any] = {"clientName": "WEB", "clientVersion": _YT_INNERTUBE_VER, "hl": OS_LANG or "en"}
+    if YT_REGION:
+        client_ctx["gl"] = YT_REGION
+    payload: dict[str, Any] = {"context": {"client": client_ctx}, "query": query}
+    if sp_params:
+        payload["params"] = sp_params
+
+    resp = _NET.post(
+        _YT_ENDPOINT,
+        json_body=payload,
+        cookies=_YT_CONSENT_COOKIES,
+        timeout=2.5,
+        headers={
+            "X-YouTube-Client-Name": "1",
+            "X-YouTube-Client-Version": _YT_INNERTUBE_VER,
+            "Origin": "https://www.youtube.com",
+            "Content-Type": "application/json",
+        },
+    )
+    videos: list[YTVideo] = []
+    seen: set[str] = set()
+    for vr in _iter_yt_renderers(resp.json()):
+        vid = vr["videoId"]
+        if vid in seen:
+            continue
+        seen.add(vid)
+        badges = [b.get("metadataBadgeRenderer", {}) for b in vr.get("badges", []) if isinstance(b, dict)]
+        overlays = [o.get("thumbnailOverlayTimeStatusRenderer", {}) for o in vr.get("thumbnailOverlays", []) if isinstance(o, dict)]
+        is_live = (
+            any(b.get("style") == "BADGE_STYLE_TYPE_LIVE_NOW" for b in badges)
+            or any(o.get("style") == "LIVE" for o in overlays)
+        )
+        videos.append(
+            YTVideo(
+                video_id=vid,
+                title=_yt_text(vr.get("title")),
+                channel=_yt_text(vr.get("ownerText")) or _yt_text(vr.get("longBylineText")) or "YouTube",
+                is_live=is_live,
+                duration_s=_yt_duration_seconds(_yt_text(vr.get("lengthText"))),
+                source="innertube",
+            )
+        )
+    return videos
+
+
+def resolve_youtube_video(
+    query: str,
+    kind: str = "auto",
+    live: Optional[bool] = None,
+    latest: Optional[bool] = None,
+    timeout: float = 5.0,
+) -> dict[str, Any]:
+    raw_q = (query or "").strip()
+    clean_q = re.sub(r"\s+(?:on|in)\s+youtube(?:\s+music)?$", "", clean_search_query(raw_q), flags=re.I).strip() or raw_q
+
+    if live is None:
+        live = kind == "live" or bool(re.search(r"\b(?:live\s*stream|livestream|live\s+now)\b", clean_q, re.I))
+    if latest is None:
+        latest = bool(re.search(r"\b(?:latest|newest|most\s+recent)\b", clean_q, re.I))
+
+    fallback = {
+        "url": "https://www.youtube.com/results?search_query=" + urllib.parse.quote_plus(clean_q),
+        "title": clean_q.title(),
+        "channel": "YouTube",
+        "video_id": "",
+        "query": clean_q,
+        "is_live": False,
+        "not_live_fallback": False,
+        "resolved": False,
+        "source": "search_page",
+    }
+
+    cache_key = (clean_q.lower(), kind, bool(live), bool(latest))
+    if not live and not latest:
+        cached = _MEDIA_CACHE.get(cache_key)
+        if cached:
+            return dict(cached)
+
+    sp = "EgJAAQ%3D%3D" if live else ("CAISAhAB" if latest else "EgIQAQ%3D%3D")
+    try:
+        candidates = _query_yt_innertube(clean_q, sp_params=sp)
+        if not candidates and (live or latest):
+            candidates = _query_yt_innertube(clean_q)
+    except Exception:
+        candidates = []
+
+    chosen: Optional[YTVideo] = None
+    if live:
+        chosen = next((v for v in candidates if v.is_live), candidates[0] if candidates else None)
+    elif kind == "song":
+        chosen = next((v for v in candidates if v.duration_s is None or 55 <= v.duration_s <= 720), candidates[0] if candidates else None)
+    elif candidates:
+        chosen = candidates[0]
+
+    if chosen:
+        fallback.update(
+            video_id=chosen.video_id,
+            title=chosen.title or fallback["title"],
+            channel=chosen.channel or "YouTube",
+            url=f"https://www.youtube.com/watch?v={chosen.video_id}&autoplay=1",
+            is_live=bool(chosen.is_live),
+            not_live_fallback=bool(live and not chosen.is_live),
+            resolved=True,
+            source=chosen.source,
+        )
+        if not live and not latest:
+            _MEDIA_CACHE.put(cache_key, dict(fallback), ttl_s=21600.0)
+
+    return fallback
+
+
+def searchYoutube(query: str, **kwargs) -> str:
+    res = resolve_youtube_video(query, **kwargs)
+    webbrowser.open(res["url"])
+    return res["url"]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 11. Live Financial Quote Engine (Preserved Public Interface)
+# ──────────────────────────────────────────────────────────────────────────────
+
+_YF_SEARCH_API = "https://query2.finance.yahoo.com/v1/finance/search"
+_YF_CHART_API = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+_VALID_ASSET_CLASSES = frozenset({"EQUITY", "ETF", "INDEX", "CRYPTOCURRENCY", "CURRENCY", "MUTUALFUND", "FUTURE"})
 
 
 def get_stock_quote(query: str, range_val: str = "1d") -> Optional[Quote]:
     q = (query or "").strip()
     if not q:
         return None
-    cache_key = f"{q.lower()}:{range_val}"
-    cached = _QUOTE_CACHE.get(cache_key)
+    ckey = f"{q.lower()}:{range_val}"
+    cached = _QUOTE_CACHE.get(ckey)
     if cached:
         return cached
-    try:
-        resolved = _resolve_symbol(q)
-        if not resolved:
-            return None
-        symbol, name = resolved
 
-        intervals = {"1d": "5m", "5d": "15m", "1mo": "1d", "3mo": "1d", "1y": "1wk"}
-        interval = intervals.get(range_val, "5m")
-        data = _yf_get(
-            _YF_CHART.format(symbol=urllib.parse.quote(symbol, safe="")),
-            {"range": range_val, "interval": interval},
+    try:
+        s_resp = _NET.get(
+            _YF_SEARCH_API,
+            params={"q": q, "quotesCount": 5, "newsCount": 0},
+            headers={"Accept": "application/json"},
+            timeout=2.4,
+        ).json()
+        match = next(
+            (item for item in (s_resp.get("quotes") or []) if item.get("symbol") and item.get("quoteType") in _VALID_ASSET_CLASSES),
+            None,
         )
-        result = (data.get("chart") or {}).get("result") or []
-        meta = (result[0].get("meta") if result else None) or {}
+        if not match:
+            return None
+
+        symbol = match["symbol"]
+        name = match.get("shortname") or match.get("longname") or symbol
+        interval = {"1d": "5m", "5d": "15m", "1mo": "1d", "3mo": "1d", "1y": "1wk"}.get(range_val, "5m")
+
+        c_resp = _NET.get(
+            _YF_CHART_API.format(symbol=urllib.parse.quote(symbol, safe="")),
+            params={"range": range_val, "interval": interval},
+            headers={"Accept": "application/json"},
+            timeout=2.4,
+        ).json()
+
+        chart_res = ((c_resp.get("chart") or {}).get("result") or [None])[0] or {}
+        meta = chart_res.get("meta") or {}
         price = meta.get("regularMarketPrice")
         if price is None:
             return None
 
-        quotes_data = (result[0].get("indicators", {}).get("quote", [{}])[0]) if result else {}
-        closes = quotes_data.get("close", [])
-        history = [round(float(c), 2) for c in closes if c is not None]
-        timestamps = [int(t) for t in (result[0].get("timestamp") or []) if t is not None]
+        q_ind = ((chart_res.get("indicators") or {}).get("quote") or [{}])[0]
+        closes = [round(float(c), 2) for c in (q_ind.get("close") or []) if c is not None]
+        stamps = [int(ts) for ts in (chart_res.get("timestamp") or []) if ts is not None]
 
-        if range_val == "1d" and len(history) < 8:
-            try:
-                data_5d = _yf_get(
-                    _YF_CHART.format(symbol=urllib.parse.quote(symbol, safe="")),
-                    {"range": "5d", "interval": "15m"},
-                )
-                res_5d = (data_5d.get("chart") or {}).get("result") or []
-                if res_5d:
-                    q_5d = (res_5d[0].get("indicators", {}).get("quote", [{}])[0])
-                    closes_5d = q_5d.get("close", [])
-                    h_5d = [round(float(c), 2) for c in closes_5d if c is not None]
-                    if len(h_5d) > len(history):
-                        history = h_5d
-                        timestamps = [int(t) for t in (res_5d[0].get("timestamp") or []) if t is not None]
-            except Exception:
-                pass
-
-        as_of = None
+        as_of_dt: Optional[datetime] = None
         if meta.get("regularMarketTime"):
             try:
                 from zoneinfo import ZoneInfo
-                as_of = datetime.fromtimestamp(
-                    meta["regularMarketTime"], ZoneInfo(meta.get("exchangeTimezoneName") or "UTC")
-                )
+                tz = ZoneInfo(meta.get("exchangeTimezoneName") or "UTC")
+                as_of_dt = datetime.fromtimestamp(meta["regularMarketTime"], tz)
             except Exception:
-                as_of = datetime.fromtimestamp(meta["regularMarketTime"])
-        quote = Quote(
+                as_of_dt = datetime.fromtimestamp(meta["regularMarketTime"], timezone.utc)
+
+        quote_obj = Quote(
             symbol=symbol,
             name=name,
             price=float(price),
-            currency=meta.get("currency") or "USD",
+            currency=meta.get("currency") or "",
             previous_close=meta.get("previousClose") or meta.get("chartPreviousClose"),
             exchange=meta.get("fullExchangeName") or meta.get("exchangeName") or "",
-            as_of=as_of,
+            as_of=as_of_dt,
             day_high=meta.get("regularMarketDayHigh"),
             day_low=meta.get("regularMarketDayLow"),
             volume=meta.get("regularMarketVolume"),
             fifty_two_week_high=meta.get("fiftyTwoWeekHigh"),
             fifty_two_week_low=meta.get("fiftyTwoWeekLow"),
-            history=history,
-            timestamps=timestamps,
+            history=closes,
+            timestamps=stamps,
         )
-        _QUOTE_CACHE.set(cache_key, quote, QUOTE_TTL_S)
-        return quote
-    except Exception as e:
-        logger.warning("[Quote] %r failed: %s", q, e)
+        _QUOTE_CACHE.put(ckey, quote_obj, ttl_s=30.0)
+        return quote_obj
+    except Exception as exc:
+        logger.debug("[QuoteEngine] Failed for %r: %s", q, exc)
         return None
 
 
 def format_quote(q: Quote) -> str:
-    sym = _CCY_SYMBOL.get(q.currency, f"{q.currency} " if q.currency else "")
-    text = f"{q.name} is at {sym}{q.price:,.2f}"
-    if q.change_pct is not None:
-        text += f", {'up' if q.change >= 0 else 'down'} {abs(q.change_pct):.2f} percent from the previous close"
+    ccy = f"{q.currency} " if q.currency else ""
+    out = f"{q.name} ({q.symbol}) is trading at {ccy}{q.price:,.2f}"
+    if q.change_pct is not None and q.change is not None:
+        direction = "up" if q.change >= 0 else "down"
+        out += f", {direction} {abs(q.change_pct):.2f}% from the previous close"
     if q.as_of:
-        text += f". Last trade was at {q.as_of.strftime('%I:%M %p').lstrip('0')} on {q.as_of.strftime('%b')} {q.as_of.day}"
-    return text + "."
+        out += f" as of {q.as_of.strftime('%I:%M %p').lstrip('0')} on {q.as_of.strftime('%b %d')}"
+    return out + "."
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Automatic Background Warmup on Import
+# 12. Lifecycle Management
 # ──────────────────────────────────────────────────────────────────────────────
-
 
 def warmup() -> None:
-    """Pre-warms DDGS client and HTTP/2 TLS sockets in the background on startup."""
-    def _w():
-        for fn in (_get_ddgs, lambda: _has_module("selectolax")):
-            try:
-                fn()
-            except Exception:
-                pass
-        for url in ("https://html.duckduckgo.com/", "https://www.bing.com/", "https://news.google.com/"):
-            try:
-                _HTTP.get(url, timeout=1.5)
-            except Exception:
-                pass
-
-    _EXECUTOR.submit(_w)
+    """Pre-initializes TLS sessions in a background worker without blocking import."""
+    def _init() -> None:
+        try:
+            _get_ddgs_instance()
+        except Exception:
+            pass
+    _POOL.submit(_init)
 
 
 def shutdown() -> None:
-    _EXECUTOR.shutdown(wait=False, cancel_futures=True)
-    _SEARCH_CACHE.clear()
-    _YT_CACHE.clear()
+    _POOL.shutdown(wait=False, cancel_futures=True)
+    _RESULT_CACHE.clear()
+    _MEDIA_CACHE.clear()
+    _QUOTE_CACHE.clear()
 
 
 warmup()

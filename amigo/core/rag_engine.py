@@ -128,7 +128,152 @@ _SEARCH_CACHE_LOCK = threading.Lock()
 _extracted_text_cache: collections.OrderedDict[tuple[str, float], str] = collections.OrderedDict()
 _extracted_text_lock = threading.Lock()
 
+_FRAME_CACHE: collections.OrderedDict[str, dict] = collections.OrderedDict()
+_FRAME_CACHE_MAX = 512
+_frame_cache_lock = threading.Lock()
+
+_user_facts_cache: list[dict[str, Any]] | None = None
+_user_facts_lock = threading.Lock()
+
+_stats_cache: dict[str, int] | None = None
+_stats_cache_time: float = 0.0
+_STATS_CACHE_TTL = 30.0
+_stats_lock = threading.Lock()
+
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="AmigoMemvid")
+
+
+def _get_cached_frame(mv: Any, uri: str) -> dict:
+    if not uri:
+        return {}
+    with _frame_cache_lock:
+        if uri in _FRAME_CACHE:
+            _FRAME_CACHE.move_to_end(uri)
+            return _FRAME_CACHE[uri]
+    try:
+        with _mv_lock:
+            frame_data = mv.frame(uri)
+        if frame_data and isinstance(frame_data, dict):
+            with _frame_cache_lock:
+                _FRAME_CACHE[uri] = frame_data
+                if len(_FRAME_CACHE) > _FRAME_CACHE_MAX:
+                    _FRAME_CACHE.popitem(last=False)
+            return frame_data
+    except Exception:
+        pass
+    return {}
+
+
+def _invalidate_stats_cache() -> None:
+    global _stats_cache_time
+    with _stats_lock:
+        _stats_cache_time = 0.0
+
+
+def _invalidate_user_facts_cache() -> None:
+    global _user_facts_cache
+    with _user_facts_lock:
+        _user_facts_cache = None
+
+
+def _get_user_facts_records() -> list[dict[str, Any]]:
+    global _user_facts_cache
+    with _user_facts_lock:
+        if _user_facts_cache is not None:
+            return _user_facts_cache
+
+        records: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        try:
+            p = load_profile()
+            for f in p.get("user_profile", {}).get("custom_facts", []):
+                txt = f.get("text", "") if isinstance(f, dict) else str(f)
+                cat = f.get("category", "custom") if isinstance(f, dict) else "custom"
+                imp = float(f.get("importance", 1.0)) if isinstance(f, dict) else 1.0
+                clean = txt.strip().strip('"')
+                if clean and clean.lower() not in seen:
+                    seen.add(clean.lower())
+                    records.append({"text": clean, "category": cat, "importance": imp})
+        except Exception:
+            pass
+
+        try:
+            mv = init_memvid()
+            with _mv_lock:
+                st = mv.stats() if hasattr(mv, "stats") else {}
+                total = int(st.get("active_frame_count") or st.get("frame_count") or 100)
+                timeline = mv.timeline(limit=total) or []
+                for item in timeline:
+                    preview = item.get("preview") or ""
+                    if "user_fact" in preview or "tags: user_fact" in preview or "Fact: " in preview:
+                        uri = item.get("uri")
+                        if uri:
+                            frame_data = _get_cached_frame(mv, uri)
+                            if "user_fact" in (frame_data.get("tags") or []):
+                                meta = frame_data.get("extra_metadata") or {}
+                                raw_fact = meta.get("fact")
+                                if raw_fact:
+                                    try:
+                                        fact = json.loads(raw_fact)
+                                    except Exception:
+                                        fact = raw_fact
+                                else:
+                                    fact = frame_data.get("text") or ""
+                                clean = str(fact).strip().strip('"')
+                                if clean and clean.lower() not in seen:
+                                    seen.add(clean.lower())
+                                    cat = meta.get("category", "user_profile")
+                                    imp = float(meta.get("importance", 1.0))
+                                    records.append({"text": clean, "category": cat, "importance": imp})
+        except Exception as e:
+            logger.debug("[Memvid] Error loading user facts: %s", e)
+
+        _user_facts_cache = records
+        return _user_facts_cache
+
+
+def _search_user_facts_in_memory(query: str, effective_query: str = "", top_k: int = 3) -> list[dict[str, Any]]:
+    records = _get_user_facts_records()
+    if not records:
+        return []
+
+    scored: list[tuple[float, dict[str, Any]]] = []
+    eff_q = (effective_query or query).strip()
+
+    for r in records:
+        text = r["text"]
+        lex_orig, sal_orig, phrase_orig = _evaluate_lexical_match(query, text)
+        if eff_q != query.strip():
+            lex_res, sal_res, phrase_res = _evaluate_lexical_match(eff_q, text)
+            lex_overlap = max(lex_orig, lex_res * 0.90)
+            salient_cov = max(sal_orig, sal_res * 0.90)
+            phrase_bonus = max(phrase_orig, phrase_res * 0.90)
+        else:
+            lex_overlap, salient_cov, phrase_bonus = lex_orig, sal_orig, phrase_orig
+
+        if lex_overlap < 0.12 and salient_cov < 0.20:
+            continue
+
+        combined = 0.45 * lex_overlap + 0.35 * salient_cov + 0.20 * phrase_bonus
+        if salient_cov < 0.35:
+            combined *= 0.65
+        calibrated_score = round(min(1.0, max(0.0, combined)), 4)
+
+        candidate = {
+            "text": text,
+            "source": USER_FACTS,
+            "score": calibrated_score,
+            "raw_score": calibrated_score,
+            "lexical_overlap": lex_overlap,
+            "salient_coverage": salient_cov,
+            "phrase_bonus": phrase_bonus,
+            "metadata": {"category": r.get("category", "user_profile"), "importance": r.get("importance", 1.0)},
+        }
+        scored.append((calibrated_score, candidate))
+
+    scored.sort(key=lambda x: -x[0])
+    return [cand for _, cand in scored[:top_k]]
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -630,6 +775,9 @@ def search(
 
     effective_query = resolve_contextual_query(query, conversation_history)
 
+    if target_collections == [USER_FACTS]:
+        return _search_user_facts_in_memory(query, effective_query=effective_query, top_k=top_k)
+
     cache_key = (
         f"{effective_query.lower()}::{sorted(target_collections)}::{top_k}::"
         f"{json.dumps(metadata_filter or {}, sort_keys=True)}"
@@ -700,8 +848,7 @@ def search(
         uri = hit.get("uri")
         if uri:
             try:
-                with _mv_lock:
-                    frame_data = mv.frame(uri)
+                frame_data = _get_cached_frame(mv, uri)
                 for k, v in (frame_data.get("extra_metadata") or {}).items():
                     try:
                         meta[k] = json.loads(v)
@@ -1336,6 +1483,12 @@ def add_user_fact(fact: str, category: str = "user_profile", importance: float =
     if not fact or len(fact.strip()) < 5:
         return None
     clean_fact = fact.strip()
+
+    records = _get_user_facts_records()
+    with _user_facts_lock:
+        if any(r["text"].lower() == clean_fact.lower() for r in records):
+            return "existing"
+
     try:
         mv = init_memvid()
         title = f"Fact: {category}"
@@ -1354,6 +1507,10 @@ def add_user_fact(fact: str, category: str = "user_profile", importance: float =
             )
             commit()
         _record_frame_tokens(clean_fact)
+        with _user_facts_lock:
+            if _user_facts_cache is not None:
+                _user_facts_cache.append({"text": clean_fact, "category": category, "importance": importance})
+        _invalidate_stats_cache()
         clear_search_cache()
         return str(frame_id)
     except Exception as e:
@@ -1362,46 +1519,13 @@ def add_user_fact(fact: str, category: str = "user_profile", importance: float =
 
 
 def get_all_user_facts(min_importance: float = 0.0) -> list[str]:
-    facts: list[str] = []
-    try:
-        p = load_profile()
-        for f in p.get("user_profile", {}).get("custom_facts", []):
-            txt = f.get("text") if isinstance(f, dict) else str(f)
-            if txt and txt not in facts:
-                facts.append(txt)
-    except Exception:
-        pass
-
-    try:
-        mv = init_memvid()
-        with _mv_lock:
-            for item in (mv.timeline() or []):
-                uri = item.get("uri")
-                if not uri:
-                    continue
-                try:
-                    frame_data = mv.frame(uri)
-                    if "user_fact" in (frame_data.get("tags") or []):
-                        meta = frame_data.get("extra_metadata") or {}
-                        raw_fact = meta.get("fact")
-                        if raw_fact:
-                            try:
-                                fact = json.loads(raw_fact)
-                            except Exception:
-                                fact = raw_fact
-                        else:
-                            fact = frame_data.get("text") or ""
-                        clean = str(fact).strip().strip('"')
-                        if clean and clean not in facts:
-                            facts.append(clean)
-                except Exception:
-                    pass
-    except Exception as e:
-        logger.debug("[Memvid] Error retrieving user facts: %s", e)
-    return facts
+    records = _get_user_facts_records()
+    return [r["text"] for r in records if r.get("importance", 1.0) >= min_importance]
 
 
 def clear_user_facts() -> None:
+    _invalidate_user_facts_cache()
+    _invalidate_stats_cache()
     try:
         profile = load_profile()
         if "user_profile" in profile:
@@ -1418,7 +1542,7 @@ def clear_user_facts() -> None:
                 if fid is None:
                     continue
                 try:
-                    f = mv.frame(item.get("uri"))
+                    f = _get_cached_frame(mv, item.get("uri"))
                     if "user_fact" in (f.get("tags") or []):
                         mv.remove(fid)
                 except Exception:
@@ -1973,6 +2097,12 @@ def get_active_context_prompt() -> str:
 
 
 def get_index_stats() -> dict[str, int]:
+    global _stats_cache, _stats_cache_time
+    now = time.monotonic()
+    with _stats_lock:
+        if _stats_cache is not None and (now - _stats_cache_time < _STATS_CACHE_TTL):
+            return dict(_stats_cache)
+
     counts = {col: 0 for col in ALL_COLLECTIONS}
     counts["total"] = 0
     try:
@@ -1982,25 +2112,36 @@ def get_index_stats() -> dict[str, int]:
             total = int(st.get("active_frame_count") or st.get("frame_count") or 0)
             counts["total"] = total
             if total == 0:
+                with _stats_lock:
+                    _stats_cache = counts
+                    _stats_cache_time = now
                 return counts
 
-            for item in (mv.timeline(limit=total) or []):
-                uri = item.get("uri")
-                if not uri:
-                    continue
-                try:
-                    frame_data = mv.frame(uri)
-                    tags = frame_data.get("tags") or []
-                    for col, tag in _COLLECTION_TO_TAG.items():
-                        if tag in tags:
-                            counts[col] += 1
-                            break
-                except Exception:
-                    pass
+            timeline = mv.timeline(limit=total) or []
+            for item in timeline:
+                preview = item.get("preview") or ""
+                matched = False
+                for col, tag in _COLLECTION_TO_TAG.items():
+                    if f"tags: {tag}" in preview or f" {tag}" in preview or f"tags: [{tag}" in preview:
+                        counts[col] += 1
+                        matched = True
+                        break
+                if not matched:
+                    uri = item.get("uri")
+                    if uri:
+                        frame_data = _get_cached_frame(mv, uri)
+                        tags = frame_data.get("tags") or []
+                        for col, tag in _COLLECTION_TO_TAG.items():
+                            if tag in tags:
+                                counts[col] += 1
+                                break
     except Exception as e:
         logger.debug("[Memvid] Error reading stats: %s", e)
 
-    return counts
+    with _stats_lock:
+        _stats_cache = counts
+        _stats_cache_time = now
+    return dict(counts)
 
 
 get_stats = get_index_stats
@@ -2030,15 +2171,47 @@ def save_memory(memory: dict) -> None:
             profile["identity"] = up["identity"]
         if "preferences" in up:
             profile["preferences"] = up["preferences"]
+        
+        existing_facts = set(f.lower() for f in get_all_user_facts())
+        new_facts_to_add: list[tuple[str, str, float]] = []
         for fact in up.get("custom_facts", []):
-            if isinstance(fact, dict):
-                add_user_fact(
-                    fact.get("text", ""),
-                    category=fact.get("category", "custom"),
-                    importance=fact.get("importance", 1.0),
-                )
-            elif isinstance(fact, str):
-                add_user_fact(fact, category="custom")
+            txt = fact.get("text", "") if isinstance(fact, dict) else str(fact)
+            cat = fact.get("category", "custom") if isinstance(fact, dict) else "custom"
+            imp = float(fact.get("importance", 1.0)) if isinstance(fact, dict) else 1.0
+            clean = txt.strip()
+            if clean and clean.lower() not in existing_facts:
+                existing_facts.add(clean.lower())
+                new_facts_to_add.append((clean, cat, imp))
+
+        if new_facts_to_add:
+            try:
+                mv = init_memvid()
+                with _mv_lock:
+                    for clean, cat, imp in new_facts_to_add:
+                        mv.put(
+                            title=f"Fact: {cat}",
+                            text=clean,
+                            tags=["user_fact", cat],
+                            metadata={
+                                "category": cat,
+                                "fact": clean,
+                                "importance": imp,
+                                "timestamp": datetime.datetime.now().isoformat(),
+                            },
+                        )
+                    commit()
+                for clean, cat, imp in new_facts_to_add:
+                    _record_frame_tokens(clean)
+                    with _user_facts_lock:
+                        if _user_facts_cache is not None:
+                            _user_facts_cache.append({"text": clean, "category": cat, "importance": imp})
+                _invalidate_stats_cache()
+                clear_search_cache()
+            except Exception as e:
+                logger.error("[Memvid] Error batch saving memory facts: %s", e)
+
+        up["custom_facts"] = get_all_user_facts()
+
     save_profile(profile)
 
 

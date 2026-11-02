@@ -73,3 +73,18 @@ def test_document_qa_abstains_when_no_grounded_passages_are_found():
     answer.assert_not_called()
     assert "couldn't find enough relevant information" in response
     assert metadata["status"] == "insufficient_evidence"
+
+
+def test_tts_normalizer_silences_sources_block_and_citations():
+    from amigo.utils.tts import normalize_text_for_tts
+
+    full_response = (
+        "Your SSC registration number is 10032417783.\n\n"
+        "Let me know if you need anything else!\n\n"
+        "Sources: [1] ssc admit card.pdf — passage 2; [2] ssc admit card.pdf — passage 3"
+    )
+    spoken = normalize_text_for_tts(full_response)
+    assert "Sources" not in spoken
+    assert "admit card" not in spoken
+    assert "passage" not in spoken
+    assert "registration number" in spoken

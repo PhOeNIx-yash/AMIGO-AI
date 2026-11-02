@@ -325,29 +325,55 @@ def _tool_play_youtube(params, query, spoken):
 
 
 def _tool_get_current_media(params, query, spoken):
-    live_media = _get_live_media_title_from_windows()
+    live_media = _get_live_media_title_from_windows(wait_if_cold=True)
     is_playing = _is_system_audio_playing()
 
     if live_media:
         raw_title, raw_artist, status = live_media
         clean_title = _RE_MEDIA_CLEAN_TITLE.sub("", raw_title).strip() if raw_title else ""
-        by_artist = f" by {raw_artist}" if raw_artist and raw_artist not in ("YouTube Music", "YouTube", "") and raw_artist.lower() not in clean_title.lower() else ""
+        by_artist = f" by {raw_artist}" if raw_artist and raw_artist.lower() not in clean_title.lower() else ""
         update_active_state("current_media", {"title": clean_title, "artist": raw_artist, "status": status.lower()})
         if status.lower() == "paused":
             return f"'{clean_title}'{by_artist} is paused.", None
         return f"Currently playing '{clean_title}'{by_artist}.", None
 
+    # Fallback 1: check direct system media info & active audio process windows
+    try:
+        sys_media = os_automation.get_system_media_info()
+        if sys_media and sys_media.get("title"):
+            clean_title = _RE_MEDIA_CLEAN_TITLE.sub("", sys_media["title"]).strip()
+            raw_artist = sys_media.get("artist", "")
+            by_artist = f" by {raw_artist}" if raw_artist and raw_artist.lower() not in clean_title.lower() else ""
+            status = sys_media.get("status", "playing")
+            update_active_state("current_media", {"title": clean_title, "artist": raw_artist, "status": status.lower()})
+            if status.lower() == "paused":
+                return f"'{clean_title}'{by_artist} is paused.", None
+            return f"Currently playing '{clean_title}'{by_artist}.", None
+    except Exception:
+        pass
+
+    # Fallback 2: check active assistant session and conversation history
+    last_played = get_last_played_song()
+    if last_played and last_played.get("title"):
+        clean_title = _RE_MEDIA_CLEAN_TITLE.sub("", last_played["title"]).strip()
+        raw_artist = last_played.get("artist", "")
+        by_artist = f" by {raw_artist}" if raw_artist and raw_artist.lower() not in clean_title.lower() else ""
+        if is_playing:
+            return f"Currently playing '{clean_title}'{by_artist}.", last_played.get("url")
+        return f"'{clean_title}'{by_artist} was played recently.", last_played.get("url")
+
+    state = get_active_state(clean_expired=True) or {}
+    media_state = state.get("current_media") or {}
+    title = media_state.get("title") or media_state.get("query") or ""
+    if title:
+        clean_title = _RE_MEDIA_CLEAN_TITLE.sub("", title).strip()
+        artist = media_state.get("artist") or ""
+        by_artist = f" by {artist}" if artist and artist.lower() not in clean_title.lower() else ""
+        if clean_title:
+            return f"Currently playing '{clean_title}'{by_artist}.", media_state.get("url")
+
     if is_playing:
-        state = get_active_state(clean_expired=True) or {}
-        media_state = state.get("current_media") or {}
-        if media_state.get("status") == "playing" and not media_state.get("stale"):
-            title = media_state.get("title") or media_state.get("query") or ""
-            artist = media_state.get("artist") or ""
-            clean_title = _RE_MEDIA_CLEAN_TITLE.sub("", title).strip()
-            by_artist = f" by {artist}" if artist and artist not in ("YouTube Music", "YouTube", "") and artist.lower() not in clean_title.lower() else ""
-            if clean_title:
-                return f"Currently playing '{clean_title}'{by_artist}.", media_state.get("url")
-        return "Audio is currently playing on your PC.", None
+        return "Audio is currently playing on your PC, but the track name could not be identified.", None
 
     return "No song or video is currently playing.", None
 
@@ -1493,7 +1519,7 @@ TOOL_DEFINITIONS = [
           {"query": _p("string", "Self-contained search query with pronouns resolved from conversation history"),
            "show_in_browser": _p("boolean", "True if user asked to open search results in a browser")}, ["query"]),
     _tool("stock_quote", "Look up real-time stock or crypto prices.", {"symbol": _p("string", "Ticker or asset name")}, ["symbol"]),
-    _tool("get_time", "Read the current local system time."),
+    _tool("get_time", "Read the current local system time on the clock."),
     _tool("get_date", "Read the current local date."),
     _tool("play_youtube", "Play songs, music, or videos on YouTube.",
           {"query": _p("string", "Exact song, video title, or music search query as spoken by the user. Do NOT invent, assume, or add artist names if the user did not say them.")},
@@ -1589,7 +1615,9 @@ ROUTING RULES:
 - Information Retrieval vs Navigation:
   * Questions about People, Figures, Creators, Online Facts, Companies, Concepts, or General Knowledge: Route to 'web_search' (e.g. "Who is X?", "What is quantum computing?", "Latest news on...", "Tell me about Y").
   * Questions about Local Documents: Route to 'document_qa' ONLY when the user explicitly asks about their personal files, local documents, invoices, resumes, spreadsheets, or indexed records on this PC (e.g. "what is in my invoice", "check my resume for X", "what does the document say"). Never route general knowledge or people questions to 'document_qa'.
-  * Weather and Time: Route to 'get_weather' and 'get_time'.
+  * Weather: Route to 'get_weather'.
+  * Clock Time ('get_time'): Use 'get_time' only when the user is asking what time it is on the clock. For general questions, status inquiries, or questions asking when an action occurred, route to 'chat'.
+  * Assistant Status & Capabilities ('chat'): Questions about the assistant itself, online/offline connectivity, readiness, or system state route to 'chat' (the active environment state is already provided in the runtime context).
 - Opening Files: When the user asks to open, view, or launch a file or document, route to 'open_file' with params['path'].
 - Screen & Display: Route to 'read_screen' ONLY when the user explicitly asks about their computer screen, monitor, active window, GUI, or visual display (e.g. "what's on my screen", "read my screen", "look at this window"). Never route logic riddles, hypothetical scenarios, or physical object questions to 'read_screen'.
 - Spoken Dialogue, Riddles & Logic ('chat'): Use 'chat' for conversational greetings, chit-chat, opinions, advice, math problems, hypothetical physics scenarios, and logic riddles.

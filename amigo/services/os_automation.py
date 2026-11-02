@@ -861,13 +861,30 @@ def _media_info_via_winrt():
 
     async def _query():
         mgr = await Manager.request_async()
-        session = mgr.get_current_session()
-        if session is None:
-            return None
-        props = await session.try_get_media_properties_async()
-        status = session.get_playback_info().playback_status
-        status = getattr(status, "name", str(status)).lower()
-        return {"status": status, "title": props.title or "", "artist": props.artist or ""}
+        sessions = []
+        try:
+            curr = mgr.get_current_session()
+            if curr:
+                sessions.append(curr)
+        except Exception:
+            pass
+        try:
+            for s in (mgr.get_sessions() or []):
+                if s not in sessions:
+                    sessions.append(s)
+        except Exception:
+            pass
+
+        for session in sessions:
+            try:
+                props = await session.try_get_media_properties_async()
+                if props and props.title:
+                    info = session.get_playback_info()
+                    status = getattr(info.playback_status, "name", str(info.playback_status)).lower()
+                    return {"status": status, "title": props.title, "artist": props.artist or ""}
+            except Exception:
+                continue
+        return None
 
     # Own thread + loop: asyncio.run() raises if the assistant already has a running loop.
     pool = ThreadPoolExecutor(max_workers=1)
@@ -898,21 +915,65 @@ def _media_info_via_script():
     return {"status": status.lower(), "title": title, "artist": artist}
 
 
+def _media_info_via_active_audio_window() -> dict | None:
+    """Structurally resolves media title from the visible window of whatever process is actively emitting audio."""
+    try:
+        import pythoncom
+        from pycaw.pycaw import AudioUtilities, IAudioMeterInformation
+        pythoncom.CoInitialize()
+        active_pids: set[int] = set()
+        try:
+            for s in AudioUtilities.GetAllSessions():
+                if s.Process:
+                    try:
+                        if s._ctl.QueryInterface(IAudioMeterInformation).GetPeakValue() > 0.0005:
+                            active_pids.add(s.Process.pid)
+                    except Exception:
+                        pass
+        finally:
+            pythoncom.CoUninitialize()
+
+        if not active_pids:
+            return None
+
+        for _, pid, raw_t, _ in _enum_visible_windows():
+            if pid in active_pids and raw_t and len(raw_t.strip()) > 1:
+                t = raw_t.strip()
+                # Windows standard application title structure: "<Content / Track> - <App>"
+                if " - " in t:
+                    parts = t.split(" - ")
+                    if len(parts) >= 2:
+                        t = " - ".join(parts[:-1]).strip()
+                # Clean pipe/bullet-delimited web video channel/label tags (e.g. "Track | Channel | Label")
+                if " | " in t:
+                    pipe_parts = [p.strip() for p in t.split(" | ") if p.strip()]
+                    if pipe_parts:
+                        t = pipe_parts[0]
+                elif " • " in t:
+                    dot_parts = [p.strip() for p in t.split(" • ") if p.strip()]
+                    if dot_parts:
+                        t = dot_parts[0]
+                return {"status": "playing", "title": t.strip(), "artist": ""}
+    except Exception:
+        pass
+    return None
+
+
 def get_system_media_info() -> dict | None:
     """Real-time media title, artist and playback status from Windows' media
-    transport controls. Prefers the in-process API; falls back to get_media.ps1."""
+    transport controls. Prefers the in-process API; falls back to get_media.ps1 and active audio window inspection."""
     if not _IS_WINDOWS:
         return None
-    for source in (_media_info_via_winrt, _media_info_via_script):
+    for source in (_media_info_via_winrt, _media_info_via_script, _media_info_via_active_audio_window):
         try:
             info = source()
         except Exception as exc:
-            log.warning("Media query via %s failed: %s", source.__name__, exc)
+            log.debug("Media query via %s failed: %s", source.__name__, exc)
             continue
         if info is _UNAVAILABLE:
             continue
-        return info if info and info.get("title") else None
-    log.info("No media backend available (install `winsdk` or provide %s)", MEDIA_SCRIPT.name)
+        if info and info.get("title"):
+            return info
     return None
 
 

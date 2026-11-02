@@ -1,6 +1,6 @@
 """
 LLM-Based Agent for Amigo Voice Assistant.
-Clean, streamlined inference engine for LFM 3 1.7B:
+Clean, streamlined inference engine for LFM 3 Omni:
 - Direct GGUF inference via llama-cpp-python on RTX 3050 GPU (with CPU fallback)
 - Fast KV-cache reuse with unified system prompt prefix
 - Multi-turn conversation context and RAG profile integration
@@ -232,12 +232,25 @@ def get_clipboard_text() -> str | None:
     return None
 
 
+_turn_context_cache: tuple[float, tuple, str] | None = None
+_turn_context_lock = threading.Lock()
+
+
 def build_turn_runtime_context(
     query: str,
     web_context: str = "",
     doc_context: str = "",
     pending_confirmation: str = "",
 ) -> str:
+    global _turn_context_cache
+    now_ts = time.time()
+    cache_key = (query.strip(), bool(web_context), bool(doc_context), pending_confirmation.strip())
+    with _turn_context_lock:
+        if _turn_context_cache is not None:
+            c_time, c_key, c_val = _turn_context_cache
+            if (now_ts - c_time < 3.0) and (c_key == cache_key):
+                return c_val
+
     ctx_blocks: list[str] = []
     now = datetime.datetime.now()
     net_status, online = _get_internet_status()
@@ -265,7 +278,10 @@ def build_turn_runtime_context(
     if doc_context:
         ctx_blocks.append(f"[Retrieved Local Context]:\n{doc_context}")
 
-    return "\n\n".join(ctx_blocks)
+    res = "\n\n".join(ctx_blocks)
+    with _turn_context_lock:
+        _turn_context_cache = (now_ts, cache_key, res)
+    return res
 
 
 def build_unified_history_messages(
@@ -315,33 +331,39 @@ def _build_ai_messages(
 # ── Model Configuration & Lifecycle ────────────────────────────
 
 MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "models"))
-MODEL_NAME = "LFM 3 1.7B"
-MODEL_FILENAME = "LFM3-1.7B-Q4_K_M.gguf"
+MODEL_NAME = "LFM 3 Omni 2B"
+MODEL_FILENAME = "LFM3-Omni-2B-Q4_K_M.gguf"
 MODEL_PATH = os.path.join(MODEL_DIR, MODEL_FILENAME)
 MODEL_TARGETS = [
-    ("LiquidAI/LFM3-1.7B-GGUF", "LFM3-1.7B-Q4_K_M.gguf"),
-    ("bartowski/LFM-3-1.7B-GGUF", "LFM-3-1.7B-Q4_K_M.gguf"),
+    ("LiquidAI/LFM3-Omni-2B-GGUF", "LFM3-Omni-2B-Q4_K_M.gguf"),
+    ("ggml-org/LFM3-Omni-2B-GGUF", "LFM3-Omni-2B-Q4_K_M.gguf"),
 ]
 
 STOP_TOKENS = ["<eos>", "<turn|>", "<|turn|>", "<|endoftext|>", "<|im_end|>", "<|im_start|>", "<|eot_id|>"]
 
 AVAILABLE_MODELS = {
-    "lfm-3-1.7b": {
-        "key": "lfm-3-1.7b",
-        "name": "LFM 3 1.7B",
-        "repo": "LiquidAI/LFM3-1.7B-GGUF",
-        "filename": "LFM3-1.7B-Q4_K_M.gguf",
-        "path": os.path.join(MODEL_DIR, "LFM3-1.7B-Q4_K_M.gguf"),
+    "lfm-3-omni": {
+        "key": "lfm-3-omni",
+        "name": "LFM 3 Omni 2B",
+        "repo": "LiquidAI/LFM3-Omni-2B-GGUF",
+        "filename": "LFM3-Omni-2B-Q4_K_M.gguf",
+        "path": os.path.join(MODEL_DIR, "LFM3-Omni-2B-Q4_K_M.gguf"),
+        "mmproj_filename": "mmproj-LFM3-Omni-2B-Q4_K_M.gguf",
+        "mmproj_path": os.path.join(MODEL_DIR, "mmproj-LFM3-Omni-2B-Q4_K_M.gguf"),
         "targets": [
-            ("LiquidAI/LFM3-1.7B-GGUF", "LFM3-1.7B-Q4_K_M.gguf"),
-            ("bartowski/LFM-3-1.7B-GGUF", "LFM-3-1.7B-Q4_K_M.gguf"),
+            ("LiquidAI/LFM3-Omni-2B-GGUF", "LFM3-Omni-2B-Q4_K_M.gguf"),
+            ("ggml-org/LFM3-Omni-2B-GGUF", "LFM3-Omni-2B-Q4_K_M.gguf"),
         ],
-        "downloaded": os.path.exists(os.path.join(MODEL_DIR, "LFM3-1.7B-Q4_K_M.gguf")) and os.path.getsize(os.path.join(MODEL_DIR, "LFM3-1.7B-Q4_K_M.gguf")) > 500_000_000,
+        "mmproj_targets": [
+            ("LiquidAI/LFM3-Omni-2B-GGUF", "mmproj-LFM3-Omni-2B-Q4_K_M.gguf"),
+            ("ggml-org/LFM3-Omni-2B-GGUF", "mmproj-LFM3-Omni-2B-Q4_K_M.gguf"),
+        ],
+        "downloaded": os.path.exists(os.path.join(MODEL_DIR, "LFM3-Omni-2B-Q4_K_M.gguf")) and os.path.getsize(os.path.join(MODEL_DIR, "LFM3-Omni-2B-Q4_K_M.gguf")) > 500_000_000,
         "size_gb": 1.10,
     },
 }
 
-_active_model_key = "lfm-3-1.7b"
+_active_model_key = "lfm-3-omni"
 _local_llm_instance = None
 _model_load_failed = False
 _model_load_error = None
@@ -469,7 +491,9 @@ def get_model_path() -> str:
 
 
 def is_vision_ready() -> bool:
-    return False
+    active_info = AVAILABLE_MODELS.get(_active_model_key, {})
+    mmproj = active_info.get("mmproj_path", "")
+    return bool(mmproj and os.path.exists(mmproj) and os.path.getsize(mmproj) > 50_000_000)
 
 
 def ensure_model_downloaded() -> str:
@@ -477,7 +501,7 @@ def ensure_model_downloaded() -> str:
     if os.path.exists(path) and os.path.getsize(path) > 500_000_000:
         return path
     m_info = AVAILABLE_MODELS.get(_active_model_key, {})
-    repo = m_info.get("repo", "LiquidAI/LFM3-1.7B-GGUF")
+    repo = m_info.get("repo", "LiquidAI/LFM3-Omni-2B-GGUF")
     filename = m_info.get("filename", MODEL_FILENAME)
     logger.info("Downloading %s (%s) to %s...", m_info.get("name", "Model"), filename, path)
     os.makedirs(MODEL_DIR, exist_ok=True)
@@ -594,7 +618,7 @@ def get_available_models() -> dict:
     return AVAILABLE_MODELS
 
 
-def set_active_model(model_key: str = "lfm-3-1.7b") -> bool:
+def set_active_model(model_key: str = "lfm-3-omni") -> bool:
     global _active_model_key, _local_llm_instance, _LLM_CONFIG
     if model_key not in AVAILABLE_MODELS:
         return False

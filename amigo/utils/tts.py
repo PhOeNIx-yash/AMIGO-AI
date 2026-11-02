@@ -417,6 +417,8 @@ _RE_URL = re.compile(r'https?://\S+|www\.\S+', re.IGNORECASE)
 _RE_CONSECUTIVE_DOTS = re.compile(r'\.{2,}')
 _RE_WHITESPACE = re.compile(r'\s+')
 _RE_SPECIAL_CHARS = re.compile(r'[*_~`#<>{}[\]\\]')
+_RE_SOURCES_BLOCK = re.compile(r'(?:\n+|\s+)(?:\[?(?:Sources?|References?|Citations?)\]?\s*:)\s*[\s\S]*$', re.IGNORECASE)
+_RE_INLINE_CITATION = re.compile(r'\[(?:\d+|Source\s*\d+[^\]]*)\]', re.IGNORECASE)
 
 
 def _extract_text_from_json(text: str) -> str:
@@ -479,6 +481,10 @@ def normalize_text_for_tts(text: str) -> str:
     except Exception:
         pass
     t = _extract_text_from_json(text)
+
+    # Strip bibliographic/sources blocks so citations are displayed in UI but not read aloud by TTS
+    t = _RE_SOURCES_BLOCK.sub('', t).strip()
+    t = _RE_INLINE_CITATION.sub('', t)
 
     # 1. Markdown tables to natural conversational speech
     t = re.sub(r'\|\s*\|+', '|\n|', t)

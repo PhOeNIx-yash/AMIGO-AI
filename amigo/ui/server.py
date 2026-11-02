@@ -222,8 +222,8 @@ def get_active_model_info() -> dict:
         models = get_llm_available_models() or {}
         info = next(iter(models.values()), {})
 
-    name = info.get("name", "LFM 3 1.7B")
-    key = info.get("key", "lfm-3-1.7b")
+    name = info.get("name", "LFM 3 Omni 2B")
+    key = info.get("key", "lfm-3-omni")
     vision_ok = is_vision_ready()
     ctx_len = int(os.getenv("AMIGO_LLM_N_CTX", "8192"))
     return {
@@ -244,7 +244,7 @@ def get_active_model_info() -> dict:
 
 def get_available_models() -> list[dict]:
     try:
-        active_key = get_active_model_info().get("key", "lfm-3-1.7b")
+        active_key = get_active_model_info().get("key", "lfm-3-omni")
         return [
             {
                 "key": k,
@@ -256,7 +256,7 @@ def get_available_models() -> list[dict]:
         ]
     except Exception:
         return [
-            {"key": "lfm-3-1.7b", "name": "LFM 3 1.7B", "status": "active", "type": "local"},
+            {"key": "lfm-3-omni", "name": "LFM 3 Omni 2B", "status": "active", "type": "local"},
         ]
 
 
@@ -492,7 +492,7 @@ def index():
     return jsonify({
         "status": "online",
         "service": "Amigo AI Engine & Windows 11 Voice Assistant Backend",
-        "model": info.get("name", "LFM 3 1.7B"),
+        "model": info.get("name", "LFM 3 Omni 2B"),
     })
 
 
@@ -599,7 +599,7 @@ def api_assistant_process():
         return jsonify({
             "status": "online",
             "message": "Amigo AI Engine online",
-            "model": info.get("name", "LFM 3 1.7B"),
+            "model": info.get("name", "LFM 3 Omni 2B"),
             "version": "Windows 11 Voice Assistant",
         })
 
@@ -659,6 +659,8 @@ def api_assistant_process():
     response_text = _extract_text_from_json(response_text)
     speech_reply = response_text or (get_quick_feedback(f"starting {tool.replace('_', ' ')}") if tool not in _SILENT_TOOLS else "")
     speech_reply = _extract_text_from_json(speech_reply)
+    speech_reply = re.sub(r'(?:\n+|\s+)(?:\[?(?:Sources?|References?|Citations?)\]?\s*:)\s*[\s\S]*$', '', speech_reply, flags=re.IGNORECASE).strip()
+    speech_reply = re.sub(r'\[(?:\d+|Source\s*\d+[^\]]*)\]', '', speech_reply, flags=re.IGNORECASE)
     if "matching file" in speech_reply and "\n" in speech_reply:
         m_count = _RE_FILE_MATCH_COUNT.search(speech_reply)
         c_num = m_count.group(1) if m_count else "some"
@@ -953,8 +955,8 @@ def handle_settings():
         "user_profile": u_prof,
         "user_name": get_current_user_name(),
         "voice": curr_voice,
-        "model": info.get("key", "lfm-3-1.7b"),
-        "model_name": info.get("name", "LFM 3 1.7B"),
+        "model": info.get("key", "lfm-3-omni"),
+        "model_name": info.get("name", "LFM 3 Omni 2B"),
         "thinking_enabled": is_thinking_enabled(),
         "available_models": get_available_models(),
         "available_voices": get_voice_catalog(),
@@ -1425,3 +1427,4 @@ if __name__ == "__main__":
     print("==================================================")
     initialize_amigo_async()
     launch_server(port=5000, open_browser=True)
+
