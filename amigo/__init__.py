@@ -74,8 +74,37 @@ from amigo.services.screen_vision import read_text_from_image, analyze_image, ca
 from amigo.services.web_search import search_web
 from amigo.services.weather import get_weather_data
 
-from amigo.ui.server import launch_server, app
-from amigo.ui.hotkey_service import start_hotkey_service, is_hotkey_service_running
+from amigo.core.task_agent import (
+    AutonomousAgent,
+    run_autonomous_agent,
+    decompose_task,
+    execute_command,
+    execute_python,
+    read_file_content,
+    write_file_content,
+    edit_file_content,
+    list_dir_contents,
+    fetch_web_page,
+)
+
+# Lazy UI and server forwarders to eliminate circular imports
+def launch_server(*args, **kwargs):
+    from amigo.ui.server import launch_server as _fn
+    return _fn(*args, **kwargs)
+
+def start_hotkey_service(*args, **kwargs):
+    from amigo.ui.hotkey_service import start_hotkey_service as _fn
+    return _fn(*args, **kwargs)
+
+def is_hotkey_service_running(*args, **kwargs):
+    from amigo.ui.hotkey_service import is_hotkey_service_running as _fn
+    return _fn(*args, **kwargs)
+
+def __getattr__(name):
+    if name == "app":
+        from amigo.ui.server import app as _app
+        return _app
+    raise AttributeError(f"module 'amigo' has no attribute '{name}'")
 
 from amigo.utils.tts import speak, stop_speaking, set_tts_callbacks, get_tts_engine_name, transcribe_b64
 from amigo.utils.tool_registry import UI_TOOL_HANDLERS, build_action_cards, execute_tool, set_media_update_callback
@@ -161,6 +190,17 @@ __all__ = [
     "capture_screen_image",
     "search_web",
     "get_weather_data",
+    # Autonomous Agent
+    "AutonomousAgent",
+    "run_autonomous_agent",
+    "decompose_task",
+    "execute_command",
+    "execute_python",
+    "read_file_content",
+    "write_file_content",
+    "edit_file_content",
+    "list_dir_contents",
+    "fetch_web_page",
     # UI
     "launch_server",
     "app",

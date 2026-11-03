@@ -943,17 +943,8 @@ def _media_info_via_active_audio_window() -> dict | None:
                 if " - " in t:
                     parts = t.split(" - ")
                     if len(parts) >= 2:
-                        t = " - ".join(parts[:-1]).strip()
-                # Clean pipe/bullet-delimited web video channel/label tags (e.g. "Track | Channel | Label")
-                if " | " in t:
-                    pipe_parts = [p.strip() for p in t.split(" | ") if p.strip()]
-                    if pipe_parts:
-                        t = pipe_parts[0]
-                elif " • " in t:
-                    dot_parts = [p.strip() for p in t.split(" • ") if p.strip()]
-                    if dot_parts:
-                        t = dot_parts[0]
-                return {"status": "playing", "title": t.strip(), "artist": ""}
+                        return {"status": "playing", "title": " - ".join(parts[:-1]).strip(), "artist": ""}
+                return {"status": "playing", "title": t, "artist": ""}
     except Exception:
         pass
     return None

@@ -20,7 +20,7 @@ This document provides a comprehensive, transparent inventory of everything **Am
 
 ## 🛠️ Complete Tools & Actions Catalog
 
-Amigo exposes **38 distinct agent tools** partitioned across 10 functional domains.
+Amigo exposes **46 distinct agent tools** partitioned across 11 functional domains.
 
 ### 1. General Conversation & Knowledge
 | Tool Name | Parameters | Spoken/Voice Prompt Examples | What It Does |
@@ -136,6 +136,23 @@ Amigo exposes **38 distinct agent tools** partitioned across 10 functional domai
 | `draft_email` | `to`, `subject`, `prompt` | *"Draft email to team about Friday meeting"* | Composes an email draft directly in Outlook (never auto-sends). |
 | `get_calendar` | `days` (opt) | *"What's on my calendar today?"*, *"Check my schedule"* | Reads Outlook calendar appointments and meetings. |
 | `search_calendar` | `query` (str) | *"When is the project review meeting?"* | Searches Outlook calendar events by keyword. |
+
+---
+
+### 11. Autonomous Agent & Universal Primitives (Zero-Hardcoding Turing-Complete Automation) ⚡🤖
+Amigo features an **Autonomous ReAct Agent Loop** (`AutonomousAgent`) capable of executing multi-step goals step-by-step, inspecting outputs, self-correcting on errors, and completing open-ended tasks dynamically without hardcoded keyword rules.
+
+| Tool Name | Parameters | Spoken/Voice Prompt Examples | What It Does |
+|---|---|---|---|
+| `autonomous_agent` | `goal` (str) | *"Organize my downloads folder by file type"*, *"Diagnose why the dev server is failing, fix the file, and verify it runs"* | Runs an autonomous multi-step goal loop (Thought → Action → Observation → Self-Correction → Done). |
+| `run_command` | `command` (str), `cwd` (opt) | *"Run dir in PowerShell"*, *"Check git status"*, *"Install package via pip"*, *"Run tests"* | Executes PowerShell/shell commands with captured stdout, stderr, and exit codes. |
+| `run_python` | `code` (str) | *"Write a python script to calculate compound interest"*, *"Process this JSON data using Python"* | Executes arbitrary Python code dynamically in an isolated subprocess. |
+| `read_file` | `path` (str), `start_line` (opt), `end_line` (opt) | *"Read config.json"*, *"Show lines 1 to 50 of server.py"* | Reads text or code from any file on disk. |
+| `write_file` | `path` (str), `content` (str), `append` (opt) | *"Save this summary to notes.txt"*, *"Create script.py with content..."* | Writes or appends content to any file on disk with automatic folder creation. |
+| `edit_file` | `path` (str), `target` (str), `replacement` (str) | *"Replace port 5000 with 8000 in config.py"* | Performs precise string replacement inside a file. |
+| `list_directory` | `path` (opt) | *"What files are in my project folder?"*, *"List contents of Desktop"* | Lists files, directories, sizes, and file extensions. |
+| `fetch_web_page` | `url` (str) | *"Fetch data from api.example.com"*, *"Download content from this website"* | Fetches web page content, extracts clean text, and parses API responses. |
+| `register_tool` | `name`, `handler`, `description`, `parameters` | Programmatic API | Dynamically registers any new tool at runtime without modifying or hardcoding router code. |
 
 ---
 

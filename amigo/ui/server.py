@@ -337,6 +337,14 @@ def _process_query(
         "read_screen": ("Inspecting Screen", "Visual screen analysis"),
         "set_timer": ("Setting Timer", f"{first_params.get('duration', '')}s countdown"),
         "set_reminder": ("Setting Reminder", str(first_params.get("query") or "Reminder")),
+        "run_command": ("Executing Command", str(first_params.get("command") or clean_user_query)[:35]),
+        "run_python": ("Running Python Code", "Dynamic code execution"),
+        "read_file": ("Reading File", str(first_params.get("path") or "File system")[:35]),
+        "write_file": ("Writing File", str(first_params.get("path") or "File system")[:35]),
+        "edit_file": ("Modifying File", str(first_params.get("path") or "File system")[:35]),
+        "list_directory": ("Scanning Folder", str(first_params.get("path") or "Directory")[:35]),
+        "fetch_web_page": ("Fetching Web Content", str(first_params.get("url") or "URL")[:35]),
+        "autonomous_agent": ("Autonomous Agent", str(first_params.get("goal") or clean_user_query)[:35]),
         "chat": ("Thinking", clean_user_query[:35] if clean_user_query else ""),
     }
     status_label, status_detail = _tool_label_map.get(first_tool.lower(), (first_tool.replace("_", " ").title(), ""))
