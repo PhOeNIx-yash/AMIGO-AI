@@ -1406,112 +1406,6 @@ def _tool_confirm_action(params, query, spoken):
     return execute_tool(pending["tool"], {**pending["params"], "confirmed": True}, query=pending["query"], spoken="")
 
 
-def _tool_run_command(params, query, spoken):
-    from amigo.core.task_agent import execute_command
-    cmd = (params or {}).get("command") or query
-    cwd = (params or {}).get("cwd")
-    res = execute_command(cmd, cwd=cwd)
-    stdout = res.get("stdout", "")
-    stderr = res.get("stderr", "")
-    code = res.get("exit_code", 0)
-    if res.get("success"):
-        msg = f"Command executed successfully (exit code 0).\n{stdout}" if stdout else "Command executed with no output."
-    else:
-        err = res.get("error") or stderr or f"Process exited with code {code}"
-        msg = f"Command failed: {err}"
-    return msg, None, {"command_result": res, "tool": "run_command"}
-
-
-def _tool_run_python(params, query, spoken):
-    from amigo.core.task_agent import execute_python
-    code = (params or {}).get("code") or query
-    res = execute_python(code)
-    stdout = res.get("stdout", "")
-    stderr = res.get("stderr", "")
-    if res.get("success"):
-        msg = f"Python output:\n{stdout}" if stdout else "Python code executed successfully."
-    else:
-        err = res.get("error") or stderr or "Execution failed"
-        msg = f"Python execution error: {err}"
-    return msg, None, {"python_result": res, "tool": "run_python"}
-
-
-def _tool_read_file(params, query, spoken):
-    from amigo.core.task_agent import read_file_content
-    path = (params or {}).get("path") or query
-    s_line = int((params or {}).get("start_line", 1) or 1)
-    e_line = (params or {}).get("end_line")
-    e_line = int(e_line) if e_line else None
-    res = read_file_content(path, start_line=s_line, end_line=e_line)
-    if res.get("success"):
-        msg = f"Read {res.get('total_lines')} lines from {path}:\n{res.get('content')}"
-    else:
-        msg = f"Could not read file: {res.get('error')}"
-    return msg, None, {"file_read": res, "tool": "read_file"}
-
-
-def _tool_write_file(params, query, spoken):
-    from amigo.core.task_agent import write_file_content
-    path = (params or {}).get("path") or ""
-    content = (params or {}).get("content", "")
-    append = bool((params or {}).get("append", False))
-    res = write_file_content(path, content, append=append)
-    if res.get("success"):
-        msg = f"Successfully wrote {res.get('bytes_written')} bytes to {path}."
-    else:
-        msg = f"Failed to write to file: {res.get('error')}"
-    return msg, None, {"file_write": res, "tool": "write_file"}
-
-
-def _tool_edit_file(params, query, spoken):
-    from amigo.core.task_agent import edit_file_content
-    path = (params or {}).get("path") or ""
-    target = (params or {}).get("target", "")
-    replacement = (params or {}).get("replacement", "")
-    res = edit_file_content(path, target, replacement)
-    if res.get("success"):
-        msg = f"Updated {path} ({res.get('replacements_made')} replacement(s))."
-    else:
-        msg = f"Failed to edit file: {res.get('error')}"
-    return msg, None, {"file_edit": res, "tool": "edit_file"}
-
-
-def _tool_list_directory(params, query, spoken):
-    from amigo.core.task_agent import list_dir_contents
-    path = (params or {}).get("path", ".")
-    res = list_dir_contents(path)
-    if res.get("success"):
-        items = res.get("items", [])
-        lines = [f"Contents of {res.get('path')} ({len(items)} items):"]
-        for it in items:
-            prefix = "[DIR] " if it["is_dir"] else "      "
-            size_str = f"({it['size']} bytes)" if not it["is_dir"] else ""
-            lines.append(f"  {prefix}{it['name']} {size_str}")
-        msg = "\n".join(lines)
-    else:
-        msg = f"Failed to list directory: {res.get('error')}"
-    return msg, None, {"directory_list": res, "tool": "list_directory"}
-
-
-def _tool_fetch_web_page(params, query, spoken):
-    from amigo.core.task_agent import fetch_web_page
-    url = (params or {}).get("url") or query
-    res = fetch_web_page(url)
-    if res.get("success"):
-        msg = f"Fetched {url}:\n{res.get('content')}"
-    else:
-        msg = f"Failed to fetch {url}: {res.get('error')}"
-    return msg, None, {"web_fetch": res, "tool": "fetch_web_page"}
-
-
-def _tool_autonomous_agent(params, query, spoken):
-    from amigo.core.task_agent import run_autonomous_agent
-    from dataclasses import asdict
-    goal = (params or {}).get("goal") or query
-    result = run_autonomous_agent(goal)
-    return result.final_answer, None, {"agent_result": asdict(result), "tool": "autonomous_agent"}
-
-
 def _tool_cancel_action(params, query, spoken):
     global _PENDING_CONFIRMATION
     had_pending = get_pending_confirmation() is not None
@@ -1519,22 +1413,17 @@ def _tool_cancel_action(params, query, spoken):
     return ("Okay, I won't do that." if had_pending else "Nothing to cancel."), None
 
 
+def _tool_get_clipboard(params, query, spoken):
+    from amigo.core.llm_agent import get_clipboard_text
+    clip = get_clipboard_text()
+    if clip:
+        return f"Clipboard content:\n{clip}", None, {"clipboard": clip}
+    return "The clipboard is currently empty.", None, {"clipboard": ""}
+
+
 UI_TOOL_HANDLERS = {
-    "run_command":        _tool_run_command,
-    "execute_command":    _tool_run_command,
-    "terminal":           _tool_run_command,
-    "run_python":         _tool_run_python,
-    "execute_python":     _tool_run_python,
-    "code_interpreter":   _tool_run_python,
-    "read_file":          _tool_read_file,
-    "write_file":         _tool_write_file,
-    "edit_file":          _tool_edit_file,
-    "list_directory":     _tool_list_directory,
-    "list_dir":           _tool_list_directory,
-    "fetch_web_page":     _tool_fetch_web_page,
-    "fetch_page":         _tool_fetch_web_page,
-    "autonomous_agent":   _tool_autonomous_agent,
-    "autonomous_task":    _tool_autonomous_agent,
+    "get_clipboard":         _tool_get_clipboard,
+    "get_clipboard_content": _tool_get_clipboard,
     "web_search":         _tool_web_search,
     "open_website":       _tool_open_website,
     "show_images":        _tool_show_images,
@@ -1645,13 +1534,13 @@ TOOL_DEFINITIONS = [
     _tool("stock_quote", "Look up real-time stock or crypto prices.", {"symbol": _p("string", "Ticker or asset name")}, ["symbol"]),
     _tool("get_time", "Read the current local system time on the clock."),
     _tool("get_date", "Read the current local date."),
-    _tool("play_youtube", "Play songs, music, or videos on YouTube.",
+    _tool("play_youtube", "Search and play songs, music, or videos on YouTube. Do NOT use to skip, advance, or go to next or previous track.",
           {"query": _p("string", "Exact song, video title, or music search query as spoken by the user. Do NOT invent, assume, or add artist names if the user did not say them.")},
           ["query"]),
     _tool("resume_media", "Resume paused audio/video playback."),
     _tool("pause_media", "Pause currently playing audio/video."),
-    _tool("next_track", "Advance active media playback."),
-    _tool("prev_track", "Go to previous track."),
+    _tool("next_track", "Advance active media playback to the next track or song (e.g. 'next song', 'skip track', 'skip song'). NEVER route 'next song' to play_youtube."),
+    _tool("prev_track", "Return to the previous track or song in active media playback (e.g. 'previous track', 'previous song', 'go back a song'). Do not ask questions; invoke immediately."),
     _tool("current_media", "Report the title and playback state of currently playing or paused media on the PC."),
     _tool("set_volume", "Control system audio volume (mute, unmute, volume_up, volume_down, set_volume).",
           {"action": _p("string", "mute | unmute | volume_up | volume_down | set_volume"), "level": _p("integer", "0-100")}),
@@ -1698,29 +1587,7 @@ TOOL_DEFINITIONS = [
     _tool("open_website", "Open or navigate to a website or URL in the default browser ONLY when the user explicitly commands to visit, launch, or open a website. NEVER use for conversational questions, invitations, or opinions ('want to watch?', 'do you want to see it?').",
           {"url": _p("string", "Website URL or domain to open in browser"),
            "title": _p("string", "Short title of the site")}, ["url"]),
-    _tool("run_command", "Run a PowerShell or terminal command to inspect the system, manage files, install software, run scripts, or perform any Windows task.",
-          {"command": _p("string", "The exact command line string to execute"),
-           "cwd": _p("string", "Optional working directory path")}, ["command"]),
-    _tool("run_python", "Execute arbitrary Python code in an isolated environment to perform calculations, data analysis, file automation, web scraping, custom logic, or script execution.",
-          {"code": _p("string", "The complete Python code to execute")}, ["code"]),
-    _tool("read_file", "Read text or code from a file on the computer.",
-          {"path": _p("string", "Absolute or relative path to the file"),
-           "start_line": _p("integer", "Line number to start reading from"),
-           "end_line": _p("integer", "Line number to stop reading at")}, ["path"]),
-    _tool("write_file", "Create a new file, save text, or write content to a file on disk. Always use this to create or save files.",
-          {"path": _p("string", "Target file path"),
-           "content": _p("string", "Content to write to the file"),
-           "append": _p("boolean", "True to append to the end of the file")}, ["path", "content"]),
-    _tool("edit_file", "Replace an exact target snippet in a file with new replacement text.",
-          {"path": _p("string", "File path to modify"),
-           "target": _p("string", "Exact text to find and replace"),
-           "replacement": _p("string", "New text to insert")}, ["path", "target", "replacement"]),
-    _tool("list_directory", "List files and subfolders in any folder on the computer.",
-          {"path": _p("string", "Path to the folder to list (defaults to current directory)")}),
-    _tool("fetch_web_page", "Fetch and extract text content from any web page URL or API.",
-          {"url": _p("string", "URL to fetch")}, ["url"]),
-    _tool("autonomous_agent", "Execute a complex multi-step autonomous task requiring iterative planning, execution, and verification.",
-          {"goal": _p("string", "Complete description of the goal to achieve")}, ["goal"]),
+    _tool("get_clipboard", "Read the current text content from the Windows clipboard."),
     _tool("stop", "Stop active speech, responses, or media playback. Use when user says 'stop', 'quiet', 'pause', 'stop talking', or 'stop amigo'. Do not close or exit Amigo."),
     _tool("exit", "Permanently quit or exit the Amigo assistant process. Only use when user explicitly commands 'exit amigo', 'quit amigo', or 'shut down amigo'. NEVER use for 'stop'."),
 ]
@@ -1768,8 +1635,7 @@ def _tools_block() -> str:
 _MASTER_SYSTEM_PROMPT = """You are Amigo, a friendly, intelligent, and capable personal AI voice and desktop assistant on the user's Windows PC.
 
 CORE RULES:
-- IMPORTANT: You HAVE FULL ACCESS to the user's local Windows PC, terminal, Git repository, Python interpreter, filesystem, and internet via tools.
-- NEVER refuse by claiming 'I don't have access to your repository/files/terminal/internet' or 'You need to run this in your terminal'. Instead, ALWAYS call the appropriate tool (run_command, run_python, autonomous_agent, fetch_web_page) to execute the task directly!
+- IMPORTANT: You have full access to control Windows apps, playback, system state, web search, weather, notes, reminders, and local documents via tools.
 - State the direct answer or solution immediately in the first sentence.
 - Keep responses concise and natural (1 to 3 sentences) unless the user asks for detailed explanations, lists, or code.
 - Never use robotic filler phrases like 'Certainly!', 'Sure thing!', 'As an AI', or 'According to search results'.
@@ -1785,7 +1651,8 @@ ROUTING RULES:
 - Route by understanding the user's intent.
 - Launching Apps vs Websites: When the user asks to open or launch an application or program (e.g. Chrome, Notepad, Spotify, Calculator), route to 'open_app'. Route to 'open_website' only when the user explicitly requests to visit a web URL or domain (e.g. https://...).
 - Information Retrieval vs Navigation:
-  * Questions about People, Figures, Creators, Online Facts, Companies, Concepts, or General Knowledge: Route to 'web_search' (e.g. "Who is X?", "What is quantum computing?", "Latest news on...", "Tell me about Y").
+  * Questions about Current Events, Online News, Real-Time Web Lookups, or Public Web Info: Route to 'web_search'.
+  * Conceptual Explanations, General Questions, Science, Reasoning, or Riddles ('explain quantum computing', 'tell me a joke', 'how does photosynthesis work'): Route to 'chat'.
   * Questions about Local Documents: Route to 'document_qa' ONLY when the user explicitly asks about their personal files, local documents, invoices, resumes, spreadsheets, or indexed records on this PC (e.g. "what is in my invoice", "check my resume for X", "what does the document say"). Never route general knowledge or people questions to 'document_qa'.
   * Weather: Route to 'get_weather'.
   * Clock Time ('get_time'): Use 'get_time' only when the user is asking what time it is on the clock. For general questions, status inquiries, or questions asking when an action occurred, route to 'chat'.
@@ -1794,14 +1661,31 @@ ROUTING RULES:
 - Screen & Display: Route to 'read_screen' ONLY when the user explicitly asks about their computer screen, monitor, active window, GUI, or visual display (e.g. "what's on my screen", "read my screen", "look at this window"). Never route logic riddles, hypothetical scenarios, or physical object questions to 'read_screen'.
 - Spoken Dialogue, Riddles & Logic ('chat'): Use 'chat' for conversational greetings, chit-chat, opinions, advice, math problems, hypothetical physics scenarios, and logic riddles.
 - Conversational Inquiries & Invitations: Questions like "want to watch?", "do you want to watch it?", "what do you think?", or compliments like "what an amazing movie" are conversational dialogue—route to 'chat'. Never route them to 'open_website' or 'open_app'.
-- Media & Playback: For media requests ('play_youtube'), pass the exact media title or query in params['query']. Use 'resume_media', 'pause_media', 'next_track', 'prev_track' for playback controls.
+- Media & Playback:
+  * To play music or videos: route to 'play_youtube' with params['query'].
+  * To pause media or music ('pause the music', 'pause playback'): route to 'pause_media'.
+  * To resume playback ('resume playback', 'resume music'): route to 'resume_media'.
+  * To advance or skip tracks or songs ('next song', 'skip track', 'next track', 'skip song'): ALWAYS route to 'next_track'. NEVER route 'next song' to 'play_youtube'.
+  * To return to previous track or song ('previous track', 'previous song', 'go back a song'): ALWAYS route to 'prev_track'. NEVER ask clarification questions.
+  * To check what track is currently playing ('what song is playing'): route to 'current_media'.
+- Volume Control ('set_volume'):
+  * Setting volume to a specific percentage/number ('set volume to 50'): route to 'set_volume' with {"action": "set_volume", "level": 50}.
+  * Muting volume ('mute the volume'): route to 'set_volume' with {"action": "mute"}.
+  * Turning volume up/down ('turn up the volume', 'turn down the volume'): route to 'set_volume' with {"action": "volume_up"} or {"action": "volume_down"}.
+- System Control & Power:
+  * Putting PC to sleep ('put pc to sleep', 'sleep pc'): route to 'sleep_pc'.
+  * Locking PC ('lock my pc'): route to 'lock_pc'.
+  * Restarting PC ('restart computer'): route to 'restart_pc'.
+  * System hardware status ('check system status'): route to 'system_status'.
+  * Screenshot ('take a screenshot'): route to 'take_screenshot'.
+  * Empty recycle bin ('empty recycle bin'): route to 'empty_recycle_bin'.
+- Calendar & Email:
+  * Checking calendar ('check my calendar'): route to 'get_calendar'.
+  * Checking unread emails ('check unread emails'): route to 'unread_emails'.
 - Stopping vs Closing vs Exiting:
-  * Halting Speech or Playback ('stop'): When the user asks to stop, be quiet, pause speech, halt audio/music, or stop talking (e.g. "stop", "stop speaking", "be quiet", "pause playback"), route to 'stop'. 'stop' halts speech and pauses media without closing any window or exiting.
+  * Halting Speech ('stop'): When the user asks to stop talking, be quiet, or pause speech (e.g. "stop", "stop speaking", "be quiet", "shut up"), route to 'stop'.
   * Closing Windows & Apps ('close_app'): Use 'close_app' ONLY when the user explicitly commands to close a specific third-party program or window (e.g. "close chrome", "close notepad", "close spotify"). Never use 'close_app' to stop speech or close Amigo.
   * Exiting the Assistant ('exit'): Use 'exit' ONLY when the user explicitly commands to terminate, quit, or shut down Amigo entirely (e.g. "exit amigo", "quit assistant", "shut down amigo").
-- Terminal & Shell Commands: When the user asks to run terminal, PowerShell, shell, or CLI commands (e.g. git commands, system status commands, process checks), route to 'run_command'.
-- Complex Multi-Step Goals & Automation ('autonomous_agent'): When the user asks for open-ended or multi-step tasks requiring planning, research, creating files, or compound workflows, route to 'autonomous_agent' with params['goal'].
-- Python Execution ('run_python'): When the user asks to write and run Python code or compute data with Python, route to 'run_python'.
 - System Actions & Confirmations: If an action is pending user confirmation and the user affirms ('yes', 'sure'), call 'confirm_action'. If the user declines ('no', 'cancel'), call 'cancel_action'.
 
 OUTPUT FORMAT:
@@ -1840,6 +1724,21 @@ User: want to watch?
 {"actions": [{"tool": "chat", "params": {}}]}
 
 User: what an amazing movie
+{"actions": [{"tool": "chat", "params": {}}]}
+
+User: next song
+{"actions": [{"tool": "next_track", "params": {}}]}
+
+User: previous track
+{"actions": [{"tool": "prev_track", "params": {}}]}
+
+User: what song is playing
+{"actions": [{"tool": "current_media", "params": {}}]}
+
+User: turn down the volume
+{"actions": [{"tool": "set_volume", "params": {"action": "volume_down"}}]}
+
+User: explain quantum computing
 {"actions": [{"tool": "chat", "params": {}}]}"""
 
 _MASTER_PROMPT_CACHE: str | None = None
@@ -2256,9 +2155,13 @@ def execute_actions(
         spoken = action.get("speak", "") or params.get("speak", "") or params.get("reply", "") or params.get("response", "")
 
         if last_tool_output:
-            for key in ("text", "context", "prompt"):
-                if not params.get(key):
-                    if key in params or (key == "text" and tool in ("type_text", "search_and_type", "insert_content")) or (key in ("context", "prompt") and tool in ("draft_email", "generate_content")):
+            for key in ("content", "text", "context", "prompt", "query", "code", "data"):
+                if key in params and not params.get(key):
+                    params[key] = last_tool_output
+                    break
+            else:
+                for key in ("content", "text", "context", "prompt"):
+                    if not params.get(key):
                         params[key] = last_tool_output
                         break
 
@@ -2400,56 +2303,6 @@ def build_action_cards(tool: str, params: dict, result_metadata: dict, url: str 
             "selected": True,
             "badge": "Web Link",
             "payload": {"tool": "open_website", "url": target_url, "title": display_title},
-        })
-
-    elif tool in ("run_command", "execute_command"):
-        cmd_res = result_metadata.get("command_result") or {}
-        code = cmd_res.get("exit_code", 0)
-        dur = cmd_res.get("duration_s", 0)
-        cards.append({
-            "id": "act-command",
-            "type": "command",
-            "title": f"Terminal: {params.get('command', 'Command')[:45]}",
-            "subtitle": f"Exit code {code} ({dur}s)",
-            "selected": True,
-            "badge": f"Exit {code}",
-            "payload": {"tool": "run_command", **cmd_res},
-        })
-
-    elif tool in ("run_python", "execute_python"):
-        py_res = result_metadata.get("python_result") or {}
-        cards.append({
-            "id": "act-python",
-            "type": "code",
-            "title": "Python Execution",
-            "subtitle": (py_res.get("stdout") or response_text)[:120],
-            "selected": True,
-            "badge": "Python",
-            "payload": {"tool": "run_python", **py_res},
-        })
-
-    elif tool in ("read_file", "write_file", "edit_file", "list_directory"):
-        cards.append({
-            "id": "act-file-op",
-            "type": "file",
-            "title": f"File System: {tool.replace('_', ' ').title()}",
-            "subtitle": response_text[:120],
-            "selected": True,
-            "badge": "Files",
-            "payload": {"tool": tool, **result_metadata},
-        })
-
-    elif tool == "autonomous_agent":
-        agent_data = result_metadata.get("agent_result") or {}
-        steps_count = len(agent_data.get("steps") or [])
-        cards.append({
-            "id": "act-autonomous",
-            "type": "agent",
-            "title": f"Autonomous Task: {agent_data.get('goal', 'Task')[:50]}",
-            "subtitle": f"Completed {steps_count} autonomous steps in {agent_data.get('total_duration_s', 0)}s",
-            "selected": True,
-            "badge": f"{steps_count} Steps",
-            "payload": {"tool": "autonomous_agent", **agent_data},
         })
 
     return cards

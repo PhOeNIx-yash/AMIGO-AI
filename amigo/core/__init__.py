@@ -76,21 +76,6 @@ from amigo.core.reminder_timer import (
     get_active_data,
 )
 
-from amigo.core.task_agent import (
-    AutonomousAgent,
-    run_autonomous_agent,
-    decompose_task,
-    execute_command,
-    execute_python,
-    read_file_content,
-    write_file_content,
-    edit_file_content,
-    list_dir_contents,
-    fetch_web_page,
-    get_desktop_context,
-    execute_desktop_action,
-)
-
 __all__ = [
     # AI
     "get_ai_response",
@@ -151,17 +136,4 @@ __all__ = [
     "handle_set_reminder",
     "handle_cancel_reminder",
     "get_active_data",
-    # Autonomous Task Agent
-    "AutonomousAgent",
-    "run_autonomous_agent",
-    "decompose_task",
-    "execute_command",
-    "execute_python",
-    "read_file_content",
-    "write_file_content",
-    "edit_file_content",
-    "list_dir_contents",
-    "fetch_web_page",
-    "get_desktop_context",
-    "execute_desktop_action",
 ]

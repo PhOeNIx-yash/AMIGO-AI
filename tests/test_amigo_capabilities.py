@@ -157,17 +157,6 @@ class TestToolRegistry(unittest.TestCase):
         self.assertIn("search google", lower)
 
 
-class TestTaskAgent(unittest.TestCase):
-    """Tests for task agent (updated to use new agent)."""
-    
-    def test_task_agent_decompose_preserves_natural_phrases(self):
-        from amigo.core import task_agent
-        single = task_agent.decompose_task("search for bed and breakfast")
-        self.assertEqual(single, ["search for bed and breakfast"])
-
-        compound = task_agent.decompose_task("close Chrome and search the web")
-        self.assertEqual(compound, ["close Chrome", "search the web"])
-
 
 class TestReminderTimer(unittest.TestCase):
     """Tests for reminder timer (unchanged)."""

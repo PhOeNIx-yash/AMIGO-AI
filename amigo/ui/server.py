@@ -132,14 +132,6 @@ except Exception:
 
 logger = logging.getLogger("amigo.ui_server")
 _RE_FILE_MATCH_COUNT = re.compile(r"I found (\d+) matching file")
-_SILENT_TOOLS = {"chat", "stop", "stop_speaking", "pause_media", "resume_media", "next_track", "prev_track", "blocked"}
-_CLIPBOARD_KEYWORDS = (
-    "clipboard",
-    "copy",
-    "copied",
-    "paste",
-    "pasted",
-)
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
@@ -177,6 +169,7 @@ class EventBroadcaster:
 
 broadcaster = EventBroadcaster()
 current_state = "idle"
+
 
 _current_media = {
     "title": "No music playing",
@@ -304,9 +297,9 @@ def _process_query(
     clean_user_query = (display_prompt or query).strip()
     history = rag_engine.get_recent_conversations(6 if is_voice else 10)
 
-    # Only check clipboard when the user's query actually mentions clipboard keywords
-    q_low = clean_user_query.lower()
-    clipboard_used = any(kw in q_low for kw in _CLIPBOARD_KEYWORDS) and bool(get_clipboard_text())
+    # Check clipboard availability dynamically without hardcoded keyword gating
+    clip_text = get_clipboard_text()
+    clipboard_used = bool(clip_text)
 
     t0 = time.perf_counter()
     if attached_context:
@@ -317,37 +310,27 @@ def _process_query(
 
     logger.debug("[Timing] request_id=%s stage=route duration_ms=%.1f", request_id, (time.perf_counter() - t0) * 1000)
 
-    # Broadcast primary detected intent with descriptive labels for UI
+    # Broadcast primary detected intent with dynamically generated descriptive labels
     first_tool = actions[0].get("tool", "chat") if actions else "chat"
     first_params = actions[0].get("params", {}) if actions else {}
-    _tool_label_map = {
-        "web_search": ("Searching Web", str(first_params.get("query") or clean_user_query)),
-        "open_website": ("Browsing", str(first_params.get("title") or first_params.get("url") or "Web")),
-        "open_app": ("Opening App", str(first_params.get("name") or clean_user_query)),
-        "close_app": ("Closing App", str(first_params.get("name") or first_params.get("app_name") or clean_user_query)),
-        "open_file": ("Opening File", str(first_params.get("path") or "Document")),
-        "document_qa": ("Analyzing Documents", str(first_params.get("filepath") or first_params.get("query") or "Indexed files")),
-        "ask_document": ("Analyzing Documents", str(first_params.get("filepath") or first_params.get("query") or "Indexed files")),
-        "summarize_document": ("Summarizing", str(first_params.get("filepath") or "Document")),
-        "stock_quote": ("Market Quote", str(first_params.get("symbol") or "Price quote").upper()),
-        "get_weather": ("Checking Weather", str(first_params.get("city") or "Local forecast")),
-        "play_youtube": ("Streaming Media", str(first_params.get("query") or "YouTube")),
-        "generate_content": ("Drafting Content", str(first_params.get("topic") or first_params.get("type") or "Draft")),
-        "find_file": ("Finding File", str(first_params.get("query") or "File system")),
-        "read_screen": ("Inspecting Screen", "Visual screen analysis"),
-        "set_timer": ("Setting Timer", f"{first_params.get('duration', '')}s countdown"),
-        "set_reminder": ("Setting Reminder", str(first_params.get("query") or "Reminder")),
-        "run_command": ("Executing Command", str(first_params.get("command") or clean_user_query)[:35]),
-        "run_python": ("Running Python Code", "Dynamic code execution"),
-        "read_file": ("Reading File", str(first_params.get("path") or "File system")[:35]),
-        "write_file": ("Writing File", str(first_params.get("path") or "File system")[:35]),
-        "edit_file": ("Modifying File", str(first_params.get("path") or "File system")[:35]),
-        "list_directory": ("Scanning Folder", str(first_params.get("path") or "Directory")[:35]),
-        "fetch_web_page": ("Fetching Web Content", str(first_params.get("url") or "URL")[:35]),
-        "autonomous_agent": ("Autonomous Agent", str(first_params.get("goal") or clean_user_query)[:35]),
-        "chat": ("Thinking", clean_user_query[:35] if clean_user_query else ""),
-    }
-    status_label, status_detail = _tool_label_map.get(first_tool.lower(), (first_tool.replace("_", " ").title(), ""))
+    
+    # Generate human-readable label and detail dynamically for any tool
+    words = first_tool.lower().replace("_", " ").split()
+    if words:
+        w0 = words[0]
+        act_ing = (w0[:-1] + "ing") if (w0.endswith("e") and not w0.endswith("ee")) else (w0 + "ing")
+        rest = " ".join(words[1:]).title()
+        status_label = f"{act_ing.capitalize()} {rest}".strip() if rest else act_ing.capitalize()
+    else:
+        status_label = "Processing"
+
+    detail_val = ""
+    for k in ("goal", "query", "name", "title", "url", "command", "path", "city", "topic", "question"):
+        if k in first_params and first_params[k]:
+            detail_val = str(first_params[k])[:40]
+            break
+    status_detail = detail_val or clean_user_query[:35]
+
     broadcaster.broadcast("intent_detected", {
         "intent": first_tool.lower(),
         "tool": first_tool.lower(),

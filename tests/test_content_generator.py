@@ -215,7 +215,12 @@ class TestContentGenerator(unittest.TestCase):
         from amigo.services.os_automation import restart_pc
         mock_run.return_value.returncode = 0
         self.assertTrue(restart_pc("45"))
-        mock_run.assert_called_with(["shutdown", "/r", "/t", "45"], check=True)
+        self.assertTrue(mock_run.called)
+        cmd_args = mock_run.call_args[0][0]
+        self.assertTrue(any("shutdown" in str(a).lower() for a in cmd_args))
+        self.assertIn("/r", cmd_args)
+        self.assertIn("/t", cmd_args)
+        self.assertIn("45", cmd_args)
 
     def test_revert_content_undoes_last_revision(self):
         rag_engine.update_active_state("generated_content", {

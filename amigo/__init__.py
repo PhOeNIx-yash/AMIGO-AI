@@ -74,19 +74,6 @@ from amigo.services.screen_vision import read_text_from_image, analyze_image, ca
 from amigo.services.web_search import search_web
 from amigo.services.weather import get_weather_data
 
-from amigo.core.task_agent import (
-    AutonomousAgent,
-    run_autonomous_agent,
-    decompose_task,
-    execute_command,
-    execute_python,
-    read_file_content,
-    write_file_content,
-    edit_file_content,
-    list_dir_contents,
-    fetch_web_page,
-)
-
 # Lazy UI and server forwarders to eliminate circular imports
 def launch_server(*args, **kwargs):
     from amigo.ui.server import launch_server as _fn
@@ -190,17 +177,6 @@ __all__ = [
     "capture_screen_image",
     "search_web",
     "get_weather_data",
-    # Autonomous Agent
-    "AutonomousAgent",
-    "run_autonomous_agent",
-    "decompose_task",
-    "execute_command",
-    "execute_python",
-    "read_file_content",
-    "write_file_content",
-    "edit_file_content",
-    "list_dir_contents",
-    "fetch_web_page",
     # UI
     "launch_server",
     "app",

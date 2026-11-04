@@ -95,8 +95,8 @@ User Voice / Text Input
         │
         ▼
   ┌─────────────────────────────────┐
-  │   Tier 1: Multi-Step Decomposer │  (conjunction detection, <5ms)
-  │   task_agent.decompose_task()   │
+  │   Tier 1: Multi-Step Actions    │  (action planning & chaining)
+  │   tool_registry.execute_actions │
   └─────────────────────────────────┘
         │
         ▼
@@ -151,8 +151,7 @@ amigo-main/
 │   │   ├── rag_engine.py           # Memvid memory capsule, instant retrieval & prompt injection
 │   │   ├── rag_indexer.py          # Background file crawling & incremental hash indexer
 │   │   ├── reminder_timer.py       # Background timer & reminder scheduling engine
-│   │   ├── proactive_intelligence.py # Proactive suggestions & adaptive learning engine
-│   │   └── task_agent.py           # Multi-step task decomposer & chain executor
+│   │   └── proactive_intelligence.py # Proactive suggestions & adaptive learning engine
 │   ├── services/           # External integrations
 │   │   ├── __init__.py
 │   │   ├── app_opener.py           # Dynamic Windows application resolver & launcher
