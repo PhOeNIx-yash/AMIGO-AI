@@ -1130,3 +1130,37 @@ def get_system_status() -> dict:
             "cpu": None, "ram": None, "battery": None, "plugged": None,
             "summary": "Could not read system hardware status.",
         }
+
+
+# --------------------------------------------------------------------------- #
+# Windows settings: change ANY setting by plain-language name (see os_settings.py)
+#   change_setting("light mode") | change_setting("night light", "on")
+#   get_setting("brightness")    | toggle_setting("wifi") | list_settings("sleep")
+# Each returns (ok, message_to_speak); list_settings returns a list of dicts.
+# --------------------------------------------------------------------------- #
+try:
+    try:
+        from amigo.services.os_settings import (  # noqa: E402
+            change_setting, get_setting, toggle_setting, list_settings, reload_catalog,
+        )
+    except ImportError:
+        from os_settings import (  # noqa: E402
+            change_setting, get_setting, toggle_setting, list_settings, reload_catalog,
+        )
+except Exception as _settings_err:  # keep every other automation working regardless
+    log.warning("Settings engine unavailable: %s", _settings_err)
+
+    def change_setting(setting, value=None, confirmed=False):
+        return False, "The settings engine isn't available."
+
+    def get_setting(setting):
+        return False, "The settings engine isn't available."
+
+    def toggle_setting(setting):
+        return False, "The settings engine isn't available."
+
+    def list_settings(query=None):
+        return []
+
+    def reload_catalog():
+        return 0

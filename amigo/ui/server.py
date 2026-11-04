@@ -958,6 +958,30 @@ def handle_settings():
 def handle_user_profile():
     if request.method == "OPTIONS":
         return jsonify({"status": "ok"})
+
+
+@app.route("/api/os-settings", methods=["GET"])
+def api_list_os_settings():
+    from amigo.services.os_settings import list_settings
+    query = request.args.get("query")
+    try:
+        return jsonify({"success": True, "settings": list_settings(query)})
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc), "settings": []}), 500
+
+
+@app.route("/api/os-settings/change", methods=["POST"])
+def api_change_os_setting():
+    data = request.get_json(silent=True) or {}
+    setting = data.get("setting", "")
+    value = data.get("value")
+    confirmed = bool(data.get("confirmed", False))
+    from amigo.services.os_settings import change_setting
+    try:
+        ok, msg = change_setting(setting, value=value, confirmed=confirmed)
+        return jsonify({"success": ok, "message": msg})
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
     memory = load_memory()
     if request.method == "POST":
         data = request.get_json() or {}

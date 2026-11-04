@@ -29,6 +29,13 @@ from amigo.services.os_automation import (
     get_system_status,
     get_system_media_info,
 )
+from amigo.services.os_settings import (
+    change_setting,
+    get_setting,
+    toggle_setting,
+    list_settings,
+    reload_catalog,
+)
 from amigo.services.screen_vision import (
     read_text_from_image,
     analyze_image,
@@ -62,12 +69,17 @@ __all__ = [
     "get_unread_emails",
     "search_emails",
     "mail_available",
-    # OS Automation
+    # OS Automation & Settings
     "play_pause_media",
     "next_track",
     "prev_track",
     "set_volume",
     "get_system_status",
+    "change_setting",
+    "get_setting",
+    "toggle_setting",
+    "list_settings",
+    "reload_catalog",
     # Screen Vision
     "read_text_from_image",
     "analyze_image",

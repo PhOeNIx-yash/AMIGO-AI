@@ -1236,6 +1236,34 @@ def _tool_open_settings(params, query, spoken):
     return "Opened settings.", None
 
 
+def _tool_change_setting(params, query, spoken):
+    params = params if isinstance(params, dict) else {}
+    s = str(params.get("setting") or query or "").strip()
+    val = params.get("value")
+    confirmed = bool(params.get("confirmed", False))
+    try:
+        from amigo.services.os_settings import change_setting
+        ok, msg = change_setting(s, value=val, confirmed=confirmed)
+        if not ok and "confirm" in msg.lower():
+            return msg, None, {"requires_confirmation": True, "action_type": "change_setting", "setting": s, "value": val}
+        return msg, None
+    except Exception as exc:
+        logger.error("[Change Setting Error]: %s", exc)
+        return f"Could not change setting: {exc}", None
+
+
+def _tool_get_setting(params, query, spoken):
+    params = params if isinstance(params, dict) else {}
+    s = str(params.get("setting") or query or "").strip()
+    try:
+        from amigo.services.os_settings import get_setting
+        ok, msg = get_setting(s)
+        return msg, None
+    except Exception as exc:
+        logger.error("[Get Setting Error]: %s", exc)
+        return f"Could not read setting: {exc}", None
+
+
 def _tool_open_history(params, query, spoken):
     """Broadcast open/close history drawer events to the React UI."""
     params = params if isinstance(params, dict) else {}
@@ -1449,6 +1477,9 @@ UI_TOOL_HANDLERS = {
     "set_volume":         _tool_set_volume,
     "set_brightness":     _tool_set_brightness,
     "open_settings":      _tool_open_settings,
+    "change_setting":     _tool_change_setting,
+    "get_setting":        _tool_get_setting,
+    "toggle_setting":     _tool_change_setting,
     "open_history":       _tool_open_history,
     "system_status":      _tool_system_status,
     "hardware_metrics":   _tool_system_status,
@@ -1559,6 +1590,11 @@ TOOL_DEFINITIONS = [
     _tool("empty_recycle_bin", "Empty the Windows recycle bin."),
     _tool("system_status", "Check battery, CPU, RAM, and disk status."),
     _tool("open_settings", "Open a Windows or assistant settings page.", {"setting": _p("string", "Setting name")}, ["setting"]),
+    _tool("change_setting", "Change, toggle, or configure any Windows setting (e.g. 'switch to dark mode', 'turn on night light', 'turn off bluetooth', 'turn on wifi', 'sleep after 30 minutes on battery', 'increase mouse speed', 'change time zone to India').",
+          {"setting": _p("string", "Name or description of the Windows setting"),
+           "value": _p("string", "Optional target value, state (on/off), choice, or adjustment")}, ["setting"]),
+    _tool("get_setting", "Check or read the current value or state of a Windows setting (e.g. 'check night light', 'what is my time zone', 'is bluetooth on', 'is wifi enabled').",
+          {"setting": _p("string", "Name or description of the setting to inspect")}, ["setting"]),
     _tool("open_history", "Open or view conversational memory and interaction history."),
     _tool("get_weather", "Get weather forecast for a city.", {"city": _p("string", "City name resolved from context")}),
     _tool("set_timer", "Start a countdown timer.", {"duration": _p("integer", "Seconds"), "label": _p("string", "Label")}, ["duration"]),
@@ -1654,7 +1690,7 @@ ROUTING RULES:
   * Questions about Current Events, Online News, Real-Time Web Lookups, or Public Web Info: Route to 'web_search'.
   * Conceptual Explanations, General Questions, Science, Reasoning, or Riddles ('explain quantum computing', 'tell me a joke', 'how does photosynthesis work'): Route to 'chat'.
   * Questions about Local Documents: Route to 'document_qa' ONLY when the user explicitly asks about their personal files, local documents, invoices, resumes, spreadsheets, or indexed records on this PC (e.g. "what is in my invoice", "check my resume for X", "what does the document say"). Never route general knowledge or people questions to 'document_qa'.
-  * Weather: Route to 'get_weather'.
+  * Weather ('what is the weather', 'weather in london'): Route questions asking about weather, forecast, or temperature to 'get_weather' with params['city'].
   * Clock Time ('get_time'): Use 'get_time' only when the user is asking what time it is on the clock. For general questions, status inquiries, or questions asking when an action occurred, route to 'chat'.
   * Assistant Status & Capabilities ('chat'): Questions about the assistant itself, online/offline connectivity, readiness, or system state route to 'chat' (the active environment state is already provided in the runtime context).
 - Opening Files: When the user asks to open, view, or launch a file or document, route to 'open_file' with params['path'].
@@ -1686,6 +1722,10 @@ ROUTING RULES:
   * Halting Speech ('stop'): When the user asks to stop talking, be quiet, or pause speech (e.g. "stop", "stop speaking", "be quiet", "shut up"), route to 'stop'.
   * Closing Windows & Apps ('close_app'): Use 'close_app' ONLY when the user explicitly commands to close a specific third-party program or window (e.g. "close chrome", "close notepad", "close spotify"). Never use 'close_app' to stop speech or close Amigo.
   * Exiting the Assistant ('exit'): Use 'exit' ONLY when the user explicitly commands to terminate, quit, or shut down Amigo entirely (e.g. "exit amigo", "quit assistant", "shut down amigo").
+- Windows Settings Control:
+  * To change, toggle, or configure any Windows setting ('switch to dark mode', 'turn on night light', 'turn off bluetooth', 'turn on wifi', 'sleep after 30 minutes on battery', 'increase mouse speed'): route to 'change_setting' with params['setting'] and optional params['value'].
+  * To inspect or read a Windows setting value or state ('check night light', 'what is my time zone', 'is bluetooth on'): route to 'get_setting' with params['setting'].
+  * To open or display a settings window or page ('open bluetooth settings', 'open display settings', 'open settings'): route to 'open_settings' with params['setting'].
 - System Actions & Confirmations: If an action is pending user confirmation and the user affirms ('yes', 'sure'), call 'confirm_action'. If the user declines ('no', 'cancel'), call 'cancel_action'.
 
 OUTPUT FORMAT:
@@ -1698,6 +1738,9 @@ User: Open chrome
 
 User: What's the weather in Tokyo?
 {"actions": [{"tool": "get_weather", "params": {"city": "Tokyo"}}]}
+
+User: what's the weather in london
+{"actions": [{"tool": "get_weather", "params": {"city": "london"}}]}
 
 User: Play some jazz on youtube
 {"actions": [{"tool": "play_youtube", "params": {"query": "jazz music"}}]}
@@ -1735,8 +1778,14 @@ User: previous track
 User: what song is playing
 {"actions": [{"tool": "current_media", "params": {}}]}
 
+User: set volume to 50
+{"actions": [{"tool": "set_volume", "params": {"action": "set_volume", "level": 50}}]}
+
 User: turn down the volume
 {"actions": [{"tool": "set_volume", "params": {"action": "volume_down"}}]}
+
+User: what does this document say
+{"actions": [{"tool": "document_qa", "params": {"query": "what does this document say"}}]}
 
 User: explain quantum computing
 {"actions": [{"tool": "chat", "params": {}}]}"""
@@ -2009,9 +2058,22 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
 
     # Normalize tool params from local LLM
     for call in tool_calls:
+        if call["tool"] == "system_control":
+            act = str((call.get("params") or {}).get("action") or "").lower()
+            if act in ("sleep", "sleep_pc"):
+                call["tool"] = "sleep_pc"
+            elif act in ("lock", "lock_pc"):
+                call["tool"] = "lock_pc"
+            elif act in ("restart", "restart_pc"):
+                call["tool"] = "restart_pc"
+            elif act in ("empty_bin", "empty_recycle_bin"):
+                call["tool"] = "empty_recycle_bin"
+
         if call["tool"] == "set_volume":
             p = call.setdefault("params", {})
-            if "level" in p and not p.get("action"):
+            if "level" in p and p.get("level") is not None:
+                p["action"] = "set_volume"
+            elif not p.get("action"):
                 p["action"] = "set_volume"
 
         if call["tool"] == "chat":
@@ -2303,6 +2365,18 @@ def build_action_cards(tool: str, params: dict, result_metadata: dict, url: str 
             "selected": True,
             "badge": "Web Link",
             "payload": {"tool": "open_website", "url": target_url, "title": display_title},
+        })
+
+    elif tool in ("change_setting", "get_setting", "open_settings"):
+        setting_name = str(params.get("setting") or "Windows Setting").strip().title()
+        cards.append({
+            "id": f"act-setting-{abs(hash(setting_name)) % 100000}",
+            "type": "setting",
+            "title": f"Setting: {setting_name}",
+            "subtitle": response_text[:120],
+            "selected": True,
+            "badge": "Settings",
+            "payload": {"tool": tool, **params},
         })
 
     return cards

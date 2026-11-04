@@ -39,6 +39,8 @@ Amigo exposes **46 distinct agent tools** partitioned across 11 functional domai
 | `close_app` | `name` (str) | *"Close Notepad"*, *"Quit Chrome"*, *"Exit Spotify"* | Gracefully terminates matching running processes using `psutil`. |
 | `open_folder` | `name` (str) | *"Open Downloads folder"*, *"Open Documents"*, *"Open Desktop"* | Opens Windows Explorer to standard user folders or custom directories. |
 | `open_settings` | `setting` (str) | *"Open Bluetooth settings"*, *"Open Display settings"*, *"Open WiFi settings"* | Opens specific Windows 10/11 Settings pages directly via `ms-settings:` deep-links. |
+| `change_setting` | `setting` (str), `value` (opt) | *"Switch to dark mode"*, *"Turn on night light"*, *"Turn off Bluetooth"*, *"Sleep after 30 minutes on battery"*, *"Increase mouse speed"* | Directly changes/toggles Windows settings dynamically via catalog data, Registry, SPI, WinRT Radios, or commands without hardcoding. |
+| `get_setting` | `setting` (str) | *"What is my color mode?"*, *"Check night light status"*, *"Is Wi-Fi on?"* | Reads and reports current Windows setting values and states in plain language. |
 
 ---
 

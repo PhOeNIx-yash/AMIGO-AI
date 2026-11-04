@@ -1,0 +1,1767 @@
+{
+ "_": "Edit freely. Add your own entries in settings_user.json; same id overrides. See os_settings.py.",
+ "language": {
+  "on": [
+   "on",
+   "enable",
+   "enabled",
+   "activate",
+   "show",
+   "allow",
+   "start",
+   "yes",
+   "true"
+  ],
+  "off": [
+   "off",
+   "disable",
+   "disabled",
+   "deactivate",
+   "hide",
+   "block",
+   "stop",
+   "deny",
+   "no",
+   "false"
+  ],
+  "toggle": [
+   "toggle",
+   "flip",
+   "invert"
+  ],
+  "up": [
+   "increase",
+   "raise",
+   "higher",
+   "more",
+   "up",
+   "bigger",
+   "larger",
+   "faster",
+   "brighter",
+   "louder"
+  ],
+  "down": [
+   "decrease",
+   "lower",
+   "reduce",
+   "less",
+   "down",
+   "smaller",
+   "slower",
+   "dimmer",
+   "quieter"
+  ],
+  "never": [
+   "never",
+   "none",
+   "nothing"
+  ],
+  "relative": [
+   "by"
+  ],
+  "fillers": [
+   "please",
+   "can",
+   "could",
+   "you",
+   "would",
+   "will",
+   "the",
+   "my",
+   "to",
+   "set",
+   "change",
+   "turn",
+   "switch",
+   "make",
+   "mode",
+   "setting",
+   "settings",
+   "windows",
+   "computer",
+   "pc",
+   "laptop",
+   "system",
+   "a",
+   "an",
+   "is",
+   "are",
+   "it",
+   "of",
+   "for",
+   "at",
+   "in",
+   "by",
+   "after",
+   "every",
+   "percent",
+   "level",
+   "value",
+   "now",
+   "amigo",
+   "hey",
+   "just",
+   "and",
+   "also",
+   "me",
+   "i",
+   "want",
+   "need",
+   "like",
+   "use",
+   "using",
+   "from",
+   "with",
+   "when",
+   "that",
+   "this",
+   "be",
+   "go",
+   "put",
+   "get",
+   "so",
+   "then"
+  ],
+  "time_units": {
+   "second": 1,
+   "seconds": 1,
+   "sec": 1,
+   "secs": 1,
+   "minute": 60,
+   "minutes": 60,
+   "min": 60,
+   "mins": 60,
+   "hour": 3600,
+   "hours": 3600,
+   "hr": 3600,
+   "hrs": 3600
+  },
+  "power_source": {
+   "ac": [
+    "plugged",
+    "plugin",
+    "charging",
+    "ac",
+    "wall",
+    "outlet"
+   ],
+   "dc": [
+    "battery",
+    "unplugged",
+    "dc"
+   ]
+  }
+ },
+ "discovery": {
+  "powercfg": {
+   "query_args": [
+    "/qh"
+   ],
+   "patterns": {
+    "subgroup": "Subgroup GUID:\\s*(?P<guid>[0-9a-f-]{36})\\s*\\((?P<name>.*)\\)",
+    "setting": "Power Setting GUID:\\s*(?P<guid>[0-9a-f-]{36})\\s*\\((?P<name>.*)\\)",
+    "alias": "GUID Alias:\\s*(?P<alias>\\S+)",
+    "unit": "Possible Settings units:\\s*(?P<unit>.+)",
+    "min": "Minimum Possible Setting:\\s*0x(?P<v>[0-9a-f]+)",
+    "max": "Maximum Possible Setting:\\s*0x(?P<v>[0-9a-f]+)",
+    "inc": "Possible Settings increment:\\s*0x(?P<v>[0-9a-f]+)",
+    "opt_index": "Possible Setting Index:\\s*(?P<i>\\d+)",
+    "opt_name": "Possible Setting Friendly Name:\\s*(?P<n>.+)",
+    "ac": "Current AC Power Setting Index:\\s*0x(?P<v>[0-9a-f]+)",
+    "dc": "Current DC Power Setting Index:\\s*0x(?P<v>[0-9a-f]+)"
+   },
+   "hints": {
+    "STANDBYIDLE": [
+     "sleep timeout",
+     "sleep timer",
+     "computer sleep",
+     "sleep"
+    ],
+    "HIBERNATEIDLE": [
+     "hibernate timeout",
+     "hibernate timer",
+     "hibernate after"
+    ],
+    "VIDEOIDLE": [
+     "screen timeout",
+     "display timeout",
+     "turn off screen",
+     "turn off display",
+     "screen off",
+     "monitor timeout",
+     "screen off timer"
+    ],
+    "VIDEODIM": [
+     "dim screen",
+     "dim display",
+     "dim timeout"
+    ],
+    "VIDEOCONLOCK": [
+     "lock screen timeout",
+     "lock screen display off",
+     "console lock timeout"
+    ],
+    "DISKIDLE": [
+     "hard disk timeout",
+     "turn off hard disk",
+     "disk sleep"
+    ],
+    "LIDACTION": [
+     "lid close",
+     "lid close action",
+     "laptop lid",
+     "closing the lid",
+     "close the lid"
+    ],
+    "PBUTTONACTION": [
+     "power button",
+     "power button action"
+    ],
+    "SBUTTONACTION": [
+     "sleep button",
+     "sleep button action"
+    ],
+    "PROCTHROTTLEMAX": [
+     "maximum processor state",
+     "max cpu",
+     "maximum cpu",
+     "cpu limit",
+     "processor limit"
+    ],
+    "PROCTHROTTLEMIN": [
+     "minimum processor state",
+     "min cpu",
+     "minimum cpu"
+    ],
+    "ESBATTTHRESHOLD": [
+     "battery saver threshold",
+     "battery saver level",
+     "battery saver turns on",
+     "battery saver"
+    ],
+    "RTCWAKE": [
+     "wake timers",
+     "allow wake timers"
+    ]
+   }
+  }
+ },
+ "settings": [
+  {
+   "id": "color_mode",
+   "name": "Windows color mode",
+   "kind": "choice",
+   "aliases": [
+    "theme",
+    "color mode",
+    "colour mode",
+    "appearance",
+    "windows theme",
+    "app mode"
+   ],
+   "option_aliases": {
+    "light": [
+     "light mode",
+     "light theme",
+     "bright mode",
+     "white mode",
+     "light"
+    ],
+    "dark": [
+     "dark mode",
+     "dark theme",
+     "night mode",
+     "black mode",
+     "dark"
+    ]
+   },
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+     "name": "AppsUseLightTheme",
+     "dtype": "dword",
+     "values": {
+      "light": 1,
+      "dark": 0
+     }
+    },
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+     "name": "SystemUsesLightTheme",
+     "dtype": "dword",
+     "values": {
+      "light": 1,
+      "dark": 0
+     }
+    }
+   ],
+   "after": [
+    "broadcast:ImmersiveColorSet"
+   ]
+  },
+  {
+   "id": "transparency_effects",
+   "name": "transparency effects",
+   "aliases": [
+    "transparency",
+    "translucent",
+    "glass effect"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+     "name": "EnableTransparency",
+     "dtype": "dword",
+     "values": {
+      "on": 1,
+      "off": 0
+     }
+    }
+   ],
+   "after": [
+    "broadcast:ImmersiveColorSet"
+   ]
+  },
+  {
+   "id": "accent_on_taskbar",
+   "name": "accent color on start and taskbar",
+   "aliases": [
+    "accent color taskbar",
+    "colored taskbar",
+    "taskbar color",
+    "show accent color on start"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+     "name": "ColorPrevalence",
+     "dtype": "dword",
+     "values": {
+      "on": 1,
+      "off": 0
+     }
+    }
+   ],
+   "after": [
+    "broadcast:ImmersiveColorSet"
+   ]
+  },
+  {
+   "id": "accent_on_title_bars",
+   "name": "accent color on title bars",
+   "aliases": [
+    "title bar color",
+    "colored title bars",
+    "window border color"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\Windows\\DWM",
+     "name": "ColorPrevalence",
+     "dtype": "dword",
+     "values": {
+      "on": 1,
+      "off": 0
+     }
+    }
+   ],
+   "after": [
+    "broadcast:ImmersiveColorSet"
+   ]
+  },
+  {
+   "id": "animations",
+   "name": "animation effects",
+   "aliases": [
+    "animations",
+    "window animations",
+    "visual effects"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "spi",
+     "get": 4162,
+     "set": 4163,
+     "mode": "pvvalue",
+     "values": {
+      "on": 1,
+      "off": 0
+     }
+    }
+   ]
+  },
+  {
+   "id": "taskbar_alignment",
+   "name": "taskbar alignment",
+   "kind": "choice",
+   "aliases": [
+    "taskbar icons position",
+    "start button position",
+    "align taskbar",
+    "taskbar position"
+   ],
+   "option_aliases": {
+    "left": [
+     "left",
+     "left aligned",
+     "start on the left"
+    ],
+    "center": [
+     "center",
+     "centre",
+     "middle",
+     "centered"
+    ]
+   },
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+     "name": "TaskbarAl",
+     "dtype": "dword",
+     "values": {
+      "left": 0,
+      "center": 1
+     }
+    }
+   ],
+   "after": [
+    "restart_explorer"
+   ]
+  },
+  {
+   "id": "taskbar_search",
+   "name": "taskbar search",
+   "kind": "choice",
+   "aliases": [
+    "search box",
+    "search bar",
+    "taskbar search box",
+    "search button"
+   ],
+   "option_aliases": {
+    "hidden": [
+     "hidden",
+     "hide",
+     "none",
+     "remove"
+    ],
+    "icon": [
+     "icon",
+     "icon only",
+     "button"
+    ],
+    "box": [
+     "box",
+     "search box",
+     "bar"
+    ],
+    "label": [
+     "icon and label",
+     "label"
+    ]
+   },
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Search",
+     "name": "SearchboxTaskbarMode",
+     "dtype": "dword",
+     "values": {
+      "hidden": 0,
+      "icon": 1,
+      "box": 2,
+      "label": 3
+     }
+    }
+   ],
+   "after": [
+    "restart_explorer"
+   ]
+  },
+  {
+   "id": "task_view_button",
+   "name": "task view button",
+   "aliases": [
+    "task view",
+    "virtual desktops button"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+     "name": "ShowTaskViewButton",
+     "dtype": "dword",
+     "values": {
+      "on": 1,
+      "off": 0
+     },
+     "missing": "on"
+    }
+   ],
+   "after": [
+    "restart_explorer"
+   ]
+  },
+  {
+   "id": "widgets_button",
+   "name": "widgets button",
+   "aliases": [
+    "widgets",
+    "news and interests",
+    "taskbar widgets"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+     "name": "TaskbarDa",
+     "dtype": "dword",
+     "values": {
+      "on": 1,
+      "off": 0
+     },
+     "missing": "on"
+    }
+   ],
+   "after": [
+    "restart_explorer"
+   ]
+  },
+  {
+   "id": "taskbar_autohide",
+   "name": "taskbar auto hide",
+   "aliases": [
+    "hide the taskbar",
+    "auto hide taskbar",
+    "automatically hide taskbar",
+    "autohide taskbar"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "command",
+     "set_ps": "$p='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StuckRects3'; $v=(Get-ItemProperty $p).Settings; $v[8]=[byte]$env:AMIGO_VALUE; Set-ItemProperty $p Settings $v; Stop-Process -Name explorer -Force",
+     "get_ps": "(Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StuckRects3').Settings[8]",
+     "values": {
+      "on": "3",
+      "off": "2"
+     }
+    }
+   ]
+  },
+  {
+   "id": "taskbar_clock_seconds",
+   "name": "seconds in taskbar clock",
+   "aliases": [
+    "clock seconds",
+    "show seconds",
+    "seconds on clock"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+     "name": "ShowSecondsInSystemClock",
+     "dtype": "dword",
+     "values": {
+      "on": 1,
+      "off": 0
+     }
+    }
+   ],
+   "after": [
+    "restart_explorer"
+   ]
+  },
+  {
+   "id": "show_hidden_files",
+   "name": "hidden files",
+   "aliases": [
+    "show hidden files",
+    "hidden items",
+    "hidden folders"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+     "name": "Hidden",
+     "dtype": "dword",
+     "values": {
+      "on": 1,
+      "off": 2
+     }
+    }
+   ],
+   "after": [
+    "refresh_shell"
+   ]
+  },
+  {
+   "id": "show_file_extensions",
+   "name": "file extensions",
+   "aliases": [
+    "file name extensions",
+    "show extensions",
+    "extensions"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+     "name": "HideFileExt",
+     "dtype": "dword",
+     "values": {
+      "on": 0,
+      "off": 1
+     }
+    }
+   ],
+   "after": [
+    "refresh_shell"
+   ]
+  },
+  {
+   "id": "compact_view",
+   "name": "compact view in file explorer",
+   "aliases": [
+    "compact mode",
+    "compact spacing",
+    "explorer compact"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+     "name": "UseCompactMode",
+     "dtype": "dword",
+     "values": {
+      "on": 1,
+      "off": 0
+     }
+    }
+   ],
+   "after": [
+    "refresh_shell"
+   ]
+  },
+  {
+   "id": "desktop_icons",
+   "name": "desktop icons",
+   "aliases": [
+    "show desktop icons",
+    "icons on desktop"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+     "name": "HideIcons",
+     "dtype": "dword",
+     "values": {
+      "on": 0,
+      "off": 1
+     }
+    }
+   ],
+   "after": [
+    "refresh_shell"
+   ]
+  },
+  {
+   "id": "snap_windows",
+   "name": "snap windows",
+   "aliases": [
+    "window snapping",
+    "snap assist",
+    "snap layouts"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Control Panel\\Desktop",
+     "name": "WindowArrangementActive",
+     "dtype": "sz",
+     "values": {
+      "on": "1",
+      "off": "0"
+     }
+    }
+   ]
+  },
+  {
+   "id": "notifications",
+   "name": "notifications",
+   "aliases": [
+    "toast notifications",
+    "notification banners",
+    "app notifications"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\Windows\\CurrentVersion\\PushNotifications",
+     "name": "ToastEnabled",
+     "dtype": "dword",
+     "values": {
+      "on": 1,
+      "off": 0
+     }
+    }
+   ]
+  },
+  {
+   "id": "do_not_disturb",
+   "name": "do not disturb",
+   "aliases": [
+    "dnd",
+    "quiet mode",
+    "silence notifications",
+    "focus assist",
+    "mute notifications"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings",
+     "name": "NOC_GLOBAL_SETTING_TOASTS_ENABLED",
+     "dtype": "dword",
+     "values": {
+      "on": 0,
+      "off": 1
+     },
+     "missing": "off"
+    }
+   ]
+  },
+  {
+   "id": "location_access",
+   "name": "location access",
+   "aliases": [
+    "location",
+    "location services",
+    "gps"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location",
+     "name": "Value",
+     "dtype": "sz",
+     "values": {
+      "on": "Allow",
+      "off": "Deny"
+     }
+    }
+   ]
+  },
+  {
+   "id": "webcam_access",
+   "name": "camera access",
+   "aliases": [
+    "camera",
+    "webcam access",
+    "camera privacy"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\webcam",
+     "name": "Value",
+     "dtype": "sz",
+     "values": {
+      "on": "Allow",
+      "off": "Deny"
+     }
+    }
+   ]
+  },
+  {
+   "id": "microphone_access",
+   "name": "microphone access",
+   "aliases": [
+    "microphone privacy",
+    "mic access"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\microphone",
+     "name": "Value",
+     "dtype": "sz",
+     "values": {
+      "on": "Allow",
+      "off": "Deny"
+     }
+    }
+   ]
+  },
+  {
+   "id": "advertising_id",
+   "name": "advertising id",
+   "aliases": [
+    "personalized ads",
+    "ad tracking",
+    "advertising"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\Windows\\CurrentVersion\\AdvertisingInfo",
+     "name": "Enabled",
+     "dtype": "dword",
+     "values": {
+      "on": 1,
+      "off": 0
+     }
+    }
+   ]
+  },
+  {
+   "id": "clipboard_history",
+   "name": "clipboard history",
+   "aliases": [
+    "clipboard"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\Clipboard",
+     "name": "EnableClipboardHistory",
+     "dtype": "dword",
+     "values": {
+      "on": 1,
+      "off": 0
+     }
+    }
+   ]
+  },
+  {
+   "id": "game_mode",
+   "name": "game mode",
+   "aliases": [
+    "gaming mode"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\GameBar",
+     "name": "AutoGameModeEnabled",
+     "dtype": "dword",
+     "values": {
+      "on": 1,
+      "off": 0
+     }
+    }
+   ]
+  },
+  {
+   "id": "autoplay",
+   "name": "autoplay",
+   "aliases": [
+    "auto play",
+    "autoplay for devices"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\AutoplayHandlers",
+     "name": "DisableAutoplay",
+     "dtype": "dword",
+     "values": {
+      "on": 0,
+      "off": 1
+     }
+    }
+   ]
+  },
+  {
+   "id": "storage_sense",
+   "name": "storage sense",
+   "aliases": [
+    "automatic cleanup",
+    "auto cleanup"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\Windows\\CurrentVersion\\StorageSense\\Parameters\\StoragePolicy",
+     "name": "01",
+     "dtype": "dword",
+     "values": {
+      "on": 1,
+      "off": 0
+     }
+    }
+   ]
+  },
+  {
+   "id": "mono_audio",
+   "name": "mono audio",
+   "aliases": [
+    "mono sound",
+    "single channel audio"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\Multimedia\\Audio",
+     "name": "AccessibilityMonoMixState",
+     "dtype": "dword",
+     "values": {
+      "on": 1,
+      "off": 0
+     }
+    }
+   ]
+  },
+  {
+   "id": "touchpad",
+   "name": "touchpad",
+   "aliases": [
+    "track pad",
+    "trackpad",
+    "touch pad"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\Windows\\CurrentVersion\\PrecisionTouchPad\\Status",
+     "name": "Enabled",
+     "dtype": "dword",
+     "values": {
+      "on": 1,
+      "off": 0
+     }
+    }
+   ]
+  },
+  {
+   "id": "mouse_speed",
+   "name": "mouse speed",
+   "aliases": [
+    "pointer speed",
+    "cursor speed",
+    "mouse sensitivity",
+    "pointer sensitivity"
+   ],
+   "kind": "number",
+   "targets": [
+    {
+     "type": "spi",
+     "get": 112,
+     "set": 113,
+     "mode": "pvvalue"
+    }
+   ],
+   "min": 1,
+   "max": 20,
+   "step": 2
+  },
+  {
+   "id": "swap_mouse_buttons",
+   "name": "swapped mouse buttons",
+   "aliases": [
+    "swap mouse buttons",
+    "left handed mouse",
+    "primary mouse button",
+    "switch mouse buttons"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "spi",
+     "set": 33,
+     "get_metric": 23,
+     "mode": "uiparam",
+     "values": {
+      "on": 1,
+      "off": 0
+     }
+    }
+   ]
+  },
+  {
+   "id": "pointer_precision",
+   "name": "enhance pointer precision",
+   "aliases": [
+    "mouse acceleration",
+    "pointer acceleration",
+    "pointer precision"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "spi",
+     "get": 3,
+     "set": 4,
+     "mode": "intarray",
+     "length": 3,
+     "match_index": 2,
+     "values": {
+      "on": [
+       6,
+       10,
+       1
+      ],
+      "off": [
+       0,
+       0,
+       0
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "scroll_lines",
+   "name": "mouse wheel scroll lines",
+   "aliases": [
+    "scroll speed",
+    "scroll lines",
+    "mouse wheel speed",
+    "wheel scroll"
+   ],
+   "kind": "number",
+   "targets": [
+    {
+     "type": "spi",
+     "get": 104,
+     "set": 105,
+     "mode": "uiparam"
+    }
+   ],
+   "min": 1,
+   "max": 100,
+   "step": 2
+  },
+  {
+   "id": "keyboard_repeat_rate",
+   "name": "keyboard repeat rate",
+   "aliases": [
+    "key repeat rate",
+    "key repeat speed",
+    "typing repeat speed"
+   ],
+   "kind": "number",
+   "targets": [
+    {
+     "type": "spi",
+     "get": 10,
+     "set": 11,
+     "mode": "uiparam"
+    }
+   ],
+   "min": 0,
+   "max": 31,
+   "step": 4
+  },
+  {
+   "id": "keyboard_repeat_delay",
+   "name": "keyboard repeat delay",
+   "aliases": [
+    "key repeat delay",
+    "typing delay"
+   ],
+   "kind": "number",
+   "targets": [
+    {
+     "type": "spi",
+     "get": 22,
+     "set": 23,
+     "mode": "uiparam"
+    }
+   ],
+   "min": 0,
+   "max": 3,
+   "step": 1,
+   "note": "Zero is shortest, three is longest."
+  },
+  {
+   "id": "screen_saver",
+   "name": "screen saver",
+   "aliases": [
+    "screensaver"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "spi",
+     "get": 16,
+     "set": 17,
+     "mode": "uiparam",
+     "values": {
+      "on": 1,
+      "off": 0
+     }
+    }
+   ]
+  },
+  {
+   "id": "screen_saver_timeout",
+   "name": "screen saver timeout",
+   "aliases": [
+    "screensaver timeout",
+    "screen saver delay",
+    "screen saver wait time"
+   ],
+   "kind": "number",
+   "targets": [
+    {
+     "type": "spi",
+     "get": 14,
+     "set": 15,
+     "mode": "uiparam"
+    }
+   ],
+   "unit": "seconds",
+   "min": 10,
+   "max": 86400,
+   "step": 300
+  },
+  {
+   "id": "wallpaper",
+   "name": "desktop wallpaper",
+   "kind": "text",
+   "must_exist": true,
+   "aliases": [
+    "wallpaper",
+    "desktop background",
+    "background picture",
+    "background image"
+   ],
+   "targets": [
+    {
+     "type": "spi",
+     "set": 20,
+     "mode": "string"
+    }
+   ],
+   "read_target": {
+    "type": "registry",
+    "hive": "HKCU",
+    "path": "Control Panel\\Desktop",
+    "name": "WallPaper",
+    "dtype": "sz"
+   }
+  },
+  {
+   "id": "text_size",
+   "name": "text size",
+   "aliases": [
+    "text scaling",
+    "text scale",
+    "font size",
+    "make text bigger"
+   ],
+   "kind": "number",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Software\\Microsoft\\Accessibility",
+     "name": "TextScaleFactor",
+     "dtype": "dword"
+    }
+   ],
+   "unit": "percent",
+   "min": 100,
+   "max": 225,
+   "step": 25,
+   "after": [
+    "broadcast:WindowsThemeElement"
+   ],
+   "note": "Some apps only pick this up after you sign out and back in."
+  },
+  {
+   "id": "magnifier",
+   "name": "magnifier",
+   "aliases": [
+    "screen magnifier",
+    "zoom screen"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "command",
+     "set": {
+      "on": [
+       "magnify.exe"
+      ],
+      "off": [
+       "taskkill",
+       "/f",
+       "/im",
+       "magnify.exe"
+      ]
+     },
+     "get_ps": "if(Get-Process magnify -ErrorAction SilentlyContinue){'on'}else{'off'}",
+     "values": {
+      "on": "on",
+      "off": "off"
+     }
+    }
+   ]
+  },
+  {
+   "id": "narrator",
+   "name": "narrator",
+   "aliases": [
+    "screen reader",
+    "voice narrator"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "command",
+     "set": {
+      "on": [
+       "narrator.exe"
+      ],
+      "off": [
+       "taskkill",
+       "/f",
+       "/im",
+       "narrator.exe"
+      ]
+     },
+     "get_ps": "if(Get-Process narrator -ErrorAction SilentlyContinue){'on'}else{'off'}",
+     "values": {
+      "on": "on",
+      "off": "off"
+     }
+    }
+   ]
+  },
+  {
+   "id": "on_screen_keyboard",
+   "name": "on screen keyboard",
+   "aliases": [
+    "virtual keyboard",
+    "touch keyboard",
+    "screen keyboard"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "command",
+     "set": {
+      "on": [
+       "osk.exe"
+      ],
+      "off": [
+       "taskkill",
+       "/f",
+       "/im",
+       "osk.exe"
+      ]
+     },
+     "get_ps": "if(Get-Process osk -ErrorAction SilentlyContinue){'on'}else{'off'}",
+     "values": {
+      "on": "on",
+      "off": "off"
+     }
+    }
+   ]
+  },
+  {
+   "id": "wifi",
+   "name": "Wi-Fi",
+   "aliases": [
+    "wifi",
+    "wi fi",
+    "wireless",
+    "wlan",
+    "wireless internet"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "radio",
+     "radio": "wifi",
+     "values": {
+      "on": "on",
+      "off": "off"
+     }
+    }
+   ]
+  },
+  {
+   "id": "bluetooth",
+   "name": "Bluetooth",
+   "aliases": [
+    "blue tooth"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "radio",
+     "radio": "bluetooth",
+     "values": {
+      "on": "on",
+      "off": "off"
+     }
+    }
+   ]
+  },
+  {
+   "id": "airplane_mode",
+   "name": "airplane mode",
+   "aliases": [
+    "flight mode",
+    "aeroplane mode",
+    "all wireless"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "radio",
+     "radio": "all",
+     "values": {
+      "on": "off",
+      "off": "on"
+     }
+    }
+   ]
+  },
+  {
+   "id": "firewall",
+   "name": "Windows firewall",
+   "aliases": [
+    "firewall",
+    "defender firewall"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "command",
+     "set_ps": "Set-NetFirewallProfile -All -Enabled $env:AMIGO_VALUE",
+     "values": {
+      "on": "True",
+      "off": "False"
+     }
+    }
+   ],
+   "admin": true,
+   "confirm": true,
+   "read_target": {
+    "type": "command",
+    "get_ps": "if((Get-NetFirewallProfile | Where-Object {-not $_.Enabled}).Count -eq 0){'on'}else{'off'}",
+    "values": {
+     "on": "on",
+     "off": "off"
+    }
+   }
+  },
+  {
+   "id": "remote_desktop",
+   "name": "remote desktop",
+   "aliases": [
+    "remote access",
+    "rdp"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKLM",
+     "path": "SYSTEM\\CurrentControlSet\\Control\\Terminal Server",
+     "name": "fDenyTSConnections",
+     "dtype": "dword",
+     "values": {
+      "on": 0,
+      "off": 1
+     }
+    }
+   ],
+   "admin": true,
+   "confirm": true
+  },
+  {
+   "id": "developer_mode",
+   "name": "developer mode",
+   "aliases": [
+    "dev mode"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKLM",
+     "path": "Software\\Microsoft\\Windows\\CurrentVersion\\AppModelUnlock",
+     "name": "AllowDevelopmentWithoutDevLicense",
+     "dtype": "dword",
+     "values": {
+      "on": 1,
+      "off": 0
+     }
+    }
+   ],
+   "admin": true
+  },
+  {
+   "id": "time_format",
+   "name": "clock format",
+   "kind": "choice",
+   "aliases": [
+    "time format",
+    "24 hour clock",
+    "12 hour clock",
+    "hour format"
+   ],
+   "option_aliases": {
+    "24 hour": [
+     "24 hour",
+     "24 hour clock",
+     "24 hours",
+     "military time",
+     "twenty four hour"
+    ],
+    "12 hour": [
+     "12 hour",
+     "12 hour clock",
+     "12 hours",
+     "am pm",
+     "twelve hour"
+    ]
+   },
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Control Panel\\International",
+     "name": "sShortTime",
+     "dtype": "sz",
+     "values": {
+      "24 hour": "HH:mm",
+      "12 hour": "h:mm tt"
+     }
+    },
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Control Panel\\International",
+     "name": "sTimeFormat",
+     "dtype": "sz",
+     "values": {
+      "24 hour": "HH:mm:ss",
+      "12 hour": "h:mm:ss tt"
+     }
+    },
+    {
+     "type": "registry",
+     "hive": "HKCU",
+     "path": "Control Panel\\International",
+     "name": "iTime",
+     "dtype": "sz",
+     "values": {
+      "24 hour": "1",
+      "12 hour": "0"
+     }
+    }
+   ],
+   "after": [
+    "broadcast:intl"
+   ]
+  },
+  {
+   "id": "time_zone",
+   "name": "time zone",
+   "kind": "choice",
+   "aliases": [
+    "timezone",
+    "local time zone",
+    "clock zone",
+    "region time"
+   ],
+   "dynamic_options": {
+    "argv": [
+     "tzutil",
+     "/l"
+    ],
+    "regex": "(?m)^(?P<label>\\(UTC.*)\\r?\\n(?P<value>[^\\r\\n]+)\\r?$"
+   },
+   "targets": [
+    {
+     "type": "command",
+     "set": [
+      "tzutil",
+      "/s",
+      "{value}"
+     ],
+     "get": [
+      "tzutil",
+      "/g"
+     ]
+    }
+   ],
+   "after": [
+    "broadcast:intl"
+   ]
+  },
+  {
+   "id": "auto_time_zone",
+   "name": "set time zone automatically",
+   "aliases": [
+    "automatic time zone",
+    "auto time zone"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "registry",
+     "hive": "HKLM",
+     "path": "SYSTEM\\CurrentControlSet\\Services\\tzautoupdate",
+     "name": "Start",
+     "dtype": "dword",
+     "values": {
+      "on": 3,
+      "off": 4
+     }
+    }
+   ],
+   "admin": true
+  },
+  {
+   "id": "power_plan",
+   "name": "power plan",
+   "kind": "choice",
+   "aliases": [
+    "power scheme",
+    "power mode",
+    "performance mode",
+    "performance plan"
+   ],
+   "dynamic_options": {
+    "argv": [
+     "powercfg",
+     "/list"
+    ],
+    "regex": "GUID:\\s*(?P<value>[0-9a-fA-F-]{36})\\s*\\((?P<label>[^)]+)\\)"
+   },
+   "targets": [
+    {
+     "type": "command",
+     "set": [
+      "powercfg",
+      "/setactive",
+      "{value}"
+     ],
+     "get": [
+      "powercfg",
+      "/getactivescheme"
+     ],
+     "regex": "GUID:\\s*(?P<value>[0-9a-fA-F-]{36})"
+    }
+   ]
+  },
+  {
+   "id": "hibernate",
+   "name": "hibernation",
+   "aliases": [
+    "hibernate option",
+    "hibernate feature"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "command",
+     "set": {
+      "on": [
+       "powercfg",
+       "/h",
+       "on"
+      ],
+      "off": [
+       "powercfg",
+       "/h",
+       "off"
+      ]
+     }
+    }
+   ],
+   "admin": true,
+   "read_target": {
+    "type": "registry",
+    "hive": "HKLM",
+    "path": "SYSTEM\\CurrentControlSet\\Control\\Power",
+    "name": "HibernateEnabled",
+    "dtype": "dword",
+    "values": {
+     "on": 1,
+     "off": 0
+    }
+   }
+  },
+  {
+   "id": "volume",
+   "name": "volume",
+   "aliases": [
+    "sound level",
+    "speaker volume",
+    "audio level"
+   ],
+   "kind": "number",
+   "targets": [
+    {
+     "type": "callable",
+     "set": "set_volume",
+     "get": "get_volume"
+    }
+   ],
+   "unit": "percent",
+   "min": 0,
+   "max": 100,
+   "step": 10
+  },
+  {
+   "id": "mute",
+   "name": "mute",
+   "aliases": [
+    "sound mute",
+    "audio mute"
+   ],
+   "kind": "toggle",
+   "targets": [
+    {
+     "type": "callable",
+     "set": "mute",
+     "values": {
+      "on": true,
+      "off": false
+     }
+    }
+   ],
+   "option_aliases": {
+    "on": [
+     "mute",
+     "mute sound",
+     "silence"
+    ],
+    "off": [
+     "unmute",
+     "unmute sound"
+    ]
+   }
+  },
+  {
+   "id": "brightness",
+   "name": "screen brightness",
+   "aliases": [
+    "brightness",
+    "display brightness",
+    "monitor brightness"
+   ],
+   "kind": "number",
+   "targets": [
+    {
+     "type": "callable",
+     "set": "set_brightness"
+    }
+   ],
+   "unit": "percent",
+   "min": 0,
+   "max": 100,
+   "step": 10
+  },
+  {
+   "id": "flush_dns",
+   "name": "DNS cache flush",
+   "kind": "action",
+   "aliases": [
+    "flush dns",
+    "clear dns cache",
+    "reset dns cache"
+   ],
+   "targets": [
+    {
+     "type": "command",
+     "set": [
+      "ipconfig",
+      "/flushdns"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "restart_explorer",
+   "name": "Windows Explorer restart",
+   "kind": "action",
+   "aliases": [
+    "restart explorer",
+    "restart file explorer",
+    "restart taskbar",
+    "restart the shell"
+   ],
+   "targets": [
+    {
+     "type": "command",
+     "set": [
+      "taskkill",
+      "/f",
+      "/im",
+      "explorer.exe"
+     ]
+    }
+   ]
+  }
+ ]
+}
