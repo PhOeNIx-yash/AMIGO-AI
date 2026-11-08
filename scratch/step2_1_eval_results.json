@@ -1,0 +1,62 @@
+{
+  "step": "2.1",
+  "gate_passed": true,
+  "orig_queries": {
+    "accuracy_pct": 96.97,
+    "baseline_accuracy_pct": 96.97,
+    "diffs": []
+  },
+  "held_out": {
+    "accuracy_pct": 96.0,
+    "baseline_accuracy_pct": 96.0,
+    "dev_accuracy_pct": 97.0,
+    "sealed_accuracy_pct": 95.0,
+    "category_stats": {
+      "formal": {
+        "correct": 29,
+        "total": 30
+      },
+      "casual": {
+        "correct": 76,
+        "total": 82
+      },
+      "short": {
+        "correct": 27,
+        "total": 28
+      },
+      "rambling": {
+        "correct": 11,
+        "total": 11
+      },
+      "stt_error": {
+        "correct": 9,
+        "total": 9
+      },
+      "chitchat": {
+        "correct": 10,
+        "total": 10
+      },
+      "meta": {
+        "correct": 16,
+        "total": 16
+      },
+      "vocative": {
+        "correct": 4,
+        "total": 4
+      },
+      "follow_up": {
+        "correct": 10,
+        "total": 10
+      }
+    },
+    "diffs": [],
+    "regressions": []
+  },
+  "latency": {
+    "median_ms": 456.5,
+    "baseline_median_ms": 460.3,
+    "delta_pct": -0.82,
+    "p95_ms": 641.2,
+    "baseline_p95_ms": 658.5
+  }
+}

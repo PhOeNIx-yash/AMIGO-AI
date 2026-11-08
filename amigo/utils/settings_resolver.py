@@ -1,119 +1,79 @@
 """
 Windows Settings URI Resolver for Amigo.
-Single source of truth for all ms-settings: URI mappings.
-Dynamic keyword + alias matching - no hardcoding at call sites.
+Loads settings pages and aliases dynamically from amigo/services/settings_catalog.json.
+Zero hardcoded tables in Python code.
 """
 
+import json
 import os
-import re
 import random
+import re
 
-_SETTINGS_TABLE = [
-    ("Bluetooth",            "ms-settings:bluetooth"),
-    ("Wi-Fi",                "ms-settings:network-wifi"),
-    ("Network",              "ms-settings:network"),
-    ("VPN",                  "ms-settings:network-vpn"),
-    ("Display",              "ms-settings:display"),
-    ("Night Light",          "ms-settings:nightlight"),
-    ("Sound",                "ms-settings:sound"),
-    ("Notifications",        "ms-settings:notifications"),
-    ("Battery Saver",        "ms-settings:batterysaver"),
-    ("Power",                "ms-settings:powersleep"),
-    ("Personalization",      "ms-settings:personalization"),
-    ("Wallpaper",            "ms-settings:personalization-background"),
-    ("Lock Screen",          "ms-settings:lockscreen"),
-    ("Taskbar",              "ms-settings:taskbar"),
-    ("Start Menu",           "ms-settings:personalization-start"),
-    ("Themes",               "ms-settings:themes"),
-    ("Accessibility",        "ms-settings:easeofaccess"),
-    ("Magnifier",            "ms-settings:easeofaccess-magnifier"),
-    ("Narrator",             "ms-settings:easeofaccess-narrator"),
-    ("Mouse",                "ms-settings:mousetouchpad"),
-    ("Touchpad",             "ms-settings:devices-touchpad"),
-    ("Keyboard",             "ms-settings:keyboard"),
-    ("Pen",                  "ms-settings:pen"),
-    ("Clipboard",            "ms-settings:clipboard"),
-    ("Storage",              "ms-settings:storagesense"),
-    ("Apps",                 "ms-settings:appsfeatures"),
-    ("Default Apps",         "ms-settings:defaultapps"),
-    ("Startup Apps",         "ms-settings:startupapps"),
-    ("Updates",              "ms-settings:windowsupdate"),
-    ("Security",             "ms-settings:windowsdefender"),
-    ("Privacy",              "ms-settings:privacy"),
-    ("Location",             "ms-settings:privacy-location"),
-    ("Camera",               "ms-settings:privacy-webcam"),
-    ("Microphone",           "ms-settings:privacy-microphone"),
-    ("Date",                 "ms-settings:dateandtime"),
-    ("Time",                 "ms-settings:dateandtime"),
-    ("Region",               "ms-settings:regionlanguage"),
-    ("Language",             "ms-settings:regionlanguage"),
-    ("Accounts",             "ms-settings:accounts"),
-    ("Sign-in",              "ms-settings:signinoptions"),
-    ("About",                "ms-settings:about"),
-    ("Recovery",             "ms-settings:recovery"),
-    ("Troubleshoot",         "ms-settings:troubleshoot"),
-    ("Game Mode",            "ms-settings:gaming-gamemode"),
-]
+_CATALOG_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "services",
+    "settings_catalog.json",
+)
 
-# Extra spoken aliases that do not appear literally in label text
-_ALIASES = {
-    "wifi":           ("Wi-Fi",       "ms-settings:network-wifi"),
-    "wi-fi":          ("Wi-Fi",       "ms-settings:network-wifi"),
-    "internet":       ("Network",     "ms-settings:network"),
-    "sleep":          ("Power",       "ms-settings:powersleep"),
-    "background":     ("Wallpaper",   "ms-settings:personalization-background"),
-    "brightness":     ("Display",     "ms-settings:display"),
-    "volume":         ("Sound",       "ms-settings:sound"),
-    "battery":        ("Battery Saver","ms-settings:batterysaver"),
-    "antivirus":      ("Security",    "ms-settings:windowsdefender"),
-    "defender":       ("Security",    "ms-settings:windowsdefender"),
-    "update":         ("Updates",     "ms-settings:windowsupdate"),
-    "windows update": ("Updates",     "ms-settings:windowsupdate"),
-    "game":           ("Game Mode",   "ms-settings:gaming-gamemode"),
-    "gaming":         ("Game Mode",   "ms-settings:gaming-gamemode"),
-    "night":          ("Night Light", "ms-settings:nightlight"),
-    "notification":   ("Notifications","ms-settings:notifications"),
-    "dark mode":      ("Personalization","ms-settings:personalization-color"),
-    "color":          ("Personalization","ms-settings:personalization-color"),
-    "pin":            ("Sign-in",     "ms-settings:signinoptions"),
-    "password":       ("Sign-in",     "ms-settings:signinoptions"),
-    "mic":            ("Microphone",  "ms-settings:privacy-microphone"),
-    "webcam":         ("Camera",      "ms-settings:privacy-webcam"),
-    "gps":            ("Location",    "ms-settings:privacy-location"),
-    "startup":        ("Startup Apps","ms-settings:startupapps"),
-    "storage":        ("Storage",     "ms-settings:storagesense"),
-    "disk":           ("Storage",     "ms-settings:storagesense"),
-}
-
-# Build keyword map: label words + aliases (all lowercase)
-_KEYWORD_MAP = dict(_ALIASES)
-for _label, _uri in _SETTINGS_TABLE:
-    for _word in re.split(r"[\s]+", _label.lower()):
-        _word = _word.strip("&-/")
-        if _word and _word not in _KEYWORD_MAP:
-            _KEYWORD_MAP[_word] = (_label, _uri)
+_CATALOG_CACHE: dict | None = None
+_SETTINGS_TABLE: list[tuple[str, str]] = []
+_ALIASES: dict[str, tuple[str, str]] = {}
+_KEYWORD_MAP: dict[str, tuple[str, str]] = {}
 
 
-def resolve_setting(setting: str) -> tuple:
+def _ensure_catalog_loaded():
+    global _CATALOG_CACHE, _SETTINGS_TABLE, _ALIASES, _KEYWORD_MAP
+    if _CATALOG_CACHE is not None:
+        return
+
+    try:
+        with open(_CATALOG_PATH, "r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+
+    _CATALOG_CACHE = data
+    pages_data = data.get("settings_pages", {})
+    raw_table = pages_data.get("table", [])
+    raw_aliases = pages_data.get("aliases", {})
+
+    _SETTINGS_TABLE = [(item[0], item[1]) for item in raw_table]
+    _ALIASES = {k.lower(): (v[0], v[1]) for k, v in raw_aliases.items()}
+
+    _KEYWORD_MAP = dict(_ALIASES)
+    for label, uri in _SETTINGS_TABLE:
+        for word in re.split(r"[\s]+", label.lower()):
+            word = word.strip("&-/")
+            if word and word not in _KEYWORD_MAP:
+                _KEYWORD_MAP[word] = (label, uri)
+
+
+_ensure_catalog_loaded()
+
+
+def resolve_setting(setting: str) -> tuple[str, str]:
     """
     Resolve a natural-language settings string to (display_name, ms-settings URI).
-    Dynamic: keyword map + alias table + substring fallback. Zero hardcoded if/elif.
+    Dynamic lookup against settings_catalog.json. Zero hardcoded if/elif chains.
     """
-    s = setting.lower().strip()
+    _ensure_catalog_loaded()
+    s = (setting or "").lower().strip()
 
-    # Generic/random/empty -> pick a practical random top entry
-    _generic = {"", "random", "settings", "setting", "windows setting",
-                "a random windows setting", "windows settings", "any setting",
-                "a random windows", "windows", "window"}
-    if s in _generic or s.startswith("random"):
-        label, uri = random.choice(_SETTINGS_TABLE[:15])
-        return label, uri
+    # Empty or generic inquiry -> fallback to default Windows Settings landing page
+    if not s or s in ("settings", "setting", "windows settings", "windows setting", "any setting"):
+        return "Windows", "ms-settings:"
 
-    # Full-phrase alias check first (multi-word like "dark mode", "windows update")
+    if s.startswith("random"):
+        if _SETTINGS_TABLE:
+            label, uri = random.choice(_SETTINGS_TABLE[:15])
+            return label, uri
+        return "Windows", "ms-settings:"
+
+    # 1. Full-phrase alias check first (multi-word e.g. "dark mode", "windows update")
     if s in _KEYWORD_MAP:
         return _KEYWORD_MAP[s]
 
-    # Word-by-word longest-score match
+    # 2. Word-by-word longest-score match
     words = re.split(r"[\s\-/&]+", s)
     best_label, best_uri, best_score = "Windows", "ms-settings:", 0
     for word in words:
@@ -129,7 +89,7 @@ def resolve_setting(setting: str) -> tuple:
     if best_score > 0:
         return best_label, best_uri
 
-    # Word-bounded fallback on full phrase
+    # 3. Token-bounded fallback on full phrase
     query_tokens = set(re.findall(r"\b[a-z0-9]+\b", s))
     for label, uri in _SETTINGS_TABLE:
         lbl = label.lower()
@@ -141,7 +101,7 @@ def resolve_setting(setting: str) -> tuple:
         if any(w in query_tokens for w in lbl_tokens if len(w) >= 3):
             return label, uri
 
-    # Alias word-bounded fallback
+    # 4. Alias word-bounded fallback
     for alias, (label, uri) in _ALIASES.items():
         if re.search(r"\b" + re.escape(alias) + r"\b", s):
             return label, uri
@@ -155,4 +115,3 @@ def open_setting(setting: str) -> str:
     os.system(f"start {uri}")
     from amigo.core.llm_agent import get_quick_feedback
     return get_quick_feedback(f"opened {label} settings")
-
