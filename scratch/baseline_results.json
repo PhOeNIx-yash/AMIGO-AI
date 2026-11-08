@@ -1,0 +1,2303 @@
+{
+  "orig_queries": {
+    "total": 33,
+    "correct": 32,
+    "accuracy_pct": 96.97,
+    "median_latency_ms": 589.3,
+    "p95_latency_ms": 892.0,
+    "items": [
+      {
+        "query": "what time is it",
+        "expected": "get_time",
+        "got": "get_time",
+        "passed": true,
+        "latency_ms": 455.9
+      },
+      {
+        "query": "what's the date today",
+        "expected": "get_date",
+        "got": "get_date",
+        "passed": true,
+        "latency_ms": 483.9
+      },
+      {
+        "query": "open notepad",
+        "expected": "open_app",
+        "got": "open_app",
+        "passed": true,
+        "latency_ms": 561.8
+      },
+      {
+        "query": "close chrome",
+        "expected": "close_app",
+        "got": "close_app",
+        "passed": true,
+        "latency_ms": 589.3
+      },
+      {
+        "query": "play believer by imagine dragons on youtube",
+        "expected": "play_youtube",
+        "got": "play_youtube",
+        "passed": true,
+        "latency_ms": 682.0
+      },
+      {
+        "query": "pause the music",
+        "expected": "pause_media",
+        "got": "pause_media",
+        "passed": true,
+        "latency_ms": 460.4
+      },
+      {
+        "query": "resume playback",
+        "expected": "resume_media",
+        "got": "resume_media",
+        "passed": true,
+        "latency_ms": 473.2
+      },
+      {
+        "query": "next song",
+        "expected": "next_track",
+        "got": "next_track",
+        "passed": true,
+        "latency_ms": 491.3
+      },
+      {
+        "query": "previous track",
+        "expected": "prev_track",
+        "got": "prev_track",
+        "passed": true,
+        "latency_ms": 483.4
+      },
+      {
+        "query": "what song is playing",
+        "expected": "current_media",
+        "got": "current_media",
+        "passed": true,
+        "latency_ms": 472.4
+      },
+      {
+        "query": "set volume to 50",
+        "expected": "set_volume",
+        "got": "set_volume",
+        "passed": true,
+        "latency_ms": 822.0
+      },
+      {
+        "query": "mute the volume",
+        "expected": "set_volume",
+        "got": "set_volume",
+        "passed": true,
+        "latency_ms": 589.1
+      },
+      {
+        "query": "turn up the volume",
+        "expected": "set_volume",
+        "got": "set_volume",
+        "passed": true,
+        "latency_ms": 591.9
+      },
+      {
+        "query": "turn down the volume",
+        "expected": "set_volume",
+        "got": "set_volume",
+        "passed": true,
+        "latency_ms": 635.2
+      },
+      {
+        "query": "take a screenshot",
+        "expected": "take_screenshot",
+        "got": "take_screenshot",
+        "passed": true,
+        "latency_ms": 489.5
+      },
+      {
+        "query": "lock my pc",
+        "expected": "lock_pc",
+        "got": "lock_pc",
+        "passed": true,
+        "latency_ms": 470.3
+      },
+      {
+        "query": "put pc to sleep",
+        "expected": "sleep_pc",
+        "got": "sleep_pc",
+        "passed": true,
+        "latency_ms": 455.2
+      },
+      {
+        "query": "restart computer",
+        "expected": "restart_pc",
+        "got": "restart_pc",
+        "passed": true,
+        "latency_ms": 507.7
+      },
+      {
+        "query": "check system status",
+        "expected": "system_status",
+        "got": "system_status",
+        "passed": true,
+        "latency_ms": 491.8
+      },
+      {
+        "query": "empty recycle bin",
+        "expected": "empty_recycle_bin",
+        "got": "empty_recycle_bin",
+        "passed": true,
+        "latency_ms": 537.1
+      },
+      {
+        "query": "search for python tutorials",
+        "expected": "web_search",
+        "got": "web_search",
+        "passed": true,
+        "latency_ms": 840.2
+      },
+      {
+        "query": "what's the weather in london",
+        "expected": "get_weather",
+        "got": "get_weather",
+        "passed": true,
+        "latency_ms": 605.1
+      },
+      {
+        "query": "set a timer for 5 minutes",
+        "expected": "set_timer",
+        "got": "set_timer",
+        "passed": true,
+        "latency_ms": 769.9
+      },
+      {
+        "query": "remind me to call mom in 30 minutes",
+        "expected": "set_reminder",
+        "got": "set_timer",
+        "passed": false,
+        "latency_ms": 873.3
+      },
+      {
+        "query": "minimize all windows",
+        "expected": "window_mgmt",
+        "got": "window_mgmt",
+        "passed": true,
+        "latency_ms": 773.7
+      },
+      {
+        "query": "maximize this window",
+        "expected": "window_mgmt",
+        "got": "window_mgmt",
+        "passed": true,
+        "latency_ms": 719.8
+      },
+      {
+        "query": "find file report.pdf",
+        "expected": "find_file",
+        "got": "find_file",
+        "passed": true,
+        "latency_ms": 629.2
+      },
+      {
+        "query": "what does this document say",
+        "expected": "document_qa",
+        "got": "document_qa",
+        "passed": true,
+        "latency_ms": 692.2
+      },
+      {
+        "query": "check my calendar",
+        "expected": "get_calendar",
+        "got": "get_calendar",
+        "passed": true,
+        "latency_ms": 692.4
+      },
+      {
+        "query": "check unread emails",
+        "expected": "unread_emails",
+        "got": "unread_emails",
+        "passed": true,
+        "latency_ms": 462.6
+      },
+      {
+        "query": "how are you today",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 750.8
+      },
+      {
+        "query": "tell me a joke",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 892.0
+      },
+      {
+        "query": "explain quantum computing",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 920.1
+      }
+    ]
+  },
+  "held_out": {
+    "total": 200,
+    "dev_total": 100,
+    "dev_correct": 97,
+    "dev_accuracy_pct": 97.0,
+    "sealed_total": 100,
+    "sealed_correct": 95,
+    "sealed_accuracy_pct": 95.0,
+    "total_correct": 192,
+    "accuracy_pct": 96.0,
+    "mean_latency_ms": 491.9,
+    "median_latency_ms": 460.3,
+    "p95_latency_ms": 658.5,
+    "category_stats": {
+      "formal": {
+        "correct": 29,
+        "total": 30
+      },
+      "casual": {
+        "correct": 76,
+        "total": 82
+      },
+      "short": {
+        "correct": 27,
+        "total": 28
+      },
+      "rambling": {
+        "correct": 11,
+        "total": 11
+      },
+      "stt_error": {
+        "correct": 9,
+        "total": 9
+      },
+      "chitchat": {
+        "correct": 10,
+        "total": 10
+      },
+      "meta": {
+        "correct": 16,
+        "total": 16
+      },
+      "vocative": {
+        "correct": 4,
+        "total": 4
+      },
+      "follow_up": {
+        "correct": 10,
+        "total": 10
+      }
+    },
+    "items": [
+      {
+        "id": 0,
+        "query": "Could you kindly inform me of the current hour?",
+        "split": "dev",
+        "category": "formal",
+        "expected": "get_time",
+        "got": "get_time",
+        "passed": true,
+        "latency_ms": 455.8
+      },
+      {
+        "id": 1,
+        "query": "what time you got",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "get_time",
+        "got": "get_time",
+        "passed": true,
+        "latency_ms": 467.0
+      },
+      {
+        "id": 2,
+        "query": "time now",
+        "split": "dev",
+        "category": "short",
+        "expected": "get_time",
+        "got": "get_time",
+        "passed": true,
+        "latency_ms": 478.4
+      },
+      {
+        "id": 3,
+        "query": "hey buddy I was just wondering if you could glance at the clock and tell me what time it is right now",
+        "split": "sealed",
+        "category": "rambling",
+        "expected": "get_time",
+        "got": "get_time",
+        "passed": true,
+        "latency_ms": 512.2
+      },
+      {
+        "id": 4,
+        "query": "what time is it right now no question mark",
+        "split": "dev",
+        "category": "stt_error",
+        "expected": "get_time",
+        "got": "get_time",
+        "passed": true,
+        "latency_ms": 473.3
+      },
+      {
+        "id": 5,
+        "query": "current local time please",
+        "split": "sealed",
+        "category": "formal",
+        "expected": "get_time",
+        "got": "get_time",
+        "passed": true,
+        "latency_ms": 455.6
+      },
+      {
+        "id": 6,
+        "query": "what hour is it",
+        "split": "dev",
+        "category": "casual",
+        "expected": "get_time",
+        "got": "get_time",
+        "passed": true,
+        "latency_ms": 454.8
+      },
+      {
+        "id": 7,
+        "query": "clock check",
+        "split": "sealed",
+        "category": "short",
+        "expected": "get_time",
+        "got": "get_time",
+        "passed": true,
+        "latency_ms": 462.1
+      },
+      {
+        "id": 8,
+        "query": "tell me the time on the pc",
+        "split": "dev",
+        "category": "casual",
+        "expected": "get_time",
+        "got": "get_time",
+        "passed": true,
+        "latency_ms": 485.7
+      },
+      {
+        "id": 9,
+        "query": "do you have the current time handy",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "get_time",
+        "got": "get_time",
+        "passed": true,
+        "latency_ms": 482.3
+      },
+      {
+        "id": 10,
+        "query": "Pray tell, what is today's calendar date?",
+        "split": "dev",
+        "category": "formal",
+        "expected": "get_date",
+        "got": "get_date",
+        "passed": true,
+        "latency_ms": 466.3
+      },
+      {
+        "id": 11,
+        "query": "whats todays date",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "get_date",
+        "got": "get_date",
+        "passed": true,
+        "latency_ms": 452.8
+      },
+      {
+        "id": 12,
+        "query": "date today",
+        "split": "dev",
+        "category": "short",
+        "expected": "get_date",
+        "got": "get_date",
+        "passed": true,
+        "latency_ms": 449.1
+      },
+      {
+        "id": 13,
+        "query": "I seem to have lost track of the days this week could you tell me what date it is today",
+        "split": "sealed",
+        "category": "rambling",
+        "expected": "get_date",
+        "got": "get_date",
+        "passed": true,
+        "latency_ms": 474.0
+      },
+      {
+        "id": 14,
+        "query": "what is today date on the calendar",
+        "split": "dev",
+        "category": "stt_error",
+        "expected": "get_date",
+        "got": "get_date",
+        "passed": true,
+        "latency_ms": 484.4
+      },
+      {
+        "id": 15,
+        "query": "which day of the month are we on",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "get_date",
+        "got": "get_date",
+        "passed": true,
+        "latency_ms": 480.4
+      },
+      {
+        "id": 16,
+        "query": "todays date please",
+        "split": "dev",
+        "category": "short",
+        "expected": "get_date",
+        "got": "get_date",
+        "passed": true,
+        "latency_ms": 466.6
+      },
+      {
+        "id": 17,
+        "query": "what day is it today exactly",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "get_date",
+        "got": "get_date",
+        "passed": true,
+        "latency_ms": 452.1
+      },
+      {
+        "id": 18,
+        "query": "give me the current date",
+        "split": "dev",
+        "category": "formal",
+        "expected": "get_date",
+        "got": "get_date",
+        "passed": true,
+        "latency_ms": 449.7
+      },
+      {
+        "id": 19,
+        "query": "check calendar date for today",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "get_date",
+        "got": "get_date",
+        "passed": true,
+        "latency_ms": 461.0
+      },
+      {
+        "id": 20,
+        "query": "Would you please launch the Spotify software?",
+        "split": "dev",
+        "category": "formal",
+        "expected": "open_app",
+        "got": "open_app",
+        "passed": true,
+        "latency_ms": 586.2
+      },
+      {
+        "id": 21,
+        "query": "fire up calculator",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "open_app",
+        "got": "open_app",
+        "passed": true,
+        "latency_ms": 576.1
+      },
+      {
+        "id": 22,
+        "query": "notepad",
+        "split": "dev",
+        "category": "short",
+        "expected": "open_app",
+        "got": "open_app",
+        "passed": true,
+        "latency_ms": 570.3
+      },
+      {
+        "id": 23,
+        "query": "hey if you have a moment can you go ahead and start up the visual studio code application for me",
+        "split": "sealed",
+        "category": "rambling",
+        "expected": "open_app",
+        "got": "open_app",
+        "passed": true,
+        "latency_ms": 604.0
+      },
+      {
+        "id": 24,
+        "query": "open crome browser right now",
+        "split": "dev",
+        "category": "stt_error",
+        "expected": "open_app",
+        "got": "open_app",
+        "passed": true,
+        "latency_ms": 566.8
+      },
+      {
+        "id": 25,
+        "query": "bring up the terminal",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "open_app",
+        "got": "open_app",
+        "passed": true,
+        "latency_ms": 582.8
+      },
+      {
+        "id": 26,
+        "query": "launch vlc player",
+        "split": "dev",
+        "category": "casual",
+        "expected": "open_app",
+        "got": "open_app",
+        "passed": true,
+        "latency_ms": 619.8
+      },
+      {
+        "id": 27,
+        "query": "start discord",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "open_app",
+        "got": "open_app",
+        "passed": true,
+        "latency_ms": 548.2
+      },
+      {
+        "id": 28,
+        "query": "run paint app",
+        "split": "dev",
+        "category": "casual",
+        "expected": "open_app",
+        "got": "open_app",
+        "passed": true,
+        "latency_ms": 543.3
+      },
+      {
+        "id": 29,
+        "query": "pull up excel spreadsheet app",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "open_app",
+        "got": "open_app",
+        "passed": true,
+        "latency_ms": 565.2
+      },
+      {
+        "id": 30,
+        "query": "Please terminate the active Notepad session.",
+        "split": "dev",
+        "category": "formal",
+        "expected": "close_app",
+        "got": "close_app",
+        "passed": true,
+        "latency_ms": 602.2
+      },
+      {
+        "id": 31,
+        "query": "kill spotify",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "close_app",
+        "got": "close_app",
+        "passed": true,
+        "latency_ms": 568.6
+      },
+      {
+        "id": 32,
+        "query": "close calc",
+        "split": "dev",
+        "category": "short",
+        "expected": "close_app",
+        "got": "close_app",
+        "passed": true,
+        "latency_ms": 540.5
+      },
+      {
+        "id": 33,
+        "query": "I am completely finished working in discord so could you please shut down that window",
+        "split": "sealed",
+        "category": "rambling",
+        "expected": "close_app",
+        "got": "close_app",
+        "passed": true,
+        "latency_ms": 559.7
+      },
+      {
+        "id": 34,
+        "query": "shut down chrome window please",
+        "split": "dev",
+        "category": "stt_error",
+        "expected": "close_app",
+        "got": "close_app",
+        "passed": true,
+        "latency_ms": 625.6
+      },
+      {
+        "id": 35,
+        "query": "exit vlc player",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "close_app",
+        "got": "close_app",
+        "passed": true,
+        "latency_ms": 625.2
+      },
+      {
+        "id": 36,
+        "query": "quit the calculator app",
+        "split": "dev",
+        "category": "casual",
+        "expected": "close_app",
+        "got": "close_app",
+        "passed": true,
+        "latency_ms": 565.4
+      },
+      {
+        "id": 37,
+        "query": "terminate visual studio code",
+        "split": "sealed",
+        "category": "formal",
+        "expected": "close_app",
+        "got": "close_app",
+        "passed": true,
+        "latency_ms": 592.7
+      },
+      {
+        "id": 38,
+        "query": "dismiss the paint program",
+        "split": "dev",
+        "category": "casual",
+        "expected": "close_app",
+        "got": "close_app",
+        "passed": true,
+        "latency_ms": 542.6
+      },
+      {
+        "id": 39,
+        "query": "close out of steam",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "close_app",
+        "got": "close_app",
+        "passed": true,
+        "latency_ms": 574.3
+      },
+      {
+        "id": 40,
+        "query": "Kindly initiate playback of Clair de Lune on YouTube.",
+        "split": "dev",
+        "category": "formal",
+        "expected": "play_youtube",
+        "got": "play_youtube",
+        "passed": true,
+        "latency_ms": 648.3
+      },
+      {
+        "id": 41,
+        "query": "put on some lo fi beats",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "play_youtube",
+        "got": "play_youtube",
+        "passed": true,
+        "latency_ms": 595.0
+      },
+      {
+        "id": 42,
+        "query": "play coldplay yellow",
+        "split": "dev",
+        "category": "short",
+        "expected": "play_youtube",
+        "got": "play_youtube",
+        "passed": true,
+        "latency_ms": 589.0
+      },
+      {
+        "id": 43,
+        "query": "could you find and start playing that song bohemian rhapsody by queen over on youtube",
+        "split": "sealed",
+        "category": "rambling",
+        "expected": "play_youtube",
+        "got": "play_youtube",
+        "passed": true,
+        "latency_ms": 681.5
+      },
+      {
+        "id": 44,
+        "query": "play hotel california on you tube",
+        "split": "dev",
+        "category": "stt_error",
+        "expected": "play_youtube",
+        "got": "play_youtube",
+        "passed": true,
+        "latency_ms": 609.0
+      },
+      {
+        "id": 45,
+        "query": "stream ed sheeran shape of you",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "play_youtube",
+        "got": "play_youtube",
+        "passed": true,
+        "latency_ms": 696.6
+      },
+      {
+        "id": 46,
+        "query": "play relaxing acoustic guitar music",
+        "split": "dev",
+        "category": "casual",
+        "expected": "play_youtube",
+        "got": "play_youtube",
+        "passed": true,
+        "latency_ms": 635.8
+      },
+      {
+        "id": 47,
+        "query": "blast some rock music on youtube",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "play_youtube",
+        "got": "play_youtube",
+        "passed": true,
+        "latency_ms": 567.8
+      },
+      {
+        "id": 48,
+        "query": "put on interstellar soundtrack",
+        "split": "dev",
+        "category": "casual",
+        "expected": "play_youtube",
+        "got": "play_youtube",
+        "passed": true,
+        "latency_ms": 624.6
+      },
+      {
+        "id": 49,
+        "query": "cue up billie eilish bad guy",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "play_youtube",
+        "got": "play_youtube",
+        "passed": true,
+        "latency_ms": 692.0
+      },
+      {
+        "id": 50,
+        "query": "hold the music for a sec",
+        "split": "dev",
+        "category": "casual",
+        "expected": "pause_media",
+        "got": "pause_media",
+        "passed": true,
+        "latency_ms": 460.8
+      },
+      {
+        "id": 51,
+        "query": "keep playing the track",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "resume_media",
+        "got": "resume_media",
+        "passed": true,
+        "latency_ms": 455.1
+      },
+      {
+        "id": 52,
+        "query": "skip to the following song",
+        "split": "dev",
+        "category": "formal",
+        "expected": "next_track",
+        "got": "next_track",
+        "passed": true,
+        "latency_ms": 452.3
+      },
+      {
+        "id": 53,
+        "query": "go back to the prior track",
+        "split": "sealed",
+        "category": "formal",
+        "expected": "prev_track",
+        "got": "prev_track",
+        "passed": true,
+        "latency_ms": 480.5
+      },
+      {
+        "id": 54,
+        "query": "what track is this playing right now",
+        "split": "dev",
+        "category": "casual",
+        "expected": "current_media",
+        "got": "current_media",
+        "passed": true,
+        "latency_ms": 484.9
+      },
+      {
+        "id": 55,
+        "query": "freeze playback",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "pause_media",
+        "got": "pause_media",
+        "passed": true,
+        "latency_ms": 489.0
+      },
+      {
+        "id": 56,
+        "query": "unpause audio",
+        "split": "dev",
+        "category": "short",
+        "expected": "resume_media",
+        "got": "resume_media",
+        "passed": true,
+        "latency_ms": 464.1
+      },
+      {
+        "id": 57,
+        "query": "skip this one",
+        "split": "sealed",
+        "category": "short",
+        "expected": "next_track",
+        "got": "next_track",
+        "passed": true,
+        "latency_ms": 449.8
+      },
+      {
+        "id": 58,
+        "query": "play the previous one again",
+        "split": "dev",
+        "category": "casual",
+        "expected": "prev_track",
+        "got": "prev_track",
+        "passed": true,
+        "latency_ms": 451.3
+      },
+      {
+        "id": 59,
+        "query": "identify current playing music",
+        "split": "sealed",
+        "category": "formal",
+        "expected": "current_media",
+        "got": "current_media",
+        "passed": true,
+        "latency_ms": 473.1
+      },
+      {
+        "id": 60,
+        "query": "Adjust the output gain to thirty percent.",
+        "split": "dev",
+        "category": "formal",
+        "expected": "set_volume",
+        "got": "control_windows_system",
+        "passed": false,
+        "latency_ms": 1066.7
+      },
+      {
+        "id": 61,
+        "query": "silence the speakers",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "set_volume",
+        "got": "set_volume",
+        "passed": true,
+        "latency_ms": 550.0
+      },
+      {
+        "id": 62,
+        "query": "louder",
+        "split": "dev",
+        "category": "short",
+        "expected": "set_volume",
+        "got": "set_volume",
+        "passed": true,
+        "latency_ms": 584.4
+      },
+      {
+        "id": 63,
+        "query": "it is a bit too loud in here could you soften the sound level a notch",
+        "split": "sealed",
+        "category": "rambling",
+        "expected": "set_volume",
+        "got": "set_volume",
+        "passed": true,
+        "latency_ms": 633.4
+      },
+      {
+        "id": 64,
+        "query": "turn volume up ten percent",
+        "split": "dev",
+        "category": "stt_error",
+        "expected": "set_volume",
+        "got": "set_volume",
+        "passed": true,
+        "latency_ms": 642.2
+      },
+      {
+        "id": 65,
+        "query": "unmute audio",
+        "split": "sealed",
+        "category": "short",
+        "expected": "set_volume",
+        "got": "set_volume",
+        "passed": true,
+        "latency_ms": 593.7
+      },
+      {
+        "id": 66,
+        "query": "drop sound down a bit",
+        "split": "dev",
+        "category": "casual",
+        "expected": "set_volume",
+        "got": "set_volume",
+        "passed": true,
+        "latency_ms": 591.4
+      },
+      {
+        "id": 67,
+        "query": "crank up the audio",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "set_volume",
+        "got": "set_volume",
+        "passed": true,
+        "latency_ms": 591.2
+      },
+      {
+        "id": 68,
+        "query": "set sound level to eighty",
+        "split": "dev",
+        "category": "casual",
+        "expected": "set_volume",
+        "got": "set_volume",
+        "passed": true,
+        "latency_ms": 815.3
+      },
+      {
+        "id": 69,
+        "query": "kill the sound completely",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "set_volume",
+        "got": "set_volume",
+        "passed": true,
+        "latency_ms": 580.3
+      },
+      {
+        "id": 70,
+        "query": "Secure the workstation immediately.",
+        "split": "dev",
+        "category": "formal",
+        "expected": "lock_pc",
+        "got": "lock_pc",
+        "passed": true,
+        "latency_ms": 454.3
+      },
+      {
+        "id": 71,
+        "query": "lock workstation",
+        "split": "sealed",
+        "category": "short",
+        "expected": "lock_pc",
+        "got": "lock_pc",
+        "passed": true,
+        "latency_ms": 454.7
+      },
+      {
+        "id": 72,
+        "query": "go to sleep now computer",
+        "split": "dev",
+        "category": "casual",
+        "expected": "sleep_pc",
+        "got": "sleep_pc",
+        "passed": true,
+        "latency_ms": 458.6
+      },
+      {
+        "id": 73,
+        "query": "suspend system state",
+        "split": "sealed",
+        "category": "formal",
+        "expected": "sleep_pc",
+        "got": "sleep_pc",
+        "passed": true,
+        "latency_ms": 485.2
+      },
+      {
+        "id": 74,
+        "query": "reboot the machine please",
+        "split": "dev",
+        "category": "casual",
+        "expected": "restart_pc",
+        "got": "restart_pc",
+        "passed": true,
+        "latency_ms": 481.3
+      },
+      {
+        "id": 75,
+        "query": "perform system restart",
+        "split": "sealed",
+        "category": "formal",
+        "expected": "restart_pc",
+        "got": "restart_pc",
+        "passed": true,
+        "latency_ms": 473.6
+      },
+      {
+        "id": 76,
+        "query": "how much battery and ram is left",
+        "split": "dev",
+        "category": "casual",
+        "expected": "system_status",
+        "got": "system_status",
+        "passed": true,
+        "latency_ms": 454.8
+      },
+      {
+        "id": 77,
+        "query": "hardware metrics check",
+        "split": "sealed",
+        "category": "short",
+        "expected": "system_status",
+        "got": "system_status",
+        "passed": true,
+        "latency_ms": 450.2
+      },
+      {
+        "id": 78,
+        "query": "purge deleted files from trash bin",
+        "split": "dev",
+        "category": "formal",
+        "expected": "empty_recycle_bin",
+        "got": "empty_recycle_bin",
+        "passed": true,
+        "latency_ms": 506.4
+      },
+      {
+        "id": 79,
+        "query": "clean out the recycle bin",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "empty_recycle_bin",
+        "got": "empty_recycle_bin",
+        "passed": true,
+        "latency_ms": 531.8
+      },
+      {
+        "id": 80,
+        "query": "Collapse all active applications to the taskbar.",
+        "split": "dev",
+        "category": "formal",
+        "expected": "window_mgmt",
+        "got": "window_mgmt",
+        "passed": true,
+        "latency_ms": 782.5
+      },
+      {
+        "id": 81,
+        "query": "hide every window",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "window_mgmt",
+        "got": "window_mgmt",
+        "passed": true,
+        "latency_ms": 740.5
+      },
+      {
+        "id": 82,
+        "query": "show desktop",
+        "split": "dev",
+        "category": "short",
+        "expected": "window_mgmt",
+        "got": "read_screen",
+        "passed": false,
+        "latency_ms": 569.2
+      },
+      {
+        "id": 83,
+        "query": "make this window take the entire screen",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "window_mgmt",
+        "got": "window_mgmt",
+        "passed": true,
+        "latency_ms": 751.7
+      },
+      {
+        "id": 84,
+        "query": "fullscreen current window",
+        "split": "dev",
+        "category": "short",
+        "expected": "window_mgmt",
+        "got": "window_mgmt",
+        "passed": true,
+        "latency_ms": 734.8
+      },
+      {
+        "id": 85,
+        "query": "minimize everything on screen",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "window_mgmt",
+        "got": "window_mgmt",
+        "passed": true,
+        "latency_ms": 736.7
+      },
+      {
+        "id": 86,
+        "query": "expand active window to maximum size",
+        "split": "dev",
+        "category": "formal",
+        "expected": "window_mgmt",
+        "got": "window_mgmt",
+        "passed": true,
+        "latency_ms": 680.5
+      },
+      {
+        "id": 87,
+        "query": "un-maximize current window",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "window_mgmt",
+        "got": "window_mgmt",
+        "passed": true,
+        "latency_ms": 719.9
+      },
+      {
+        "id": 88,
+        "query": "minimize all programs",
+        "split": "dev",
+        "category": "casual",
+        "expected": "window_mgmt",
+        "got": "window_mgmt",
+        "passed": true,
+        "latency_ms": 774.8
+      },
+      {
+        "id": 89,
+        "query": "restore minimized windows",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "window_mgmt",
+        "got": "window_mgmt",
+        "passed": true,
+        "latency_ms": 680.1
+      },
+      {
+        "id": 90,
+        "query": "Capture the visual display to image.",
+        "split": "dev",
+        "category": "formal",
+        "expected": "take_screenshot",
+        "got": "take_screenshot",
+        "passed": true,
+        "latency_ms": 457.0
+      },
+      {
+        "id": 91,
+        "query": "grab a screen snap",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "take_screenshot",
+        "got": "take_screenshot",
+        "passed": true,
+        "latency_ms": 472.4
+      },
+      {
+        "id": 92,
+        "query": "screenshot",
+        "split": "dev",
+        "category": "short",
+        "expected": "take_screenshot",
+        "got": "take_screenshot",
+        "passed": true,
+        "latency_ms": 474.5
+      },
+      {
+        "id": 93,
+        "query": "hey could you take a picture of what is currently on my desktop monitor",
+        "split": "sealed",
+        "category": "rambling",
+        "expected": "take_screenshot",
+        "got": "take_screenshot",
+        "passed": true,
+        "latency_ms": 498.9
+      },
+      {
+        "id": 94,
+        "query": "snap the screen",
+        "split": "dev",
+        "category": "short",
+        "expected": "take_screenshot",
+        "got": "take_screenshot",
+        "passed": true,
+        "latency_ms": 474.9
+      },
+      {
+        "id": 95,
+        "query": "what error message is showing on my screen right now",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "read_screen",
+        "got": "read_screen",
+        "passed": true,
+        "latency_ms": 759.5
+      },
+      {
+        "id": 96,
+        "query": "inspect the visual layout of this window",
+        "split": "dev",
+        "category": "formal",
+        "expected": "read_screen",
+        "got": "read_screen",
+        "passed": true,
+        "latency_ms": 712.9
+      },
+      {
+        "id": 97,
+        "query": "read text displayed on my monitor",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "read_screen",
+        "got": "read_screen",
+        "passed": true,
+        "latency_ms": 700.7
+      },
+      {
+        "id": 98,
+        "query": "look at what is on the screen and tell me the title",
+        "split": "dev",
+        "category": "casual",
+        "expected": "read_screen",
+        "got": "read_screen",
+        "passed": true,
+        "latency_ms": 634.3
+      },
+      {
+        "id": 99,
+        "query": "examine screen contents",
+        "split": "sealed",
+        "category": "short",
+        "expected": "read_screen",
+        "got": "read_screen",
+        "passed": true,
+        "latency_ms": 588.4
+      },
+      {
+        "id": 100,
+        "query": "Could you provide the meteorological conditions for Chicago?",
+        "split": "dev",
+        "category": "formal",
+        "expected": "get_weather",
+        "got": "get_weather",
+        "passed": true,
+        "latency_ms": 552.8
+      },
+      {
+        "id": 101,
+        "query": "is it pouring in seattle",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "get_weather",
+        "got": "get_weather",
+        "passed": true,
+        "latency_ms": 618.3
+      },
+      {
+        "id": 102,
+        "query": "weather miami",
+        "split": "dev",
+        "category": "short",
+        "expected": "get_weather",
+        "got": "get_weather",
+        "passed": true,
+        "latency_ms": 604.3
+      },
+      {
+        "id": 103,
+        "query": "I am thinking about taking a walk outside do you know if it is cold or sunny in Boston today",
+        "split": "sealed",
+        "category": "rambling",
+        "expected": "get_weather",
+        "got": "get_weather",
+        "passed": true,
+        "latency_ms": 564.7
+      },
+      {
+        "id": 104,
+        "query": "temperature in san francisco today",
+        "split": "dev",
+        "category": "stt_error",
+        "expected": "get_weather",
+        "got": "get_weather",
+        "passed": true,
+        "latency_ms": 568.2
+      },
+      {
+        "id": 105,
+        "query": "how hot is it in phoenix right now",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "get_weather",
+        "got": "get_weather",
+        "passed": true,
+        "latency_ms": 599.9
+      },
+      {
+        "id": 106,
+        "query": "will it snow in denver this evening",
+        "split": "dev",
+        "category": "casual",
+        "expected": "get_weather",
+        "got": "get_weather",
+        "passed": true,
+        "latency_ms": 600.5
+      },
+      {
+        "id": 107,
+        "query": "toronto weather forecast",
+        "split": "sealed",
+        "category": "short",
+        "expected": "get_weather",
+        "got": "get_weather",
+        "passed": true,
+        "latency_ms": 602.7
+      },
+      {
+        "id": 108,
+        "query": "check outside temperature in berlin",
+        "split": "dev",
+        "category": "casual",
+        "expected": "get_weather",
+        "got": "get_weather",
+        "passed": true,
+        "latency_ms": 569.6
+      },
+      {
+        "id": 109,
+        "query": "what are the weather conditions in sydney",
+        "split": "sealed",
+        "category": "formal",
+        "expected": "get_weather",
+        "got": "get_weather",
+        "passed": true,
+        "latency_ms": 573.5
+      },
+      {
+        "id": 110,
+        "query": "Initialize a countdown mechanism for twelve minutes.",
+        "split": "dev",
+        "category": "formal",
+        "expected": "set_timer",
+        "got": "set_timer",
+        "passed": true,
+        "latency_ms": 771.7
+      },
+      {
+        "id": 111,
+        "query": "give me a timer for four minutes",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "set_timer",
+        "got": "set_timer",
+        "passed": true,
+        "latency_ms": 761.6
+      },
+      {
+        "id": 112,
+        "query": "timer 45 seconds",
+        "split": "dev",
+        "category": "short",
+        "expected": "set_timer",
+        "got": "set_timer",
+        "passed": true,
+        "latency_ms": 712.7
+      },
+      {
+        "id": 113,
+        "query": "I am boiling some pasta on the stove so please start a countdown for eight minutes",
+        "split": "sealed",
+        "category": "rambling",
+        "expected": "set_timer",
+        "got": "set_timer",
+        "passed": true,
+        "latency_ms": 782.0
+      },
+      {
+        "id": 114,
+        "query": "start a timer for ten mins pizza",
+        "split": "dev",
+        "category": "stt_error",
+        "expected": "set_timer",
+        "got": "set_timer",
+        "passed": true,
+        "latency_ms": 774.5
+      },
+      {
+        "id": 115,
+        "query": "countdown 3 minutes for tea",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "set_timer",
+        "got": "set_timer",
+        "passed": true,
+        "latency_ms": 745.5
+      },
+      {
+        "id": 116,
+        "query": "set 20 minute timer",
+        "split": "dev",
+        "category": "short",
+        "expected": "set_timer",
+        "got": "set_timer",
+        "passed": true,
+        "latency_ms": 734.8
+      },
+      {
+        "id": 117,
+        "query": "start a stopwatch timer for 15 minutes",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "set_timer",
+        "got": "set_timer",
+        "passed": true,
+        "latency_ms": 765.0
+      },
+      {
+        "id": 118,
+        "query": "set a buzzer for thirty seconds",
+        "split": "dev",
+        "category": "casual",
+        "expected": "set_timer",
+        "got": "set_timer",
+        "passed": true,
+        "latency_ms": 808.3
+      },
+      {
+        "id": 119,
+        "query": "timer for one hour laundry",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "set_timer",
+        "got": "set_timer",
+        "passed": true,
+        "latency_ms": 754.1
+      },
+      {
+        "id": 120,
+        "query": "Schedule a notification for 4:00 PM to submit the quarterly report.",
+        "split": "dev",
+        "category": "formal",
+        "expected": "set_reminder",
+        "got": "set_reminder",
+        "passed": true,
+        "latency_ms": 780.4
+      },
+      {
+        "id": 121,
+        "query": "alert me to take my medicine in an hour",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "set_reminder",
+        "got": "set_timer",
+        "passed": false,
+        "latency_ms": 795.5
+      },
+      {
+        "id": 122,
+        "query": "remind me buy milk tomorrow 9am",
+        "split": "dev",
+        "category": "short",
+        "expected": "set_reminder",
+        "got": "set_reminder",
+        "passed": true,
+        "latency_ms": 697.4
+      },
+      {
+        "id": 123,
+        "query": "hey make sure you ping me at five thirty this evening because I promised I would pick up Sarah",
+        "split": "sealed",
+        "category": "rambling",
+        "expected": "set_reminder",
+        "got": "set_reminder",
+        "passed": true,
+        "latency_ms": 879.8
+      },
+      {
+        "id": 124,
+        "query": "remind me call doctor at two pm",
+        "split": "dev",
+        "category": "stt_error",
+        "expected": "set_reminder",
+        "got": "set_reminder",
+        "passed": true,
+        "latency_ms": 640.9
+      },
+      {
+        "id": 125,
+        "query": "set a reminder for tomorrow morning to check emails",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "set_reminder",
+        "got": "set_reminder",
+        "passed": true,
+        "latency_ms": 663.3
+      },
+      {
+        "id": 126,
+        "query": "create a reminder to pay electric bill on Friday",
+        "split": "dev",
+        "category": "casual",
+        "expected": "set_reminder",
+        "got": "set_reminder",
+        "passed": true,
+        "latency_ms": 685.7
+      },
+      {
+        "id": 127,
+        "query": "notify me to stretch in 45 minutes",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "set_reminder",
+        "got": "set_timer",
+        "passed": false,
+        "latency_ms": 738.6
+      },
+      {
+        "id": 128,
+        "query": "remind me about the team sync at 3 pm",
+        "split": "dev",
+        "category": "casual",
+        "expected": "set_reminder",
+        "got": "set_reminder",
+        "passed": true,
+        "latency_ms": 664.2
+      },
+      {
+        "id": 129,
+        "query": "prompt me to drink water in twenty minutes",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "set_reminder",
+        "got": "set_timer",
+        "passed": false,
+        "latency_ms": 801.1
+      },
+      {
+        "id": 130,
+        "query": "Navigate to the Bluetooth configuration panel.",
+        "split": "dev",
+        "category": "formal",
+        "expected": "open_settings",
+        "got": "open_settings",
+        "passed": true,
+        "latency_ms": 641.0
+      },
+      {
+        "id": 131,
+        "query": "open wifi page",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "open_settings",
+        "got": "open_settings",
+        "passed": true,
+        "latency_ms": 548.3
+      },
+      {
+        "id": 132,
+        "query": "deactivate bluetooth radio",
+        "split": "dev",
+        "category": "formal",
+        "expected": "change_setting",
+        "got": "change_setting",
+        "passed": true,
+        "latency_ms": 684.0
+      },
+      {
+        "id": 133,
+        "query": "turn wifi off",
+        "split": "sealed",
+        "category": "short",
+        "expected": "change_setting",
+        "got": "change_setting",
+        "passed": true,
+        "latency_ms": 718.2
+      },
+      {
+        "id": 134,
+        "query": "enable dark mode theme",
+        "split": "dev",
+        "category": "casual",
+        "expected": "change_setting",
+        "got": "change_setting",
+        "passed": true,
+        "latency_ms": 801.5
+      },
+      {
+        "id": 135,
+        "query": "switch on night light",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "change_setting",
+        "got": "change_setting",
+        "passed": true,
+        "latency_ms": 714.5
+      },
+      {
+        "id": 136,
+        "query": "is my bluetooth turned on right now",
+        "split": "dev",
+        "category": "casual",
+        "expected": "get_setting",
+        "got": "get_setting",
+        "passed": true,
+        "latency_ms": 592.6
+      },
+      {
+        "id": 137,
+        "query": "check current night light state",
+        "split": "sealed",
+        "category": "formal",
+        "expected": "get_setting",
+        "got": "get_setting",
+        "passed": true,
+        "latency_ms": 589.6
+      },
+      {
+        "id": 138,
+        "query": "bring up display settings window",
+        "split": "dev",
+        "category": "casual",
+        "expected": "open_settings",
+        "got": "open_settings",
+        "passed": true,
+        "latency_ms": 576.8
+      },
+      {
+        "id": 139,
+        "query": "toggle wifi on",
+        "split": "sealed",
+        "category": "short",
+        "expected": "change_setting",
+        "got": "change_setting",
+        "passed": true,
+        "latency_ms": 703.5
+      },
+      {
+        "id": 140,
+        "query": "Review unread correspondence in my inbox.",
+        "split": "dev",
+        "category": "formal",
+        "expected": "unread_emails",
+        "got": "unread_emails",
+        "passed": true,
+        "latency_ms": 457.5
+      },
+      {
+        "id": 141,
+        "query": "do i have new emails",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "unread_emails",
+        "got": "unread_emails",
+        "passed": true,
+        "latency_ms": 452.3
+      },
+      {
+        "id": 142,
+        "query": "check new mail",
+        "split": "dev",
+        "category": "short",
+        "expected": "unread_emails",
+        "got": "unread_emails",
+        "passed": true,
+        "latency_ms": 465.9
+      },
+      {
+        "id": 143,
+        "query": "Inspect upcoming schedule entries for the week.",
+        "split": "sealed",
+        "category": "formal",
+        "expected": "get_calendar",
+        "got": "get_calendar",
+        "passed": true,
+        "latency_ms": 775.8
+      },
+      {
+        "id": 144,
+        "query": "what meetings do i have today",
+        "split": "dev",
+        "category": "casual",
+        "expected": "get_calendar",
+        "got": "get_calendar",
+        "passed": true,
+        "latency_ms": 705.6
+      },
+      {
+        "id": 145,
+        "query": "calendar agenda",
+        "split": "sealed",
+        "category": "short",
+        "expected": "get_calendar",
+        "got": "get_calendar",
+        "passed": true,
+        "latency_ms": 685.2
+      },
+      {
+        "id": 146,
+        "query": "compose an email to Alex about the budget meeting",
+        "split": "dev",
+        "category": "casual",
+        "expected": "draft_email",
+        "got": "draft_email",
+        "passed": true,
+        "latency_ms": 1075.9
+      },
+      {
+        "id": 147,
+        "query": "draft a message to boss regarding sick leave",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "draft_email",
+        "got": "generate_content",
+        "passed": false,
+        "latency_ms": 1096.6
+      },
+      {
+        "id": 148,
+        "query": "what appointments are lined up tomorrow",
+        "split": "dev",
+        "category": "casual",
+        "expected": "get_calendar",
+        "got": "get_calendar",
+        "passed": true,
+        "latency_ms": 688.1
+      },
+      {
+        "id": 149,
+        "query": "any unread messages in outlook",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "unread_emails",
+        "got": "unread_emails",
+        "passed": true,
+        "latency_ms": 464.5
+      },
+      {
+        "id": 150,
+        "query": "Research recent geopolitical events in South America.",
+        "split": "dev",
+        "category": "formal",
+        "expected": "web_search",
+        "got": "web_search",
+        "passed": true,
+        "latency_ms": 716.8
+      },
+      {
+        "id": 151,
+        "query": "who won the cricket match yesterday",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "web_search",
+        "got": "web_search",
+        "passed": true,
+        "latency_ms": 693.3
+      },
+      {
+        "id": 152,
+        "query": "latest space x launch news",
+        "split": "dev",
+        "category": "short",
+        "expected": "web_search",
+        "got": "web_search",
+        "passed": true,
+        "latency_ms": 844.9
+      },
+      {
+        "id": 153,
+        "query": "can you search online to see what time the supermarket down the street closes tonight",
+        "split": "sealed",
+        "category": "rambling",
+        "expected": "web_search",
+        "got": "web_search",
+        "passed": true,
+        "latency_ms": 731.5
+      },
+      {
+        "id": 154,
+        "query": "look up who won best picture oscar this year",
+        "split": "dev",
+        "category": "casual",
+        "expected": "web_search",
+        "got": "chat",
+        "passed": false,
+        "latency_ms": 871.0
+      },
+      {
+        "id": 155,
+        "query": "find online who is the current ceo of microsoft",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "web_search",
+        "got": "web_search",
+        "passed": true,
+        "latency_ms": 625.9
+      },
+      {
+        "id": 156,
+        "query": "query online the valuation of apple stock",
+        "split": "dev",
+        "category": "casual",
+        "expected": "web_search",
+        "got": "web_search",
+        "passed": true,
+        "latency_ms": 616.6
+      },
+      {
+        "id": 157,
+        "query": "what is the current population of tokyo",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "web_search",
+        "got": "chat",
+        "passed": false,
+        "latency_ms": 837.9
+      },
+      {
+        "id": 158,
+        "query": "lookup recipe for authentic chicken tikka masala",
+        "split": "dev",
+        "category": "casual",
+        "expected": "web_search",
+        "got": "web_search",
+        "passed": true,
+        "latency_ms": 734.9
+      },
+      {
+        "id": 159,
+        "query": "search online for python async tutorial",
+        "split": "sealed",
+        "category": "casual",
+        "expected": "web_search",
+        "got": "web_search",
+        "passed": true,
+        "latency_ms": 805.0
+      },
+      {
+        "id": 160,
+        "query": "Greetings, how fares your operation this afternoon?",
+        "split": "dev",
+        "category": "chitchat",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 1029.2
+      },
+      {
+        "id": 161,
+        "query": "sup amigo how you doing",
+        "split": "sealed",
+        "category": "chitchat",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 1077.8
+      },
+      {
+        "id": 162,
+        "query": "what is your favorite color if you had one",
+        "split": "dev",
+        "category": "chitchat",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 1012.9
+      },
+      {
+        "id": 163,
+        "query": "can you compose a whimsical haiku regarding autumn leaves",
+        "split": "sealed",
+        "category": "chitchat",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 954.0
+      },
+      {
+        "id": 164,
+        "query": "If a tree falls in an uninhabited forest does it make a sound?",
+        "split": "dev",
+        "category": "chitchat",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 1128.2
+      },
+      {
+        "id": 165,
+        "query": "why do cats purr when they are happy",
+        "split": "sealed",
+        "category": "chitchat",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 1125.3
+      },
+      {
+        "id": 166,
+        "query": "explain how photosynthesis converts sunlight into glucose",
+        "split": "dev",
+        "category": "chitchat",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 1065.5
+      },
+      {
+        "id": 167,
+        "query": "tell me an amusing anecdote about computers",
+        "split": "sealed",
+        "category": "chitchat",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 1525.6
+      },
+      {
+        "id": 168,
+        "query": "I am feeling quite tired after a long workday",
+        "split": "dev",
+        "category": "chitchat",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 1265.0
+      },
+      {
+        "id": 169,
+        "query": "what is the meaning of life according to Douglas Adams",
+        "split": "sealed",
+        "category": "chitchat",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 1036.4
+      },
+      {
+        "id": 170,
+        "query": "what can you do",
+        "split": "dev",
+        "category": "meta",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 1157.2
+      },
+      {
+        "id": 171,
+        "query": "list your tools",
+        "split": "sealed",
+        "category": "meta",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 1094.3
+      },
+      {
+        "id": 172,
+        "query": "what tools do you have available",
+        "split": "dev",
+        "category": "meta",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 1033.5
+      },
+      {
+        "id": 173,
+        "query": "are you online right now",
+        "split": "sealed",
+        "category": "meta",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 985.5
+      },
+      {
+        "id": 174,
+        "query": "who created you and how were you built",
+        "split": "dev",
+        "category": "meta",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 1451.1
+      },
+      {
+        "id": 175,
+        "query": "what model are you running on this machine",
+        "split": "sealed",
+        "category": "meta",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 866.5
+      },
+      {
+        "id": 176,
+        "query": "tell me your capabilities",
+        "split": "dev",
+        "category": "meta",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 1089.8
+      },
+      {
+        "id": 177,
+        "query": "what functions can you perform",
+        "split": "sealed",
+        "category": "meta",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 1142.8
+      },
+      {
+        "id": 178,
+        "query": "how do you work",
+        "split": "dev",
+        "category": "meta",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 1032.7
+      },
+      {
+        "id": 179,
+        "query": "are you an ai or a real person",
+        "split": "sealed",
+        "category": "meta",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 790.7
+      },
+      {
+        "id": 180,
+        "query": "what are your features",
+        "split": "dev",
+        "category": "meta",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 1012.5
+      },
+      {
+        "id": 181,
+        "query": "can you help me on my computer",
+        "split": "sealed",
+        "category": "meta",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 1219.1
+      },
+      {
+        "id": 182,
+        "query": "explain what you are capable of doing",
+        "split": "dev",
+        "category": "meta",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 1340.4
+      },
+      {
+        "id": 183,
+        "query": "show me your list of functions",
+        "split": "sealed",
+        "category": "meta",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 1300.3
+      },
+      {
+        "id": 184,
+        "query": "what is your prompt",
+        "split": "dev",
+        "category": "meta",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 972.7
+      },
+      {
+        "id": 185,
+        "query": "tell me a secret about yourself",
+        "split": "sealed",
+        "category": "meta",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 1112.5
+      },
+      {
+        "id": 186,
+        "query": "Amigo",
+        "split": "dev",
+        "category": "vocative",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 1009.0
+      },
+      {
+        "id": 187,
+        "query": "Hey Amigo",
+        "split": "sealed",
+        "category": "vocative",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 857.3
+      },
+      {
+        "id": 188,
+        "query": "Amigo!",
+        "split": "dev",
+        "category": "vocative",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 827.0
+      },
+      {
+        "id": 189,
+        "query": "hello amigo",
+        "split": "sealed",
+        "category": "vocative",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 830.5
+      },
+      {
+        "id": 190,
+        "query": "turn it up higher",
+        "split": "dev",
+        "category": "follow_up",
+        "expected": "set_volume",
+        "got": "set_volume",
+        "passed": true,
+        "latency_ms": 721.1
+      },
+      {
+        "id": 191,
+        "query": "mute it now",
+        "split": "sealed",
+        "category": "follow_up",
+        "expected": "set_volume",
+        "got": "set_volume",
+        "passed": true,
+        "latency_ms": 627.9
+      },
+      {
+        "id": 192,
+        "query": "pause that",
+        "split": "dev",
+        "category": "follow_up",
+        "expected": "pause_media",
+        "got": "pause_media",
+        "passed": true,
+        "latency_ms": 537.8
+      },
+      {
+        "id": 193,
+        "query": "unpause it",
+        "split": "sealed",
+        "category": "follow_up",
+        "expected": "resume_media",
+        "got": "resume_media",
+        "passed": true,
+        "latency_ms": 569.5
+      },
+      {
+        "id": 194,
+        "query": "skip to the next one",
+        "split": "dev",
+        "category": "follow_up",
+        "expected": "next_track",
+        "got": "next_track",
+        "passed": true,
+        "latency_ms": 574.8
+      },
+      {
+        "id": 195,
+        "query": "close it please",
+        "split": "sealed",
+        "category": "follow_up",
+        "expected": "close_app",
+        "got": "close_app",
+        "passed": true,
+        "latency_ms": 670.6
+      },
+      {
+        "id": 196,
+        "query": "turn that back on",
+        "split": "dev",
+        "category": "follow_up",
+        "expected": "change_setting",
+        "got": "change_setting",
+        "passed": true,
+        "latency_ms": 769.7
+      },
+      {
+        "id": 197,
+        "query": "what about tomorrow in that city",
+        "split": "sealed",
+        "category": "follow_up",
+        "expected": "get_weather",
+        "got": "get_weather",
+        "passed": true,
+        "latency_ms": 662.2
+      },
+      {
+        "id": 198,
+        "query": "cancel that reminder",
+        "split": "dev",
+        "category": "follow_up",
+        "expected": "cancel_reminder",
+        "got": "cancel_reminder",
+        "passed": true,
+        "latency_ms": 709.5
+      },
+      {
+        "id": 199,
+        "query": "tell me more about that",
+        "split": "sealed",
+        "category": "follow_up",
+        "expected": "chat",
+        "got": "chat",
+        "passed": true,
+        "latency_ms": 1004.4
+      }
+    ]
+  },
+  "latency": {
+    "mean_routing_latency_ms": 491.9,
+    "median_routing_latency_ms": 460.3,
+    "p95_routing_latency_ms": 658.5,
+    "mean_ttft_ms": 433.7,
+    "mean_ttfa_ms": 1087.6
+  }
+}
