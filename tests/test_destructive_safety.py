@@ -4,14 +4,34 @@ import sys
 
 sys.path.insert(0, os.path.abspath("."))
 
-from amigo.utils.tool_registry import execute_tool, get_pending_confirmation
+from amigo.utils.tool_registry import execute_tool, execute_actions, get_pending_confirmation
 
 
 class TestDestructiveSafety(unittest.TestCase):
     """
     Guarantees that destructive tools (shutdown, restart, sleep, empty_recycle_bin)
-    require user confirmation when confirmed is False/omitted.
+    require user confirmation when confirmed is False/omitted, and that model-generated
+    actions CANNOT bypass confirmation by outputting confirmed=True.
     """
+
+    def test_model_cannot_skip_confirmation(self):
+        """Model cannot bypass confirmation by injecting confirmed=True in action params."""
+        for tool_name in ["restart_pc", "sleep_pc", "empty_recycle_bin"]:
+            results = execute_actions([{"tool": tool_name, "params": {"confirmed": True}}])
+            msg, url, meta = results[0]
+            self.assertTrue(
+                meta.get("requires_confirmation"),
+                f"Model must not be able to skip confirmation on '{tool_name}' via params.confirmed=True!",
+            )
+            self.assertEqual(meta.get("status"), "requires_confirmation")
+
+        # Also test system_control with shutdown
+        results = execute_actions([{"tool": "system_control", "params": {"action": "shutdown", "confirmed": True}}])
+        msg, url, meta = results[0]
+        self.assertTrue(
+            meta.get("requires_confirmation"),
+            "Model must not be able to skip confirmation on system_control shutdown via params.confirmed=True!",
+        )
 
     def test_empty_recycle_bin_safety(self):
         msg, url, meta = execute_tool("empty_recycle_bin", {})

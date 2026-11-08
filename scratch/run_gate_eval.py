@@ -11,7 +11,7 @@ from tests.held_out_eval_set import HELD_OUT_EVAL_DATA, DEV_EVAL_DATA, SEALED_EV
 from amigo.core import llm_agent
 
 print("==================================================")
-print("   RUNNING STEP 2.3 REGRESSION GATE EVALUATION    ")
+print("   RUNNING STEP 2.2 REGRESSION GATE EVALUATION    ")
 print("==================================================")
 
 with open("scratch/baseline_results.json", "r", encoding="utf-8") as f:
@@ -135,7 +135,7 @@ else:
 print("==================================================")
 
 gate_results = {
-    "step": "2.3",
+    "step": "2.2",
     "gate_passed": gate_passed,
     "orig_queries": {
         "accuracy_pct": round(orig_acc, 2),
@@ -160,6 +160,6 @@ gate_results = {
     }
 }
 
-with open("scratch/step2_3_eval_results.json", "w", encoding="utf-8") as f:
+with open("scratch/step2_2_eval_results.json", "w", encoding="utf-8") as f:
     json.dump(gate_results, f, indent=2)
 

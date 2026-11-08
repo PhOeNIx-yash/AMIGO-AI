@@ -1539,88 +1539,7 @@ def _tool_get_clipboard(params, query, spoken):
     return "The clipboard is currently empty.", None, {"clipboard": ""}
 
 
-def _tool_manage_voices(params, query, spoken):
-    from amigo.utils.tts import get_voice_catalog, get_active_voice, set_voice
-    params = params if isinstance(params, dict) else {}
-    action = str(params.get("action") or "list").strip().lower()
-    voice_param = str(params.get("voice") or "").strip()
-    catalog = get_voice_catalog()
-    active_key = get_active_voice()
-    active_info = catalog.get(active_key, {})
-    active_name = active_info.get("name", active_key)
-
-    if action in ("set", "switch", "change") or voice_param:
-        target = voice_param.lower()
-        if not target and query:
-            target = query.lower()
-
-        chosen_key = None
-        if "male" in target and "female" not in target:
-            for k, v in catalog.items():
-                if v.get("gender", "").lower() == "male" and k != active_key:
-                    chosen_key = k
-                    break
-            if not chosen_key:
-                for k, v in catalog.items():
-                    if v.get("gender", "").lower() == "male":
-                        chosen_key = k
-                        break
-        elif "female" in target:
-            for k, v in catalog.items():
-                if v.get("gender", "").lower() == "female" and k != active_key:
-                    chosen_key = k
-                    break
-            if not chosen_key:
-                for k, v in catalog.items():
-                    if v.get("gender", "").lower() == "female":
-                        chosen_key = k
-                        break
-        else:
-            for k, v in catalog.items():
-                name = v.get("name", "").lower()
-                if target == k.lower() or target == name or target in name or target in k.lower():
-                    chosen_key = k
-                    break
-
-        if chosen_key:
-            display_name = set_voice(chosen_key)
-            return f"Switched voice to {display_name}.", None, {
-                "action": "set",
-                "voice": chosen_key,
-                "display_name": display_name,
-            }
-        else:
-            return f"I couldn't find a voice matching '{voice_param}'.", None, {
-                "action": "set",
-                "error": "voice_not_found",
-            }
-
-    # Action is "list" (or default)
-    total_voices = len(catalog)
-    popular = ["Heart", "Bella", "Sarah", "Adam", "Michael"]
-    spoken_summary = (
-        f"I have {total_voices} voices available. Currently using {active_name}. "
-        f"Popular options include {', '.join(popular[:-1])}, and {popular[-1]}."
-    )
-    meta = {
-        "action": "list",
-        "active_voice": active_key,
-        "voices": catalog,
-        "cards": [{
-            "type": "voice_list",
-            "active": active_key,
-            "total": total_voices,
-            "voices": [
-                {"id": k, "name": v.get("name", k), "gender": v.get("gender"), "accent": v.get("accent")}
-                for k, v in catalog.items()
-            ],
-        }],
-    }
-    return spoken_summary, None, meta
-
-
 UI_TOOL_HANDLERS = {
-    "manage_voices":         _tool_manage_voices,
     "get_clipboard":         _tool_get_clipboard,
     "get_clipboard_content": _tool_get_clipboard,
     "web_search":         _tool_web_search,
@@ -1732,34 +1651,34 @@ def _tool(name: str, description: str, props: dict | None = None, required: list
 
 
 TOOL_DEFINITIONS = [
-    _tool("chat", "Conversational dialogue, general knowledge, explanations, science, reasoning, philosophy, math, and casual chit-chat. Use when no live web lookup or PC control is requested. Ex: 'why do leaves change color in autumn?', 'how does a quantum computer differ from a classical machine'.",
+    _tool("chat", "Conversational dialogue, general knowledge, science, reasoning, philosophy, math, and chit-chat. Use when no live web lookup or PC control is requested. Ex: 'why do leaves change color in autumn?', 'how does a quantum computer work'.",
           {"response": _p("string", "Direct spoken reply")}),
-    _tool("web_search", "Search the web for current events, breaking news, live sports, real-time facts, web recipes, or live Internet lookups. Not for weather or forecasts (use get_weather) or general reasoning. Ex: 'look up live score of yesterday's basketball match', 'find a quick recipe for garlic butter pasta', 'search online for recent space telescope discoveries'.",
+    _tool("web_search", "Search the web for current events, breaking news, live sports, real-time facts, web recipes, or live lookups. Not for weather or forecasts (use get_weather) or general reasoning. Ex: 'uh could you check online and see who won the basketball game yesterday evening', 'find a quick recipe for garlic butter pasta', 'search online for recent space telescope discoveries'.",
           {"query": _p("string", "Search query")}, ["query"]),
     _tool("stock_quote", "Look up current share price for a market ticker (e.g. MSFT, AAPL, BTC). Not when asked to search or query online (use web_search). Ex: 'what is Apple trading at right now?', 'stock price for TSLA', 'how much is Ethereum worth'.",
           {"symbol": _p("string", "Ticker or asset symbol")}, ["symbol"]),
-    _tool("get_time", "Report current local clock time. Not for date (use get_date) or timers (use set_timer). Ex: 'tell me the exact clock time', 'could you check the clock?', 'time check'.",
+    _tool("get_time", "Report current local clock time. Not for date (use get_date) or timers (use set_timer). Ex: 'what is the time', 'could you check the clock?', 'time check'.",
           {}),
-    _tool("get_date", "Report current calendar day, month, and year. Not for clock time (use get_time) or schedule. Ex: 'what day of the week is today?', 'state today's date', 'what month and year are we in'.",
+    _tool("get_date", "Report current calendar day, month, and year. Not for clock time (use get_time) or schedule. Ex: 'what day of the week is today?', 'what date is it today', 'what month and year are we in'.",
           {}),
-    _tool("play_youtube", "Search and play songs, music, or videos on YouTube. Not for track skipping or resuming. Ex: 'stream ambient jazz on youtube', 'put on chopin nocturne', 'play the official trailer for dune'.",
+    _tool("play_youtube", "Play songs, music, or videos on YouTube. Not for track skipping or resuming. Ex: 'stream ambient jazz on youtube', 'put on chopin nocturne', 'play the official trailer for dune'.",
           {"query": _p("string", "Song, video title, or music search query")}, ["query"]),
     _tool("resume_media", "Resume paused media or music playback. Not for searching new songs. Ex: 'unpause the music please', 'continue playback', 'resume'.",
           {}),
     _tool("pause_media", "Pause active media or music. Never use to halt assistant speech (use stop). Ex: 'pause the music', 'could you pause playback for a moment?', 'pause'.",
           {}),
-    _tool("next_track", "Advance media playback to next track. Not for searching songs. Ex: 'play following audio track', 'advance to next song', 'next track'.",
+    _tool("next_track", "Advance media playback to next track. Not for searching songs. Ex: 'play the next track', 'skip this song', 'next track'.",
           {}),
-    _tool("prev_track", "Return media playback to previous track. Not for searching songs. Ex: 'return to earlier audio track', 'can we replay the earlier song?', 'previous song'.",
+    _tool("prev_track", "Return media playback to previous track. Not for searching songs. Ex: 'return to last song', 'previous track please', 'previous song'.",
           {}),
     _tool("current_media", "Report title, artist, and playback status of active media. Not for controlling playback. Ex: 'what song is playing right now?', 'identify this track', 'what track is currently on'.",
           {}),
-    _tool("set_volume", "Adjust master audio volume or mute sound. Never use for halting assistant speech (use stop) or pausing music. Ex: 'turn the volume up a bit', 'could you mute the sound please?', 'volume 65'.",
+    _tool("set_volume", "Adjust master audio volume or mute sound. Never use for halting assistant speech (use stop) or pausing music. Ex: 'turn the volume up a bit', 'turn down the volume its to loud', 'turn it up'.",
           {"action": _p("string", "mute | unmute | volume_up | volume_down | set_volume"),
            "level": _p("integer", "Volume percentage 0-100")}),
-    _tool("set_brightness", "Adjust display screen brightness percentage. Not for volume. Ex: 'could you dim the screen to 40 percent?', 'brightness 80', 'increase screen brightness a little'.",
+    _tool("set_brightness", "Adjust display brightness percentage. Not for volume. Ex: 'dim screen to 40 percent', 'brightness 80', 'increase screen brightness'.",
           {"level": _p("integer", "Brightness percentage 0-100")}, ["level"]),
-    _tool("take_screenshot", "Capture and save full screenshot of monitor. Not for reading text on screen (use read_screen). Ex: 'snap full desktop screenshot', 'save monitor capture', 'grab screen right now'.",
+    _tool("take_screenshot", "Capture and save full screenshot of monitor. Not for reading text on screen (use read_screen). Ex: 'take a screenshot for me', 'can you grab a screenshot', 'screen shot please'.",
           {}),
     _tool("read_screen", "Inspect visual GUI elements or text on monitor using OCR and vision. Use ONLY when asking about visible screen/window contents. Not for querying documents or files (use document_qa). Ex: 'what does this error message on screen say?', 'read the visible paragraph in this open window', 'can you see what button is highlighted'.",
           {"question": _p("string", "Question about visible screen contents")}),
@@ -1770,28 +1689,27 @@ TOOL_DEFINITIONS = [
     _tool("window_mgmt", "Manage desktop windows (minimize_all, maximize, restore, switch_window). Not for inspecting contents (use read_screen). Ex: 'minimize all windows please', 'can you maximize this window?', 'switch to next application'.",
           {"action": _p("string", "minimize_all | maximize | restore | switch_window")}, ["action"]),
     _tool("system_control", "General OS power manager to initiate shutdown or abort scheduled shutdown. For locking, sleep, or reboot, prefer lock_pc, sleep_pc, or restart_pc. Ex: 'can you shut down the computer completely?', 'abort system shutdown', 'power off the machine'.",
-          {"action": _p("string", "shutdown | cancel_shutdown"),
-           "confirmed": _p("boolean", "Safety confirmation boolean")}),
+          {"action": _p("string", "shutdown | cancel_shutdown")}),
     _tool("lock_pc", "Dedicated action to lock Windows workstation immediately. Not for sleep (use sleep_pc) or restart (use restart_pc). Ex: 'lock my computer please', 'could you lock the workstation?', 'lock screen'.",
           {}),
     _tool("sleep_pc", "Dedicated action to put PC into low-power sleep mode. Not for locking (use lock_pc) or shutdown. Ex: 'put computer to sleep', 'could you suspend the system now?', 'go to sleep mode'.",
-          {"confirmed": _p("boolean", "Safety confirmation boolean")}),
+          {}),
     _tool("restart_pc", "Dedicated action to reboot or restart Windows OS. Not for sleep (use sleep_pc) or shutdown. Ex: 'can you restart my pc please?', 'reboot the computer', 'restart windows'.",
-          {"confirmed": _p("boolean", "Safety confirmation boolean")}),
+          {}),
     _tool("empty_recycle_bin", "Permanently purge deleted items from Windows Recycle Bin. Not for single files. Ex: 'empty the recycle bin please', 'clear trash bin now', 'purge recycle bin'.",
-          {"confirmed": _p("boolean", "Safety confirmation boolean")}),
+          {}),
     _tool("system_status", "Report hardware utilization including CPU load, RAM usage, storage space, and battery level. Not for settings pages. Ex: 'how much memory is currently free?', 'check battery level and cpu usage', 'what are the system hardware metrics'.",
           {}),
     _tool("open_settings", "Open or display a Windows Settings page GUI window. Not for toggling settings without GUI (use change_setting). Ex: 'open the display settings window', 'could you show network configuration?', 'launch sound settings page'.",
           {"setting": _p("string", "Settings category or name")}),
-    _tool("control_windows_system", "Direct controller for hardware power states (sleep, reboot, shutdown) and hardware power profiles. Not for standard Windows UI settings (use change_setting). Ex: 'put machine into power saver', 'engage balanced power mode', 'enable battery saver'.",
+    _tool("control_windows_system", "Direct controller for hardware power states and power profiles. Not for standard Windows UI settings (use change_setting). Ex: 'turn on battery saver', 'switch to power saver mode', 'balanced power profile'.",
           {"action": _p("string", "Action name")}),
     _tool("screen_pen_annotate", "Draw visual callouts (circle, arrow, box, underline) on screen to highlight UI elements. Ex: 'circle the download button on screen', 'draw a red box around login field', 'point an arrow at top navigation'.",
           {"action": _p("string", "circle | arrow | box | underline | clear"),
            "x": _p("integer", "X coordinate 0-1000"),
            "y": _p("integer", "Y coordinate 0-1000"),
            "label": _p("string", "Annotation note")}, ["action"]),
-    _tool("change_setting", "Configure Windows settings (dark theme, night light, Wi-Fi, Bluetooth, sound device, mouse speed). Use for OS settings by name. Not for hardware power states or screen brightness (use control_windows_system or set_brightness). Ex: 'toggle dark mode for me', 'disable bluetooth radio', 'switch night light on please'.",
+    _tool("change_setting", "Turn on, turn off, toggle, or configure Windows settings (dark mode, night light, Wi-Fi, Bluetooth, sound device). Not for hardware power states or screen brightness (use control_windows_system or set_brightness). Ex: 'turn off bluetooth radio', 'do the same for bluetooth', 'switch night light on please'.",
           {"setting": _p("string", "Setting name (dark_mode, bluetooth, wifi, night_light)"),
            "value": _p("string", "on | off | toggle | value")}, ["setting"]),
     _tool("get_setting", "Query current value or active state of a Windows setting. Not for changing values. Ex: 'is bluetooth currently turned on?', 'check if dark mode is active', 'what is active sound output device'.",
@@ -1810,17 +1728,17 @@ TOOL_DEFINITIONS = [
           {}),
     _tool("cancel_reminder", "Cancel or dismiss a scheduled task reminder. Not for listing reminders. Ex: 'cancel the clinic appointment reminder', 'delete reminder to water plants', 'could you clear all scheduled reminders?'.",
           {"query": _p("string", "Reminder topic to cancel, or 'all'")}),
-    _tool("find_file", "Search local files or folders by name, pattern, or keyword. Not for web search. Ex: 'can you locate files ending in .pdf?', 'search for documents matching marketing budget', 'find spreadsheets from last month'.",
+    _tool("find_file", "Search local files or folders by name, pattern, or keyword. Not for web search. Ex: 'i was working on a project last week and cannot find the spreadsheet about marketing budget', 'search for documents matching marketing budget', 'find spreadsheets from last month'.",
           {"query": _p("string", "Search keyword or filename pattern")}, ["query"]),
     _tool("open_file", "Open an existing local file in its default desktop application. Supports target_index for ordinal selection from search results. Not for web URLs. Ex: 'launch project_plan.pdf', 'open the second spreadsheet from earlier results', 'could you open report.docx?'.",
           {"path": _p("string", "File path or filename"),
            "target_index": _p("integer", "Ordinal index: 0=first, 1=second, -1=last")}, ["path"]),
-    _tool("document_qa", "Read, inspect, or answer questions about personal local files, documents, resumes, invoices, or records. Supports target_index for ordinal selection. Not for visible screen OCR (use read_screen) or general knowledge (use chat). Ex: 'what does this document say?', 'summarize payment terms from the first invoice', 'check notes in meeting_summary.txt'.",
+    _tool("document_qa", "Read or answer questions about personal local files, documents, resumes, or records. Supports target_index for ordinal selection. Not for visible screen OCR (use read_screen) or general knowledge (use chat). Ex: 'what does this document say?', 'summarize payment terms from the first invoice', 'check notes in meeting_summary.txt'.",
           {"query": _p("string", "Question about document contents"),
            "target_index": _p("integer", "Ordinal index: 0=first, 1=second, -1=last")}, ["query"]),
-    _tool("memory_recall", "Store personal user facts or recall saved preferences. Not for general knowledge or web facts. Ex: 'remember that my preferred airline is Delta', 'what did i say my favorite coffee was?', 'recall my wifi password note'.",
+    _tool("memory_recall", "Save personal user preferences ('remember that...') or retrieve stored notes and personal details. Not for general knowledge or web facts. Ex: 'remember that my preferred airline is Delta', 'what did i say my favorite coffee was?', 'can you remember that my dog is named Milo?'.",
           {"action": _p("string", "store | recall"),
-           "fact": _p("string", "Fact to remember when action is store"),
+           "fact": _p("string", "Personal fact to remember when action is store"),
            "query": _p("string", "Question or topic when action is recall")}, ["action"]),
     _tool("get_calendar", "Retrieve upcoming calendar schedule, meetings, and events. Not for reminders (use set_reminder). Ex: 'check my agenda for today', 'show calendar appointments this afternoon', 'any events scheduled tomorrow?'.",
           {}),
@@ -1829,12 +1747,12 @@ TOOL_DEFINITIONS = [
            "query": _p("string", "Search query or sender")}),
     _tool("unread_emails", "Inspect and report unread email messages in Outlook. Not for composing emails. Ex: 'do i have any unread emails right now?', 'check unread inbox messages', 'unread email count please'.",
           {}),
-    _tool("draft_email", "Compose and prepare an email in Outlook. Use exclusively for email messages to recipients. Not for general creative writing, articles, code, or essays (use generate_content). Ex: 'write an email to Bob about tomorrow's lunch meeting', 'email to supervisor about project milestone', 'send a note to team@company.com'.",
+    _tool("draft_email", "Compose and prepare an email in Outlook. Use exclusively for email messages to recipients. Not for general creative writing, articles, code, or essays (use generate_content). Ex: 'i need to send an email to sarah letting her know i will be about twenty minutes late to our sync', 'email to supervisor about project milestone', 'can you please right an email to Chris about dinner'.",
           {"to": _p("string", "Recipient email or name"),
            "subject": _p("string", "Subject line"),
            "prompt": _p("string", "Instructions for email content")}, ["prompt"]),
     _tool("generate_content", "Generate creative writing, essays, articles, blog posts, scripts, or code. Not for Outlook email messages (use draft_email) or short chat answers. Ex: 'write a python function to compute fibonacci numbers', 'can you draft a blog post on sustainable gardening?', 'compose a recommendation letter for an intern'.",
-          {"type": _p("string", "Content type: email, code, letter, essay, summary"),
+          {"type": _p("string", "Content type: code, letter, essay, summary"),
            "topic": _p("string", "Subject or topic of content"),
            "tone": _p("string", "Tone: formal, casual, professional"),
            "destination": _p("string", "Target app to paste into")}, ["type", "topic"]),
@@ -1842,7 +1760,7 @@ TOOL_DEFINITIONS = [
           {"feedback": _p("string", "Revision instructions")}, ["feedback"]),
     _tool("revert_content", "Restore or undo the draft to its previous version. Not for new modifications. Ex: 'undo the last draft changes please', 'can we restore the previous version of the text?', 'revert to earlier draft'.",
           {}),
-    _tool("insert_content", "Paste or insert active generated AI draft into target application. Never use for arbitrary keystrokes (use type_text). Ex: 'insert the draft into notepad', 'paste the generated summary into word', 'send content to active editor'.",
+    _tool("insert_content", "Paste or insert active generated AI draft into target application. Never use for arbitrary keystrokes (use type_text). Ex: 'insert the draft into notepad', 'paste the generated summary into word', 'paste this into my editor'.",
           {"destination": _p("string", "Target app name (e.g. notepad, word)")}, ["destination"]),
     _tool("type_text", "Simulate keyboard typing of user-supplied text into active window. Never use for pasting generated AI drafts (use insert_content). Ex: 'type admin@company.org into the username box', 'could you write hello everyone into the active window', 'type 123456'.",
           {"text": _p("string", "Text to type"),
@@ -1862,7 +1780,7 @@ TOOL_DEFINITIONS = [
           {}),
     _tool("exit", "Permanently quit and terminate the Amigo assistant process. Use ONLY for quitting Amigo. Not for 'stop' (use stop). Ex: 'quit amigo completely', 'terminate the assistant program', 'exit amigo'.",
           {}),
-    _tool("manage_voices", "List available Kokoro TTS voices or switch assistant's speaking voice. Not for volume (use set_volume) or music. Ex: 'could you list all available voices?', 'switch speaker voice to Sarah', 'change voice to male'.",
+    _tool("manage_voices", "List Kokoro TTS voices or switch assistant's speaking voice. Not for volume (use set_volume) or music. Ex: 'could you list all available voices?', 'switch speaker voice to Sarah', 'change voice to male'.",
           {"action": _p("string", "list | set"),
            "voice": _p("string", "Voice name or ID when action is 'set'")}, ["action"]),
 ]
@@ -1911,7 +1829,7 @@ _MASTER_SYSTEM_PROMPT = """You are Amigo, an intelligent, helpful voice and desk
 
 CORE OPERATING PRINCIPLES:
 - You understand user intent and select the single best tool from TOOLS AVAILABLE below.
-- Information & Freshness: The current date and time are provided in the environment context for every turn. Always use 'web_search' for current events, live sports, real-time facts, recent news, or online lookups. Use 'get_weather' for weather forecasts and temperatures. Use 'chat' for general knowledge, reasoning, science explanations, math, advice, and conversation.
+- Information & Freshness: The current date and time are provided in the environment context for every turn. Always use 'web_search' for current events, live sports, real-time facts, recent news, or time-sensitive questions requiring information beyond your static knowledge. Use 'get_weather' for weather forecasts and temperatures. Use 'chat' for general knowledge, reasoning, science explanations, math, advice, and conversation.
 - System & App Control: Launch desktop apps with 'open_app'. Open specific web URLs with 'open_website'. Adjust volume with 'set_volume'. Control playback with media tools.
 - Output Format: Output ONLY valid JSON matching this schema:
 {"actions": [{"tool": "<tool_name>", "params": {<parameters>}}]}
@@ -2372,6 +2290,8 @@ def execute_actions(
             continue
         tool = action.get("tool", "chat")
         params = action.get("params", {}) if isinstance(action.get("params"), dict) else {}
+        # Safety Guard: Model-generated action parameters cannot bypass confirmation
+        params = {k: v for k, v in params.items() if k != "confirmed"}
         spoken = action.get("speak", "") or params.get("speak", "") or params.get("reply", "") or params.get("response", "")
 
         if last_tool_output:

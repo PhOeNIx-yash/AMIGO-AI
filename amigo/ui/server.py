@@ -215,8 +215,8 @@ def get_active_model_info() -> dict:
         models = get_llm_available_models() or {}
         info = next(iter(models.values()), {})
 
-    name = info.get("name", "LFM 3 Omni 2B")
-    key = info.get("key", "lfm-3-omni")
+    name = info.get("name", "NVIDIA Nemotron 3.5 Bolt")
+    key = info.get("key", "nemotron-3.5-bolt")
     vision_ok = is_vision_ready()
     ctx_len = int(os.getenv("AMIGO_LLM_N_CTX", "8192"))
     return {
@@ -237,7 +237,7 @@ def get_active_model_info() -> dict:
 
 def get_available_models() -> list[dict]:
     try:
-        active_key = get_active_model_info().get("key", "lfm-3-omni")
+        active_key = get_active_model_info().get("key", "nemotron-3.5-bolt")
         return [
             {
                 "key": k,
@@ -249,7 +249,7 @@ def get_available_models() -> list[dict]:
         ]
     except Exception:
         return [
-            {"key": "lfm-3-omni", "name": "LFM 3 Omni 2B", "status": "active", "type": "local"},
+            {"key": "nemotron-3.5-bolt", "name": "NVIDIA Nemotron 3.5 Bolt", "status": "active", "type": "local"},
         ]
 
 
@@ -483,7 +483,7 @@ def index():
     return jsonify({
         "status": "online",
         "service": "Amigo AI Engine & Windows 11 Voice Assistant Backend",
-        "model": info.get("name", "LFM 3 Omni 2B"),
+        "model": info.get("name", "NVIDIA Nemotron 3.5 Bolt"),
     })
 
 
@@ -590,7 +590,7 @@ def api_assistant_process():
         return jsonify({
             "status": "online",
             "message": "Amigo AI Engine online",
-            "model": info.get("name", "LFM 3 Omni 2B"),
+            "model": info.get("name", "NVIDIA Nemotron 3.5 Bolt"),
             "version": "Windows 11 Voice Assistant",
         })
 
@@ -946,8 +946,8 @@ def handle_settings():
         "user_profile": u_prof,
         "user_name": get_current_user_name(),
         "voice": curr_voice,
-        "model": info.get("key", "lfm-3-omni"),
-        "model_name": info.get("name", "LFM 3 Omni 2B"),
+        "model": info.get("key", "nemotron-3.5-bolt"),
+        "model_name": info.get("name", "NVIDIA Nemotron 3.5 Bolt"),
         "thinking_enabled": is_thinking_enabled(),
         "available_models": get_available_models(),
         "available_voices": get_voice_catalog(),
@@ -1346,26 +1346,13 @@ def _load_llm_background():
     global _llm_load_error
     try:
         init_local_llm()
+        from amigo.core.llm_agent import warmup_router_prefix
+        warmup_router_prefix()
         _llm_ready.set()
     except Exception as e:
         _llm_load_error = e
         _llm_ready.set()
         return
-
-    # Pre-warm both the Router KV prefix and the Voice Assistant KV prefix
-    try:
-        query_local_llm(
-            [{"role": "system", "content": get_static_router_prefix()}, {"role": "user", "content": "hi"}],
-            system_prompt="",
-            max_tokens=8,
-            temperature=0.0,
-            thinking=False,
-            sanitize=False,
-            stop=_ROUTER_STOP,
-        )
-        logger.info("[Local AI Engine] Router KV prefix cache pre-warmed.")
-    except Exception:
-        pass
 
 
 def initialize_amigo_async():

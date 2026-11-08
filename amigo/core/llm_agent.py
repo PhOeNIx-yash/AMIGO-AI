@@ -619,6 +619,28 @@ def init_local_llm(force_reload: bool = False):
             return None
 
 
+def warmup_router_prefix() -> float:
+    """Pre-evaluates the static router prefix into GPU KV cache so first turn takes ~450ms instead of ~7.8s."""
+    from amigo.utils.tool_registry import get_static_master_prompt, _ROUTER_STOP
+    t0 = time.perf_counter()
+    init_local_llm()
+    try:
+        query_local_llm(
+            [{"role": "system", "content": get_static_master_prompt()}, {"role": "user", "content": "hi"}],
+            system_prompt="",
+            max_tokens=1,
+            temperature=0.0,
+            thinking=False,
+            sanitize=False,
+            stop=_ROUTER_STOP,
+        )
+    except Exception as e:
+        logger.warning("[Local AI Engine] Prefix warm-up failed: %s", e)
+    elapsed = time.perf_counter() - t0
+    logger.info("[Local AI Engine] Router prefix KV cache pre-warmed in %.2f s", elapsed)
+    return elapsed
+
+
 def get_available_models() -> dict:
     for m in AVAILABLE_MODELS.values():
         m["downloaded"] = os.path.exists(m["path"]) and os.path.getsize(m["path"]) > 500_000_000
