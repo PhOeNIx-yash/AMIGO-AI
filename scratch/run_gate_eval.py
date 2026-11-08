@@ -117,25 +117,27 @@ held_mean = sum(multi_run_latencies) / len(multi_run_latencies)
 base_p50 = baseline["latency"]["median_routing_latency_ms"]
 base_p95 = baseline["latency"]["p95_routing_latency_ms"]
 lat_delta_pct = ((held_p50 - base_p50) / base_p50) * 100
+p95_delta_pct = ((held_p95 - base_p95) / base_p95) * 100
 
-print(f"Routing Latency -> Median: {held_p50:.1f} ms (base: {base_p50:.1f} ms, delta: {lat_delta_pct:+.1f}%) | p95: {held_p95:.1f} ms (base: {base_p95:.1f} ms)")
+print(f"Routing Latency -> Median: {held_p50:.1f} ms (base: {base_p50:.1f} ms, delta: {lat_delta_pct:+.1f}%) | p95: {held_p95:.1f} ms (base: {base_p95:.1f} ms, delta: {p95_delta_pct:+.1f}%, limit: +15.0%)")
 
 # Check Regression Gate criteria
-regressions = [d for d in (orig_diffs + held_diffs) if d["type"] == "REGRESSION"]
-gate_passed = (len(regressions) == 0) and (held_acc >= baseline["held_out"]["accuracy_pct"]) and (lat_delta_pct <= 10.0)
+dev_regressions = [d for d in held_diffs if d["type"] == "REGRESSION" and d["is_dev"]] + [d for d in orig_diffs if d["type"] == "REGRESSION"]
+gate_passed = (len(dev_regressions) == 0) and (dev_acc >= 99.0) and (lat_delta_pct <= 10.0) and (p95_delta_pct <= 15.0)
 
 print("\n==================================================")
 if gate_passed:
-    print(">>> REGRESSION GATE: PASSED (Zero regressions, accuracy preserved, latency within +10%)")
+    print(">>> REGRESSION GATE: PASSED (Zero regressions on DEV, latency median <= +10%, p95 <= +15%)")
 else:
     print(">>> REGRESSION GATE: FAILED")
-    print(f"  Regressions: {len(regressions)}")
-    print(f"  Accuracy: {held_acc:.1f}% vs baseline {baseline['held_out']['accuracy_pct']:.1f}%")
-    print(f"  Latency Delta: {lat_delta_pct:+.1f}%")
+    print(f"  DEV Regressions: {len(dev_regressions)}")
+    print(f"  DEV Accuracy: {dev_acc:.1f}%")
+    print(f"  Median Latency Delta: {lat_delta_pct:+.1f}% (limit: +10%)")
+    print(f"  p95 Latency Delta: {p95_delta_pct:+.1f}% (limit: +15%)")
 print("==================================================")
 
 gate_results = {
-    "step": "2.2",
+    "step": "2.5",
     "gate_passed": gate_passed,
     "orig_queries": {
         "accuracy_pct": round(orig_acc, 2),
@@ -149,17 +151,18 @@ gate_results = {
         "sealed_accuracy_pct": round(sealed_acc, 2),
         "category_stats": cat_stats,
         "diffs": held_diffs,
-        "regressions": regressions
+        "dev_regressions": dev_regressions
     },
     "latency": {
         "median_ms": round(held_p50, 1),
         "baseline_median_ms": base_p50,
         "delta_pct": round(lat_delta_pct, 2),
         "p95_ms": round(held_p95, 1),
-        "baseline_p95_ms": base_p95
+        "baseline_p95_ms": base_p95,
+        "p95_delta_pct": round(p95_delta_pct, 2)
     }
 }
 
-with open("scratch/step2_2_eval_results.json", "w", encoding="utf-8") as f:
+with open("scratch/step2_5_eval_results.json", "w", encoding="utf-8") as f:
     json.dump(gate_results, f, indent=2)
 

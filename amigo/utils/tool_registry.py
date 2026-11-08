@@ -111,7 +111,7 @@ _media_update_cb = None
 _ui_broadcast_cb = None
 _call_ctx = threading.local()
 _PENDING_CONFIRMATION = None
-_PENDING_TTL_SECONDS = 90.0
+_PENDING_TTL_SECONDS = 30.0
 
 
 def set_media_update_callback(cb):
@@ -1539,7 +1539,88 @@ def _tool_get_clipboard(params, query, spoken):
     return "The clipboard is currently empty.", None, {"clipboard": ""}
 
 
+def _tool_manage_voices(params, query, spoken):
+    from amigo.utils.tts import get_voice_catalog, get_active_voice, set_voice
+    params = params if isinstance(params, dict) else {}
+    action = str(params.get("action") or "list").strip().lower()
+    voice_param = str(params.get("voice") or "").strip()
+    catalog = get_voice_catalog()
+    active_key = get_active_voice()
+    active_info = catalog.get(active_key, {})
+    active_name = active_info.get("name", active_key)
+
+    if action in ("set", "switch", "change") or voice_param:
+        target = voice_param.lower()
+        if not target and query:
+            target = query.lower()
+
+        chosen_key = None
+        if "male" in target and "female" not in target:
+            for k, v in catalog.items():
+                if v.get("gender", "").lower() == "male" and k != active_key:
+                    chosen_key = k
+                    break
+            if not chosen_key:
+                for k, v in catalog.items():
+                    if v.get("gender", "").lower() == "male":
+                        chosen_key = k
+                        break
+        elif "female" in target:
+            for k, v in catalog.items():
+                if v.get("gender", "").lower() == "female" and k != active_key:
+                    chosen_key = k
+                    break
+            if not chosen_key:
+                for k, v in catalog.items():
+                    if v.get("gender", "").lower() == "female":
+                        chosen_key = k
+                        break
+        else:
+            for k, v in catalog.items():
+                name = v.get("name", "").lower()
+                if target == k.lower() or target == name or target in name or target in k.lower():
+                    chosen_key = k
+                    break
+
+        if chosen_key:
+            display_name = set_voice(chosen_key)
+            return f"Switched voice to {display_name}.", None, {
+                "action": "set",
+                "voice": chosen_key,
+                "display_name": display_name,
+            }
+        else:
+            return f"I couldn't find a voice matching '{voice_param}'.", None, {
+                "action": "set",
+                "error": "voice_not_found",
+            }
+
+    # Action is "list" (or default)
+    total_voices = len(catalog)
+    popular = ["Heart", "Bella", "Sarah", "Adam", "Michael"]
+    spoken_summary = (
+        f"I have {total_voices} voices available. Currently using {active_name}. "
+        f"Popular options include {', '.join(popular[:-1])}, and {popular[-1]}."
+    )
+    meta = {
+        "action": "list",
+        "active_voice": active_key,
+        "voices": catalog,
+        "cards": [{
+            "type": "voice_list",
+            "active": active_key,
+            "total": total_voices,
+            "voices": [
+                {"id": k, "name": v.get("name", k), "gender": v.get("gender"), "accent": v.get("accent")}
+                for k, v in catalog.items()
+            ],
+        }],
+    }
+    return spoken_summary, None, meta
+
+
 UI_TOOL_HANDLERS = {
+    "manage_voices":         _tool_manage_voices,
     "get_clipboard":         _tool_get_clipboard,
     "get_clipboard_content": _tool_get_clipboard,
     "web_search":         _tool_web_search,
@@ -1603,6 +1684,7 @@ UI_TOOL_HANDLERS = {
     "reveal_file":        _make_file_handler("reveal"),
     "copy_file_path":     _make_file_handler("copy_path"),
     "memory_recall":      _tool_memory_recall,
+    "memory_store":       _tool_memory_recall,
     "current_media":      _tool_get_current_media,
     "get_current_media":  _tool_get_current_media,
     "clarification":      _tool_clarification,
@@ -2071,6 +2153,40 @@ def parse_user_intent_fast(query: str) -> dict[str, Any] | None:
     return None
 
 
+_TOOL_SCHEMA_MAP: dict[str, dict] = {}
+
+
+def get_tool_schema(tool_name: str) -> dict | None:
+    global _TOOL_SCHEMA_MAP
+    if not _TOOL_SCHEMA_MAP:
+        _TOOL_SCHEMA_MAP = {t["name"]: t for t in TOOL_DEFINITIONS}
+    return _TOOL_SCHEMA_MAP.get(tool_name)
+
+
+def _validate_action_plan(tool_calls: list[dict]) -> list[str]:
+    """Validates that all tool calls in action plan satisfy schema required params."""
+    errors = []
+    for call in tool_calls:
+        if not isinstance(call, dict):
+            continue
+        t_name = call.get("tool")
+        if not t_name:
+            continue
+        schema = get_tool_schema(t_name)
+        if not schema:
+            continue
+        params_schema = schema.get("parameters") or {}
+        required = params_schema.get("required") or []
+        call_params = call.get("params") or {}
+        missing = [
+            req for req in required
+            if req not in call_params or call_params[req] is None or str(call_params[req]).strip() == ""
+        ]
+        if missing:
+            errors.append(f"Tool '{t_name}' is missing required parameter(s): {', '.join(missing)}.")
+    return errors
+
+
 def _route_with_llm(query: str, conversation_history: list | None = None) -> tuple[list[dict], str]:
     messages = _build_router_messages(query, conversation_history=conversation_history)
     try:
@@ -2091,6 +2207,39 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
         return [_chat_action(msg)], msg
 
     tool_calls = _parse_tool_calls(response)
+
+    # ── Step 2.5: Schema Validate-and-Repair Pipeline ───────────────────────
+    schema_errors = _validate_action_plan(tool_calls)
+    if schema_errors and tool_calls:
+        logger.info("[Tool Registry] Schema validation failed: %s. Attempting repair re-prompt.", schema_errors)
+        repair_msg = (
+            f"Your previous action plan had schema validation errors:\n"
+            + "\n".join(f"- {e}" for e in schema_errors)
+            + f"\nOriginal user query: '{query}'\n"
+            f"Please output a corrected JSON action plan providing all required parameters."
+        )
+        repair_messages = list(messages)
+        repair_messages.append({"role": "assistant", "content": response})
+        repair_messages.append({"role": "user", "content": repair_msg})
+        try:
+            repair_response = query_local_llm(
+                repair_messages,
+                system_prompt="",
+                max_tokens=512,
+                temperature=0.0,
+                repeat_penalty=1.0,
+                thinking=False,
+                sanitize=False,
+                stop=_ROUTER_STOP,
+                raise_on_error=False,
+            )
+            repaired_calls = _parse_tool_calls(repair_response)
+            if repaired_calls and not _validate_action_plan(repaired_calls):
+                logger.info("[Tool Registry] Repair re-prompt succeeded: %s", repaired_calls)
+                tool_calls = repaired_calls
+                response = repair_response
+        except Exception as repair_err:
+            logger.warning("[Tool Registry] Repair re-prompt encountered error: %s", repair_err)
     final_response = _extract_final_response(response, tool_calls)
 
     # Disambiguation & semantic intent normalization (purely structural, language-agnostic)

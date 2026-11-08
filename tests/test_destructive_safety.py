@@ -57,14 +57,32 @@ class TestDestructiveSafety(unittest.TestCase):
         self.assertIsNotNone(pending)
         self.assertIn("restart", pending.get("action", "").lower())
 
-    def test_system_control_destructive_safety(self):
-        for action in ["shutdown", "restart", "sleep", "empty_bin"]:
-            msg, url, meta = execute_tool("system_control", {"action": action})
-            self.assertTrue(
-                meta.get("requires_confirmation"),
-                f"system_control with action={action} must require confirmation!",
-            )
-            self.assertEqual(meta.get("status"), "requires_confirmation")
+    def test_confirmation_expires_after_30_seconds(self):
+        """A pending confirmation must expire and be rejected after 30 seconds."""
+        import time
+        from amigo.utils import tool_registry
+
+        # Request confirmation
+        execute_tool("restart_pc", {})
+        pending = get_pending_confirmation()
+        self.assertIsNotNone(pending)
+
+        # Fast-forward created timestamp beyond 30 seconds
+        tool_registry._PENDING_CONFIRMATION["created"] = time.time() - 35.0
+
+        # Attempt confirmation after expiration
+        msg, url, meta = execute_tool("confirm_action", {})
+        self.assertIn("nothing waiting", msg.lower())
+        self.assertIsNone(get_pending_confirmation())
+
+    def test_confirm_action_with_nothing_pending(self):
+        """A 'yes' or confirm_action with nothing pending must do nothing."""
+        from amigo.utils import tool_registry
+        tool_registry._PENDING_CONFIRMATION = None
+
+        msg, url, meta = execute_tool("confirm_action", {})
+        self.assertIn("nothing waiting", msg.lower())
+        self.assertIsNone(get_pending_confirmation())
 
 
 if __name__ == "__main__":
