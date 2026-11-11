@@ -1494,9 +1494,7 @@ def _tool_exit(params, query, spoken):
 def _tool_read_emails(params, query, spoken):
     params = params if isinstance(params, dict) else {}
     action = str(params.get("action") or "").strip().lower()
-    if action == "unread" or (not action and "unread" in query.lower()):
-        if not action and "unread" in query.lower():
-            logger.warning("[SHADOW-FALLBACK] read_emails: unread in query check fired: '%s'", query)
+    if action == "unread":
         return _tool_unread_emails(params, query, spoken)
     if action == "search" or (not action and params.get("query")):
         return _tool_search_emails(params, query, spoken)
