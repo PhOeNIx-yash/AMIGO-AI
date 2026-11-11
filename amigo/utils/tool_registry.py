@@ -2431,21 +2431,6 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
                 tool_calls[i] = {"tool": "chat", "params": {}, "speak": ""}
                 continue
 
-            has_query_params = bool(urllib.parse.urlparse(raw_url).query)
-            if has_query_params and is_internet_connected():
-                logger.warning("[SHADOW-FALLBACK] open_website: query_params rewrite to web_search fired: url='%s' query='%s'", raw_url, query)
-                tool_calls[i] = {
-                    "tool": "web_search",
-                    "params": {"query": query.strip()},
-                    "speak": "",
-                }
-            elif raw_url and "." not in raw_url and "://" not in raw_url and "/" not in raw_url:
-                tool_calls[i] = {
-                    "tool": "open_app",
-                    "params": {"name": raw_url},
-                    "speak": "",
-                }
-
     # Normalize tool params from local LLM
     for call in tool_calls:
         if call["tool"] in ("volume_up", "volume_down", "mute"):
