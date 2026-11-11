@@ -1366,28 +1366,6 @@ def _tool_change_setting(params, query, spoken):
     val = params.get("value")
     confirmed = bool(params.get("confirmed", False))
 
-    # Context-aware check for Wi-Fi to prevent redundant toggle
-    s_lower = s.lower()
-    val_lower = str(val or "").lower()
-    combined = f"{s_lower} {val_lower}"
-    if "wifi" in combined or "wi-fi" in combined:
-        logger.warning("[SHADOW-FALLBACK] change_setting: wifi combined string check fired: '%s'", combined)
-        try:
-            from amigo.services.os_automation import WindowsSystemController
-            want_on = any(w in combined for w in ("on", "enable", "connect", "start", "run")) or (
-                not any(w in combined for w in ("off", "disable", "stop", "disconnect"))
-            )
-            wifi_info = WindowsSystemController.get_wifi_status()
-            if want_on and wifi_info.get("radio_state") == "On":
-                prof = wifi_info.get("profile")
-                if prof and wifi_info.get("connected"):
-                    return f"Wi-Fi is already turned on and connected to {prof}.", None
-                return "Wi-Fi is already turned on.", None
-            elif not want_on and wifi_info.get("radio_state") == "Off":
-                return "Wi-Fi is already turned off.", None
-        except Exception:
-            pass
-
     try:
         from amigo.services.os_settings import change_setting
         ok, msg = change_setting(s, value=val, confirmed=confirmed)
