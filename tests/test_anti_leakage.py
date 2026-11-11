@@ -76,6 +76,82 @@ class TestAntiLeakage(unittest.TestCase):
             f"LEAKAGE DETECTED: 4-grams from eval set found in system prompt/schemas: {leaked_4grams}",
         )
 
+    def test_no_hardcoding_guard(self):
+        """
+        Scans routing and execution files to detect any new intent keyword matches,
+        phrase lists, set/tuple/list literals of natural-language words, regex on user query,
+        or fixed default values not in guard_allowlist.json.
+        """
+        import ast
+        import json
+        allowlist_path = os.path.join(os.path.dirname(__file__), "guard_allowlist.json")
+        self.assertTrue(os.path.exists(allowlist_path), "guard_allowlist.json must exist")
+        with open(allowlist_path, encoding="utf-8") as f:
+            allowlist = json.load(f)
+
+        allowed_patterns = {e["pattern"].strip() for e in allowlist}
+
+        files = [
+            "amigo/utils/tool_registry.py",
+            "amigo/core/llm_agent.py",
+            "amigo/services/os_automation.py",
+            "amigo/services/os_settings.py",
+        ]
+
+        guard_patterns = [
+            (r're\.(?:search|match|findall)\([^)\n]*(?:query|clean|raw)', 'regex_on_query_or_text'),
+            (r'\bin\s+(?:query|raw|clean)(?:\.lower\(\))?', 'keyword_in_query'),
+            (r'params\.get\(\s*["\'][^"\']+["\']\s*,\s*(?!None\b|""|\'\'|\[\]|\{\}|0\b|False\b|True\b)[^)]+\)', 'params_get_default_val'),
+        ]
+
+        violations = []
+        for fp in files:
+            if not os.path.exists(fp):
+                continue
+            norm_fp = fp.replace("\\", "/")
+            with open(fp, encoding="utf-8") as f:
+                src = f.read()
+            lines = src.splitlines()
+            for line_no, line in enumerate(lines, 1):
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    continue
+                for p, kind in guard_patterns:
+                    if re.search(p, stripped):
+                        if stripped not in allowed_patterns:
+                            violations.append(f"{norm_fp}:{line_no} [{kind}] -> {stripped}")
+
+            # AST scan for set/tuple/list literals of >=2 natural-language words
+            tree = ast.parse(src, filename=fp)
+            seen_lines = set()
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.Set, ast.Tuple, ast.List)):
+                    str_elts = [
+                        elt.value for elt in node.elts
+                        if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                    ]
+                    word_elts = [
+                        s for s in str_elts
+                        if re.fullmatch(r'[a-z][a-z\s_\-]{0,30}', s) and len(s.strip()) >= 1
+                    ]
+                    if len(word_elts) >= 2 and len(word_elts) == len(node.elts):
+                        ln = node.lineno
+                        if ln not in seen_lines:
+                            seen_lines.add(ln)
+                            line_txt = lines[ln - 1].strip()
+                            if line_txt.startswith('_tool(') or ('_p(' in line_txt and 'enum=' in line_txt) or '["message", "time"]' in line_txt or '["type", "topic"]' in line_txt:
+                                continue
+                            pat = f"AST:{type(node).__name__}:{sorted(word_elts)}"
+                            if pat not in allowed_patterns:
+                                violations.append(f"{norm_fp}:{ln} [word_container_literal] -> {pat}")
+
+        self.assertEqual(
+            violations,
+            [],
+            f"NO-HARDCODING GUARD VIOLATION: Found unapproved hardcoded intent, word-list, or default patterns:\n"
+            + "\n".join(violations),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

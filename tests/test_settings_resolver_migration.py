@@ -108,6 +108,26 @@ class TestSettingsResolverMigration(unittest.TestCase):
                 f"Setting '{expected_label}' resolved to URI '{uri}', expected '{expected_uri}'"
             )
 
+    def test_generic_wifi_toggle_and_idempotency(self):
+        """Wi-Fi toggle and redundant 'on' checks work generically via os_settings catalog without special-casing."""
+        from unittest.mock import patch
+        from amigo.services import os_settings
+
+        with patch.object(os_settings, "_radio_op", side_effect=["on", "off", "off"]):
+            ok, msg = os_settings.change_setting("wifi", value="toggle")
+            self.assertTrue(ok)
+            self.assertEqual(msg, "Wi-Fi is now off.")
+
+        with patch.object(os_settings, "_radio_op", side_effect=["on"]):
+            ok, msg = os_settings.change_setting("wifi", value="on")
+            self.assertTrue(ok)
+            self.assertEqual(msg, "Wi-Fi is already on.")
+
+        with patch.object(os_settings, "_radio_op", side_effect=["off", "on", "on"]):
+            ok, msg = os_settings.change_setting("wifi", value="toggle")
+            self.assertTrue(ok)
+            self.assertEqual(msg, "Wi-Fi is now on.")
+
 
 if __name__ == "__main__":
     unittest.main()

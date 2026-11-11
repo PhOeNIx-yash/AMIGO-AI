@@ -18,16 +18,14 @@ def is_internet_connected(timeout: float = 0.8, cache_ttl: float = 2.0) -> bool:
     if now - _last_online_check < cache_ttl:
         return _is_online_cache
 
-    try:
-        # Quick TCP connection to Cloudflare or Google DNS server (port 53)
-        with socket.create_connection(("8.8.8.8", 53), timeout=timeout):
-            _is_online_cache = True
-    except OSError:
+    _is_online_cache = False
+    for host, port in (("1.1.1.1", 443), ("8.8.8.8", 443), ("8.8.8.8", 53), ("1.1.1.1", 53)):
         try:
-            with socket.create_connection(("1.1.1.1", 53), timeout=timeout):
+            with socket.create_connection((host, port), timeout=timeout):
                 _is_online_cache = True
+                break
         except OSError:
-            _is_online_cache = False
+            continue
 
     _last_online_check = now
     return _is_online_cache

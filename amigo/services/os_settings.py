@@ -215,7 +215,7 @@ def _read_catalog_files() -> tuple[dict, list[dict], dict]:
     discovery: dict = {}
     for path in (CATALOG_FILE, USER_CATALOG_FILE):
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
         except FileNotFoundError:
             if path == CATALOG_FILE:
                 log.warning("Settings catalog not found: %s", path)
@@ -570,10 +570,62 @@ def _winrt_radio_api():
     return Radio, RadioAccessStatus, RadioState
 
 
+def _radio_op_ps(want: str, new_state: str | None):
+    """PowerShell WinRT fallback for systems without Python winsdk/winrt bindings."""
+    if not _IS_WINDOWS:
+        raise OSError("Windows radio control is only supported on Windows")
+    target_state = "On" if new_state == "on" else ("Off" if new_state == "off" else "")
+    ps_script = f"""
+    Add-Type -AssemblyName System.Runtime.WindowsRuntime
+    $asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | ? {{
+        $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
+        $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'
+    }})[0]
+    Function Await($WinRtTask, $ResultType) {{
+        $asTask = $asTaskGeneric.MakeGenericMethod($ResultType)
+        $netTask = $asTask.Invoke($null, @($WinRtTask))
+        $netTask.Wait(-1) | Out-Null
+        $netTask.Result
+    }}
+    [Windows.Devices.Radios.Radio,Windows.System.Devices,ContentType=WindowsRuntime] | Out-Null
+    [Windows.Devices.Radios.RadioAccessStatus,Windows.System.Devices,ContentType=WindowsRuntime] | Out-Null
+    [Windows.Devices.Radios.RadioState,Windows.System.Devices,ContentType=WindowsRuntime] | Out-Null
+    Await ([Windows.Devices.Radios.Radio]::RequestAccessAsync()) ([Windows.Devices.Radios.RadioAccessStatus]) | Out-Null
+    $radios = Await ([Windows.Devices.Radios.Radio]::GetRadiosAsync()) ([System.Collections.Generic.IReadOnlyList[Windows.Devices.Radios.Radio]])
+    $want = '{want}'
+    $matched = @($radios | ? {{ $want -eq 'all' -or ($_.Kind.ToString().ToLower().Replace('_','') -eq $want) }})
+    if ($matched.Count -eq 0) {{ throw "NO_RADIO" }}
+    if ('{target_state}' -eq '') {{
+        $states = @($matched | % {{ $_.State.ToString().ToLower() }} | Select-Object -Unique)
+        if ($states.Count -eq 1 -and ($states[0] -eq 'on' -or $states[0] -eq 'off')) {{ Write-Output $states[0] }}
+    }} else {{
+        $t = [Windows.Devices.Radios.RadioState]::'{target_state}'
+        foreach ($r in $matched) {{
+            $res = Await ($r.SetStateAsync($t)) ([Windows.Devices.Radios.RadioAccessStatus])
+            if ($res -ne 'Allowed') {{ throw "SET_REFUSED" }}
+        }}
+        Write-Output '{new_state or ""}'
+    }}
+    """
+    r = _run([_resolve_exe("powershell"), "-NoProfile", "-NonInteractive", "-Command", ps_script], timeout=RADIO_TIMEOUT)
+    if r.returncode != 0:
+        err = (r.stderr or r.stdout or "").strip()
+        if "ACCESS_DENIED" in err or "SET_REFUSED" in err:
+            raise PermissionError(f"Windows refused radio access: {err}")
+        raise OSError(f"Radio query failed for {want}: {err}")
+    out = (r.stdout or "").strip().lower()
+    if new_state is None:
+        return out if out in ("on", "off") else None
+    return new_state
+
+
 def _radio_op(kind: str, new_state: str | None):
     """new_state None -> read ('on'/'off'/None for mixed); else set it."""
-    Radio, Access, RadioState = _winrt_radio_api()
     want = kind.lower().replace("_", "")
+    try:
+        Radio, Access, RadioState = _winrt_radio_api()
+    except ModuleNotFoundError:
+        return _radio_op_ps(want, new_state)
 
     async def go():
         if await Radio.request_access_async() != Access.ALLOWED:
@@ -1231,6 +1283,9 @@ def _change(setting, value, confirmed) -> tuple[bool, str]:
             return False, f"What should I set {st.name} to?"
         if st.spec.get("must_exist") and not os.path.exists(text):
             return False, f"I can't find {text}."
+
+    if st.kind == "toggle" and req.polarity != "toggle" and state in ("on", "off") and st.read(req.source) == state:
+        return True, f"{st.name} is already {state}."
 
     try:
         st.write(state=state, number=number, text=text, source=req.source)

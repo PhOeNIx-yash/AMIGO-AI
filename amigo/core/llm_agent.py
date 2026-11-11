@@ -253,10 +253,7 @@ def build_turn_runtime_context(
 
     ctx_blocks: list[str] = []
     now = datetime.datetime.now()
-    net_status, online = _get_internet_status()
-    env_line = f"[Current Time: {now.strftime('%A, %B %d, %Y %I:%M %p').lstrip('0')} ({_day_period(now.hour)}) | Network: {net_status}]"
-    if not online:
-        env_line += " (Note: PC is currently offline)"
+    env_line = f"[Current Time: {now.strftime('%A, %B %d, %Y %I:%M %p').lstrip('0')} ({_day_period(now.hour)})]"
     ctx_blocks.append(env_line)
 
     if pending_confirmation:
@@ -302,17 +299,24 @@ def build_turn_runtime_context(
 def build_unified_history_messages(
     conversation_history: list | None = None,
     max_turns: int = 3,
+    for_router: bool = False,
 ) -> list[dict]:
     history = conversation_history or rag_engine.get_recent_conversations(count=max_turns)
     formatted: list[dict] = []
     for turn in history[-max_turns:]:
         u = str(turn.get("user") or turn.get("user_query") or turn.get("query") or "").strip()
         a = str(turn.get("assistant") or turn.get("assistant_reply") or turn.get("response") or "").strip()
-        if u and a:
-            clean_a, _ = _strip_reasoning(a)
+        tool = str(turn.get("tool") or "").strip()
+        params = turn.get("params")
+        if u:
+            clean_a, _ = _strip_reasoning(a) if a else ("", "")
             spoken = (clean_a.strip() or a)[:400]
             formatted.append({"role": "user", "content": u[:300]})
-            formatted.append({"role": "assistant", "content": spoken or "Done."})
+            if for_router and tool and tool != "chat" and isinstance(params, dict):
+                action_content = json.dumps({"actions": [{"tool": tool, "params": params}]})
+                formatted.append({"role": "assistant", "content": action_content})
+            else:
+                formatted.append({"role": "assistant", "content": spoken or "Done."})
     return formatted
 
 

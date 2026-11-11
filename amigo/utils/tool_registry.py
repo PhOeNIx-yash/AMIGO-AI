@@ -35,7 +35,7 @@ from amigo.core.reminder_timer import (
     handle_set_timer,
     parse_relative_seconds,
 )
-from amigo.services.app_opener import execute_file_action, find_files, open_folder, open_windows_app
+from amigo.services.app_opener import execute_file_action, find_files, is_known_app, is_known_folder, open_folder, open_windows_app
 from amigo.services.content_generator import (
     generate_content as _tool_generate_content,
     insert_content as _tool_insert_content,
@@ -138,10 +138,7 @@ def _get_conv_history(explicit_history: list | None = None) -> list[dict]:
 
 
 def _offline_reply(query: str, what: str) -> str:
-    return get_ai_response(
-        query,
-        web_context=f"Error: The PC is currently offline. Explain to the user that {what}.",
-    )
+    return f"You are currently offline, so {what}."
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -153,7 +150,7 @@ def _tool_web_search(params, query, spoken):
     conv_history = _get_conv_history()
 
     if not is_internet_connected():
-        return _offline_reply(query, "you cannot search the web right now because you are offline"), None, {"status": "offline"}
+        return _offline_reply(query, "web search isn't available right now"), None, {"status": "offline"}
 
     raw_q = str(params.get("query") or query or "").strip() or query
     resolved_q = rag_engine.resolve_contextual_query(raw_q, conv_history)
@@ -240,7 +237,7 @@ def _tool_stock_quote(params, query, spoken):
 def _tool_open_website(params, query, spoken):
     params = params if isinstance(params, dict) else {}
     if not is_internet_connected():
-        return _offline_reply(query, "websites cannot be opened offline"), None, {"status": "offline"}
+        return _offline_reply(query, "websites cannot be opened right now"), None, {"status": "offline"}
     raw_url = str(params.get("url") or "").strip()
     title = str(params.get("title") or "").strip()
 
@@ -398,6 +395,11 @@ def _tool_get_date(params, query, spoken):
 
 
 def _tool_time_date(params, query, spoken):
+    action = str((params or {}).get("action") or "both").strip().lower()
+    if action == "time":
+        return _tool_get_time(params, query, spoken)
+    if action == "date":
+        return _tool_get_date(params, query, spoken)
     now = datetime.datetime.now()
     return f"It is {now.strftime('%I:%M %p').lstrip('0')} on {now.strftime('%A, %B')} {now.day}, {now.year}.", None
 
@@ -468,11 +470,14 @@ def _tool_open_app(params, query, spoken):
     params = params if isinstance(params, dict) else {}
     app_name = (params.get("name") or params.get("app") or params.get("app_name") or params.get("target") or params.get("query") or "").strip()
     if not app_name:
+        logger.warning("[SHADOW-FALLBACK] open_app: app_name fallback to query.strip() fired for query='%s'", query)
         app_name = query.strip()
     if not app_name:
         return spoken or "Which application would you like to open?", None
 
     clean_target = app_name.strip()
+    if not is_known_app(clean_target) and not is_app_already_running(clean_target):
+        return "Which application would you like to open?", None
     if open_windows_app(clean_target):
         update_active_state("active_app", {"name": clean_target})
         return spoken or f"Opened {clean_target.title()}.", None, {"status": "completed", "app": clean_target}
@@ -485,7 +490,9 @@ def _tool_open_app(params, query, spoken):
 
 
 def _tool_open_folder(params, query, spoken):
-    folder_name = (params or {}).get("name", "downloads")
+    folder_name = str((params or {}).get("name") or "").strip()
+    if not folder_name or not is_known_folder(folder_name):
+        return "Which folder would you like to open?", None
     _, msg = open_folder(folder_name)
     return msg or spoken, None
 
@@ -894,11 +901,38 @@ def _tool_prev_track(params, query, spoken):
     return "Previous track.", None
 
 
+def _tool_media_control(params, query, spoken):
+    action = str((params or {}).get("action") or "").strip().lower()
+    dispatch = {
+        "play": _tool_play_media,
+        "resume": _tool_play_media,
+        "pause": _tool_pause_media,
+        "next": _tool_next_track,
+        "previous": _tool_prev_track,
+        "prev": _tool_prev_track,
+        "status": _tool_current_media,
+        "current": _tool_current_media,
+    }
+    fn = dispatch.get(action)
+    if fn:
+        return fn(params, query, spoken)
+    return "Which media action would you like: play, pause, next, previous, or status?", None
+
+
 def get_pending_confirmation():
     global _PENDING_CONFIRMATION
-    if _PENDING_CONFIRMATION and (time.time() - _PENDING_CONFIRMATION["created"]) > _PENDING_TTL_SECONDS:
-        _PENDING_CONFIRMATION = None
+    if _PENDING_CONFIRMATION:
+        start_time = _PENDING_CONFIRMATION.get("timer_started") or _PENDING_CONFIRMATION.get("created")
+        if start_time and (time.time() - start_time) > _PENDING_TTL_SECONDS:
+            _PENDING_CONFIRMATION = None
     return _PENDING_CONFIRMATION
+
+
+def start_pending_confirmation_timer():
+    """Starts/resets the 30-second TTL countdown after the confirmation question finishes being spoken."""
+    global _PENDING_CONFIRMATION
+    if _PENDING_CONFIRMATION:
+        _PENDING_CONFIRMATION["timer_started"] = time.time()
 
 
 def _pending_confirmation_line() -> str:
@@ -906,7 +940,7 @@ def _pending_confirmation_line() -> str:
     if not pending:
         return ""
     action_name = pending.get("action") or pending.get("tool") or "action"
-    return f"[Awaiting user confirmation: user was asked to confirm '{action_name}']"
+    return f"[Awaiting user confirmation: user was asked to confirm '{action_name}'. Use 'confirm_action' ONLY if user affirmatively agrees (e.g. 'yes', 'confirm', 'proceed'). If the user issues a new command, route to that tool directly.]"
 
 
 def _require_confirmation(action_name: str, params: dict, query: str, spoken: str, tool: str | None = None) -> tuple[str, None, dict]:
@@ -924,6 +958,7 @@ def _require_confirmation(action_name: str, params: dict, query: str, spoken: st
             "query": call.get("query", query),
             "action": action_text,
             "created": time.time(),
+            "timer_started": None,
         }
     return f"Do you want me to {action_text}? Say yes to go ahead.", None, {
         "status": "requires_confirmation",
@@ -971,7 +1006,9 @@ def _tool_clarification(params, query, spoken):
     params = params if isinstance(params, dict) else {}
     candidates = params.get("candidate_tools", [])
     q = params.get("query", query)
-    return f"I'm not completely sure what you'd like to do with '{q}'. Please choose an option below or clarify.", None, {
+    custom_msg = params.get("message")
+    spoken_reply = custom_msg or f"I'm not completely sure what you'd like to do with '{q}'. Please choose an option below or clarify."
+    return spoken_reply, None, {
         "status": "requires_clarification",
         "requires_clarification": True,
         "candidates": candidates,
@@ -1057,6 +1094,10 @@ def _tool_system_control(params, query, spoken):
     return f"Unknown system control action: {action}", None
 
 
+def _tool_power_control(params, query, spoken):
+    return _tool_system_control(params, query, spoken)
+
+
 # ── Document Path Resolution ───────────────────────────────────
 
 _ORDINAL_WORDS = {
@@ -1091,15 +1132,17 @@ def resolve_document_path(query_or_target: str, target_index: int | None = None)
         found_list = found_list.get("items", [])
 
     # Ordinals index convention: 0 = first, 1 = second, -1 = last
-    if target_index is not None and isinstance(found_list, list) and found_list:
-        try:
-            t_idx = int(target_index)
-            if t_idx == -1:
-                t_idx = len(found_list) - 1
-            if 0 <= t_idx < len(found_list) and os.path.exists(found_list[t_idx]):
-                return found_list[t_idx]
-        except (ValueError, TypeError):
-            pass
+    if target_index is not None:
+        if isinstance(found_list, list) and found_list:
+            try:
+                t_idx = int(target_index)
+                if t_idx == -1:
+                    t_idx = len(found_list) - 1
+                if 0 <= t_idx < len(found_list) and os.path.exists(found_list[t_idx]):
+                    return found_list[t_idx]
+            except (ValueError, TypeError):
+                pass
+        return None
 
     if not query_or_target or not isinstance(query_or_target, str):
         return active_path if active_ok else None
@@ -1117,6 +1160,7 @@ def resolve_document_path(query_or_target: str, target_index: int | None = None)
         if idx == -1:
             return None
         if idx is not None and os.path.exists(found_list[idx]):
+            logger.warning("[SHADOW-FALLBACK] resolve_document_path: _ordinal_index from raw query fired: '%s' -> %s", clean, idx)
             return found_list[idx]
 
     tokens = re.findall(r"[a-z0-9']+", clean.lower())
@@ -1127,6 +1171,7 @@ def resolve_document_path(query_or_target: str, target_index: int | None = None)
 
     search_terms = []
     if m_ext := re.search(r"\b([\w\-.]+\.(?:pdf|docx?|txt|xlsx?|csv|json|py|pptx?|html))\b", raw, re.I):
+        logger.warning("[SHADOW-FALLBACK] resolve_document_path: regex filename search from raw query fired: '%s'", m_ext.group(1))
         search_terms.append(m_ext.group(1))
     if m_doc := re.search(r"\b(?:file|document|doc|ticket|sheet)\s+([a-zA-Z0-9_\-]{2,25})", clean, re.I):
         cand = m_doc.group(1).strip()
@@ -1152,7 +1197,7 @@ def resolve_document_path(query_or_target: str, target_index: int | None = None)
                         update_active_state("active_file", {"path": fpath, "name": os.path.basename(fpath)})
                         return fpath
 
-    return active_path if active_ok else None
+    return None
 
 
 def _tool_file_action(params, query, spoken, default_action="open"):
@@ -1160,13 +1205,21 @@ def _tool_file_action(params, query, spoken, default_action="open"):
     # Gracefully redirect to write_file if content was provided
     if params.get("content"):
         return _tool_write_file(params, query, spoken)
-    target = params.get("path") or params.get("name") or query
+    target = str(params.get("path") or params.get("name") or query or "").strip()
     action = params.get("action") or default_action
     t_idx = params.get("target_index")
-    target_path = resolve_document_path(str(target), target_index=t_idx)
+
+    if t_idx is None and target and not os.path.isfile(target):
+        matches, _ = find_files(target)
+        if len(matches) > 1 and os.path.basename(matches[0]).lower() != target.lower():
+            update_active_state("found_files", matches[:5])
+            lines = [f"{i}. {os.path.basename(p)}" for i, p in enumerate(matches[:5], 1)]
+            return "I found multiple matching files:\n" + "\n".join(lines) + "\nWhich one would you like to open?", None
+
+    target_path = resolve_document_path(target, target_index=t_idx)
 
     if not (target_path and os.path.exists(target_path)):
-        return "I couldn't find that file on this computer.", None
+        return "Which file would you like to open?", None
 
     update_active_state("active_file", {"path": target_path, "name": os.path.basename(target_path)})
     ok, msg = execute_file_action(target_path, action)
@@ -1227,14 +1280,27 @@ def _tool_set_volume(params, query, spoken):
     if action == "volume_down":
         os_automation.volume_down()
         return "Volume decreased.", None
-    if level in (None, ""):
+    if action == "set_volume" or (not action and level is not None):
+        try:
+            val = int(level)
+            if not (0 <= val <= 100):
+                return "What volume level would you like, from 0 to 100?", None
+            level = val
+        except (ValueError, TypeError):
+            return "What volume level would you like, from 0 to 100?", None
+    elif level in (None, ""):
         return "What volume level would you like, from 0 to 100?", None
     return _level_result(os_automation.set_volume(level), f"Volume set to {level} percent."), None
 
 
 def _tool_set_brightness(params, query, spoken):
     level = (params or {}).get("level")
-    if level in (None, ""):
+    try:
+        val = int(level)
+        if not (0 <= val <= 100):
+            return "What brightness level would you like, from 0 to 100?", None
+        level = val
+    except (ValueError, TypeError):
         return "What brightness level would you like, from 0 to 100?", None
     return _level_result(os_automation.set_brightness(level), f"Brightness set to {level} percent."), None
 
@@ -1249,6 +1315,8 @@ def _tool_open_settings(params, query, spoken):
             _ui_broadcast_cb("open_settings", {"setting": s})
         except Exception:
             pass
+    if s in ("settings", "setting", "setting tab", "settings tab", "tab", "app settings", "ui", "close"):
+        logger.warning("[SHADOW-FALLBACK] open_settings: phrase blacklist matched '%s', suppressed open_setting() call", s)
     if s and s not in ("settings", "setting", "setting tab", "settings tab", "tab", "app settings", "ui", "close"):
         return open_setting(s), None
     return "Opened settings.", None
@@ -1306,6 +1374,8 @@ def _tool_screen_pen_annotate(params, query, spoken):
 
 def _tool_change_setting(params, query, spoken):
     params = params if isinstance(params, dict) else {}
+    if not params.get("setting") and query:
+        logger.warning("[SHADOW-FALLBACK] change_setting: setting fallback to query fired: '%s'", query)
     s = str(params.get("setting") or query or "").strip()
     val = params.get("value")
     confirmed = bool(params.get("confirmed", False))
@@ -1315,6 +1385,7 @@ def _tool_change_setting(params, query, spoken):
     val_lower = str(val or "").lower()
     combined = f"{s_lower} {val_lower}"
     if "wifi" in combined or "wi-fi" in combined:
+        logger.warning("[SHADOW-FALLBACK] change_setting: wifi combined string check fired: '%s'", combined)
         try:
             from amigo.services.os_automation import WindowsSystemController
             want_on = any(w in combined for w in ("on", "enable", "connect", "start", "run")) or (
@@ -1334,6 +1405,8 @@ def _tool_change_setting(params, query, spoken):
     try:
         from amigo.services.os_settings import change_setting
         ok, msg = change_setting(s, value=val, confirmed=confirmed)
+        if not ok and ("don't have a direct way" in msg.lower() or "which setting" in msg.lower()):
+            return "Which setting would you like to change?", None
         if not ok and "confirm" in msg.lower():
             return msg, None, {"requires_confirmation": True, "action_type": "change_setting", "setting": s, "value": val}
         return msg, None
@@ -1344,10 +1417,14 @@ def _tool_change_setting(params, query, spoken):
 
 def _tool_get_setting(params, query, spoken):
     params = params if isinstance(params, dict) else {}
+    if not params.get("setting") and query:
+        logger.warning("[SHADOW-FALLBACK] get_setting: setting fallback to query fired: '%s'", query)
     s = str(params.get("setting") or query or "").strip()
     try:
         from amigo.services.os_settings import get_setting
         ok, msg = get_setting(s)
+        if not ok and "don't know that setting" in msg.lower():
+            return "Which setting would you like to check?", None
         return msg, None
     except Exception as exc:
         logger.error("[Get Setting Error]: %s", exc)
@@ -1423,6 +1500,8 @@ def _tool_read_emails(params, query, spoken):
     params = params if isinstance(params, dict) else {}
     action = str(params.get("action") or "").strip().lower()
     if action == "unread" or (not action and "unread" in query.lower()):
+        if not action and "unread" in query.lower():
+            logger.warning("[SHADOW-FALLBACK] read_emails: unread in query check fired: '%s'", query)
         return _tool_unread_emails(params, query, spoken)
     if action == "search" or (not action and params.get("query")):
         return _tool_search_emails(params, query, spoken)
@@ -1520,6 +1599,25 @@ def _tool_confirm_action(params, query, spoken):
     pending = get_pending_confirmation()
     if not pending:
         return "There's nothing waiting for confirmation right now.", None
+
+    params = params if isinstance(params, dict) else {}
+    target_action = str(params.get("action") or params.get("tool") or "").strip().lower()
+    if target_action:
+        pending_tool = str(pending.get("tool") or "").lower()
+        pending_action = str(pending.get("action") or "").lower()
+        matched = (
+            target_action in pending_tool
+            or target_action in pending_action
+            or pending_tool in target_action
+            or pending_action in target_action
+        )
+        if not matched:
+            return (
+                f"Cannot confirm: '{target_action}' does not match the pending action '{pending_action}'.",
+                None,
+                {"status": "action_mismatch", "error": "confirmation_action_mismatch"},
+            )
+
     _PENDING_CONFIRMATION = None
     return execute_tool(pending["tool"], {**pending["params"], "confirmed": True}, query=pending["query"], spoken="")
 
@@ -1630,6 +1728,8 @@ UI_TOOL_HANDLERS = {
     "get_time":           _tool_get_time,
     "get_date":           _tool_get_date,
     "time_date":          _tool_time_date,
+    "media_control":      _tool_media_control,
+    "power_control":      _tool_power_control,
     "get_weather":        _tool_get_weather,
     "open_app":           _tool_open_app,
     "take_screenshot":    _tool_take_screenshot,
@@ -1720,8 +1820,11 @@ for _key, (_func, _msg) in _SIMPLE_OS_ACTIONS.items():
 #  Tool Definitions & Multi-Turn Context-Aware Router
 # ═══════════════════════════════════════════════════════════════
 
-def _p(type_: str, description: str = "") -> dict:
-    return {"type": type_, "description": description}
+def _p(type_: str, description: str = "", enum: list[str] | None = None) -> dict:
+    d: dict[str, Any] = {"type": type_, "description": description}
+    if enum is not None:
+        d["enum"] = enum
+    return d
 
 
 def _tool(name: str, description: str, props: dict | None = None, required: list | None = None) -> dict:
@@ -1733,138 +1836,123 @@ def _tool(name: str, description: str, props: dict | None = None, required: list
 
 
 TOOL_DEFINITIONS = [
-    _tool("chat", "Conversational dialogue, general knowledge, science, reasoning, philosophy, math, and chit-chat. Use when no live web lookup or PC control is requested. Ex: 'why do leaves change color in autumn?', 'how does a quantum computer work'.",
+    _tool("chat", "General knowledge, reasoning, creative conversation, assistant questions, and chit-chat. Not for hardware status (use system_status) or standalone documents/code (use generate_content). Ex: 'why do leaves change color in autumn?', 'how does a quantum computer work', 'tell me a quick joke'.",
           {"response": _p("string", "Direct spoken reply")}),
-    _tool("web_search", "Search the web for current events, breaking news, live sports, real-time facts, web recipes, or live lookups. Not for weather or forecasts (use get_weather) or general reasoning. Ex: 'uh could you check online and see who won the basketball game yesterday evening', 'find a quick recipe for garlic butter pasta', 'search online for recent space telescope discoveries'.",
+    _tool("web_search", "Search the web for current events, live sports, market research, company info, real-time facts, web recipes, or explicit online lookups. Always use when asked to search or query online; not for weather (use get_weather) or direct ticker quotes (use stock_quote). Ex: 'uh could you check online and see who won the basketball game yesterday evening', 'find a quick recipe for garlic butter pasta', 'search online for recent space telescope discoveries'.",
           {"query": _p("string", "Search query")}, ["query"]),
-    _tool("stock_quote", "Look up current share price for a market ticker (e.g. MSFT, AAPL, BTC). Not when asked to search or query online (use web_search). Ex: 'what is Apple trading at right now?', 'stock price for TSLA', 'how much is Ethereum worth'.",
+    _tool("stock_quote", "Fetch live price quote for a market ticker symbol (e.g. MSFT, NVDA, BTC). Never use for online search requests, market analysis, or research queries (use web_search). Ex: 'what is Nvidia trading at right now?', 'stock price for TSLA', 'how much is Ethereum worth'.",
           {"symbol": _p("string", "Ticker or asset symbol")}, ["symbol"]),
-    _tool("get_time", "Report current local clock time. Not for date (use get_date) or timers (use set_timer). Ex: 'what is the time', 'could you check the clock?', 'time check'.",
-          {}),
-    _tool("get_date", "Report current calendar day, month, and year. Not for clock time (use get_time) or schedule. Ex: 'what day of the week is today?', 'what date is it today', 'what month and year are we in'.",
-          {}),
-    _tool("play_youtube", "Play songs, music, or videos on YouTube. Not for track skipping or resuming. Ex: 'stream ambient jazz on youtube', 'put on chopin nocturne', 'play the official trailer for dune'.",
+    _tool("time_date", "Report current local clock time, calendar date, or both (action: time, date, or both). Not for countdown timers (use set_timer) or reminders (use set_reminder). Ex: 'what is the time', 'what date is it today', 'could you check the clock?'.",
+          {"action": _p("string", "time | date | both", enum=["time", "date", "both"])}, ["action"]),
+    _tool("play_youtube", "Play songs, music, or videos on YouTube. Never use to pause, resume, skip tracks, or check playback status (use media_control). Ex: 'stream ambient jazz on youtube', 'put on chopin nocturne', 'play the official trailer for dune'.",
           {"query": _p("string", "Song, video title, or music search query")}, ["query"]),
-    _tool("resume_media", "Resume paused media or music playback. Not for searching new songs. Ex: 'unpause the music please', 'continue playback', 'resume'.",
-          {}),
-    _tool("pause_media", "Pause active media or music. Never use to halt assistant speech (use stop). Ex: 'pause the music', 'could you pause playback for a moment?', 'pause'.",
-          {}),
-    _tool("next_track", "Advance media playback to next track. Not for searching songs. Ex: 'play the next track', 'skip this song', 'next track'.",
-          {}),
-    _tool("prev_track", "Return media playback to previous track. Not for searching songs. Ex: 'return to last song', 'previous track please', 'previous song'.",
-          {}),
-    _tool("current_media", "Report title, artist, and playback status of active media. Not for controlling playback. Ex: 'what song is playing right now?', 'identify this track', 'what track is currently on'.",
-          {}),
-    _tool("set_volume", "Adjust master audio volume or mute sound. Never use for halting assistant speech (use stop) or pausing music. Ex: 'turn the volume up a bit', 'turn down the volume its to loud', 'turn it up'.",
-          {"action": _p("string", "mute | unmute | volume_up | volume_down | set_volume"),
+    _tool("media_control", "Control active media playback (action: play, pause, next, previous, or status). Use play_youtube only to search and start new media. Never use for audio output volume or muting (use set_volume) or assistant speech (use stop). Ex: 'pause the music', 'skip this song', 'what track is currently on'.",
+          {"action": _p("string", "play | pause | next | previous | status", enum=["play", "resume", "pause", "next", "previous", "prev", "status", "current"])}, ["action"]),
+    _tool("set_volume", "Adjust system audio volume or output loudness/gain (action: volume_up, volume_down, mute, unmute, or set_volume with integer level 0-100), regardless of active media playback. Not for pausing playback (use media_control). Ex: 'turn the volume up', 'make it louder', 'turn down the volume please'.",
+          {"action": _p("string", "mute | unmute | volume_up | volume_down | set_volume", enum=["mute", "unmute", "volume_up", "volume_down", "set_volume"]),
            "level": _p("integer", "Volume percentage 0-100")}),
     _tool("set_brightness", "Adjust display brightness percentage. Not for volume. Ex: 'dim screen to 40 percent', 'brightness 80', 'increase screen brightness'.",
           {"level": _p("integer", "Brightness percentage 0-100")}, ["level"]),
-    _tool("take_screenshot", "Capture and save full screenshot of monitor. Not for reading text on screen (use read_screen). Ex: 'take a screenshot for me', 'can you grab a screenshot', 'screen shot please'.",
+    _tool("take_screenshot", "Capture full screenshot of monitor. Not for reading screen text (use read_screen). Ex: 'take a screenshot for me', 'can you grab a screenshot', 'screen shot please'.",
           {}),
-    _tool("read_screen", "Inspect visual GUI elements or text on monitor using OCR and vision. Use ONLY when asking about visible screen/window contents. Not for querying documents or files (use document_qa). Ex: 'what does this error message on screen say?', 'read the visible paragraph in this open window', 'can you see what button is highlighted'.",
+    _tool("read_screen", "Inspect visible GUI text or elements via OCR/vision. Use ONLY when asking about visible screen contents. Never use for window state or desktop visibility (use window_mgmt) or files (use document_qa). Ex: 'what does this error message on screen say?', 'read the visible paragraph in this open window', 'can you see what button is highlighted'.",
           {"question": _p("string", "Question about visible screen contents")}),
-    _tool("open_app", "Launch installed desktop application or system utility. Not for web URLs (use open_website) or settings pages. Ex: 'can you open visual studio code?', 'launch spotify for me', 'notepad please'.",
-          {"name": _p("string", "Application name")}, ["name"]),
-    _tool("close_app", "Close an external desktop application or window (e.g. Chrome, Notepad, Spotify). NEVER use to stop assistant speech (use stop) or terminate Amigo (use exit). Ex: 'could you close the notepad window?', 'terminate spotify', 'close chrome please'.",
+    _tool("open_app", "Launch desktop app or utility. 'name' must be a concrete app name from user words or context, never a pronoun or generic noun; if unknown, ask via chat. Not for URLs (use open_website) or settings. Ex: 'can you open visual studio code?', 'launch spotify for me', 'notepad please'.",
+          {"name": _p("string", "Concrete application name")}, ["name"]),
+    _tool("close_app", "Close an external desktop application or window (e.g. Chrome, Notepad, Spotify). Never use to stop assistant speech (use stop) or exit Amigo (use exit). Ex: 'could you close the notepad window?', 'close spotify', 'close chrome please'.",
           {"name": _p("string", "Application name")}),
-    _tool("window_mgmt", "Manage desktop windows (minimize_all, maximize, restore, switch_window). Not for inspecting contents (use read_screen). Ex: 'minimize all windows please', 'can you maximize this window?', 'switch to next application'.",
+    _tool("window_mgmt", "Manage desktop window layout and desktop visibility (minimize_all, maximize, restore, switch_window). Not for reading contents (use read_screen). Ex: 'minimize all windows please', 'can you maximize this window?', 'switch to next application'.",
           {"action": _p("string", "minimize_all | maximize | restore | switch_window")}, ["action"]),
-    _tool("system_control", "General OS power manager to initiate shutdown or abort scheduled shutdown. For locking, sleep, or reboot, prefer lock_pc, sleep_pc, or restart_pc. Ex: 'can you shut down the computer completely?', 'abort system shutdown', 'power off the machine'.",
-          {"action": _p("string", "shutdown | cancel_shutdown")}),
-    _tool("lock_pc", "Dedicated action to lock Windows workstation immediately. Not for sleep (use sleep_pc) or restart (use restart_pc). Ex: 'lock my computer please', 'could you lock the workstation?', 'lock screen'.",
+    _tool("power_control", "Control PC power state: lock, sleep, restart, shutdown, or cancel_shutdown. Never use to close apps (use close_app) or quit Amigo (use exit). Ex: 'lock my computer please', 'put computer to sleep', 'reboot the computer'.",
+          {"action": _p("string", "lock | sleep | restart | shutdown | cancel_shutdown", enum=["lock", "sleep", "restart", "shutdown", "cancel_shutdown"])}, ["action"]),
+    _tool("empty_recycle_bin", "Empty Windows Recycle Bin. Not for single files. Ex: 'empty the recycle bin please', 'clear trash bin now', 'delete trash bin items'.",
           {}),
-    _tool("sleep_pc", "Dedicated action to put PC into low-power sleep mode. Not for locking (use lock_pc) or shutdown. Ex: 'put computer to sleep', 'could you suspend the system now?', 'go to sleep mode'.",
+    _tool("system_status", "Report PC hardware utilization (CPU load, RAM usage, disk space, battery level). Never use when asked about a Windows setting or 'setting state' (use get_setting or ask via chat), or assistant questions (use chat). Ex: 'how much memory is currently free?', 'check battery level and cpu usage', 'show me memory and cpu usage'.",
           {}),
-    _tool("restart_pc", "Dedicated action to reboot or restart Windows OS. Not for sleep (use sleep_pc) or shutdown. Ex: 'can you restart my pc please?', 'reboot the computer', 'restart windows'.",
-          {}),
-    _tool("empty_recycle_bin", "Permanently purge deleted items from Windows Recycle Bin. Not for single files. Ex: 'empty the recycle bin please', 'clear trash bin now', 'purge recycle bin'.",
-          {}),
-    _tool("system_status", "Report hardware utilization including CPU load, RAM usage, storage space, and battery level. Not for settings pages. Ex: 'how much memory is currently free?', 'check battery level and cpu usage', 'what are the system hardware metrics'.",
-          {}),
-    _tool("open_settings", "Open or display a Windows Settings page GUI window. Not for toggling settings without GUI (use change_setting). Ex: 'open the display settings window', 'could you show network configuration?', 'launch sound settings page'.",
-          {"setting": _p("string", "Settings category or name")}),
-    _tool("control_windows_system", "Direct controller for hardware power states and power profiles. Not for standard Windows UI settings (use change_setting). Ex: 'turn on battery saver', 'switch to power saver mode', 'balanced power profile'.",
+    _tool("open_settings", "Open the Windows Settings GUI window (use setting='home' for general 'open settings', 'settings please', or 'app settings', or a named section like 'display' or 'sound'). Never use when user asks to change, toggle, or check an unspecified setting (ask via chat). Ex: 'open the display settings window', 'could you show network configuration?', 'launch sound settings page'.",
+          {"setting": _p("string", "Settings section name or 'home'")}),
+    _tool("control_windows_system", "Control hardware power states and profiles. Not for standard Windows settings (use change_setting). Ex: 'turn on battery saver', 'switch to power saver mode', 'switch to balanced power'.",
           {"action": _p("string", "Action name")}),
-    _tool("screen_pen_annotate", "Draw visual callouts (circle, arrow, box, underline) on screen to highlight UI elements. Ex: 'circle the download button on screen', 'draw a red box around login field', 'point an arrow at top navigation'.",
+    _tool("screen_pen_annotate", "Draw visual callouts (circle, arrow, box, underline) on screen. Ex: 'circle the download button on screen', 'draw a red box around login field', 'point an arrow at top navigation'.",
           {"action": _p("string", "circle | arrow | box | underline | clear"),
            "x": _p("integer", "X coordinate 0-1000"),
            "y": _p("integer", "Y coordinate 0-1000"),
            "label": _p("string", "Annotation note")}, ["action"]),
-    _tool("change_setting", "Turn on, turn off, toggle, or configure Windows settings (dark mode, night light, Wi-Fi, Bluetooth, sound device). Not for hardware power states or screen brightness (use control_windows_system or set_brightness). Ex: 'turn off bluetooth radio', 'do the same for bluetooth', 'switch night light on please'.",
-          {"setting": _p("string", "Setting name (dark_mode, bluetooth, wifi, night_light)"),
+    _tool("change_setting", "Toggle, enable, disable, or change a named Windows setting (dark mode, night light, Wi-Fi, Bluetooth, sound device). Always use for 'toggle <setting>' or turning a setting on/off; if no setting is named, ask via chat. Ex: 'turn off bluetooth radio', 'do the same for bluetooth', 'switch night light on please'.",
+          {"setting": _p("string", "Concrete setting name"),
            "value": _p("string", "on | off | toggle | value")}, ["setting"]),
-    _tool("get_setting", "Query current value or active state of a Windows setting. Not for changing values. Ex: 'is bluetooth currently turned on?', 'check if dark mode is active', 'what is active sound output device'.",
-          {"setting": _p("string", "Setting name")}, ["setting"]),
-    _tool("open_history", "Open conversational memory and interaction history log. Not for user profile facts (use memory_recall). Ex: 'show interaction history log', 'view recent conversation records', 'open history log'.",
-          {}),
-    _tool("get_weather", "Fetch weather conditions, forecast, or temperature for a city. Always use for weather, rain, snow, or outdoor temperatures. Not for general climate science (use chat). Ex: 'weather in Chicago today', 'is it going to rain in Seattle this evening?', 'what is the forecast for Paris'.",
+    _tool("get_setting", "Read active state of a named Windows setting. Never use to toggle or change a setting (use change_setting). If no setting is named (e.g. 'setting state'), ask via chat. Ex: 'is bluetooth currently turned on?', 'check if dark mode is active', 'what is active sound output device'.",
+          {"setting": _p("string", "Concrete setting name")}, ["setting"]),
+    _tool("open_history", "Open or close the interaction history log. Not for personal facts (use memory_recall). Ex: 'open my chat history', 'show past conversations', 'open history panel'.",
+          {"action": _p("string", "open | close (default: open)")}),
+    _tool("get_weather", "Fetch weather forecast or temperature for a city. Not for climate science (use chat). Ex: 'weather in Chicago today', 'is it going to rain in Seattle this evening?', 'what is the forecast for Paris'.",
           {"city": _p("string", "Target city name")}),
-    _tool("set_timer", "Start a countdown timer with duration. Not for specific clock times like 4pm (use set_reminder). Ex: 'could you set a timer for 12 minutes?', 'ten minute pasta timer please', 'start countdown for 45 seconds'.",
+    _tool("set_timer", "Start countdown timer with duration. Not for clock times (use set_reminder). Ex: 'could you set a timer for 12 minutes?', 'ten minute pasta timer please', 'start countdown for 45 seconds'.",
           {"duration": _p("string", "Duration (e.g. 10m, 2h)"),
            "seconds": _p("integer", "Total seconds")}),
-    _tool("set_reminder", "Schedule a task reminder notification for a specific future time. Not for countdown timers (use set_timer). Ex: 'remind me tomorrow morning at nine to call the clinic', 'could you remind me to check the oven at 6:30pm?', 'set reminder to water plants on Saturday'.",
-          {"message": _p("string", "Reminder message or task"),
+    _tool("set_reminder", "Schedule reminder for a future time. Not for countdown timers (use set_timer). Ex: 'remind me tomorrow morning at nine to call the clinic', 'could you remind me to check the oven at 6:30pm?', 'set reminder to water plants on Saturday'.",
+          {"message": _p("string", "Reminder message"),
            "time": _p("string", "Target time or interval")}, ["message", "time"]),
-    _tool("list_reminders", "List all active scheduled reminders. Not for creating reminders. Ex: 'what reminders do i have scheduled?', 'could you show all active reminders', 'list pending reminders'.",
+    _tool("list_reminders", "List active scheduled reminders. Ex: 'what reminders do i have scheduled?', 'could you show all active reminders', 'list pending reminders'.",
           {}),
-    _tool("cancel_reminder", "Cancel or dismiss a scheduled task reminder. Not for listing reminders. Ex: 'cancel the clinic appointment reminder', 'delete reminder to water plants', 'could you clear all scheduled reminders?'.",
-          {"query": _p("string", "Reminder topic to cancel, or 'all'")}),
-    _tool("find_file", "Search local files or folders by name, pattern, or keyword. Not for web search. Ex: 'i was working on a project last week and cannot find the spreadsheet about marketing budget', 'search for documents matching marketing budget', 'find spreadsheets from last month'.",
-          {"query": _p("string", "Search keyword or filename pattern")}, ["query"]),
-    _tool("open_file", "Open an existing local file in its default desktop application. Supports target_index for ordinal selection from search results. Not for web URLs. Ex: 'launch project_plan.pdf', 'open the second spreadsheet from earlier results', 'could you open report.docx?'.",
-          {"path": _p("string", "File path or filename"),
+    _tool("cancel_reminder", "Cancel a scheduled reminder. Ex: 'cancel the clinic appointment reminder', 'delete reminder to water plants', 'could you clear all scheduled reminders?'.",
+          {"query": _p("string", "Reminder topic or 'all'")}),
+    _tool("find_file", "Search and list matching local file paths by keyword or pattern. Never use when user asks to read, summarize, or ask what is inside a document (use document_qa). Ex: 'i was working on a project last week and cannot find the spreadsheet about marketing budget', 'search for documents matching marketing budget', 'find spreadsheets from last month'.",
+          {"query": _p("string", "Search keyword or filename")}, ["query"]),
+    _tool("open_file", "Open an existing local file. 'path' must be concrete from user words or context (never generic nouns like 'file' or 'doc'); use target_index for search results. If ambiguous, use find_file or ask. Ex: 'launch project_plan.pdf', 'open the second spreadsheet from earlier results', 'could you open report.docx?'.",
+          {"path": _p("string", "Concrete filename or path"),
            "target_index": _p("integer", "Ordinal index: 0=first, 1=second, -1=last")}, ["path"]),
-    _tool("document_qa", "Read or answer questions about personal local files, documents, resumes, or records. Supports target_index for ordinal selection. Not for visible screen OCR (use read_screen) or general knowledge (use chat). Ex: 'what does this document say?', 'summarize payment terms from the first invoice', 'check notes in meeting_summary.txt'.",
-          {"query": _p("string", "Question about document contents"),
+    _tool("document_qa", "Read, summarize, explain, or answer questions about personal local files, PDFs, invoices, resumes, or records (automatically resolves active, recent, or indexed files; always call instead of asking via chat or using find_file). Supports target_index. Not for visible screen OCR (use read_screen). Ex: 'what does this document say?', 'summarize payment terms from the first invoice', 'check notes in meeting_summary.txt'.",
+          {"query": _p("string", "Question or summary request"),
            "target_index": _p("integer", "Ordinal index: 0=first, 1=second, -1=last")}, ["query"]),
-    _tool("memory_recall", "Save personal user preferences ('remember that...') or retrieve stored notes and personal details. Not for general knowledge or web facts. Ex: 'remember that my preferred airline is Delta', 'what did i say my favorite coffee was?', 'can you remember that my dog is named Milo?'.",
+    _tool("memory_recall", "Save ('store') or retrieve ('recall') personal user facts. Not for general knowledge or web facts. Ex: 'remember that my preferred airline is Delta', 'what did i say my favorite coffee was?', 'can you remember that my dog is named Milo?'.",
           {"action": _p("string", "store | recall"),
-           "fact": _p("string", "Personal fact to remember when action is store"),
-           "query": _p("string", "Question or topic when action is recall")}, ["action"]),
-    _tool("get_calendar", "Retrieve upcoming calendar schedule, meetings, and events. Not for reminders (use set_reminder). Ex: 'check my agenda for today', 'show calendar appointments this afternoon', 'any events scheduled tomorrow?'.",
-          {}),
-    _tool("read_emails", "Fetch, search, or read specific emails in Outlook. Not for drafting new emails. Ex: 'could you check recent emails from Alex?', 'search my inbox for travel confirmation', 'read latest message from team lead'.",
+           "fact": _p("string", "Fact when store"),
+           "query": _p("string", "Query when recall")}, ["action"]),
+    _tool("get_calendar", "Retrieve upcoming calendar schedule and events. Not for reminders (use set_reminder). Ex: 'check my agenda for today', 'show calendar appointments this afternoon', 'any events scheduled tomorrow?'.",
+          {"days": _p("integer", "Number of days ahead (default 1 = today)")}),
+    _tool("read_emails", "Fetch, search, or read Outlook emails. Not for drafting emails. Ex: 'could you check recent emails from Alex?', 'search my inbox for travel confirmation', 'read latest message from team lead'.",
           {"action": _p("string", "read | search"),
-           "query": _p("string", "Search query or sender")}),
-    _tool("unread_emails", "Inspect and report unread email messages in Outlook. Not for composing emails. Ex: 'do i have any unread emails right now?', 'check unread inbox messages', 'unread email count please'.",
+           "query": _p("string", "Search query or sender"),
+           "count": _p("integer", "Max emails to summarize (default 5)")}),
+    _tool("unread_emails", "Report unread Outlook email messages. Ex: 'do i have any unread emails right now?', 'check unread inbox messages', 'unread email count please'.",
           {}),
-    _tool("draft_email", "Compose and prepare an email in Outlook. Use exclusively for email messages to recipients. Not for general creative writing, articles, code, or essays (use generate_content). Ex: 'i need to send an email to sarah letting her know i will be about twenty minutes late to our sync', 'email to supervisor about project milestone', 'can you please right an email to Chris about dinner'.",
-          {"to": _p("string", "Recipient email or name"),
-           "subject": _p("string", "Subject line"),
-           "prompt": _p("string", "Instructions for email content")}, ["prompt"]),
-    _tool("generate_content", "Generate creative writing, essays, articles, blog posts, scripts, or code. Not for Outlook email messages (use draft_email) or short chat answers. Ex: 'write a python function to compute fibonacci numbers', 'can you draft a blog post on sustainable gardening?', 'compose a recommendation letter for an intern'.",
-          {"type": _p("string", "Content type: code, letter, essay, summary"),
-           "topic": _p("string", "Subject or topic of content"),
-           "tone": _p("string", "Tone: formal, casual, professional"),
-           "destination": _p("string", "Target app to paste into")}, ["type", "topic"]),
-    _tool("regenerate_content", "Revise, adjust, or regenerate the last generated draft. Not for creating new draft from scratch. Ex: 'could you make that draft more concise and professional?', 'rewrite with a more energetic tone', 'shorten the generated text to one paragraph'.",
+    _tool("draft_email", "Compose Outlook email draft. Use exclusively for emails. Not for articles, essays, or code (use generate_content). Ex: 'i need to send an email to sarah letting her know i will be about twenty minutes late to our sync', 'email to supervisor about project milestone', 'can you please right an email to Chris about dinner'.",
+          {"to": _p("string", "Recipient"),
+           "subject": _p("string", "Subject"),
+           "prompt": _p("string", "Instructions")}, ["prompt"]),
+    _tool("generate_content", "Draft standalone structured text, essays, reports, or source code. Not for short conversational replies (use chat) or Outlook emails (use draft_email). Ex: 'write a python function to compute fibonacci numbers', 'can you draft a blog post on sustainable gardening?', 'compose a recommendation letter for an intern'.",
+          {"type": _p("string", "code | letter | essay | summary"),
+           "topic": _p("string", "Topic"),
+           "tone": _p("string", "Tone"),
+           "destination": _p("string", "Target app")}, ["type", "topic"]),
+    _tool("regenerate_content", "Revise last generated draft. Ex: 'could you make that draft more concise and professional?', 'rewrite with a more energetic tone', 'shorten the generated text to one paragraph'.",
           {"feedback": _p("string", "Revision instructions")}, ["feedback"]),
-    _tool("revert_content", "Restore or undo the draft to its previous version. Not for new modifications. Ex: 'undo the last draft changes please', 'can we restore the previous version of the text?', 'revert to earlier draft'.",
+    _tool("revert_content", "Undo draft to previous version. Ex: 'undo the last draft changes please', 'can we restore the previous version of the text?', 'revert to earlier draft'.",
           {}),
-    _tool("insert_content", "Paste or insert active generated AI draft into target application. Never use for arbitrary keystrokes (use type_text). Ex: 'insert the draft into notepad', 'paste the generated summary into word', 'paste this into my editor'.",
-          {"destination": _p("string", "Target app name (e.g. notepad, word)")}, ["destination"]),
-    _tool("type_text", "Simulate keyboard typing of user-supplied text into active window. Never use for pasting generated AI drafts (use insert_content). Ex: 'type admin@company.org into the username box', 'could you write hello everyone into the active window', 'type 123456'.",
+    _tool("insert_content", "Paste active generated AI draft into target app. Not for arbitrary typing (use type_text). Ex: 'insert the draft into notepad', 'paste the generated summary into word', 'paste this into my editor'.",
+          {"destination": _p("string", "Target app name")}, ["destination"]),
+    _tool("type_text", "Type user-supplied text into active window. Not for pasting AI drafts (use insert_content). Ex: 'type admin@company.org into the username box', 'could you write hello everyone into the active window', 'type 123456'.",
           {"text": _p("string", "Text to type"),
-           "app": _p("string", "Target application")}, ["text"]),
-    _tool("press_key", "Send keyboard key or shortcut combination. Not for typing sentences (use type_text). Ex: 'press the enter key please', 'hit escape', 'send shortcut ctrl plus p'.",
-          {"keys": _p("string", "Key name or combo: enter, tab, escape, ctrl+c, alt+f4")}, ["keys"]),
-    _tool("confirm_action", "Affirm and execute pending dangerous action that required confirmation. Not for declining. Ex: 'yes go ahead with that', 'proceed with execution', 'confirmed'.",
+           "app": _p("string", "Target app")}, ["text"]),
+    _tool("press_key", "Send keyboard key or shortcut. Not for typing sentences (use type_text). Ex: 'press the enter key please', 'hit escape', 'send shortcut ctrl plus p'.",
+          {"keys": _p("string", "Key or combo")}, ["keys"]),
+    _tool("confirm_action", "Affirm a pending confirmation prompt previously asked by Amigo. Never use for standalone user commands; use only to reply affirmatively to an active confirmation. Ex: 'yes go ahead with that', 'yes please do that', 'confirmed'.",
           {}),
-    _tool("cancel_action", "Abort pending action that required confirmation. Not for affirming. Ex: 'no do not do that', 'abort the operation', 'cancel that request'.",
+    _tool("cancel_action", "Abort pending action awaiting confirmation. Ex: 'no do not do that', 'abort the operation', 'cancel that request'.",
           {}),
-    _tool("open_website", "Open URL or web domain in default browser. Use ONLY when explicitly requesting web domain/URL. Not for desktop apps (use open_app). Ex: 'navigate to wikipedia.org', 'could you open https://github.com/trending in browser?', 'browse to python.org'.",
-          {"url": _p("string", "Full URL or domain name"),
-           "title": _p("string", "Display title")}, ["url"]),
-    _tool("get_clipboard", "Read text content copied on Windows clipboard. Not for typing text. Ex: 'what do i have copied right now?', 'could you read the clipboard content please', 'show clipboard text'.",
+    _tool("open_website", "Open URL or domain in browser. 'url' must be a concrete website or domain from user words or context; if no site is specified, ask via chat. Not for desktop apps (use open_app). Ex: 'navigate to wikipedia.org', 'could you open https://github.com/trending in browser?', 'browse to python.org'.",
+          {"url": _p("string", "Concrete URL or domain"),
+           "title": _p("string", "Title")}, ["url"]),
+    _tool("get_clipboard", "Read copied text on Windows clipboard. Ex: 'what do i have copied right now?', 'could you read the clipboard content please', 'show clipboard text'.",
           {}),
-    _tool("stop", "Immediately halt active assistant speech, verbal responses, or speaking audio. Never use to lower volume (use set_volume), close windows (use close_app), or exit the app (use exit). Ex: 'be quiet please', 'stop talking', 'hush'.",
+    _tool("stop", "Halt active assistant speech. Never use for volume (use set_volume), windows (use close_app), or exit (use exit). Ex: 'be quiet please', 'stop talking', 'hush'.",
           {}),
-    _tool("exit", "Permanently quit and terminate the Amigo assistant process. Use ONLY for quitting Amigo. Not for 'stop' (use stop). Ex: 'quit amigo completely', 'terminate the assistant program', 'exit amigo'.",
+    _tool("exit", "Quit the Amigo process. Use ONLY for quitting Amigo. Ex: 'quit amigo completely', 'close amigo assistant', 'exit amigo'.",
           {}),
-    _tool("manage_voices", "List Kokoro TTS voices or switch assistant's speaking voice. Not for volume (use set_volume) or music. Ex: 'could you list all available voices?', 'switch speaker voice to Sarah', 'change voice to male'.",
+    _tool("manage_voices", "List TTS voices or switch speaking voice. Not for volume. Ex: 'could you list all available voices?', 'switch speaker voice to Sarah', 'change voice to male'.",
           {"action": _p("string", "list | set"),
-           "voice": _p("string", "Voice name or ID when action is 'set'")}, ["action"]),
+           "voice": _p("string", "Voice name or ID")}, ["action"]),
 ]
 
 VALID_TOOL_NAMES = {tool["name"] for tool in TOOL_DEFINITIONS} | set(UI_TOOL_HANDLERS.keys())
@@ -1907,12 +1995,12 @@ def _tools_block() -> str:
     return _TOOLS_BLOCK_CACHE
 
 
-_MASTER_SYSTEM_PROMPT = """You are Amigo, an intelligent, helpful voice and desktop assistant on the user's Windows PC.
+_MASTER_SYSTEM_PROMPT = """You are Amigo, a voice and desktop assistant on the user's Windows PC.
 
 CORE OPERATING PRINCIPLES:
-- You understand user intent and select the single best tool from TOOLS AVAILABLE below.
-- Information & Freshness: The current date and time are provided in the environment context for every turn. Always use 'web_search' for current events, live sports, real-time facts, recent news, or time-sensitive questions requiring information beyond your static knowledge. Use 'get_weather' for weather forecasts and temperatures. Use 'chat' for general knowledge, reasoning, science explanations, math, advice, and conversation.
-- System & App Control: Launch desktop apps with 'open_app'. Open specific web URLs with 'open_website'. Adjust volume with 'set_volume'. Control playback with media tools.
+- Understand user intent and select the single best tool from TOOLS AVAILABLE below.
+- Date & Search: Current date/time are provided every turn. Always use 'web_search' for current events, live sports, real-time facts, recent news, or explicit online lookups; 'get_weather' for weather; 'chat' for general knowledge, reasoning, and conversation.
+- Clarifications: If a command is missing required details or ambiguous, use 'chat' to ask a single short one-sentence clarifying question without making claims about system or network state.
 - Output Format: Output ONLY valid JSON matching this schema:
 {"actions": [{"tool": "<tool_name>", "params": {<parameters>}}]}
 
@@ -1921,10 +2009,10 @@ TOOLS AVAILABLE:
 
 FEW-SHOT EXAMPLES:
 User: could you open notepad for me?
-{"actions": [{"tool": "open_app", "params": {"name": "notepad"}}]}
+Assistant: {"actions": [{"tool": "open_app", "params": {"name": "notepad"}}]}
 
 User: search online for space telescope news
-{"actions": [{"tool": "web_search", "params": {"query": "space telescope news"}}]}
+Assistant: {"actions": [{"tool": "web_search", "params": {"query": "space telescope news"}}]}
 """
 
 _MASTER_PROMPT_CACHE: str | None = None
@@ -1965,7 +2053,7 @@ def _build_router_messages(query: str, conversation_history: list | None = None)
     - Final Message (`user`): Complete runtime context (time, state, profile facts) + query + [Mode: Voice | Output: JSON].
     """
     messages: list[dict] = [{"role": "system", "content": get_static_master_prompt()}]
-    messages.extend(build_unified_history_messages(conversation_history=conversation_history, max_turns=3))
+    messages.extend(build_unified_history_messages(conversation_history=conversation_history, max_turns=3, for_router=True))
 
     pending = _pending_confirmation_line()
     runtime_ctx = build_turn_runtime_context(query, pending_confirmation=pending)
@@ -2164,7 +2252,7 @@ def get_tool_schema(tool_name: str) -> dict | None:
 
 
 def _validate_action_plan(tool_calls: list[dict]) -> list[str]:
-    """Validates that all tool calls in action plan satisfy schema required params."""
+    """Validates that all tool calls in action plan satisfy schema required params and conditional requirements."""
     errors = []
     for call in tool_calls:
         if not isinstance(call, dict):
@@ -2178,12 +2266,68 @@ def _validate_action_plan(tool_calls: list[dict]) -> list[str]:
         params_schema = schema.get("parameters") or {}
         required = params_schema.get("required") or []
         call_params = call.get("params") or {}
+
+        # Custom / conditional schema exemptions:
+        # open_file requires either 'path' or 'target_index'
+        if t_name == "open_file":
+            has_path = bool(call_params.get("path") and str(call_params["path"]).strip())
+            has_idx = call_params.get("target_index") is not None
+            if not has_path and not has_idx:
+                errors.append("Tool 'open_file' is missing required parameter: either 'path' or 'target_index' must be provided.")
+            continue
+
         missing = [
             req for req in required
             if req not in call_params or call_params[req] is None or str(call_params[req]).strip() == ""
         ]
         if missing:
             errors.append(f"Tool '{t_name}' is missing required parameter(s): {', '.join(missing)}.")
+
+        # Enum constraints declared on schema properties
+        props = params_schema.get("properties") or {}
+        for p_name, p_schema in props.items():
+            enum_vals = p_schema.get("enum") if isinstance(p_schema, dict) else None
+            if enum_vals and p_name in call_params and call_params[p_name] is not None:
+                val_str = str(call_params[p_name]).strip()
+                if val_str and val_str.lower() not in {str(e).lower() for e in enum_vals}:
+                    errors.append(
+                        f"Tool '{t_name}' parameter '{p_name}' must be one of {enum_vals}, got '{val_str}'."
+                    )
+
+        # Conditional requirements
+        if t_name == "set_volume":
+            act = str(call_params.get("action") or "").lower()
+            if act in ("set_volume", "set") or (not act and call_params.get("level") is not None):
+                lvl = call_params.get("level")
+                is_valid_num = False
+                try:
+                    if lvl is not None and not isinstance(lvl, bool) and 0 <= int(lvl) <= 100:
+                        is_valid_num = True
+                except (ValueError, TypeError):
+                    pass
+                if not is_valid_num:
+                    errors.append("Tool 'set_volume' with action='set_volume' requires a numeric 'level' (0-100).")
+        elif t_name == "set_brightness":
+            lvl = call_params.get("level")
+            is_valid_num = False
+            try:
+                if lvl is not None and not isinstance(lvl, bool) and 0 <= int(lvl) <= 100:
+                    is_valid_num = True
+            except (ValueError, TypeError):
+                pass
+            if not is_valid_num:
+                errors.append("Tool 'set_brightness' requires a numeric 'level' (0-100).")
+        elif t_name == "memory_recall":
+            act = str(call_params.get("action") or "").lower()
+            if act == "store" and not (call_params.get("fact") or call_params.get("content") or call_params.get("query")):
+                errors.append("Tool 'memory_recall' with action='store' requires 'fact'.")
+            elif act == "recall" and not (call_params.get("query") or call_params.get("fact")):
+                errors.append("Tool 'memory_recall' with action='recall' requires 'query'.")
+        elif t_name == "read_emails":
+            act = str(call_params.get("action") or "").lower()
+            if act == "search" and not (call_params.get("query") or "").strip():
+                errors.append("Tool 'read_emails' with action='search' requires 'query'.")
+
     return errors
 
 
@@ -2240,6 +2384,44 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
                 response = repair_response
         except Exception as repair_err:
             logger.warning("[Tool Registry] Repair re-prompt encountered error: %s", repair_err)
+
+    # If the action plan still has schema validation errors after repair attempt, ask clarifying question
+    post_repair_errors = _validate_action_plan(tool_calls)
+    if post_repair_errors:
+        logger.warning("[Tool Registry] Action plan invalid after repair: %s. Asking clarifying question.", post_repair_errors)
+        first_bad_tool = tool_calls[0].get("tool", "action") if tool_calls else "action"
+        friendly_tool = first_bad_tool.replace("_", " ")
+        clarify_msg = ""
+        try:
+            clarify_resp = query_local_llm(
+                [
+                    {"role": "system", "content": "You are Amigo. Ask a single short one-sentence clarifying question (no claims about system or network state). Output ONLY the question."},
+                    {"role": "user", "content": f"User said: '{query}'. Missing parameter for {friendly_tool}: {post_repair_errors[0]}. Ask one short question."}
+                ],
+                system_prompt="",
+                max_tokens=48,
+                temperature=0.0,
+                repeat_penalty=1.0,
+                thinking=False,
+                sanitize=False,
+                stop=_ROUTER_STOP,
+                raise_on_error=False,
+            )
+            cand = (clarify_resp or "").strip().strip('"').strip("'")
+            if cand and "?" in cand and not cand.startswith("{") and len(cand) < 120:
+                clarify_msg = cand.split("?")[0].strip() + "?"
+        except Exception:
+            pass
+        if not clarify_msg:
+            subject = "application" if first_bad_tool == "open_app" else friendly_tool
+            clarify_msg = f"Which {subject} details would you like me to use?"
+        tool_calls = [{
+            "tool": "clarification",
+            "params": {"query": query, "message": clarify_msg, "candidate_tools": [first_bad_tool]},
+            "speak": clarify_msg,
+        }]
+        return tool_calls, clarify_msg
+
     final_response = _extract_final_response(response, tool_calls)
 
     # Disambiguation & semantic intent normalization (purely structural, language-agnostic)
@@ -2254,6 +2436,7 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
 
             has_query_params = bool(urllib.parse.urlparse(raw_url).query)
             if has_query_params and is_internet_connected():
+                logger.warning("[SHADOW-FALLBACK] open_website: query_params rewrite to web_search fired: url='%s' query='%s'", raw_url, query)
                 tool_calls[i] = {
                     "tool": "web_search",
                     "params": {"query": query.strip()},
@@ -2286,17 +2469,21 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
 
         if call["tool"] == "set_volume":
             p = call.setdefault("params", {})
-            if "level" in p and p.get("level") is not None:
-                p["action"] = "set_volume"
+            lvl = p.get("level")
+            if lvl is not None:
                 try:
-                    p["level"] = int(p["level"])
+                    p["level"] = int(lvl)
+                    if not p.get("action"):
+                        p["action"] = "set_volume"
                 except (ValueError, TypeError):
-                    pass
+                    if str(p.get("action") or "").lower() != "set_volume":
+                        p.pop("level", None)
             elif not p.get("action"):
                 p["action"] = "set_volume"
             if p.get("action") == "set_volume" and p.get("level") is None:
                 m = re.search(r'\b(\d{1,3})\b', query)
                 if m:
+                    logger.warning("[SHADOW-FALLBACK] set_volume: regex level from query fired: query='%s' matched=%s", query, m.group(1))
                     val = int(m.group(1))
                     if 0 <= val <= 100:
                         p["level"] = val

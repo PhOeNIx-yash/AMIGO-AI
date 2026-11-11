@@ -447,6 +447,59 @@ def _find_best_app(query: str) -> Tuple[Optional[str], Optional[str]]:
     return None, None
 
 
+def is_known_app(app_name: str) -> bool:
+    """Validate an application name using existing app_opener PATH lookup and _find_best_app index scorer."""
+    raw = (app_name or "").strip().lower()
+    if not raw:
+        return False
+    norm_q = _normalize(raw)
+    if not norm_q:
+        return False
+    for cand in (norm_q, raw, norm_q.replace(" ", "")):
+        if shutil.which(cand) or shutil.which(f"{cand}.exe"):
+            return True
+
+    if not _app_dict and os.path.isfile(APP_CACHE_FILE):
+        try:
+            with open(APP_CACHE_FILE, "r", encoding="utf-8") as f:
+                cached = json.load(f).get("apps") or {}
+                if isinstance(cached, dict):
+                    _app_dict.update(cached)
+        except Exception:
+            pass
+    if not _app_dict:
+        ensure_built()
+
+    _, path = _find_best_app(raw)
+    return bool(path)
+
+
+def is_known_folder(folder_name: str) -> bool:
+    """Validate a folder name against real directories on disk."""
+    raw = (folder_name or "").strip()
+    if not raw:
+        return False
+    if os.path.isdir(raw):
+        return True
+    clean = re.sub(r"\b(?:folder|directory|my|open|show)\b", "", raw.lower()).strip()
+    if not clean or len(clean) < 3:
+        return False
+    home = os.path.expanduser("~")
+    onedrive = os.environ.get("OneDrive") or os.environ.get("OneDriveConsumer") or os.path.join(home, "OneDrive")
+    for base in (home, onedrive):
+        if base and os.path.isdir(base):
+            try:
+                with os.scandir(base) as entries:
+                    for entry in entries:
+                        if entry.is_dir() and not entry.name.startswith("."):
+                            d_low = entry.name.lower()
+                            if clean == d_low or (clean in d_low or d_low in clean):
+                                return True
+            except OSError:
+                pass
+    return False
+
+
 # ---------------------------------------------------------------------------
 # File Search Engine
 # ---------------------------------------------------------------------------
@@ -456,7 +509,7 @@ _RE_FILE_NON_WORD = re.compile(r"[^\w\s.-]")
 
 def _clean_file_keywords(query: str) -> List[str]:
     clean = _RE_FILE_NON_WORD.sub(" ", query.lower()).strip()
-    return [t for t in clean.split() if t not in _CLEAN_WORDS and len(t) >= 2] or clean.split()
+    return [t for t in clean.split() if t not in _CLEAN_WORDS and len(t) >= 2]
 
 
 
