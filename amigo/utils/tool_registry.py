@@ -470,9 +470,6 @@ def _tool_open_app(params, query, spoken):
     params = params if isinstance(params, dict) else {}
     app_name = (params.get("name") or params.get("app") or params.get("app_name") or params.get("target") or params.get("query") or "").strip()
     if not app_name:
-        logger.warning("[SHADOW-FALLBACK] open_app: app_name fallback to query.strip() fired for query='%s'", query)
-        app_name = query.strip()
-    if not app_name:
         return spoken or "Which application would you like to open?", None
 
     clean_target = app_name.strip()
