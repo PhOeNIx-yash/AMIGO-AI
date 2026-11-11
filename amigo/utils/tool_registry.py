@@ -1312,9 +1312,7 @@ def _tool_open_settings(params, query, spoken):
             _ui_broadcast_cb("open_settings", {"setting": s})
         except Exception:
             pass
-    if s in ("settings", "setting", "setting tab", "settings tab", "tab", "app settings", "ui", "close"):
-        logger.warning("[SHADOW-FALLBACK] open_settings: phrase blacklist matched '%s', suppressed open_setting() call", s)
-    if s and s not in ("settings", "setting", "setting tab", "settings tab", "tab", "app settings", "ui", "close"):
+    if s:
         return open_setting(s), None
     return "Opened settings.", None
 
