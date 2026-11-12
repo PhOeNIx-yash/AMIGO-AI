@@ -802,12 +802,24 @@ def _tool_screen_act(params, query, spoken):
         direction = _SCROLL_DIRS.get(target.lower(), "down")
         step = {"do": "scroll", "direction": direction}
 
-    from amigo.services import hands
+    from amigo.services import hands, screen_pen
+
+    def _on_hands_progress(ev):
+        bounds = ev.get("bounds") if isinstance(ev, dict) else None
+        if ev.get("ev") == "step" and isinstance(bounds, list) and len(bounds) == 4:
+            screen_pen.push_overlay_event({
+                "type": "ink",
+                "id": f"hands-step-{int(time.time() * 1000)}",
+                "seg": 0,
+                "last": True,
+                "fade": 2.0,
+                "beats": [{"marks": [{"kind": "ring", "part": "p1", "at": {"rect": bounds}, "tone": "teal"}]}],
+            })
 
     plan = {"steps": [step]}
     if app:
         plan["app"] = app
-    res = hands.act(plan)
+    res = hands.act(plan, on_progress=_on_hands_progress)
     if res.get("ok"):
         done = res.get("done")
         summary = ", ".join(done) if isinstance(done, list) and done else f"Completed {action}"

@@ -155,16 +155,18 @@ def _generate_visual_diagram_beats(topic: str) -> tuple[list[dict[str, Any]], st
     from amigo.core.llm_agent import query_local_llm, sanitize_for_tts
 
     prompt = (
-        f"Explain '{topic}' visually as compact JSON with 3 keys: "
+        f"Explain '{topic}' visually as compact JSON with keys: "
         f"'summary' (1-2 short sentences), "
-        f"'parts' (3 objects: {{\"shape\":\"sphere|torus|cone|cylinder|box\",\"label\":\"2-word name\",\"tone\":\"sky|amber|coral|teal\"}}), "
-        f"'steps' (3-4 short stage strings in order). Output ONLY valid JSON."
+        f"'visual_type' ('flow' | 'table' | 'timeline' | 'bars' | 'math'), "
+        f"'steps' (3-4 short stage strings in order, for flow/timeline), "
+        f"'parts' (3-4 key component/item strings), "
+        f"'columns' (optional 2-3 headers for table), 'rows' (optional 2-4 rows for table), "
+        f"'bars' (optional array of {{\"label\":\"...\",\"value\":10}} for bars), "
+        f"'tex' (optional LaTeX formula for math). Output ONLY valid JSON."
     )
-    raw = query_local_llm(prompt, max_tokens=320)
+    raw = query_local_llm(prompt, max_tokens=380)
     summary = f"Here is a visual breakdown of {topic}."
     marks: list[dict[str, Any]] = []
-    offsets = [(0, 0.7, 0), (0, -0.7, 0), (1.3, 0, 0), (-1.3, 0, 0)]
-    motions = [{"do": "pulse"}, {"do": "spin"}, {"do": "orbit"}, {"do": "spin"}]
     tones = ["sky", "amber", "coral", "teal"]
 
     if raw:
@@ -175,8 +177,27 @@ def _generate_visual_diagram_beats(topic: str) -> tuple[list[dict[str, Any]], st
                 if parsed.get("summary"):
                     summary = sanitize_for_tts(str(parsed["summary"])) or summary
 
+                vtype = str(parsed.get("visual_type") or "flow").strip().lower()
                 raw_steps = parsed.get("steps") or []
-                if isinstance(raw_steps, list) and len(raw_steps) >= 2:
+                if vtype == "table" and isinstance(parsed.get("columns"), list) and isinstance(parsed.get("rows"), list) and parsed["rows"]:
+                    cols = [str(c)[:30] for c in parsed["columns"][:6]]
+                    rows = [[str(cell)[:80] for cell in r[:len(cols)]] for r in parsed["rows"][:12] if isinstance(r, list)]
+                    if cols and rows:
+                        marks.append({"kind": "table", "part": f"p{len(marks) + 1}", "title": topic.title()[:40], "columns": cols, "rows": rows})
+                elif vtype == "bars" and isinstance(parsed.get("bars"), list) and parsed["bars"]:
+                    bars = [
+                        {"label": str(b.get("label") or "")[:30], "value": float(b.get("value") or 0), "tone": tones[i % len(tones)]}
+                        for i, b in enumerate(parsed["bars"][:12]) if isinstance(b, dict) and b.get("label")
+                    ]
+                    if bars:
+                        marks.append({"kind": "bars", "part": f"p{len(marks) + 1}", "title": topic.title()[:40], "bars": bars})
+                elif vtype == "timeline" and isinstance(raw_steps, list) and len(raw_steps) >= 2:
+                    events = [{"when": f"Step {i + 1}", "text": str(st)[:60]} for i, st in enumerate(raw_steps[:10])]
+                    marks.append({"kind": "timeline", "part": f"p{len(marks) + 1}", "title": topic.title()[:40], "events": events})
+                elif vtype == "math" and parsed.get("tex"):
+                    marks.append({"kind": "math", "part": f"p{len(marks) + 1}", "title": topic.title()[:40], "tex": str(parsed["tex"])[:300]})
+
+                if not marks and isinstance(raw_steps, list) and len(raw_steps) >= 2:
                     nodes = []
                     links = []
                     for idx, st in enumerate(raw_steps[:5]):
@@ -267,22 +288,53 @@ def screen_pen_annotate(
             "event": event,
         }
 
+    # Resolve real on-screen bounds via Rust `hands` when label/target is given without explicit pixel coords
+    resolved_rect: list[float] | None = None
+    if label and normalized and x == 500 and y == 500:
+        try:
+            from amigo.services import hands
+            hit = hands.find_text("front", str(label), scroll=False)
+            matches = hit.get("matches") or []
+            if not matches:
+                hit = hands.ocr_find("front", str(label))
+                matches = hit.get("matches") or []
+            if matches and isinstance(matches[0], dict) and isinstance(matches[0].get("bounds"), list):
+                b = matches[0]["bounds"]
+                if len(b) == 4:
+                    resolved_rect = [float(b[0]), float(b[1]), max(24.0, float(b[2])), max(24.0, float(b[3]))]
+        except Exception:
+            pass
+
     px, py = _to_screen_points(x, y, normalized)
     tone = _color_to_tone(color)
 
     if act == "arrow":
-        px2, py2 = _to_screen_points(x2 if x2 is not None else x + 120, y2 if y2 is not None else y - 80, normalized)
-        mark: Dict[str, Any] = {"kind": "arrow", "points": [[px2, py2], [px, py]], "tone": tone}
+        if resolved_rect:
+            rx, ry, rw, rh = resolved_rect
+            tx, ty = rx + rw / 2, ry + rh / 2
+            mark: Dict[str, Any] = {"kind": "arrow", "points": [[tx + 90, ty - 70], [tx, ty]], "tone": tone}
+        else:
+            px2, py2 = _to_screen_points(x2 if x2 is not None else x + 120, y2 if y2 is not None else y - 80, normalized)
+            mark = {"kind": "arrow", "points": [[px2, py2], [px, py]], "tone": tone}
     elif act == "box":
-        px2, py2 = _to_screen_points(x2 if x2 is not None else x + 120, y2 if y2 is not None else y + 60, normalized)
-        bx, by = min(px, px2), min(py, py2)
-        bw, bh = max(24.0, abs(px2 - px)), max(24.0, abs(py2 - py))
-        mark = {"kind": "rect", "at": {"rect": [bx, by, bw, bh]}, "tone": tone}
+        if resolved_rect:
+            mark = {"kind": "rect", "at": {"rect": resolved_rect}, "tone": tone}
+        else:
+            px2, py2 = _to_screen_points(x2 if x2 is not None else x + 120, y2 if y2 is not None else y + 60, normalized)
+            bx, by = min(px, px2), min(py, py2)
+            bw, bh = max(24.0, abs(px2 - px)), max(24.0, abs(py2 - py))
+            mark = {"kind": "rect", "at": {"rect": [bx, by, bw, bh]}, "tone": tone}
     elif act == "underline":
-        w = max(40.0, abs(_to_screen_points(x2, y, normalized)[0] - px)) if x2 is not None else 140.0
-        mark = {"kind": "underline", "at": {"rect": [px - w / 2, py - 12, w, 24]}, "tone": tone}
+        if resolved_rect:
+            mark = {"kind": "underline", "at": {"rect": resolved_rect}, "tone": tone}
+        else:
+            w = max(40.0, abs(_to_screen_points(x2, y, normalized)[0] - px)) if x2 is not None else 140.0
+            mark = {"kind": "underline", "at": {"rect": [px - w / 2, py - 12, w, 24]}, "tone": tone}
     else:
-        mark = {"kind": "circle", "at": {"rect": [px - 45, py - 45, 90, 90]}, "tone": tone}
+        if resolved_rect:
+            mark = {"kind": "circle", "at": {"rect": resolved_rect}, "tone": tone}
+        else:
+            mark = {"kind": "circle", "at": {"rect": [px - 45, py - 45, 90, 90]}, "tone": tone}
 
     if label:
         mark["label"] = str(label)[:40]
