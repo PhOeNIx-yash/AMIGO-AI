@@ -718,7 +718,7 @@ def _tool_chat(params, query, spoken, conversation_history=None):
     """Conversational reply with clean multi-turn dialogue context."""
     params = params if isinstance(params, dict) else {}
     doc_context = str(params.get("context") or params.get("doc_context") or "").strip()
-    direct_reply = (spoken or params.get("reply") or params.get("response") or "").strip()
+    direct_reply = (spoken or params.get("reply") or params.get("response") or params.get("question") or params.get("message") or "").strip()
 
     conv_history = _get_conv_history(conversation_history)
 
@@ -2549,7 +2549,14 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
                 call["tool"] = "unread_emails"
 
         if call["tool"] == "chat":
-            reply_val = call["params"].get("reply") or call["params"].get("response") or call.get("speak") or final_response
+            reply_val = (
+                call["params"].get("reply")
+                or call["params"].get("response")
+                or call["params"].get("question")
+                or call["params"].get("message")
+                or call.get("speak")
+                or final_response
+            )
             if reply_val:
                 call["params"]["response"] = reply_val
                 call["params"]["reply"] = reply_val

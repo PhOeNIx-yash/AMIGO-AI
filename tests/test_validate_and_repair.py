@@ -206,6 +206,16 @@ class TestValidateAndRepair(SafeOSTestCase):
         self.assertEqual(_validate_action_plan([{"tool": "set_volume", "params": {"action": "set_volume", "level": 50}}], grounding_text="set volume to 50"), [])
         self.assertEqual(_validate_action_plan([{"tool": "open_website", "params": {"url": "python.org"}}], grounding_text="go to python.org"), [])
 
+    def test_chat_clarification_question_does_not_fabricate_action(self):
+        """chat handler with params.question returns the question directly without calling get_ai_response."""
+        from unittest.mock import patch
+        from amigo.utils.tool_registry import execute_tool
+
+        with patch("amigo.utils.tool_registry.get_ai_response") as mock_ai:
+            msg, _, _ = execute_tool("chat", {"question": "Which app would you like me to start?"}, "start app", "")
+        mock_ai.assert_not_called()
+        self.assertEqual(msg, "Which app would you like me to start?")
+
 
 if __name__ == "__main__":
     unittest.main()
