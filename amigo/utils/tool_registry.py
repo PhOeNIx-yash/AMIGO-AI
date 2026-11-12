@@ -2542,13 +2542,6 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
                     p["action"] = "set_volume"
             else:
                 p.pop("level", None)
-            if p.get("action") == "set_volume" and p.get("level") is None:
-                m = re.search(r'\b(\d{1,3})\b', query)
-                if m:
-                    logger.warning("[SHADOW-FALLBACK] set_volume: regex level from query fired: query='%s' matched=%s", query, m.group(1))
-                    val = int(m.group(1))
-                    if 0 <= val <= 100:
-                        p["level"] = val
 
         if call["tool"] == "read_emails":
             act = str((call.get("params") or {}).get("action") or "").lower().strip()
