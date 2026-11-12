@@ -1667,7 +1667,7 @@ export default function App() {
         src="/overlay/"
         title="Roamies Ink Overlay"
         className="fixed inset-0 w-full h-full border-0 pointer-events-none z-50 bg-transparent"
-        style={{ background: "transparent" }}
+        style={{ backgroundColor: "transparent", colorScheme: "dark" }}
       />
     </SparklesBackground>
   );

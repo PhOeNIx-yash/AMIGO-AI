@@ -1422,6 +1422,10 @@ def serve_roamies_overlay(filename: str = "desktop.html"):
         html_path = os.path.join(_OVERLAY_DIR, "desktop.html")
         with open(html_path, "r", encoding="utf-8") as fh:
             html = fh.read()
+        html = html.replace(
+            "</head>",
+            "<style>html,body{background:transparent!important;color-scheme:dark;}</style></head>",
+        )
         html = html.replace("<script>Roamie.bootDesktop", "<script>window.ROAMIE_ONLY=['none'];Roamie.bootDesktop")
         html = html.replace("</body>", f"{_OVERLAY_BRIDGE_SCRIPT}</body>")
         return Response(html, mimetype="text/html")
