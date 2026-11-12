@@ -47,6 +47,46 @@ async function startServer() {
     }
   });
 
+  // Real-time SSE proxy for Roamies JS ink overlay
+  app.get("/api/overlay/stream", async (req, res) => {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders?.();
+
+    try {
+      const amigoRes = await fetch(`${AMIGO_BACKEND}/api/overlay/stream`);
+      if (!amigoRes.ok || !amigoRes.body) return res.end();
+      const reader = amigoRes.body.getReader();
+      const decoder = new TextDecoder();
+      req.on("close", () => { reader.cancel().catch(() => {}); });
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          res.write(decoder.decode(value, { stream: true }));
+        }
+      } finally {
+        try { res.end(); } catch {}
+      }
+    } catch {
+      res.end();
+    }
+  });
+
+  // Proxy Roamies JS overlay assets (/overlay/ and /overlay/*)
+  app.get(["/overlay", "/overlay/*"], async (req, res) => {
+    try {
+      const amigoRes = await fetch(`${AMIGO_BACKEND}${req.originalUrl}`);
+      const ct = amigoRes.headers.get("content-type");
+      if (ct) res.setHeader("Content-Type", ct);
+      const buf = Buffer.from(await amigoRes.arrayBuffer());
+      return res.status(amigoRes.status).send(buf);
+    } catch {
+      return res.status(502).send("Overlay backend unreachable");
+    }
+  });
+
   // Weather proxy route -> Proxies to Amigo Python backend
   app.get("/api/weather", async (req, res) => {
     try {

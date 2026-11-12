@@ -1375,6 +1375,8 @@ def _tool_screen_pen_annotate(params, query, spoken):
     x2 = params.get("x2")
     y2 = params.get("y2")
     label = params.get("label")
+    topic = params.get("topic") or label or query
+    beats = params.get("beats")
     color = params.get("color", "#00F0FF")
     duration = float(params.get("duration", 4.0))
     normalized = bool(params.get("normalized", True))
@@ -1383,10 +1385,14 @@ def _tool_screen_pen_annotate(params, query, spoken):
         from amigo.services.screen_pen import screen_pen_annotate
         res = screen_pen_annotate(
             action=action, x=x, y=y, x2=x2, y2=y2,
-            label=label, color=color, duration=duration, normalized=normalized
+            label=label, color=color, duration=duration, normalized=normalized,
+            topic=topic, beats=beats,
         )
         if res.get("status") == "success":
-            msg = f"Highlighted on screen with {res.get('drawn', action)}." if not label else f"Marked '{label}' on screen."
+            if res.get("summary"):
+                msg = res["summary"]
+            else:
+                msg = f"Highlighted on screen with {res.get('drawn', action)}." if not label else f"Marked '{label}' on screen."
         else:
             msg = f"Screen pen action {action} could not be completed."
         return msg, None, res
@@ -1888,8 +1894,9 @@ TOOL_DEFINITIONS = [
           {"setting": _p("string", "Settings section name or 'home'")}),
     _tool("control_windows_system", "Control hardware power profiles (battery saver, balanced, high performance). Never use for lock/sleep/restart/shutdown (use power_control), window layout (use window_mgmt), or standard Windows settings (use change_setting). Ex: 'turn on battery saver', 'switch to power saver mode', 'switch to balanced power'.",
           {"action": _p("string", "Action name")}),
-    _tool("screen_pen_annotate", "Draw visual callouts (circle, arrow, box, underline) on screen. Ex: 'circle the download button on screen', 'draw a red box around login field', 'point an arrow at top navigation'.",
-          {"action": _p("string", "circle | arrow | box | underline | clear"),
+    _tool("screen_pen_annotate", "Draw callouts or visual diagrams/explanations (action='diagram', topic) on screen. Ex: 'circle the download button on screen', 'explain gravity visually with a diagram', 'point an arrow at top navigation'.",
+          {"action": _p("string", "circle | arrow | box | underline | diagram | clear"),
+           "topic": _p("string", "Topic for visual diagram"),
            "x": _p("integer", "X coordinate 0-1000"),
            "y": _p("integer", "Y coordinate 0-1000"),
            "label": _p("string", "Annotation note")}, ["action"]),

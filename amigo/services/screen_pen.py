@@ -6,7 +6,9 @@ via SSE events instead of Python tkinter.
 
 from __future__ import annotations
 
+import json
 import queue
+import re
 import threading
 from typing import Any, Dict, Optional
 
@@ -98,6 +100,61 @@ PEN_TOOL_DEFINITION = {
 }
 
 
+def _sanitize_mark(mk: dict[str, Any]) -> dict[str, Any]:
+    """Normalize LLM-generated mark fields into strict Roamies `ink.js`/`ink3d.js` shapes."""
+    out = dict(mk)
+    for key in ("kind", "tone"):
+        if isinstance(out.get(key), str) and "|" in out[key]:
+            out[key] = out[key].split("|", 1)[0].strip()
+    if isinstance(out.get("parts"), list):
+        clean_parts = []
+        for p in out["parts"]:
+            if not isinstance(p, dict):
+                continue
+            cp = dict(p)
+            for key in ("shape", "tone"):
+                if isinstance(cp.get(key), str) and "|" in cp[key]:
+                    cp[key] = cp[key].split("|", 1)[0].strip()
+            if isinstance(cp.get("motion"), str):
+                cp["motion"] = {"do": cp["motion"].split("|", 1)[0].strip()}
+            clean_parts.append(cp)
+        out["parts"] = clean_parts
+    return out
+
+
+def _generate_visual_diagram_beats(topic: str) -> tuple[list[dict[str, Any]], str]:
+    """Generate Roamies `ink.js` / `ink3d.js` visual diagram beats and a short spoken summary via the local LLM."""
+    from amigo.core.llm_agent import query_local_llm, sanitize_for_tts
+
+    prompt = (
+        f"Create a visual explanation diagram for '{topic}' as strict JSON with keys 'summary' (1-2 sentences) "
+        f"and 'marks' (array of 2-3 Roamies ink marks). Use concrete single values (never '|'). Allowed mark kinds: "
+        f"1) {{\"kind\":\"model\",\"title\":\"...\",\"parts\":[{{\"shape\":\"sphere\",\"at\":[0,0,0],\"size\":[1,1,1],\"tone\":\"teal\",\"label\":\"...\",\"motion\":{{\"do\":\"spin\"}}}}]}}, "
+        f"2) {{\"kind\":\"flow\",\"title\":\"...\",\"nodes\":[{{\"id\":\"a\",\"text\":\"...\",\"tone\":\"teal\"}}],\"links\":[{{\"from\":\"a\",\"to\":\"b\",\"flow\":true}}]}}, "
+        f"3) {{\"kind\":\"card\",\"title\":\"...\",\"text\":\"...\"}}, "
+        f"4) {{\"kind\":\"circle\",\"at\":{{\"x\":400,\"y\":300,\"w\":180,\"h\":180}},\"label\":\"...\",\"tone\":\"teal\"}}. "
+        f"Output ONLY valid JSON."
+    )
+    raw = query_local_llm(prompt, max_tokens=450)
+    summary = f"Drew a visual diagram for {topic}."
+    marks: list[dict[str, Any]] = []
+    if raw:
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if m:
+            try:
+                parsed = json.loads(m.group(0))
+                if isinstance(parsed.get("marks"), list):
+                    marks = [_sanitize_mark(mk) for mk in parsed["marks"] if isinstance(mk, dict) and mk.get("kind")]
+                if parsed.get("summary"):
+                    summary = sanitize_for_tts(str(parsed["summary"])) or summary
+            except Exception:
+                pass
+
+    if not marks:
+        marks = [{"kind": "card", "title": topic.title()[:60], "text": summary, "tone": "teal"}]
+    return [{"marks": marks, "wait": 6.0}], summary
+
+
 def screen_pen_annotate(
     action: str,
     x: int = 500,
@@ -108,9 +165,11 @@ def screen_pen_annotate(
     color: str = "#00F0FF",
     duration: float = 4.0,
     normalized: bool = True,
+    topic: Optional[str] = None,
+    beats: Optional[list[dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    """Emit a Roamies JavaScript `ink.js` beat event for the requested screen annotation."""
-    valid_actions = {"circle", "arrow", "box", "underline", "clear"}
+    """Emit a Roamies JavaScript `ink.js` / `ink3d.js` beat event for the requested screen annotation or diagram."""
+    valid_actions = {"circle", "arrow", "box", "underline", "diagram", "clear"}
     act = str(action or "").strip().lower()
     if act not in valid_actions:
         return {"status": "error", "code": "INVALID_ACTION", "supported": list(valid_actions)}
@@ -119,6 +178,25 @@ def screen_pen_annotate(
         event: Dict[str, Any] = {"type": "ink_clear", "all": True}
         subscribers = push_overlay_event(event)
         return {"status": "success", "drawn": "clear", "engine": "roamies-ink-js", "subscribers": subscribers, "event": event}
+
+    if act == "diagram":
+        diag_topic = str(topic or label or "concept").strip()
+        if isinstance(beats, list) and beats:
+            diag_beats = beats
+            summary = f"Drew a visual diagram for {diag_topic}."
+        else:
+            diag_beats, summary = _generate_visual_diagram_beats(diag_topic)
+        event = {"type": "ink", "beats": diag_beats}
+        subscribers = push_overlay_event(event)
+        return {
+            "status": "success",
+            "drawn": "diagram",
+            "engine": "roamies-ink-js",
+            "topic": diag_topic,
+            "summary": summary,
+            "subscribers": subscribers,
+            "event": event,
+        }
 
     px, py = _to_screen_points(x, y, normalized)
     tone = _color_to_tone(color)
