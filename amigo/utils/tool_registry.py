@@ -105,8 +105,6 @@ def get_active_state(clean_expired: bool = False) -> dict:
 
 _RE_URLS = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]*[^\s<>"{}|\\^`\[\].,;:!?]')
 _RE_MEDIA_CLEAN_TITLE = re.compile(r"^(?:play|playing)\s*:\s*", re.IGNORECASE)
-_RE_WAKE_WORD_START = re.compile(r"^(?:(?:hey|hi|hello|ok|okay)\s+)?amigo\b[\s,.:;!-]*", re.IGNORECASE)
-_RE_WAKE_WORD_END = re.compile(r"[\s,.:;!-]+(?:amigo)\s*$", re.IGNORECASE)
 
 _media_update_cb = None
 _ui_broadcast_cb = None
@@ -2192,13 +2190,6 @@ def _chat_action(text: str = "") -> dict:
     return {"tool": "chat", "params": {"response": text} if text else {}, "speak": text}
 
 
-def _strip_wake_word(query: str) -> str:
-    q = (query or "").strip()
-    q = _RE_WAKE_WORD_START.sub("", q).strip()
-    q = _RE_WAKE_WORD_END.sub("", q).strip()
-    return q
-
-
 def parse_user_intent_fast(query: str) -> dict[str, Any] | None:
     """Fast path for blank queries; routing delegates to LLM for universal multi-lingual intent understanding."""
     if not query or not query.strip():
@@ -2572,7 +2563,7 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
 def get_agent_actions(query: str, conversation_history: list | None = None) -> tuple[list[dict], str]:
     if not query or not query.strip():
         return [{"tool": "chat", "params": {}, "speak": ""}], ""
-    cleaned = _strip_wake_word(query) or query.strip()
+    cleaned = query.strip()
     fast = parse_user_intent_fast(cleaned)
     if fast is not None:
         return [fast], fast.get("speak", "")

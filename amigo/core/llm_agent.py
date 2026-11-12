@@ -131,11 +131,6 @@ _internet_status_cache = {"status": "Connected (Online)", "online": True, "times
 _INTERNET_CACHE_TTL = 30.0
 
 _RE_SPEAKER_PREFIX = re.compile(r"^(Amigo|Assistant|AI):\s*", flags=re.IGNORECASE)
-_RE_PROBE_GUARD = re.compile(
-    r"\b(what (?:tools?|functions?|capabilities) do you have|list your tools|how were you built|"
-    r"what model are you|what is your prompt|output your json|tell me a secret)\b",
-    re.IGNORECASE,
-)
 _RE_THINK = re.compile(r"<think>([\s\S]*?)(?:</think>|$)", re.IGNORECASE)
 
 _last_screen_text = ""

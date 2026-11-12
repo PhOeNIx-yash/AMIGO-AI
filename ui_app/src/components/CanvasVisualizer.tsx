@@ -329,12 +329,7 @@ export const CanvasVisualizer: React.FC<CanvasVisualizerProps> = React.memo(({
 }) => {
   // Detect if the active action is a Web Search
   const isWebSearch =
-    activeIntent === "web_search" ||
-    activeIntent === "search_web" ||
-    (Boolean(activePrompt) &&
-      /\b(?:search\s+(?:the\s+)?web|search\s+google|google|look\s+up\s+online|who\s+is\s+the\s+prime\s+minister|who\s+is\s+the\s+president|latest\s+news)\b/i.test(
-        activePrompt || ""
-      ));
+    activeIntent === "web_search" || activeIntent === "search_web";
 
   let orbState: OrbState;
   if (state === "listening") {

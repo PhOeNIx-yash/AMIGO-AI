@@ -216,6 +216,18 @@ class TestValidateAndRepair(SafeOSTestCase):
         mock_ai.assert_not_called()
         self.assertEqual(msg, "Which app would you like me to start?")
 
+    def test_step_26_removed_regex_guards_and_wake_strippers(self):
+        """Step 2.6: regex probe guards, wake-word strippers, and file-match count regexes are removed."""
+        from amigo.core import llm_agent
+        from amigo.utils import tool_registry
+        from amigo.ui import server
+
+        self.assertFalse(hasattr(llm_agent, "_RE_PROBE_GUARD"))
+        self.assertFalse(hasattr(tool_registry, "_strip_wake_word"))
+        self.assertFalse(hasattr(tool_registry, "_RE_WAKE_WORD_START"))
+        self.assertFalse(hasattr(tool_registry, "_RE_WAKE_WORD_END"))
+        self.assertFalse(hasattr(server, "_RE_FILE_MATCH_COUNT"))
+
 
 if __name__ == "__main__":
     unittest.main()

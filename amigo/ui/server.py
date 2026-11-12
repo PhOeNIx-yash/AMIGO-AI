@@ -131,7 +131,6 @@ except Exception:
     pass
 
 logger = logging.getLogger("amigo.ui_server")
-_RE_FILE_MATCH_COUNT = re.compile(r"I found (\d+) matching file")
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
@@ -652,10 +651,9 @@ def api_assistant_process():
     speech_reply = _extract_text_from_json(speech_reply)
     speech_reply = re.sub(r'(?:\n+|\s+)(?:\[?(?:Sources?|References?|Citations?)\]?\s*:)\s*[\s\S]*$', '', speech_reply, flags=re.IGNORECASE).strip()
     speech_reply = re.sub(r'\[(?:\d+|Source\s*\d+[^\]]*)\]', '', speech_reply, flags=re.IGNORECASE)
-    if "matching file" in speech_reply and "\n" in speech_reply:
-        m_count = _RE_FILE_MATCH_COUNT.search(speech_reply)
-        c_num = m_count.group(1) if m_count else "some"
-        speech_reply = f"I found {c_num} matching files. Choose one on your screen or say 'Open number 1'."
+    file_results = result_metadata.get("file_results")
+    if isinstance(file_results, list) and file_results:
+        speech_reply = f"I found {len(file_results)} matching files. Choose one on your screen or say 'Open number 1'."
 
     status = result_metadata.get("status") or "completed"
     headlines = {
