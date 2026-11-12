@@ -1792,7 +1792,7 @@ def _tool(name: str, description: str, props: dict | None = None, required: list
 
 
 TOOL_DEFINITIONS = [
-    _tool("chat", "General knowledge, explanations, creative conversation, greetings, bare assistant name/vocative, assistant capabilities questions, and chit-chat. Not for screen reading (use read_screen), hardware status (use system_status), or standalone documents/code (use generate_content). Ex: 'why do leaves change color in autumn?', 'Amigo', 'tell me a quick joke'.",
+    _tool("chat", "General knowledge, explanations, creative conversation, greetings, bare assistant name/vocative, assistant capabilities questions, and chit-chat. Not for screen capture/reading (use take_screenshot/read_screen), hardware status (use system_status), or standalone documents/code (use generate_content). Ex: 'why do leaves change color in autumn?', 'Amigo', 'tell me a quick joke'.",
           {"response": _p("string", "Direct spoken reply")}),
     _tool("web_search", "Search the web for live news, sports, research, recipes, or real-time facts. Always use for online lookups; not for weather (use get_weather), direct ticker quotes (use stock_quote), or greetings/assistant name (use chat). Ex: 'check online who won the game yesterday', 'recipe for garlic pasta', 'recent space discoveries'.",
           {"query": _p("string", "Search query")}, ["query"]),
@@ -1810,7 +1810,7 @@ TOOL_DEFINITIONS = [
           tool_aliases={"volume_up": {"action": "volume_up"}, "volume_down": {"action": "volume_down"}, "mute": {"action": "mute"}}),
     _tool("set_brightness", "Adjust display brightness percentage (0-100). If level is missing, ask via chat instead of guessing. Ex: 'dim screen to 40 percent', 'brightness 80', 'increase screen brightness'.",
           {"level": _p("integer", "Brightness percentage 0-100")}, ["level"]),
-    _tool("take_screenshot", "Capture full screenshot of monitor. Not for reading screen text (use read_screen). Ex: 'take a screenshot for me', 'can you grab a screenshot', 'screen shot please'.",
+    _tool("take_screenshot", "Capture full screenshot of monitor. Not for reading screen text (use read_screen). Ex: 'take a screenshot for me', 'can you grab a screenshot', 'screenshot'.",
           {}),
     _tool("read_screen", "Inspect visible GUI text, window titles, or UI elements via OCR/vision. Use ONLY when asking about visible screen contents. Never use for window state or desktop visibility (use window_mgmt) or files (use document_qa). Ex: 'what does this error message on screen say?', 'read the visible paragraph in this open window', 'can you see what button is highlighted'.",
           {"question": _p("string", "Question about visible screen contents")}),
