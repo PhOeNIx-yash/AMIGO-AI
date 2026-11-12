@@ -1,6 +1,6 @@
 """
 LLM-Based Agent for Amigo Voice Assistant.
-Clean, streamlined inference engine for LFM 3 Omni 2B:
+Clean, streamlined inference engine for Qwen 3 4B Instruct:
 - Direct GGUF inference via llama-cpp-python on RTX 3050 GPU (with CPU fallback)
 - Fast KV-cache reuse with unified system prompt prefix
 - Multi-turn conversation context and RAG profile integration
@@ -345,39 +345,33 @@ def _build_ai_messages(
 # ── Model Configuration & Lifecycle ────────────────────────────
 
 MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "models"))
-MODEL_NAME = "LFM 3 Omni 2B"
-MODEL_FILENAME = "LFM3-Omni-2B-Q4_K_M.gguf"
+MODEL_NAME = "Qwen 3 4B Instruct"
+MODEL_FILENAME = "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
 MODEL_PATH = os.path.join(MODEL_DIR, MODEL_FILENAME)
 MODEL_TARGETS = [
-    ("LiquidAI/LFM3-Omni-2B-GGUF", "LFM3-Omni-2B-Q4_K_M.gguf"),
-    ("ggml-org/LFM3-Omni-2B-GGUF", "LFM3-Omni-2B-Q4_K_M.gguf"),
+    ("unsloth/Qwen3-4B-Instruct-2507-GGUF", "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"),
+    ("lmstudio-community/Qwen3-4B-Instruct-2507-GGUF", "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"),
 ]
 
 STOP_TOKENS = ["<eos>", "<turn|>", "<|turn|>", "<|endoftext|>", "<|im_end|>", "<|im_start|>", "<|eot_id|>"]
 
 AVAILABLE_MODELS = {
-    "lfm-3-omni": {
-        "key": "lfm-3-omni",
-        "name": "LFM 3 Omni 2B",
-        "repo": "LiquidAI/LFM3-Omni-2B-GGUF",
-        "filename": "LFM3-Omni-2B-Q4_K_M.gguf",
-        "path": os.path.join(MODEL_DIR, "LFM3-Omni-2B-Q4_K_M.gguf"),
-        "mmproj_filename": "mmproj-LFM3-Omni-2B-Q4_K_M.gguf",
-        "mmproj_path": os.path.join(MODEL_DIR, "mmproj-LFM3-Omni-2B-Q4_K_M.gguf"),
+    "qwen3-4b-instruct": {
+        "key": "qwen3-4b-instruct",
+        "name": "Qwen 3 4B Instruct",
+        "repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+        "filename": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        "path": os.path.join(MODEL_DIR, "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"),
         "targets": [
-            ("LiquidAI/LFM3-Omni-2B-GGUF", "LFM3-Omni-2B-Q4_K_M.gguf"),
-            ("ggml-org/LFM3-Omni-2B-GGUF", "LFM3-Omni-2B-Q4_K_M.gguf"),
+            ("unsloth/Qwen3-4B-Instruct-2507-GGUF", "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"),
+            ("lmstudio-community/Qwen3-4B-Instruct-2507-GGUF", "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"),
         ],
-        "mmproj_targets": [
-            ("LiquidAI/LFM3-Omni-2B-GGUF", "mmproj-LFM3-Omni-2B-Q4_K_M.gguf"),
-            ("ggml-org/LFM3-Omni-2B-GGUF", "mmproj-LFM3-Omni-2B-Q4_K_M.gguf"),
-        ],
-        "downloaded": os.path.exists(os.path.join(MODEL_DIR, "LFM3-Omni-2B-Q4_K_M.gguf")) and os.path.getsize(os.path.join(MODEL_DIR, "LFM3-Omni-2B-Q4_K_M.gguf")) > 500_000_000,
-        "size_gb": 1.10,
+        "downloaded": os.path.exists(os.path.join(MODEL_DIR, "Qwen3-4B-Instruct-2507-Q4_K_M.gguf")) and os.path.getsize(os.path.join(MODEL_DIR, "Qwen3-4B-Instruct-2507-Q4_K_M.gguf")) > 500_000_000,
+        "size_gb": 2.50,
     },
 }
 
-_active_model_key = "lfm-3-omni"
+_active_model_key = "qwen3-4b-instruct"
 _local_llm_instance = None
 _model_load_failed = False
 _model_load_error = None
@@ -515,7 +509,7 @@ def ensure_model_downloaded() -> str:
     if os.path.exists(path) and os.path.getsize(path) > 500_000_000:
         return path
     m_info = AVAILABLE_MODELS.get(_active_model_key, {})
-    repo = m_info.get("repo", "LiquidAI/LFM3-Omni-2B-GGUF")
+    repo = m_info.get("repo", "unsloth/Qwen3-4B-Instruct-2507-GGUF")
     filename = m_info.get("filename", MODEL_FILENAME)
     logger.info("Downloading %s (%s) to %s...", m_info.get("name", "Model"), filename, path)
     os.makedirs(MODEL_DIR, exist_ok=True)
@@ -654,7 +648,7 @@ def get_available_models() -> dict:
     return AVAILABLE_MODELS
 
 
-def set_active_model(model_key: str = "lfm-3-omni") -> bool:
+def set_active_model(model_key: str = "qwen3-4b-instruct") -> bool:
     global _active_model_key, _local_llm_instance, _LLM_CONFIG
     if model_key not in AVAILABLE_MODELS:
         return False

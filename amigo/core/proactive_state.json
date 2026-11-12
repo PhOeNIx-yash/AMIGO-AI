@@ -1,12 +1,12 @@
 {
-  "last_weather_check": 1794482043.742085,
-  "last_calendar_check": 1794482945.2403438,
-  "last_system_check": 1794483365.1490543,
-  "last_notification_time": 1794482008.9538724,
+  "last_weather_check": 1794488029.2411969,
+  "last_calendar_check": 1794488955.5814755,
+  "last_system_check": 1794489255.8803885,
+  "last_notification_time": 1794486188.7522712,
   "last_priority_alert_time": 0,
   "suggestions_this_hour": 1,
-  "last_hour_reset": 1794482008.849591,
-  "active_window_start": 1794061903.722518,
+  "last_hour_reset": 1794486187.1947043,
+  "active_window_start": 1794489298.1425686,
   "current_window_title": "amigo-main - Antigravity IDE - server.py",
   "recent_suggestions": [
     {
@@ -18,6 +18,11 @@
       "id": "wellness_break",
       "text": "Friendly reminder to rest your eyes for a moment, there\u2014you've been working hard.",
       "time": 1794482008.849591
+    },
+    {
+      "id": "wellness_break",
+      "text": "Great focus session so far, there! Good time to stand up and grab some water when you hit a pause.",
+      "time": 1794486187.1947043
     }
   ],
   "learned_patterns": {},

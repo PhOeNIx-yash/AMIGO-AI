@@ -142,6 +142,8 @@ def _sanitize_mark(mk: dict[str, Any]) -> dict[str, Any]:
     for key in ("kind", "tone"):
         if isinstance(out.get(key), str) and "|" in out[key]:
             out[key] = out[key].split("|", 1)[0].strip()
+    if out.get("kind") == "model3d":
+        out["kind"] = "model"
     at_val = out.get("at")
     if isinstance(at_val, dict) and "rect" not in at_val and all(k in at_val for k in ("x", "y")):
         out["at"] = {"rect": [float(at_val["x"]), float(at_val["y"]), float(at_val.get("w", 160)), float(at_val.get("h", 160))]}
@@ -154,6 +156,8 @@ def _sanitize_mark(mk: dict[str, Any]) -> dict[str, Any]:
             for key in ("shape", "tone"):
                 if isinstance(cp.get(key), str) and "|" in cp[key]:
                     cp[key] = cp[key].split("|", 1)[0].strip()
+            if "pos" in cp and "at" not in cp:
+                cp["at"] = cp.pop("pos")
             if isinstance(cp.get("motion"), str):
                 cp["motion"] = {"do": cp["motion"].split("|", 1)[0].strip()}
             clean_parts.append(cp)
@@ -182,22 +186,18 @@ def _generate_visual_diagram_beats(topic: str) -> tuple[list[dict[str, Any]], st
     from amigo.core.llm_agent import query_local_llm, sanitize_for_tts
 
     prompt = (
-        f"Explain '{topic}' visually as compact JSON with keys: "
-        f"'summary' (1-2 short sentences), "
-        f"'visual_type' ('flow'|'table'|'timeline'|'bars'|'math'|'model3d'|'quiz'|'geometry'|'map'), "
-        f"'steps' (3-4 short stage strings in order, for flow/timeline), "
-        f"'parts' (3-4 items or {{\"shape\":\"sphere|torus|cone|cylinder|box\",\"label\":\"name\",\"tone\":\"sky|amber|coral|teal\"}} for model3d/list), "
-        f"'columns' (optional headers for table), 'rows' (optional rows for table), "
-        f"'bars' (optional [{{\"label\":\"...\",\"value\":10}}] for bars), "
-        f"'tex' (optional LaTeX for math), "
-        f"'questions' (optional [{{\"text\":\"...\",\"options\":[\"A\",\"B\",\"C\"],\"right\":0,\"explain\":\"...\"}}] for quiz), "
-        f"'view' (optional [west,south,east,north] for map), 'places' (optional [{{\"name\":\"...\",\"lon\":0,\"lat\":0}}] for map). "
+        f"Explain '{topic}' visually as compact JSON with keys:\n"
+        f"- 'summary': 1-2 short clear sentences.\n"
+        f"- 'visual_type': 'diagram'|'table'|'timeline'|'bars'|'math'|'quiz'|'geometry'|'map' (use 'diagram' for how things work, machines, science, processes).\n"
+        f"- 'parts': 3-4 objects {{\"shape\":\"sphere|torus|cone|cylinder|box\",\"label\":\"2-3 word part\",\"tone\":\"sky|amber|coral|teal\"}}.\n"
+        f"- 'steps': 3-5 short stage strings in causal order.\n"
+        f"- Optional for specialized types: 'columns'/'rows' (table), 'bars' ([{{\"label\":\"...\",\"value\":10}}]), 'tex' (math), 'questions' (quiz), 'view'/'places' (map), 'vertices'/'lines' (geometry).\n"
         f"Output ONLY valid JSON."
     )
-    raw = query_local_llm(prompt, max_tokens=420)
+    raw = query_local_llm(prompt, max_tokens=480)
     summary = f"Here is a visual breakdown of {topic}."
     marks: list[dict[str, Any]] = []
-    offsets = [(0, 0.7, 0), (0, -0.7, 0), (1.3, 0, 0), (-1.3, 0, 0)]
+    offsets = [(0, 0.8, 0), (0, 0.0, 0), (0, -0.8, 0), (1.1, 0.2, 0)]
     motions = [{"do": "pulse"}, {"do": "spin"}, {"do": "orbit"}, {"do": "spin"}]
     tones = ["sky", "amber", "coral", "teal"]
 
@@ -209,7 +209,7 @@ def _generate_visual_diagram_beats(topic: str) -> tuple[list[dict[str, Any]], st
                 if parsed.get("summary"):
                     summary = sanitize_for_tts(str(parsed["summary"])) or summary
 
-                vtype = str(parsed.get("visual_type") or "flow").strip().lower()
+                vtype = str(parsed.get("visual_type") or "diagram").strip().lower()
                 raw_steps = parsed.get("steps") or []
 
                 if vtype == "table" and isinstance(parsed.get("columns"), list) and isinstance(parsed.get("rows"), list) and parsed["rows"]:
@@ -263,59 +263,54 @@ def _generate_visual_diagram_beats(topic: str) -> tuple[list[dict[str, Any]], st
                         "angles": parsed.get("angles") or [],
                         "tone": "teal",
                     })
-                elif vtype == "model3d" and isinstance(parsed.get("parts"), list) and parsed["parts"]:
-                    model_parts = []
-                    for idx, p in enumerate(parsed["parts"][:4]):
-                        if isinstance(p, dict):
-                            model_parts.append({
-                                "shape": str(p.get("shape") or "sphere").split("|", 1)[0].strip(),
-                                "label": str(p.get("label") or f"Part {idx + 1}")[:24],
-                                "tone": str(p.get("tone") or tones[idx % len(tones)]).split("|", 1)[0].strip(),
-                                "pos": offsets[idx % len(offsets)],
-                                "size": [0.7, 0.7, 0.7],
-                                "motion": motions[idx % len(motions)],
-                            })
-                    if model_parts:
-                        marks.append({"kind": "model3d", "part": f"p{len(marks) + 1}", "title": topic.title()[:40], "parts": model_parts})
 
-                if not marks and isinstance(raw_steps, list) and len(raw_steps) >= 2:
-                    nodes = []
-                    links = []
-                    for idx, st in enumerate(raw_steps[:5]):
-                        nid = f"s{idx + 1}"
-                        nodes.append({"id": nid, "text": str(st)[:60], "tone": tones[idx % len(tones)]})
-                        if idx > 0:
-                            links.append({"from": f"s{idx}", "to": nid, "flow": True})
-                    marks.append({
-                        "kind": "flow",
-                        "part": f"p{len(marks) + 1}",
-                        "title": f"{topic.title()[:28]} Flow",
-                        "nodes": nodes,
-                        "links": links,
-                        "lay": {"layers": [[n["id"]] for n in nodes], "via": {}, "back": []},
-                    })
+                if not marks:
+                    raw_parts = parsed.get("parts") or []
+                    if isinstance(raw_parts, list) and raw_parts:
+                        model_parts = []
+                        for idx, p in enumerate(raw_parts[:4]):
+                            if isinstance(p, dict):
+                                model_parts.append({
+                                    "shape": str(p.get("shape") or "cylinder").split("|", 1)[0].strip(),
+                                    "label": str(p.get("label") or f"Part {idx + 1}")[:24],
+                                    "tone": str(p.get("tone") or tones[idx % len(tones)]).split("|", 1)[0].strip(),
+                                    "at": list(offsets[idx % len(offsets)]),
+                                    "size": [0.75, 0.75, 0.75],
+                                    "motion": motions[idx % len(motions)],
+                                })
+                            elif isinstance(p, str) and p.strip():
+                                model_parts.append({
+                                    "shape": ["cylinder", "sphere", "cone", "torus"][idx % 4],
+                                    "label": p.strip()[:24],
+                                    "tone": tones[idx % len(tones)],
+                                    "at": list(offsets[idx % len(offsets)]),
+                                    "size": [0.75, 0.75, 0.75],
+                                    "motion": motions[idx % len(motions)],
+                                })
+                        if model_parts:
+                            marks.append({"kind": "model", "part": f"p{len(marks) + 1}", "title": f"{topic.title()[:28]} 3D", "parts": model_parts})
 
-                raw_parts = parsed.get("parts") or []
-                if isinstance(raw_parts, list) and raw_parts and vtype != "model3d":
-                    items = []
-                    for idx, p in enumerate(raw_parts[:5]):
-                        if isinstance(p, dict):
-                            lbl = str(p.get("label") or p.get("name") or f"Part {idx + 1}").strip()
-                            items.append(lbl[:80])
-                        elif isinstance(p, str) and p.strip():
-                            items.append(p.strip()[:80])
-                    if items:
+                    if isinstance(raw_steps, list) and len(raw_steps) >= 2:
+                        nodes = []
+                        links = []
+                        for idx, st in enumerate(raw_steps[:5]):
+                            nid = f"s{idx + 1}"
+                            nodes.append({"id": nid, "text": str(st)[:60], "tone": tones[idx % len(tones)]})
+                            if idx > 0:
+                                links.append({"from": f"s{idx}", "to": nid, "flow": True})
                         marks.append({
-                            "kind": "list",
+                            "kind": "flow",
                             "part": f"p{len(marks) + 1}",
-                            "title": "Key Components",
-                            "items": items,
-                            "tone": "amber",
+                            "title": f"{topic.title()[:28]} Flow",
+                            "nodes": nodes,
+                            "links": links,
+                            "lay": {"layers": [[n["id"]] for n in nodes], "via": {}, "back": []},
                         })
             except Exception:
                 pass
 
     marks.append({"kind": "card", "part": f"p{len(marks) + 1}", "title": topic.title()[:60], "text": summary, "tone": "teal"})
+    marks = [_sanitize_mark(mk) for mk in marks]
     return [{"marks": marks, "caption": summary}], summary
 
 
@@ -333,8 +328,10 @@ def screen_pen_annotate(
     beats: Optional[list[dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Emit a Roamies JavaScript `ink.js` / `ink3d.js` beat event for the requested screen annotation or diagram."""
-    valid_actions = {"circle", "arrow", "box", "underline", "diagram", "clear"}
+    valid_actions = {"circle", "arrow", "box", "underline", "diagram", "clear", "point_out", "point", "highlight", "ring"}
     act = str(action or "").strip().lower()
+    if act in {"point_out", "point", "highlight"}:
+        act = "ring"
     if act not in valid_actions:
         return {"status": "error", "code": "INVALID_ACTION", "supported": list(valid_actions)}
 
@@ -395,6 +392,11 @@ def screen_pen_annotate(
         else:
             w = max(40.0, abs(_to_screen_points(x2, y, normalized)[0] - px)) if x2 is not None else 140.0
             mark = {"kind": "underline", "at": {"rect": [px - w / 2, py - 12, w, 24]}, "tone": tone}
+    elif act == "ring":
+        if resolved_rect:
+            mark = {"kind": "ring", "at": {"rect": resolved_rect}, "tone": tone}
+        else:
+            mark = {"kind": "ring", "at": {"rect": [px - 45, py - 45, 90, 90]}, "tone": tone}
     else:
         if resolved_rect:
             mark = {"kind": "circle", "at": {"rect": resolved_rect}, "tone": tone}
