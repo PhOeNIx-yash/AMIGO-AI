@@ -141,6 +141,12 @@ def _sanitize_mark(mk: dict[str, Any]) -> dict[str, Any]:
                         if nid and nid not in node_ids:
                             node_ids.add(nid)
                             out["nodes"].append({"id": nid, "text": nid.title(), "tone": "teal"})
+        if "lay" not in out:
+            out["lay"] = {
+                "layers": [[str(n["id"])] for n in out["nodes"] if isinstance(n, dict) and n.get("id")],
+                "via": {},
+                "back": [],
+            }
     return out
 
 
@@ -201,12 +207,19 @@ def _generate_visual_diagram_beats(topic: str) -> tuple[list[dict[str, Any]], st
                         nodes.append({"id": nid, "text": str(st)[:60], "tone": tones[idx % len(tones)]})
                         if idx > 0:
                             links.append({"from": f"s{idx}", "to": nid, "flow": True})
-                    marks.append({"kind": "flow", "part": f"p{len(marks) + 1}", "title": f"{topic.title()[:28]} Flow", "nodes": nodes, "links": links})
+                    marks.append({
+                        "kind": "flow",
+                        "part": f"p{len(marks) + 1}",
+                        "title": f"{topic.title()[:28]} Flow",
+                        "nodes": nodes,
+                        "links": links,
+                        "lay": {"layers": [[n["id"]] for n in nodes], "via": {}, "back": []},
+                    })
             except Exception:
                 pass
 
     marks.append({"kind": "card", "part": f"p{len(marks) + 1}", "title": topic.title()[:60], "text": summary, "tone": "teal"})
-    return [{"marks": marks}], summary
+    return [{"marks": marks, "caption": summary}], summary
 
 
 def screen_pen_annotate(
