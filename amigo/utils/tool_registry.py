@@ -766,6 +766,79 @@ def _tool_click_screen(params, query, spoken):
         return f"Click error: {e}", None
 
 
+_SCREEN_ACT_ACTIONS = {"click": "click", "fill": "fill", "type": "type", "press": "press", "scroll": "scroll"}
+_SCROLL_DIRS = {"up": "up", "down": "down", "left": "left", "right": "right"}
+
+
+def _tool_screen_act(params, query, spoken):
+    """Execute a structured on-screen UI action via `hands` (with safe OS fallback for type/press/scroll)."""
+    params = params if isinstance(params, dict) else {}
+    action = str(params.get("action") or "").strip().lower()
+    target = str(params.get("target") or "").strip()
+    text = str(params.get("text") or "").strip()
+    app = str(params.get("app") or "").strip()
+
+    if action not in _SCREEN_ACT_ACTIONS:
+        return "Which on-screen action should I perform: click, fill, type, press, or scroll?", None
+
+    if action == "click":
+        if not target:
+            return "Which button or element on screen should I click?", None
+        step = {"do": "click", "id": int(target)} if target.isdigit() else {"do": "click_text", "text": target}
+    elif action == "fill":
+        if not target or not text:
+            return "Which field should I fill and what text should I enter?", None
+        step = {"do": "fill", "field": target, "text": text}
+    elif action == "type":
+        if not text:
+            return "What text should I type?", None
+        step = {"do": "type", "text": text}
+    elif action == "press":
+        keys = text or target
+        if not keys:
+            return "Which key or shortcut should I press?", None
+        step = {"do": "press", "keys": keys}
+    else:
+        direction = _SCROLL_DIRS.get(target.lower(), "down")
+        step = {"do": "scroll", "direction": direction}
+
+    from amigo.services import hands
+
+    if hands.is_available():
+        plan = {"steps": [step]}
+        if app:
+            plan["app"] = app
+        res = hands.act(plan)
+        if res.get("ok"):
+            done = res.get("done")
+            summary = ", ".join(done) if isinstance(done, list) and done else f"Completed {action}"
+            return f"{summary}.", None, {"hands_used": True, "plan": plan}
+        return str(res.get("error") or f"Could not {action} on screen."), None, {"hands_used": True, "error": res.get("error")}
+
+    # Fallback when roamies-hands.exe is not compiled yet
+    if action == "type":
+        os_automation.type_text(text)
+        return "Typed the text.", None, {"hands_used": False}
+    if action == "press":
+        keys = text or target
+        os_automation.press_shortcut(keys)
+        return f"Pressed {keys}.", None, {"hands_used": False}
+    if action == "scroll":
+        if target.lower() == "up":
+            os_automation.scroll_up()
+        else:
+            os_automation.scroll_down()
+        scroll_dir = "up" if target.lower() == "up" else "down"
+        return f"Scrolled {scroll_dir}.", None, {"hands_used": False}
+
+    return (
+        "UI element clicking and filling require roamies-hands.exe, which is not built yet. "
+        "Build roamies-win-extract/hands-win with Visual Studio C++ Build Tools first.",
+        None,
+        {"hands_used": False, "missing_binary": True},
+    )
+
+
 _audio_playing_cache = {"status": False, "time": 0.0}
 
 
@@ -1694,6 +1767,7 @@ UI_TOOL_HANDLERS = {
     "search_and_type":    _tool_search_and_type,
     "press_key":          _tool_press_key,
     "click_screen":       _tool_click_screen,
+    "screen_act":         _tool_screen_act,
     "new_tab":            _tool_new_tab,
     "close_app":          _tool_close_app,
     "window_management":  _tool_window_management,
@@ -1814,6 +1888,11 @@ TOOL_DEFINITIONS = [
           {}),
     _tool("read_screen", "Inspect visible GUI text, window titles, or UI elements via OCR/vision. Use ONLY when asking about visible screen contents. Never use for window state or desktop visibility (use window_mgmt) or files (use document_qa). Ex: 'what does this error message on screen say?', 'read the visible paragraph in this open window', 'can you see what button is highlighted'.",
           {"question": _p("string", "Question about visible screen contents")}),
+    _tool("screen_act", "Click, fill, type, press keys, or scroll UI controls in the active or named app. Ask via chat if target is missing.",
+          {"action": _p("string", "click | fill | type | press | scroll"),
+           "target": _p("string", "Control text or direction"),
+           "text": _p("string", "Text or shortcut"),
+           "app": _p("string", "Optional app name")}, ["action"]),
     _tool("open_website", "Open website, URL, domain, or web page in browser (e.g. .org, .com, github, site, page). 'url' must come from user words or context; if no domain is specified, ask via chat. Never use open_app for websites or URLs. Ex: 'navigate to wikipedia.org', 'browse to python.org', 'open github.com'.",
           {"url": _p("string", "Concrete URL or domain"),
            "title": _p("string", "Title")}, ["url"]),
@@ -2369,6 +2448,20 @@ def _validate_action_plan(tool_calls: list[dict], grounding_text: str | None = N
             act = str(call_params.get("action") or "").strip().lower()
             if act not in _POWER_ACTION_MAP:
                 errors.append("Tool 'power_control' requires 'action' in: lock, sleep, restart, shutdown, cancel_shutdown.")
+        elif t_name == "screen_act":
+            act = str(call_params.get("action") or "").strip().lower()
+            tgt = str(call_params.get("target") or "").strip()
+            txt = str(call_params.get("text") or "").strip()
+            if act not in _SCREEN_ACT_ACTIONS:
+                errors.append("Tool 'screen_act' requires 'action' in: click, fill, type, press, scroll.")
+            elif act == "click" and not tgt:
+                errors.append("Tool 'screen_act' with action='click' requires 'target'.")
+            elif act == "fill" and (not tgt or not txt):
+                errors.append("Tool 'screen_act' with action='fill' requires 'target' and 'text'.")
+            elif act == "type" and not txt:
+                errors.append("Tool 'screen_act' with action='type' requires 'text'.")
+            elif act == "press" and not (txt or tgt):
+                errors.append("Tool 'screen_act' with action='press' requires 'text' or 'target'.")
 
         # C.6 Grounding check for state-changing tools (zero word lists)
         if grounding_text:
@@ -2402,6 +2495,12 @@ def _validate_action_plan(tool_calls: list[dict], grounding_text: str | None = N
                             errors.append(f"Tool '{t_name}' level='{lvl_int}' does not appear in user's request or context.")
                     except (ValueError, TypeError):
                         pass
+            elif t_name == "screen_act":
+                act_s = str(call_params.get("action") or "").strip().lower()
+                tgt_s = str(call_params.get("target") or "").strip()
+                if tgt_s and not (act_s == "scroll" and tgt_s.lower() in _SCROLL_DIRS):
+                    if not _is_tokens_grounded(tgt_s, grounding_text):
+                        errors.append(f"Tool 'screen_act' target='{tgt_s}' does not appear in user's request or context.")
 
     return errors
 

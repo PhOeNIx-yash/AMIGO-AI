@@ -221,22 +221,46 @@ def get_screen_vision_context() -> str:
 
 def inspect_screen(question: str = "") -> dict:
     """
-    Captures the desktop screen, extracts visible text and active window info,
-    and returns rich multimodal vision analysis and metadata.
+    Captures the desktop screen, extracts UIA window/control context (via `hands` when available)
+    and visible OCR text, and returns rich multimodal vision analysis and metadata.
     """
-    window_title = get_active_window_title() or "Active Window"
+    hands_info = {}
+    try:
+        from amigo.services import hands
+        if hands.is_available():
+            hands_info = hands.describe_active_window()
+    except Exception as e:
+        logger.debug(f"[Inspect Screen] hands fallback: {e}")
+
+    hands_used = bool(hands_info.get("ok"))
+    window_title = (
+        hands_info.get("window_title")
+        or get_active_window_title()
+        or "Active Window"
+    )
     save_path = "amigo_screenshot.png"
     screenshot = capture_screen_image(save_path=save_path)
 
-    screen_text = ""
+    ocr_text = ""
     if screenshot is not None:
-        screen_text = read_text_from_image(screenshot)
-        if screen_text:
-            screen_text = re.sub(r"\n{3,}", "\n\n", screen_text)[:3000]
+        ocr_text = read_text_from_image(screenshot)
+        if ocr_text:
+            ocr_text = re.sub(r"\n{3,}", "\n\n", ocr_text)[:3000]
+
+    uia_texts = str(hands_info.get("texts") or "").strip()
+    screen_text = uia_texts[:3000] if uia_texts else ocr_text
+    controls = hands_info.get("controls") or []
 
     context_parts = []
     if window_title:
-        context_parts.append(f"Active Foreground Window: {window_title}")
+        app_name = hands_info.get("app")
+        title_line = f"{app_name} - {window_title}" if app_name and app_name not in window_title else window_title
+        context_parts.append(f"Active Foreground Window: {title_line}")
+    if hands_info.get("url"):
+        context_parts.append(f"Browser URL: {hands_info['url']}")
+    if controls:
+        ctrl_lines = [f"[{c.get('id')}] {c.get('role')}: {c.get('label')}" for c in controls[:25]]
+        context_parts.append("Interactive Controls:\n" + "\n".join(ctrl_lines))
     if screen_text:
         context_parts.append(f"Visible Screen Text & Code:\n{screen_text}")
     else:
@@ -263,6 +287,9 @@ def inspect_screen(question: str = "") -> dict:
         "window_title": window_title,
         "screen_text": screen_text,
         "screenshot_path": save_path,
+        "hands_used": hands_used,
+        "controls": controls,
+        "url": hands_info.get("url", ""),
     }
 
 

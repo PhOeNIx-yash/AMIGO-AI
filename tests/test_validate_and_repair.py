@@ -228,6 +228,68 @@ class TestValidateAndRepair(SafeOSTestCase):
         self.assertFalse(hasattr(tool_registry, "_RE_WAKE_WORD_END"))
         self.assertFalse(hasattr(server, "_RE_FILE_MATCH_COUNT"))
 
+    def test_hands_bridge_and_screen_act(self):
+        """Hands bridge parses JSON/progress, enriches screen_vision, and screen_act validates & executes."""
+        from unittest.mock import MagicMock, patch
+        from amigo.services import hands, screen_vision
+        from amigo.utils.tool_registry import execute_tool
+
+        # 1. Missing binary returns structured error
+        with patch("amigo.services.hands.find_binary", return_value=None):
+            res = hands.run_hands(["front"])
+            self.assertFalse(res["ok"])
+            self.assertTrue(res.get("missing_binary"))
+
+        # 2. Subprocess stdout JSON & stderr @progress parsing
+        events = []
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate.return_value = (
+            '{"ok": true, "done": ["clicked Submit"]}\n',
+            '@{"ev": "step", "do": "click"}\n',
+        )
+        with patch("amigo.services.hands.find_binary", return_value="roamies-hands.exe"), \
+             patch("amigo.services.hands.subprocess.Popen", return_value=mock_proc):
+            res = hands.act({"steps": [{"do": "click_text", "text": "Submit"}]}, on_progress=events.append)
+            self.assertTrue(res["ok"])
+            self.assertEqual(events, [{"ev": "step", "do": "click"}])
+
+        # 3. screen_vision.inspect_screen enriches context from hands when available
+        with patch("amigo.services.hands.is_available", return_value=True), \
+             patch("amigo.services.hands.describe_active_window", return_value={
+                 "ok": True,
+                 "app": "Notepad",
+                 "window_title": "notes.txt - Notepad",
+                 "url": "",
+                 "controls": [{"id": 1, "role": "button", "label": "Save"}],
+                 "texts": "Hello from UIA",
+             }), \
+             patch("amigo.services.screen_vision.capture_screen_image", return_value=None), \
+             patch("amigo.core.llm_agent.get_ai_response", return_value="You have Notepad open.") as mock_ai:
+            vis = screen_vision.inspect_screen("what is on screen?")
+            self.assertTrue(vis["hands_used"])
+            self.assertEqual(vis["window_title"], "notes.txt - Notepad")
+            self.assertIn("Hello from UIA", mock_ai.call_args.kwargs["doc_context"])
+
+        # 4. screen_act validation & execution
+        self.assertEqual(len(_validate_action_plan([{"tool": "screen_act", "params": {"action": "click"}}])), 1)
+        self.assertEqual(len(_validate_action_plan([{"tool": "screen_act", "params": {"action": "fill", "target": "Search"}}])), 1)
+        self.assertEqual(
+            len(_validate_action_plan([{"tool": "screen_act", "params": {"action": "click", "target": "Delete"}}], grounding_text="click Save")),
+            1,
+        )
+        self.assertEqual(
+            _validate_action_plan([{"tool": "screen_act", "params": {"action": "click", "target": "Save"}}], grounding_text="click Save"),
+            [],
+        )
+
+        with patch("amigo.services.hands.is_available", return_value=True), \
+             patch("amigo.services.hands.act", return_value={"ok": True, "done": ["clicked Save"]}) as mock_act:
+            msg, _, meta = execute_tool("screen_act", {"action": "click", "target": "Save"}, "click Save", "")
+            mock_act.assert_called_once()
+            self.assertIn("clicked Save", msg)
+            self.assertTrue(meta["hands_used"])
+
 
 if __name__ == "__main__":
     unittest.main()
