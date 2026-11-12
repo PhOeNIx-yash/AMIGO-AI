@@ -2534,19 +2534,6 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
 
     final_response = _extract_final_response(response, tool_calls)
 
-    # Disambiguation & semantic intent normalization (purely structural, language-agnostic)
-    for i, call in enumerate(tool_calls):
-        if call["tool"] == "open_website":
-            raw_url = str((call.get("params") or {}).get("url") or "").strip()
-            has_query_params = bool(urllib.parse.urlparse(raw_url).query)
-            if has_query_params:
-                logger.warning("[SHADOW-FALLBACK] open_website: query_params rewrite to web_search fired: url='%s' query='%s'", raw_url, query)
-                tool_calls[i] = {
-                    "tool": "web_search",
-                    "params": {"query": query.strip()},
-                    "speak": "",
-                }
-
     # Normalize tool params from local LLM
     for call in tool_calls:
         if call["tool"] in _TOOL_ALIAS_MAP:
