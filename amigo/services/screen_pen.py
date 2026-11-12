@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional
 
 _SUBSCRIBERS_LOCK = threading.Lock()
 _SUBSCRIBERS: list[queue.Queue] = []
+_LAST_EVENT: tuple[float, Dict[str, Any]] | None = None
 
 _COLOR_TONES = {
     "#00F0FF": "teal",
@@ -35,6 +36,11 @@ def subscribe_overlay_events() -> queue.Queue:
     q: queue.Queue = queue.Queue(maxsize=64)
     with _SUBSCRIBERS_LOCK:
         _SUBSCRIBERS.append(q)
+        if _LAST_EVENT is not None and (time.time() - _LAST_EVENT[0]) < 15.0:
+            try:
+                q.put_nowait(_LAST_EVENT[1])
+            except queue.Full:
+                pass
     return q
 
 
@@ -47,7 +53,9 @@ def unsubscribe_overlay_events(q: queue.Queue) -> None:
 
 def push_overlay_event(event: Dict[str, Any]) -> int:
     """Broadcast a Roamies overlay event (`ink`, `ink_clear`, etc.) to connected JS overlays."""
+    global _LAST_EVENT
     with _SUBSCRIBERS_LOCK:
+        _LAST_EVENT = (time.time(), event) if event.get("type") != "ink_clear" else None
         targets = list(_SUBSCRIBERS)
     delivered = 0
     for q in targets:
@@ -107,6 +115,9 @@ def _sanitize_mark(mk: dict[str, Any]) -> dict[str, Any]:
     for key in ("kind", "tone"):
         if isinstance(out.get(key), str) and "|" in out[key]:
             out[key] = out[key].split("|", 1)[0].strip()
+    at_val = out.get("at")
+    if isinstance(at_val, dict) and "rect" not in at_val and all(k in at_val for k in ("x", "y")):
+        out["at"] = {"rect": [float(at_val["x"]), float(at_val["y"]), float(at_val.get("w", 160)), float(at_val.get("h", 160))]}
     if isinstance(out.get("parts"), list):
         clean_parts = []
         for p in out["parts"]:
@@ -133,7 +144,7 @@ def _generate_visual_diagram_beats(topic: str) -> tuple[list[dict[str, Any]], st
         f"1) {{\"kind\":\"model\",\"title\":\"...\",\"parts\":[{{\"shape\":\"sphere\",\"at\":[0,0,0],\"size\":[1,1,1],\"tone\":\"teal\",\"label\":\"...\",\"motion\":{{\"do\":\"spin\"}}}}]}}, "
         f"2) {{\"kind\":\"flow\",\"title\":\"...\",\"nodes\":[{{\"id\":\"a\",\"text\":\"...\",\"tone\":\"teal\"}}],\"links\":[{{\"from\":\"a\",\"to\":\"b\",\"flow\":true}}]}}, "
         f"3) {{\"kind\":\"card\",\"title\":\"...\",\"text\":\"...\"}}, "
-        f"4) {{\"kind\":\"circle\",\"at\":{{\"x\":400,\"y\":300,\"w\":180,\"h\":180}},\"label\":\"...\",\"tone\":\"teal\"}}. "
+        f"4) {{\"kind\":\"circle\",\"at\":{{\"rect\":[400,250,180,180]}},\"label\":\"...\",\"tone\":\"teal\"}}. "
         f"Output ONLY valid JSON."
     )
     raw = query_local_llm(prompt, max_tokens=450)
@@ -216,12 +227,12 @@ def screen_pen_annotate(
         px2, py2 = _to_screen_points(x2 if x2 is not None else x + 120, y2 if y2 is not None else y + 60, normalized)
         bx, by = min(px, px2), min(py, py2)
         bw, bh = max(24.0, abs(px2 - px)), max(24.0, abs(py2 - py))
-        mark = {"kind": "rect", "at": {"x": bx, "y": by, "w": bw, "h": bh}, "tone": tone}
+        mark = {"kind": "rect", "at": {"rect": [bx, by, bw, bh]}, "tone": tone}
     elif act == "underline":
         w = max(40.0, abs(_to_screen_points(x2, y, normalized)[0] - px)) if x2 is not None else 140.0
-        mark = {"kind": "underline", "at": {"x": px - w / 2, "y": py - 12, "w": w, "h": 24}, "tone": tone}
+        mark = {"kind": "underline", "at": {"rect": [px - w / 2, py - 12, w, 24]}, "tone": tone}
     else:
-        mark = {"kind": "circle", "at": {"x": px - 45, "y": py - 45, "w": 90, "h": 90}, "tone": tone}
+        mark = {"kind": "circle", "at": {"rect": [px - 45, py - 45, 90, 90]}, "tone": tone}
 
     if label:
         mark["label"] = str(label)[:40]
