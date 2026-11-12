@@ -1894,7 +1894,7 @@ TOOL_DEFINITIONS = [
           {"setting": _p("string", "Settings section name or 'home'")}),
     _tool("control_windows_system", "Control hardware power profiles (battery saver, balanced, high performance). Never use for lock/sleep/restart/shutdown (use power_control), window layout (use window_mgmt), or standard Windows settings (use change_setting). Ex: 'turn on battery saver', 'switch to power saver mode', 'switch to balanced power'.",
           {"action": _p("string", "Action name")}),
-    _tool("screen_pen_annotate", "Draw callouts or visual diagrams/explanations (action='diagram', topic) on screen. Ex: 'circle the download button on screen', 'explain gravity visually with a diagram', 'point an arrow at top navigation'.",
+    _tool("screen_pen_annotate", "Draw callouts or visual diagrams/explanations (action='diagram', topic) when asked to explain/show visually or visibly. Ex: 'circle the download button on screen', 'explain gravity visually with a diagram', 'show how an engine works visibly'.",
           {"action": _p("string", "circle | arrow | box | underline | diagram | clear"),
            "topic": _p("string", "Topic for visual diagram"),
            "x": _p("integer", "X coordinate 0-1000"),
