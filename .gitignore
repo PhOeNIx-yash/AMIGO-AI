@@ -40,3 +40,6 @@ ui_app/npm-debug.log*
 # ── Checkpoints (local backups) ────────────────────────────────
 .checkpoints/
 skills.md
+
+# ── Rust Build Artifacts ───────────────────────────────────────
+roamies-win-extract/**/target/
