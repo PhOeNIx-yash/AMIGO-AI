@@ -1154,32 +1154,7 @@ def resolve_document_path(query_or_target: str, target_index: int | None = None)
     if os.path.isfile(raw):
         return raw
 
-    clean = raw
-
-    if isinstance(found_list, list) and found_list:
-        idx = _ordinal_index(clean, len(found_list))
-        if idx is None:
-            idx = _ordinal_index(raw, len(found_list))
-        if idx == -1:
-            return None
-        if idx is not None and os.path.exists(found_list[idx]):
-            logger.warning("[SHADOW-FALLBACK] resolve_document_path: _ordinal_index from raw query fired: '%s' -> %s", clean, idx)
-            return found_list[idx]
-
-    tokens = re.findall(r"[a-z0-9']+", clean.lower())
-    if not tokens:
-        return active_path if active_ok else None
-
-    search_terms = []
-    if m_ext := re.search(r"\b([\w\-.]+\.(?:pdf|docx?|txt|xlsx?|csv|json|py|pptx?|html))\b", raw, re.I):
-        logger.warning("[SHADOW-FALLBACK] resolve_document_path: regex filename search from raw query fired: '%s'", m_ext.group(1))
-        search_terms.append(m_ext.group(1))
-    if m_doc := re.search(r"\b(?:file|document|doc|ticket|sheet)\s+([a-zA-Z0-9_\-]{2,25})", clean, re.I):
-        cand = m_doc.group(1).strip()
-        if cand and cand.lower() not in _ORDINAL_WORDS:
-            search_terms.append(cand)
-    if raw and len(raw) >= 3 and raw not in search_terms:
-        search_terms.append(raw)
+    search_terms = [raw] if len(raw) >= 3 else []
 
     for term in search_terms:
         if len(term) >= 2:
