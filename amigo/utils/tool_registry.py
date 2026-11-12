@@ -1371,9 +1371,9 @@ def _tool_change_setting(params, query, spoken):
 
 def _tool_get_setting(params, query, spoken):
     params = params if isinstance(params, dict) else {}
-    if not params.get("setting") and query:
-        logger.warning("[SHADOW-FALLBACK] get_setting: setting fallback to query fired: '%s'", query)
-    s = str(params.get("setting") or query or "").strip()
+    s = str(params.get("setting") or "").strip()
+    if not s:
+        return "Which setting would you like to check?", None
     try:
         from amigo.services.os_settings import get_setting
         ok, msg = get_setting(s)
