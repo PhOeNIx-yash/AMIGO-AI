@@ -175,29 +175,6 @@ def _generate_visual_diagram_beats(topic: str) -> tuple[list[dict[str, Any]], st
                 if parsed.get("summary"):
                     summary = sanitize_for_tts(str(parsed["summary"])) or summary
 
-                raw_parts = parsed.get("parts") or []
-                valid_shapes = {"box", "sphere", "cylinder", "cone", "torus"}
-                default_shapes = ["cylinder", "torus", "cone", "box"]
-                if isinstance(raw_parts, list) and raw_parts:
-                    model_parts = []
-                    for idx, p in enumerate(raw_parts[:4]):
-                        if not isinstance(p, dict):
-                            continue
-                        raw_shape = str(p.get("shape") or "").split("|", 1)[0].strip().lower()
-                        shape = raw_shape if raw_shape in valid_shapes else default_shapes[idx % len(default_shapes)]
-                        tone = str(p.get("tone") or tones[idx % len(tones)]).split("|", 1)[0].strip()
-                        label = str(p.get("label") or f"Part {idx + 1}")[:24]
-                        model_parts.append({
-                            "shape": shape,
-                            "at": list(offsets[idx % len(offsets)]),
-                            "size": [1.0, 1.0, 0.5] if shape == "torus" else [1.0, 1.1, 1.0],
-                            "tone": tone,
-                            "label": label,
-                            "motion": motions[idx % len(motions)],
-                        })
-                    if model_parts:
-                        marks.append({"kind": "model", "part": f"p{len(marks) + 1}", "title": topic.title()[:40], "parts": model_parts})
-
                 raw_steps = parsed.get("steps") or []
                 if isinstance(raw_steps, list) and len(raw_steps) >= 2:
                     nodes = []
@@ -215,6 +192,24 @@ def _generate_visual_diagram_beats(topic: str) -> tuple[list[dict[str, Any]], st
                         "links": links,
                         "lay": {"layers": [[n["id"]] for n in nodes], "via": {}, "back": []},
                     })
+
+                raw_parts = parsed.get("parts") or []
+                if isinstance(raw_parts, list) and raw_parts:
+                    items = []
+                    for idx, p in enumerate(raw_parts[:5]):
+                        if isinstance(p, dict):
+                            lbl = str(p.get("label") or p.get("name") or f"Part {idx + 1}").strip()
+                            items.append(lbl[:80])
+                        elif isinstance(p, str) and p.strip():
+                            items.append(p.strip()[:80])
+                    if items:
+                        marks.append({
+                            "kind": "list",
+                            "part": f"p{len(marks) + 1}",
+                            "title": "Key Components",
+                            "items": items,
+                            "tone": "amber",
+                        })
             except Exception:
                 pass
 

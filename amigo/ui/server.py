@@ -1407,6 +1407,16 @@ _OVERLAY_BRIDGE_SCRIPT = (
     "else if (msg.type === 'ink_clear') window.Roamie?.ink?.clear(msg);"
     "} catch (e) {}"
     "};"
+    "let lastHot = null;"
+    "const reportHot = (x, y) => {"
+    "const hot = !!(window.Roamie?.inkHit?.(x, y));"
+    "if (hot !== lastHot) { lastHot = hot; window.parent?.postMessage({ type: 'amg_hot', hot }, '*'); }"
+    "};"
+    "window.addEventListener('message', (ev) => {"
+    "if (ev.data?.type === 'amg_ptr') reportHot(ev.data.x, ev.data.y);"
+    "});"
+    "window.addEventListener('pointermove', (e) => reportHot(e.clientX, e.clientY), true);"
+    "window.addEventListener('pointerup', (e) => setTimeout(() => reportHot(e.clientX, e.clientY), 60), true);"
     "})();</script>"
 )
 

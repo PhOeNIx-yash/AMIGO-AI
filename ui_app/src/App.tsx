@@ -321,6 +321,27 @@ export default function App() {
     try { localStorage.setItem("windows11_voice_assistant_autocycle_interval", String(autoCycleInterval)); } catch (e) { }
   }, [autoCycleInterval]);
 
+  const overlayRef = useRef<HTMLIFrameElement | null>(null);
+  const [overlayHot, setOverlayHot] = useState(false);
+
+  useEffect(() => {
+    const onMsg = (ev: MessageEvent) => {
+      if (ev.data?.type === "amg_hot") setOverlayHot(Boolean(ev.data.hot));
+    };
+    const onMove = (e: PointerEvent) => {
+      overlayRef.current?.contentWindow?.postMessage(
+        { type: "amg_ptr", x: e.clientX, y: e.clientY },
+        "*"
+      );
+    };
+    window.addEventListener("message", onMsg);
+    window.addEventListener("pointermove", onMove, { passive: true });
+    return () => {
+      window.removeEventListener("message", onMsg);
+      window.removeEventListener("pointermove", onMove);
+    };
+  }, []);
+
   // Dynamic iOS / Mobile Virtual Viewport synchronization
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1664,9 +1685,10 @@ export default function App() {
         )}
       </AnimatePresence>
       <iframe
+        ref={overlayRef}
         src="/overlay/"
         title="Roamies Ink Overlay"
-        className="fixed inset-0 w-full h-full border-0 pointer-events-none z-50 bg-transparent"
+        className={`fixed inset-0 w-full h-full border-0 z-50 bg-transparent ${overlayHot ? "pointer-events-auto" : "pointer-events-none"}`}
         style={{ backgroundColor: "transparent", colorScheme: "dark" }}
       />
     </SparklesBackground>
