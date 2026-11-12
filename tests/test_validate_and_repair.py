@@ -4,6 +4,7 @@ import unittest
 
 sys.path.insert(0, ".")
 
+from tests import SafeOSTestCase
 from amigo.utils.tool_registry import (
     TOOL_DEFINITIONS,
     VALID_TOOL_NAMES,
@@ -11,7 +12,7 @@ from amigo.utils.tool_registry import (
     get_tool_schema,
 )
 
-class TestValidateAndRepair(unittest.TestCase):
+class TestValidateAndRepair(SafeOSTestCase):
     def test_valid_call_passes_validation(self):
         calls = [{"tool": "open_app", "params": {"name": "notepad"}}]
         errors = _validate_action_plan(calls)
@@ -143,42 +144,67 @@ class TestValidateAndRepair(unittest.TestCase):
 
         self.assertEqual(_validate_action_plan([{"tool": "set_brightness", "params": {"level": 80}}]), [])
 
-    def test_network_tools_fail_clearly_when_offline(self):
-        """Internet-dependent tools fail with a short clear offline message when disconnected, and succeed online."""
+    def test_network_tools_try_first_and_fail_clearly_when_offline(self):
+        """Network tools never pre-block on raw socket probes and return offline status only when execution fails offline."""
+        from types import SimpleNamespace
         from unittest.mock import patch
-        from amigo.utils.tool_registry import _tool_open_website, _tool_web_search, _tool_get_weather
+        from amigo.utils.tool_registry import _tool_get_weather, _tool_open_website, _tool_web_search
 
-        with patch("amigo.utils.tool_registry.is_internet_connected", return_value=False):
-            msg_web, url_web, meta_web = _tool_open_website({"url": "python.org"}, "go to python.org", "")
-            self.assertIn("offline", msg_web.lower())
-            self.assertIsNone(url_web)
-            self.assertEqual(meta_web.get("status"), "offline")
-
-            msg_search, url_search, meta_search = _tool_web_search({"query": "python docs"}, "search python docs", "")
-            self.assertIn("offline", msg_search.lower())
-            self.assertIsNone(url_search)
-            self.assertEqual(meta_search.get("status"), "offline")
-
-            msg_wx, url_wx, meta_wx = _tool_get_weather({"location": "Tokyo"}, "weather in Tokyo", "")
-            self.assertIn("offline", msg_wx.lower())
-            self.assertIsNone(url_wx)
-            self.assertEqual(meta_wx.get("status"), "offline")
-
-        with patch("amigo.utils.tool_registry.is_internet_connected", return_value=True), \
-             patch("amigo.utils.tool_registry.webbrowser.open") as mock_open:
-            msg, url, meta = _tool_open_website({"url": "python.org"}, "go to python.org", "")
+        # Even if raw 1.1.1.1 probe returns False, tools execute directly instead of pre-blocking.
+        with patch("amigo.utils.tool_registry.is_internet_connected", return_value=False), \
+             patch("amigo.utils.tool_registry.webbrowser.open", return_value=True) as mock_open, \
+             patch("amigo.utils.tool_registry.search_web", return_value=SimpleNamespace(results=[], engines_used=[])) as mock_search, \
+             patch("amigo.utils.tool_registry._cached_weather_data", return_value={}), \
+             patch("amigo.utils.tool_registry.weather_command", return_value=""):
+            msg, url, _ = _tool_open_website({"url": "python.org"}, "go to python.org", "")
             mock_open.assert_called_once_with("https://python.org")
             self.assertEqual(url, "https://python.org")
             self.assertTrue(msg.startswith("Opening"))
 
-    def test_merged_tool_enum_validation(self):
-        """Merged tools validate enum choices generically from TOOL_DEFINITIONS."""
-        self.assertEqual(_validate_action_plan([{"tool": "time_date", "params": {"action": "time"}}]), [])
-        errs = _validate_action_plan([{"tool": "time_date", "params": {"action": "year"}}])
-        self.assertEqual(len(errs), 1)
-        self.assertIn("must be one of", errs[0].lower())
+            msg_srch, _, meta_srch = _tool_web_search({"query": "news"}, "latest news", "")
+            mock_search.assert_called_once()
+            self.assertEqual(meta_srch.get("status"), "offline")
+            self.assertIn("offline", msg_srch.lower())
+
+            msg_wx, _, meta_wx = _tool_get_weather({"city": "London"}, "weather in London", "")
+            self.assertEqual(meta_wx.get("status"), "offline")
+            self.assertIn("offline", msg_wx.lower())
+
+        # When webbrowser.open fails while offline, return offline error.
+        with patch("amigo.utils.tool_registry.is_internet_connected", return_value=False), \
+             patch("amigo.utils.tool_registry.webbrowser.open", return_value=False):
+            msg_web, url_web, meta_web = _tool_open_website({"url": "python.org"}, "go to python.org", "")
+            self.assertEqual(meta_web.get("status"), "offline")
+            self.assertIn("offline", msg_web.lower())
+            self.assertIsNone(url_web)
+
+    def test_step_23b_merged_tool_validation(self):
+        """Merged media_control, time_date, and power_control validate required enums."""
         self.assertEqual(_validate_action_plan([{"tool": "media_control", "params": {"action": "pause"}}]), [])
-        self.assertEqual(len(_validate_action_plan([{"tool": "power_control", "params": {"action": "format"}}])), 1)
+        self.assertEqual(_validate_action_plan([{"tool": "media_control", "params": {}}]), ["Tool 'media_control' is missing required parameter(s): action.", "Tool 'media_control' requires 'action' in: resume, pause, next, prev, status."])
+        self.assertEqual(_validate_action_plan([{"tool": "time_date", "params": {"action": "time"}}]), [])
+        self.assertEqual(len(_validate_action_plan([{"tool": "time_date", "params": {"action": "invalid"}}])), 1)
+        self.assertEqual(_validate_action_plan([{"tool": "power_control", "params": {"action": "restart"}}]), [])
+        self.assertEqual(len(_validate_action_plan([{"tool": "power_control", "params": {"action": "restart my pc"}}])), 1)
+
+    def test_grounding_validation_blocks_guessed_params_without_word_lists(self):
+        """State-changing tools reject ungrounded hallucinated values and accept values present in user words or context."""
+        # Ungrounded guesses must fail validation
+        self.assertEqual(len(_validate_action_plan([{"tool": "open_app", "params": {"name": "Chrome"}}], grounding_text="open it")), 1)
+        self.assertEqual(len(_validate_action_plan([{"tool": "open_app", "params": {"name": "Chrome"}}], grounding_text="launch the app")), 1)
+        self.assertEqual(len(_validate_action_plan([{"tool": "change_setting", "params": {"setting": "dark mode", "value": "toggle"}}], grounding_text="toggle setting")), 1)
+        self.assertEqual(len(_validate_action_plan([{"tool": "set_volume", "params": {"action": "set_volume", "level": 100}}], grounding_text="set volume level")), 1)
+        self.assertGreaterEqual(len(_validate_action_plan([{"tool": "open_website", "params": {"url": "chrome"}}], grounding_text="launch site")), 1)
+        self.assertEqual(len(_validate_action_plan([{"tool": "open_website", "params": {"url": "https://www.example.com"}}], grounding_text="open website")), 1)
+        self.assertEqual(len(_validate_action_plan([{"tool": "open_website", "params": {"url": "https://www.google.com"}}], grounding_text="open web page")), 1)
+
+        # Grounded values in query or recent context must pass
+        self.assertEqual(_validate_action_plan([{"tool": "open_app", "params": {"name": "Visual Studio Code"}}], grounding_text="open vs code"), [])
+        self.assertEqual(_validate_action_plan([{"tool": "change_setting", "params": {"setting": "wifi", "value": "off"}}], grounding_text="turn wifi off"), [])
+        self.assertEqual(_validate_action_plan([{"tool": "change_setting", "params": {"setting": "wifi", "value": "toggle"}}], grounding_text="toggle wi-fi"), [])
+        self.assertEqual(_validate_action_plan([{"tool": "change_setting", "params": {"setting": "wifi", "value": "on"}}], grounding_text="turn that back on turn off wifi Wi-Fi turned off."), [])
+        self.assertEqual(_validate_action_plan([{"tool": "set_volume", "params": {"action": "set_volume", "level": 50}}], grounding_text="set volume to 50"), [])
+        self.assertEqual(_validate_action_plan([{"tool": "open_website", "params": {"url": "python.org"}}], grounding_text="go to python.org"), [])
 
 
 if __name__ == "__main__":

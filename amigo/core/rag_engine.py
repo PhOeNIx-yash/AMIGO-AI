@@ -48,6 +48,15 @@ _RE_PARAGRAPH_SPLIT = re.compile(r"(?:\r?\n){2,}")
 # ── Paths & Constants ──────────────────────────────────────────
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.abspath(os.path.join(_BASE_DIR, "..", ".."))
+_PROJECT_ROOT_REAL = os.path.realpath(_PROJECT_ROOT).lower()
+
+
+def _is_excluded_project_path(path: str | None) -> bool:
+    """Exclude the Amigo project directory and scratch artifacts from personal document RAG."""
+    if not path:
+        return False
+    p_real = os.path.realpath(os.path.abspath(str(path))).lower()
+    return p_real == _PROJECT_ROOT_REAL or p_real.startswith(_PROJECT_ROOT_REAL + os.sep)
 
 RAG_DATA_DIR = os.path.join(_PROJECT_ROOT, "rag_data")
 PROFILE_FILE = os.path.join(_PROJECT_ROOT, "amigo_profile.json")
@@ -860,6 +869,8 @@ def search(
         if metadata_filter and isinstance(metadata_filter, dict):
             if any(fk in meta and meta[fk] != fv for fk, fv in metadata_filter.items()):
                 continue
+        if col_name == DOCUMENTS and _is_excluded_project_path(meta.get("filepath")):
+            continue
 
         raw_score = float(hit.get("score") or 0.0)
         bm25_norm = raw_score / (raw_score + 4.5)
@@ -948,7 +959,7 @@ def search_files_by_context(query: str, top_k: int = 10) -> list[dict]:
         if not _is_chunk_grounded(r, floor=0.38):
             continue
         fp = r.get("metadata", {}).get("filepath", "")
-        if fp and fp not in seen:
+        if fp and not _is_excluded_project_path(fp) and fp not in seen:
             seen.add(fp)
             unique.append({
                 "filepath": fp,
@@ -1129,7 +1140,11 @@ def build_document_evidence(
         metadata_filter=metadata_filter,
         conversation_history=history,
     )
-    grounded = [result for result in results if _is_chunk_grounded(result, 0.34)]
+    grounded = [
+        result for result in results
+        if _is_chunk_grounded(result, 0.34)
+        and not _is_excluded_project_path((result.get("metadata") or {}).get("filepath"))
+    ]
     if not grounded:
         return "", []
 
@@ -1906,7 +1921,7 @@ def add_document_chunk(
 
 
 def index_document(filepath: str) -> bool:
-    if not os.path.exists(filepath):
+    if not os.path.exists(filepath) or _is_excluded_project_path(filepath):
         return False
     ext = os.path.splitext(filepath)[1].lower()
     if ext not in SUPPORTED_EXTENSIONS:

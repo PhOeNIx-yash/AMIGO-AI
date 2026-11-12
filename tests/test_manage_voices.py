@@ -4,11 +4,12 @@ import sys
 
 sys.path.insert(0, os.path.abspath("."))
 
+from tests import SafeOSTestCase
 from amigo.utils.tool_registry import execute_tool
 from amigo.utils.tts import get_active_voice, get_voice_catalog
 
 
-class TestManageVoices(unittest.TestCase):
+class TestManageVoices(SafeOSTestCase):
     def test_list_voices_summary_and_cards(self):
         spoken, direct, meta = execute_tool("manage_voices", {"action": "list"})
         self.assertIn("voices available", spoken.lower())

@@ -50,6 +50,7 @@ import {
 import { ActionCardItem, ColorTheme } from "../types";
 import { COLOR_THEMES } from "../data/presets";
 import { sfx } from "../utils/audio";
+import InteractiveAreaChart, { AreaChartData, ChartPoint, makeSeries } from "./ui/interactive-area-chart";
 import TaskList, { Task } from "@/components/ui/task-list";
 
 interface ActionCardProps {
@@ -562,6 +563,7 @@ const WeatherCardPalette: React.FC<{
 
 /**
  * Dynamic, Real-Time Interactive Stock & Market Analytics Card Widget
+ * Powered by Surajmaurya1/easyui/interactive-area-chart
  */
 const StockCardPalette: React.FC<{
   item: ActionCardItem;
@@ -570,32 +572,58 @@ const StockCardPalette: React.FC<{
 }> = ({ item, isDark, theme }) => {
   const initialPayload = item.payload || {};
   const [data, setData] = useState<Record<string, any>>(initialPayload);
-  const [timeframe, setTimeframe] = useState<"1D" | "5D" | "1M" | "1Y">("1D");
   const [loading, setLoading] = useState<boolean>(false);
-  const [hoveredPoint, setHoveredPoint] = useState<{ x: number; y: number; val: number; index: number } | null>(null);
 
   const symbol = data.symbol || item.title?.match(/\(([^)]+)\)/)?.[1] || "STOCK";
   const name = data.name || item.title?.replace(/\s*\([^)]*\)/, "") || symbol;
-  const price = typeof data.price === "number" ? data.price : parseFloat(data.price) || 0;
-  const currency = data.currency === "USD" ? "$" : data.currency === "INR" ? "₹" : data.currency === "EUR" ? "€" : data.currency === "GBP" ? "£" : (data.currency || "$");
-  const changePct = typeof data.change_pct === "number" ? data.change_pct : (data.change && data.previous_close ? (data.change / data.previous_close) * 100 : 0);
-  const change = typeof data.change === "number" ? data.change : (data.previous_close ? price - data.previous_close : 0);
-  const isPositive = changePct >= 0;
+  const currency = data.currency || "$";
+  const currencySym = currency === "USD" ? "$" : currency === "INR" ? "₹" : currency === "EUR" ? "€" : currency === "GBP" ? "£" : currency;
+  const prevClose = typeof data.previous_close === "number" ? data.previous_close : null;
 
-  const history: number[] = Array.isArray(data.history) && data.history.length > 0 
-    ? data.history 
-    : [price * 0.985, price * 0.992, price * 0.988, price * 1.002, price * 1.006, price];
+  const [chartData, setChartData] = useState<AreaChartData>(() => {
+    const price = typeof initialPayload.price === "number" ? initialPayload.price : parseFloat(initialPayload.price) || 150;
+    const history: number[] = Array.isArray(initialPayload.history) && initialPayload.history.length > 0
+      ? initialPayload.history
+      : [price * 0.985, price * 0.992, price * 0.988, price * 1.002, price * 1.006, price];
+    const timestamps: number[] | undefined = Array.isArray(initialPayload.timestamps) ? initialPayload.timestamps : undefined;
 
-  const fetchRange = async (tf: "1D" | "5D" | "1M" | "1Y") => {
-    setTimeframe(tf);
-    const rangeMap = { "1D": "1d", "5D": "5d", "1M": "1mo", "1Y": "1y" };
+    const now = Date.now();
+    const pts1D: ChartPoint[] = history.map((val, idx) => ({
+      date: timestamps && timestamps[idx]
+        ? (timestamps[idx] < 1e11 ? timestamps[idx] * 1000 : timestamps[idx])
+        : now - (history.length - 1 - idx) * (5 * 60 * 1000),
+      value: val,
+    }));
+
+    return {
+      "1D": pts1D,
+      "5D": makeSeries(35, 11, price * 0.96, (price * 0.04) / 35, price * 0.02),
+      "1M": makeSeries(30, 7, price * 0.92, (price * 0.08) / 30, price * 0.035),
+      "1Y": makeSeries(52, 3, price * 0.82, (price * 0.18) / 52, price * 0.06),
+    };
+  });
+
+  const fetchRange = async (tf: string) => {
+    const rangeMap: Record<string, string> = { "1D": "1d", "5D": "5d", "1M": "1mo", "1Y": "1y" };
+    const apiRange = rangeMap[tf] || "1d";
     setLoading(true);
     try {
-      const res = await fetch(`/api/stock?symbol=${encodeURIComponent(symbol)}&range=${rangeMap[tf]}`);
+      const res = await fetch(`/api/stock?symbol=${encodeURIComponent(symbol)}&range=${apiRange}`);
       if (res.ok) {
         const json = await res.json();
         if (json && !json.error) {
           setData((prev) => ({ ...prev, ...json }));
+          if (Array.isArray(json.history) && json.history.length > 0) {
+            const now = Date.now();
+            const stepMs = tf === "1D" ? 5 * 60 * 1000 : tf === "5D" ? 30 * 60 * 1000 : tf === "1M" ? 24 * 3600 * 1000 : 7 * 24 * 3600 * 1000;
+            const pts: ChartPoint[] = json.history.map((val: number, idx: number) => ({
+              date: Array.isArray(json.timestamps) && json.timestamps[idx]
+                ? (json.timestamps[idx] < 1e11 ? json.timestamps[idx] * 1000 : json.timestamps[idx])
+                : now - (json.history.length - 1 - idx) * stepMs,
+              value: val,
+            }));
+            setChartData((prev) => ({ ...prev, [tf]: pts }));
+          }
         }
       }
     } catch (e) {
@@ -604,49 +632,6 @@ const StockCardPalette: React.FC<{
       setLoading(false);
     }
   };
-
-  // Memoized SVG Chart Geometry & Coordinates for 60/120 FPS Rendering
-  const width = 480;
-  const height = 135;
-  const padding = { top: 16, bottom: 20, left: 12, right: 12 };
-  const chartW = width - padding.left - padding.right;
-  const chartH = height - padding.top - padding.bottom;
-
-  const { minVal, maxVal, valRange, points, pathD, areaD } = React.useMemo(() => {
-    const min = Math.min(...history);
-    const max = Math.max(...history);
-    const range = Math.max(max - min, 0.001);
-    const pts = history.map((val, idx) => {
-      const x = padding.left + (idx / Math.max(history.length - 1, 1)) * chartW;
-      const y = padding.top + chartH - ((val - min) / range) * chartH;
-      return { x, y, val, index: idx };
-    });
-    const pD = pts.length > 0
-      ? pts.reduce((acc, pt, i) => (i === 0 ? `M ${pt.x.toFixed(1)} ${pt.y.toFixed(1)}` : `${acc} L ${pt.x.toFixed(1)} ${pt.y.toFixed(1)}`), "")
-      : "";
-    const aD = pts.length > 0
-      ? `${pD} L ${pts[pts.length - 1].x.toFixed(1)} ${(padding.top + chartH).toFixed(1)} L ${pts[0].x.toFixed(1)} ${(padding.top + chartH).toFixed(1)} Z`
-      : "";
-    return { minVal: min, maxVal: max, valRange: range, points: pts, pathD: pD, areaD: aD };
-  }, [history, chartW, chartH]);
-
-  const prevClose = typeof data.previous_close === "number" ? data.previous_close : null;
-  const prevCloseY = prevClose && prevClose >= minVal && prevClose <= maxVal
-    ? padding.top + chartH - ((prevClose - minVal) / valRange) * chartH
-    : null;
-
-  const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const targetIdx = Math.round(ratio * (points.length - 1));
-    if (points[targetIdx]) {
-      setHoveredPoint(points[targetIdx]);
-    }
-  };
-
-  const currentDisplayPrice = hoveredPoint ? hoveredPoint.val : price;
-  const currentDiff = hoveredPoint && prevClose ? hoveredPoint.val - prevClose : change;
-  const currentDiffPct = hoveredPoint && prevClose ? (currentDiff / prevClose) * 100 : changePct;
 
   const formatLargeNum = (num?: number | null) => {
     if (!num) return "--";
@@ -657,247 +642,84 @@ const StockCardPalette: React.FC<{
     return num.toLocaleString();
   };
 
-  const strokeColor = isPositive ? "#10b981" : "#f43f5e";
-  const glowShadow = isPositive ? "rgba(16, 185, 129, 0.25)" : "rgba(244, 63, 94, 0.25)";
-
   return (
     <div
-      className={`relative rounded-[22px] border p-5 overflow-hidden transform-gpu ${
+      className={`relative rounded-[22px] border p-5 overflow-hidden transition-all duration-300 ${
         isDark
           ? "bg-slate-900/60 border-white/10"
           : "bg-white/80 border-slate-200/80"
       }`}
       style={{
-        boxShadow: `0 8px 24px -6px ${glowShadow}`,
+        boxShadow: isDark ? "0 10px 30px -10px rgba(0,0,0,0.5)" : "0 10px 30px -10px rgba(0,0,0,0.06)",
       }}
     >
-      {/* Top Header Row */}
-      <div className="flex items-start justify-between gap-3 relative z-10">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span
-              className="px-2.5 py-0.5 rounded-lg text-xs font-mono font-black tracking-wider uppercase shadow-sm"
-              style={{
-                backgroundColor: isDark ? "rgba(255, 255, 255, 0.08)" : "rgba(0, 0, 0, 0.06)",
-                color: isDark ? theme.accent : theme.primary,
-                border: `1px solid ${isDark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.08)"}`,
-              }}
+      <InteractiveAreaChart
+        data={chartData}
+        defaultRange="1D"
+        title={name}
+        badge={symbol}
+        exchange={data.exchange || "EQUITY"}
+        subtitle={data.as_of ? `As of ${data.as_of}` : undefined}
+        currency={currencySym}
+        height={195}
+        isLoading={loading}
+        onRangeChange={(range) => fetchRange(range)}
+        footer={
+          <>
+            {/* Financial Key Metrics Grid */}
+            <div
+              className="mt-4 pt-3.5 border-t grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs relative z-10"
+              style={{ borderColor: isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)" }}
             >
-              {symbol}
-            </span>
-            <span className="text-xs opacity-60 font-semibold tracking-wide uppercase">
-              {data.exchange || "EQUITY"}
-            </span>
-            {data.as_of && (
-              <span className="text-[10px] opacity-45 font-medium ml-auto hidden sm:inline">
-                {data.as_of}
-              </span>
+              <div className="p-2 rounded-xl bg-white/[0.03] dark:bg-white/[0.02] border border-white/5">
+                <div className="text-[10px] opacity-50 uppercase tracking-wider font-semibold">Day Range</div>
+                <div className="font-mono font-bold mt-0.5 truncate text-[11px] sm:text-xs">
+                  {data.day_low ? `${currencySym}${data.day_low.toFixed(2)}` : "--"} - {data.day_high ? `${currencySym}${data.day_high.toFixed(2)}` : "--"}
+                </div>
+              </div>
+
+              <div className="p-2 rounded-xl bg-white/[0.03] dark:bg-white/[0.02] border border-white/5">
+                <div className="text-[10px] opacity-50 uppercase tracking-wider font-semibold">Prev Close</div>
+                <div className="font-mono font-bold mt-0.5 text-[11px] sm:text-xs">
+                  {prevClose ? `${currencySym}${prevClose.toFixed(2)}` : "--"}
+                </div>
+              </div>
+
+              <div className="p-2 rounded-xl bg-white/[0.03] dark:bg-white/[0.02] border border-white/5">
+                <div className="text-[10px] opacity-50 uppercase tracking-wider font-semibold">Volume</div>
+                <div className="font-mono font-bold mt-0.5 text-[11px] sm:text-xs">
+                  {formatLargeNum(data.volume)}
+                </div>
+              </div>
+
+              <div className="p-2 rounded-xl bg-white/[0.03] dark:bg-white/[0.02] border border-white/5">
+                <div className="text-[10px] opacity-50 uppercase tracking-wider font-semibold">52W Range</div>
+                <div className="font-mono font-bold mt-0.5 truncate text-[11px] sm:text-xs">
+                  {data.fifty_two_week_low ? `${currencySym}${data.fifty_two_week_low.toFixed(1)}` : "--"} - {data.fifty_two_week_high ? `${currencySym}${data.fifty_two_week_high.toFixed(1)}` : "--"}
+                </div>
+              </div>
+            </div>
+
+            {/* External Chart Link Footer */}
+            {data.url && (
+              <div className="mt-3.5 pt-2.5 flex items-center justify-between text-[11px] opacity-75">
+                <span className="font-medium">Live market data powered by Yahoo Finance</span>
+                <a
+                  href={data.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  className="flex items-center gap-1 font-bold underline hover:opacity-100 transition-opacity"
+                  style={{ color: isDark ? theme.accent : theme.primary }}
+                >
+                  <span>Full Chart</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
             )}
-          </div>
-          <h3 className={`text-base sm:text-lg font-bold tracking-tight truncate mt-1 ${isDark ? "text-white" : "text-slate-900"}`}>
-            {name}
-          </h3>
-        </div>
-
-        {/* Timeframe Selector Pills */}
-        <div className="flex items-center gap-1 p-1 rounded-xl bg-black/10 dark:bg-white/5 border border-white/5">
-          {(["1D", "5D", "1M", "1Y"] as const).map((tf) => (
-            <button
-              key={tf}
-              type="button"
-              onClick={() => fetchRange(tf)}
-              className={`px-2 py-1 rounded-lg text-[10px] font-bold tracking-wider transition-all active:scale-95 ${
-                timeframe === tf
-                  ? "bg-white text-slate-900 dark:bg-white/90 dark:text-slate-950 shadow-md scale-105"
-                  : isDark ? "opacity-60 hover:opacity-100 text-slate-300 hover:bg-white/5" : "opacity-60 hover:opacity-100 text-slate-600 hover:bg-black/5"
-              }`}
-            >
-              {tf}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Hero Price & Change Row */}
-      <div className="mt-3 flex items-baseline gap-3 flex-wrap relative z-10">
-        <div className="text-2xl sm:text-3xl font-black tracking-tight font-mono">
-          {currency}{currentDisplayPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-        </div>
-        <div
-          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold font-mono tracking-tight shadow-sm ${
-            isPositive
-              ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
-              : "bg-rose-500/15 text-rose-400 border border-rose-500/30"
-          }`}
-        >
-          {isPositive ? <TrendingUp className="w-3.5 h-3.5 stroke-[2.5]" /> : <TrendingDown className="w-3.5 h-3.5 stroke-[2.5]" />}
-          <span>{isPositive ? "+" : ""}{currentDiffPct.toFixed(2)}%</span>
-          <span className="opacity-75 text-[11px]">({isPositive ? "+" : ""}{currency}{Math.abs(currentDiff).toFixed(2)})</span>
-        </div>
-        {hoveredPoint && (
-          <span className="text-[11px] opacity-60 font-mono ml-auto">
-            Interactive Probe
-          </span>
-        )}
-      </div>
-
-      {/* Interactive SVG Sparkline Chart */}
-      <div className="mt-3 relative w-full h-[135px] select-none">
-        <svg
-          viewBox={`0 0 ${width} ${height}`}
-          className={`w-full h-full overflow-visible transition-opacity duration-300 ${loading ? "opacity-40" : "opacity-100"}`}
-          preserveAspectRatio="none"
-          onMouseMove={handleMouseMove}
-          onMouseLeave={() => setHoveredPoint(null)}
-        >
-          <defs>
-            <linearGradient id={`stock-gradient-${item.id}`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={strokeColor} stopOpacity="0.32" />
-              <stop offset="85%" stopColor={strokeColor} stopOpacity="0.02" />
-              <stop offset="100%" stopColor={strokeColor} stopOpacity="0" />
-            </linearGradient>
-          </defs>
-
-          {/* Previous Close Reference Line */}
-          {prevCloseY !== null && (
-            <g>
-              <line
-                x1={padding.left}
-                y1={prevCloseY}
-                x2={width - padding.right}
-                y2={prevCloseY}
-                stroke={isDark ? "rgba(255,255,255,0.2)" : "rgba(0,0,0,0.18)"}
-                strokeDasharray="4 4"
-                strokeWidth="1.2"
-              />
-              <text
-                x={width - padding.right - 2}
-                y={prevCloseY - 4}
-                textAnchor="end"
-                className="text-[9px] font-mono fill-slate-400 opacity-60 select-none"
-              >
-                Prev {currency}{prevClose?.toFixed(2)}
-              </text>
-            </g>
-          )}
-
-          {/* Area Fill */}
-          {areaD && <path d={areaD} fill={`url(#stock-gradient-${item.id})`} />}
-
-          {/* Main Price Line with Hardware Accelerated Neon Glow */}
-          {pathD && (
-            <>
-              <path
-                d={pathD}
-                fill="none"
-                stroke={strokeColor}
-                strokeWidth="6"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                opacity="0.22"
-              />
-              <path
-                d={pathD}
-                fill="none"
-                stroke={strokeColor}
-                strokeWidth="2.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </>
-          )}
-
-          {/* Hover Indicator Crosshair */}
-          {hoveredPoint && (
-            <g>
-              <line
-                x1={hoveredPoint.x}
-                y1={padding.top}
-                x2={hoveredPoint.x}
-                y2={padding.top + chartH}
-                stroke={isDark ? "rgba(255,255,255,0.4)" : "rgba(0,0,0,0.3)"}
-                strokeDasharray="2 2"
-                strokeWidth="1"
-              />
-              <circle
-                cx={hoveredPoint.x}
-                cy={hoveredPoint.y}
-                r="5"
-                fill={strokeColor}
-                stroke="#fff"
-                strokeWidth="2"
-                className="filter drop-shadow-md"
-              />
-            </g>
-          )}
-        </svg>
-
-        {/* Hovered Price Floating Tooltip */}
-        {hoveredPoint && (
-          <div
-            className="absolute pointer-events-none transform -translate-x-1/2 -translate-y-full py-1 px-2.5 rounded-lg bg-slate-900/95 text-white border border-white/20 text-[11px] font-mono font-bold shadow-xl backdrop-blur-md z-20 flex items-center gap-1.5"
-            style={{
-              left: `${(hoveredPoint.x / width) * 100}%`,
-              top: `${Math.max(10, (hoveredPoint.y / height) * 135 - 8)}px`,
-            }}
-          >
-            <span style={{ color: strokeColor }}>●</span>
-            <span>{currency}{hoveredPoint.val.toFixed(2)}</span>
-          </div>
-        )}
-      </div>
-
-      {/* Financial Key Metrics Grid */}
-      <div
-        className="mt-4 pt-3.5 border-t grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs relative z-10"
-        style={{ borderColor: isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)" }}
-      >
-        <div className="p-2 rounded-xl bg-white/[0.03] dark:bg-white/[0.02] border border-white/5">
-          <div className="text-[10px] opacity-50 uppercase tracking-wider font-semibold">Day Range</div>
-          <div className="font-mono font-bold mt-0.5 truncate text-[11px] sm:text-xs">
-            {data.day_low ? `${currency}${data.day_low.toFixed(2)}` : "--"} - {data.day_high ? `${currency}${data.day_high.toFixed(2)}` : "--"}
-          </div>
-        </div>
-
-        <div className="p-2 rounded-xl bg-white/[0.03] dark:bg-white/[0.02] border border-white/5">
-          <div className="text-[10px] opacity-50 uppercase tracking-wider font-semibold">Prev Close</div>
-          <div className="font-mono font-bold mt-0.5 text-[11px] sm:text-xs">
-            {prevClose ? `${currency}${prevClose.toFixed(2)}` : "--"}
-          </div>
-        </div>
-
-        <div className="p-2 rounded-xl bg-white/[0.03] dark:bg-white/[0.02] border border-white/5">
-          <div className="text-[10px] opacity-50 uppercase tracking-wider font-semibold">Volume</div>
-          <div className="font-mono font-bold mt-0.5 text-[11px] sm:text-xs">
-            {formatLargeNum(data.volume)}
-          </div>
-        </div>
-
-        <div className="p-2 rounded-xl bg-white/[0.03] dark:bg-white/[0.02] border border-white/5">
-          <div className="text-[10px] opacity-50 uppercase tracking-wider font-semibold">52W Range</div>
-          <div className="font-mono font-bold mt-0.5 truncate text-[11px] sm:text-xs">
-            {data.fifty_two_week_low ? `${currency}${data.fifty_two_week_low.toFixed(1)}` : "--"} - {data.fifty_two_week_high ? `${currency}${data.fifty_two_week_high.toFixed(1)}` : "--"}
-          </div>
-        </div>
-      </div>
-
-      {/* External Chart Link Footer */}
-      {data.url && (
-        <div className="mt-3.5 pt-2.5 flex items-center justify-between text-[11px] opacity-75">
-          <span className="font-medium">Live market data powered by Yahoo Finance</span>
-          <a
-            href={data.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => e.stopPropagation()}
-            className="flex items-center gap-1 font-bold underline hover:opacity-100 transition-opacity"
-            style={{ color: isDark ? theme.accent : theme.primary }}
-          >
-            <span>Full Chart</span>
-            <ExternalLink className="w-3 h-3" />
-          </a>
-        </div>
-      )}
+          </>
+        }
+      />
     </div>
   );
 };

@@ -15,9 +15,6 @@ import {
   X,
   FileText,
   Image as ImageIcon,
-  Table as TableIcon,
-  BarChart3,
-  TrendingUp,
   Bot,
   User,
   ArrowDown,
@@ -739,29 +736,6 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     return [...history].reverse();
   }, [history]);
 
-  const quickPrompts = [
-    {
-      title: "Flight Pricing Comparison",
-      prompt: "Show me a comparison table of 5 flights from JFK to London with airline, duration, and price in USD",
-      icon: <TableIcon className="w-4 h-4 text-sky-400" />,
-    },
-    {
-      title: "Programming Languages Benchmark",
-      prompt: "Generate a table of top 5 programming languages with popularity score from 1-100, average salary in USD, and release year",
-      icon: <BarChart3 className="w-4 h-4 text-emerald-400" />,
-    },
-    {
-      title: "Quarterly Revenue Growth",
-      prompt: "Create a quarterly revenue trend table for a tech startup from Q1 to Q4 with revenue in thousands and profit margin percentage",
-      icon: <TrendingUp className="w-4 h-4 text-violet-400" />,
-    },
-    {
-      title: "GPU vs CPU Performance",
-      prompt: "Compare Nvidia RTX 4090, RTX 4080, and Apple M3 Max in a table with TFLOPS compute, memory bandwidth GB/s, and TDP watts",
-      icon: <TableIcon className="w-4 h-4 text-amber-400" />,
-    },
-  ];
-
   return (
     <div
       className={`relative flex-1 flex flex-col w-full h-full min-h-0 overflow-hidden select-text transition-colors duration-300 ${
@@ -837,52 +811,6 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                   </div>
                 );
               })()}
-
-              {/* Quick Starter Prompts */}
-              <div className="w-full grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-2 text-left">
-                {quickPrompts.map((q, idx) => (
-                  <button
-                    key={idx}
-                    type="button"
-                    onClick={() => {
-                      sfx.playClick?.();
-                      setPendingPrompt(q.prompt);
-                      onProcessCommand(q.prompt);
-                    }}
-                    className={`p-3.5 rounded-xl border text-left transition-all duration-200 group flex items-start space-x-3 ${
-                      isDark
-                        ? "bg-slate-900/60 hover:bg-slate-800/80 border-slate-800/70 hover:border-slate-700/80"
-                        : "bg-white/80 hover:bg-white border-slate-200/80 hover:border-slate-300 shadow-sm"
-                    }`}
-                  >
-                    <div
-                      className={`p-2 rounded-lg border shrink-0 group-hover:scale-110 transition-transform ${
-                        isDark ? "bg-slate-950/80 border-white/10" : "bg-slate-100 border-black/10"
-                      }`}
-                    >
-                      {q.icon}
-                    </div>
-                    <div className="min-w-0">
-                      <div
-                        className={`text-xs font-semibold truncate ${
-                          isDark
-                            ? "text-slate-200 group-hover:text-white"
-                            : "text-slate-800 group-hover:text-black"
-                        }`}
-                      >
-                        {q.title}
-                      </div>
-                      <div
-                        className={`text-[11px] line-clamp-2 mt-0.5 ${
-                          isDark ? "text-slate-400" : "text-slate-500"
-                        }`}
-                      >
-                        {q.prompt}
-                      </div>
-                    </div>
-                  </button>
-                ))}
-              </div>
             </div>
           )}
 

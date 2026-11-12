@@ -5,6 +5,8 @@ Unit tests for the dynamic content generation, revision tracking, and routing sy
 import unittest
 from unittest.mock import MagicMock, patch
 
+from tests import SafeOSTestCase
+from amigo.services import os_automation as _os_auto_mod
 from amigo.services.content_generator import (
     build_temporal_and_user_context,
     route_content_to_destination,
@@ -24,7 +26,10 @@ from amigo.utils.tool_registry import (
 import amigo.core.rag_engine as rag_engine
 
 
-class TestContentGenerator(unittest.TestCase):
+_REAL_RESTART_PC = _os_auto_mod.restart_pc
+
+
+class TestContentGenerator(SafeOSTestCase):
     """Test dynamic context building, multi-destination routing, state tracking, and tool registry integration."""
 
     def setUp(self):
@@ -212,9 +217,9 @@ class TestContentGenerator(unittest.TestCase):
 
     @patch("subprocess.run")
     def test_safe_restart_pc(self, mock_run):
-        from amigo.services.os_automation import restart_pc
         mock_run.return_value.returncode = 0
-        self.assertTrue(restart_pc("45"))
+        with patch("amigo.services.os_automation.restart_pc", _REAL_RESTART_PC):
+            self.assertTrue(_os_auto_mod.restart_pc("45"))
         self.assertTrue(mock_run.called)
         cmd_args = mock_run.call_args[0][0]
         self.assertTrue(any("shutdown" in str(a).lower() for a in cmd_args))

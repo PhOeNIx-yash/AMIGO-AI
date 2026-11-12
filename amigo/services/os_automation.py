@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
+from dataclasses import dataclass
 import difflib
 import functools
 import json
@@ -27,6 +28,7 @@ import subprocess
 import sys
 import threading
 import time
+import winreg
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from ctypes import wintypes
@@ -83,12 +85,8 @@ MAX_SHUTDOWN_DELAY = 315_360_000  # Windows' documented /t ceiling
 _BASE_DIR = Path(__file__).resolve().parent
 MEDIA_SCRIPT = Path(os.environ.get("AMIGO_MEDIA_SCRIPT", _BASE_DIR / "get_media.ps1"))
 ALIAS_FILE = Path(os.environ.get("AMIGO_APP_ALIASES", _BASE_DIR / "app_aliases.json"))
+CATEGORY_ALIAS_FILE = _BASE_DIR / "system_category_aliases.json"
 
-# Words that mean "the thing in front of me" rather than a named app.
-_GENERIC_TARGET_WORDS = frozenset({
-    "current", "active", "this", "that", "the", "window", "app", "application",
-    "program", "it", "foreground", "focused",
-})
 _FILLER_AFFIX = re.compile(r"^(?:the|my)\s+|\s+(?:app|application|program|window)$")
 
 # Never terminate these; the OS (or the user's session) depends on them.
@@ -596,11 +594,6 @@ def _normalize_app_name(app_name) -> str:
     return clean
 
 
-def _is_generic_target(clean: str) -> bool:
-    tokens = clean.split()
-    return not tokens or all(t in _GENERIC_TARGET_WORDS for t in tokens)
-
-
 def _close_process_group(procs, windows, *, allow_terminate: bool, force: bool) -> bool:
     """Ask politely (WM_CLOSE), wait, and only then escalate.
     Never force-kills a process that still shows a window (e.g. an unsaved-changes
@@ -622,7 +615,6 @@ def _close_process_group(procs, windows, *, allow_terminate: bool, force: bool) 
     names = {p.pid: _stem(p) for p in procs}
     killable = [p for p in procs
                 if p.is_running() and names.get(p.pid) not in _WINDOW_ONLY_PROCESSES]
-    # window-only processes (explorer...) count as closed once their windows are gone
     window_only = [p for p in procs if names.get(p.pid) in _WINDOW_ONLY_PROCESSES]
     closed_any = bool(window_only and hwnds and not _wait_windows_gone(hwnds, 0))
 
@@ -666,7 +658,7 @@ def close_app(app_name: str = "", force: bool = False) -> bool:
     if clean in ("amigo", "amigo assistant", "amigo voice assistant"):
         log.warning("Refusing to close the assistant itself via close_app")
         return False
-    if _is_generic_target(clean):
+    if not clean:
         return window_action("close_window")
 
     _require_windows()
@@ -1132,11 +1124,28 @@ def get_system_status() -> dict:
         }
 
 
+# =========================================================================== #
+# SECTION: Unified Windows System Controller & Context-Aware Radios
+# =========================================================================== #
+
+# Optional hardware libraries with graceful fallbacks
+try:
+    import screen_brightness_control as sbc
+    HAS_SBC = True
+except Exception:
+    HAS_SBC = False
+
+try:
+    from ctypes import POINTER, cast
+    from comtypes import CLSCTX_ALL
+    from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+    HAS_PYCAW = True
+except Exception:
+    HAS_PYCAW = False
+
+
 # --------------------------------------------------------------------------- #
 # Windows settings: change ANY setting by plain-language name (see os_settings.py)
-#   change_setting("light mode") | change_setting("night light", "on")
-#   get_setting("brightness")    | toggle_setting("wifi") | list_settings("sleep")
-# Each returns (ok, message_to_speak); list_settings returns a list of dicts.
 # --------------------------------------------------------------------------- #
 try:
     try:
@@ -1147,7 +1156,7 @@ try:
         from os_settings import (  # noqa: E402
             change_setting, get_setting, toggle_setting, list_settings, reload_catalog,
         )
-except Exception as _settings_err:  # keep every other automation working regardless
+except Exception as _settings_err:
     log.warning("Settings engine unavailable: %s", _settings_err)
 
     def change_setting(setting, value=None, confirmed=False):
@@ -1164,3 +1173,511 @@ except Exception as _settings_err:  # keep every other automation working regard
 
     def reload_catalog():
         return 0
+
+
+class WindowsSystemController:
+    """
+    Executes native Windows hardware and OS settings adjustments via structured parameters.
+    All methods return a standardized dictionary for easy JSON serialization back to the LLM.
+    """
+
+    @staticmethod
+    def _run_powershell(script: str, timeout: float = 12.0) -> subprocess.CompletedProcess:
+        """Executes a PowerShell command silently without spawning a console window."""
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        return subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            startupinfo=startupinfo,
+            timeout=timeout
+        )
+
+    @classmethod
+    def get_wifi_status(cls) -> dict[str, Any]:
+        """
+        Context-aware query for Wi-Fi radio state and current network connection profile.
+        """
+        ps_script = """
+        Add-Type -AssemblyName System.Runtime.WindowsRuntime
+        $asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | ? {
+            $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
+            $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'
+        })[0]
+        Function Await($WinRtTask, $ResultType) {
+            $asTask = $asTaskGeneric.MakeGenericMethod($ResultType)
+            $netTask = $asTask.Invoke($null, @($WinRtTask))
+            $netTask.Wait(-1) | Out-Null
+            $netTask.Result
+        }
+        [Windows.Devices.Radios.Radio,Windows.System.Devices,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Devices.Radios.RadioAccessStatus,Windows.System.Devices,ContentType=WindowsRuntime] | Out-Null
+        Await ([Windows.Devices.Radios.Radio]::RequestAccessAsync()) ([Windows.Devices.Radios.RadioAccessStatus]) | Out-Null
+        $radios = Await ([Windows.Devices.Radios.Radio]::GetRadiosAsync()) ([System.Collections.Generic.IReadOnlyList[Windows.Devices.Radios.Radio]])
+        $target = $radios | ? { $_.Kind -eq 'WiFi' }
+        $state = if ($target) { $target[0].State.ToString() } else { 'Unknown' }
+
+        [Windows.Networking.Connectivity.NetworkInformation,Windows.Networking.Connectivity,ContentType=WindowsRuntime] | Out-Null
+        $profile = [Windows.Networking.Connectivity.NetworkInformation]::GetInternetConnectionProfile()
+        $profileName = if ($profile) { $profile.ProfileName } else { '' }
+        $isWlan = if ($profile) { $profile.IsWlanConnectionProfile.ToString() } else { 'False' }
+
+        Write-Output ($state + '|' + $profileName + '|' + $isWlan)
+        """
+        try:
+            res = cls._run_powershell(ps_script)
+            parts = res.stdout.strip().split("|")
+            state = parts[0].strip() if len(parts) > 0 else "Unknown"
+            profile = parts[1].strip() if len(parts) > 1 else ""
+            is_wlan = parts[2].strip().lower() == "true" if len(parts) > 2 else False
+
+            is_connected = bool(profile and is_wlan)
+            return {
+                "status": "success",
+                "radio_state": state,
+                "connected": is_connected,
+                "profile": profile,
+                "is_wlan": is_wlan
+            }
+        except Exception as exc:
+            return {
+                "status": "error",
+                "code": "WIFI_QUERY_FAILED",
+                "details": str(exc),
+                "radio_state": "Unknown",
+                "connected": False,
+                "profile": ""
+            }
+
+    @classmethod
+    def get_radio_state(cls, radio_type: str) -> dict[str, Any]:
+        """
+        Reads the current hardware radio state ('On', 'Off', 'Disabled', 'Unknown').
+        """
+        valid_radios = {"wifi": "WiFi", "bluetooth": "Bluetooth"}
+        target_kind = valid_radios.get(radio_type.lower())
+        if not target_kind:
+            return {"status": "error", "code": "INVALID_RADIO_TYPE", "supported": list(valid_radios.keys())}
+
+        ps_script = f"""
+        Add-Type -AssemblyName System.Runtime.WindowsRuntime
+        $asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | ? {{
+            $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
+            $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'
+        }})[0]
+        Function Await($WinRtTask, $ResultType) {{
+            $asTask = $asTaskGeneric.MakeGenericMethod($ResultType)
+            $netTask = $asTask.Invoke($null, @($WinRtTask))
+            $netTask.Wait(-1) | Out-Null
+            $netTask.Result
+        }}
+        [Windows.Devices.Radios.Radio,Windows.System.Devices,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Devices.Radios.RadioAccessStatus,Windows.System.Devices,ContentType=WindowsRuntime] | Out-Null
+        Await ([Windows.Devices.Radios.Radio]::RequestAccessAsync()) ([Windows.Devices.Radios.RadioAccessStatus]) | Out-Null
+        $radios = Await ([Windows.Devices.Radios.Radio]::GetRadiosAsync()) ([System.Collections.Generic.IReadOnlyList[Windows.Devices.Radios.Radio]])
+        $target = $radios | ? {{ $_.Kind -eq '{target_kind}' }}
+        if ($target) {{
+            Write-Output $target[0].State.ToString()
+        }} else {{
+            Write-Output "NOT_FOUND"
+        }}
+        """
+        try:
+            res = cls._run_powershell(ps_script)
+            out = res.stdout.strip()
+            if "On" in out:
+                return {"status": "success", "component": target_kind, "state": "On", "enabled": True}
+            elif "Off" in out:
+                return {"status": "success", "component": target_kind, "state": "Off", "enabled": False}
+            elif "NOT_FOUND" in out:
+                return {"status": "error", "code": "HARDWARE_NOT_FOUND", "component": target_kind}
+            return {"status": "success", "component": target_kind, "state": out, "enabled": out.lower() == "on"}
+        except Exception as exc:
+            return {"status": "error", "code": "QUERY_FAILED", "details": str(exc)}
+
+    @classmethod
+    def set_radio_state(cls, radio_type: str, enabled: bool) -> dict[str, Any]:
+        """
+        Toggles Windows Wi-Fi or Bluetooth hardware radios with full Context-Awareness.
+        If Wi-Fi is already on/connected and the user requests it again, Amigo returns
+        a context-aware response acknowledging the current state without redundant toggles.
+        """
+        valid_radios = {"wifi": "WiFi", "bluetooth": "Bluetooth"}
+        target_kind = valid_radios.get(radio_type.lower())
+        if not target_kind:
+            return {"status": "error", "code": "INVALID_RADIO_TYPE", "supported": list(valid_radios.keys())}
+
+        # ── Context Awareness Check ──
+        if target_kind == "WiFi":
+            wifi_info = cls.get_wifi_status()
+            current_state = wifi_info.get("radio_state", "Unknown")
+            is_connected = wifi_info.get("connected", False)
+            profile_name = wifi_info.get("profile", "")
+
+            if enabled:
+                if current_state == "On":
+                    if is_connected and profile_name:
+                        return {
+                            "status": "already_connected",
+                            "component": "WiFi",
+                            "enabled": True,
+                            "connected": True,
+                            "profile": profile_name,
+                            "message": f"Wi-Fi is already turned on and connected to {profile_name}."
+                        }
+                    return {
+                        "status": "already_on",
+                        "component": "WiFi",
+                        "enabled": True,
+                        "connected": False,
+                        "profile": profile_name,
+                        "message": "Wi-Fi is already turned on."
+                    }
+            else:
+                if current_state == "Off":
+                    return {
+                        "status": "already_off",
+                        "component": "WiFi",
+                        "enabled": False,
+                        "message": "Wi-Fi is already turned off."
+                    }
+        elif target_kind == "Bluetooth":
+            bt_info = cls.get_radio_state("bluetooth")
+            if bt_info.get("status") == "success":
+                bt_on = bt_info.get("enabled", False)
+                if enabled and bt_on:
+                    return {
+                        "status": "already_on",
+                        "component": "Bluetooth",
+                        "enabled": True,
+                        "message": "Bluetooth is already turned on."
+                    }
+                elif not enabled and not bt_on:
+                    return {
+                        "status": "already_off",
+                        "component": "Bluetooth",
+                        "enabled": False,
+                        "message": "Bluetooth is already turned off."
+                    }
+
+        target_state = "On" if enabled else "Off"
+
+        ps_script = f"""
+        Add-Type -AssemblyName System.Runtime.WindowsRuntime
+        $asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | ? {{
+            $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
+            $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'
+        }})[0]
+        Function Await($WinRtTask, $ResultType) {{
+            $asTask = $asTaskGeneric.MakeGenericMethod($ResultType)
+            $netTask = $asTask.Invoke($null, @($WinRtTask))
+            $netTask.Wait(-1) | Out-Null
+            $netTask.Result
+        }}
+        [Windows.Devices.Radios.Radio,Windows.System.Devices,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Devices.Radios.RadioAccessStatus,Windows.System.Devices,ContentType=WindowsRuntime] | Out-Null
+        Await ([Windows.Devices.Radios.Radio]::RequestAccessAsync()) ([Windows.Devices.Radios.RadioAccessStatus]) | Out-Null
+        $radios = Await ([Windows.Devices.Radios.Radio]::GetRadiosAsync()) ([System.Collections.Generic.IReadOnlyList[Windows.Devices.Radios.Radio]])
+        $target = $radios | ? {{ $_.Kind -eq '{target_kind}' }}
+        if ($target) {{
+            foreach ($r in $target) {{
+                Await ($r.SetStateAsync('{target_state}')) ([Windows.Devices.Radios.RadioAccessStatus]) | Out-Null
+            }}
+            Write-Output "SUCCESS"
+        }} else {{
+            Write-Output "NOT_FOUND"
+        }}
+        """
+        try:
+            res = cls._run_powershell(ps_script)
+            if "SUCCESS" in res.stdout:
+                action_text = "turned on" if enabled else "turned off"
+                return {
+                    "status": "success",
+                    "component": target_kind,
+                    "enabled": enabled,
+                    "message": f"{target_kind} is now {action_text}."
+                }
+            return {
+                "status": "error",
+                "code": "HARDWARE_NOT_FOUND",
+                "details": res.stderr.strip() or res.stdout.strip(),
+                "message": f"Could not find {target_kind} radio on this device."
+            }
+        except Exception as e:
+            return {"status": "error", "code": "EXECUTION_FAILED", "details": str(e)}
+
+    @staticmethod
+    def get_color_theme() -> dict[str, Any]:
+        """Reads current Windows light/dark mode from registry."""
+        reg_path = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, reg_path, 0, winreg.KEY_READ)
+            val, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+            winreg.CloseKey(key)
+            mode = "light" if val == 1 else "dark"
+            return {"status": "success", "component": "theme", "mode": mode}
+        except Exception as exc:
+            return {"status": "error", "code": "REGISTRY_READ_FAILED", "details": str(exc)}
+
+    @staticmethod
+    def set_color_theme(mode: str) -> dict[str, Any]:
+        """Switches Windows color theme between Light and Dark mode with WM_SETTINGCHANGE broadcast."""
+        m = mode.lower().strip()
+        if m not in ("dark", "light"):
+            return {"status": "error", "code": "INVALID_MODE", "supported": ["dark", "light"]}
+
+        val = 0 if m == "dark" else 1
+        reg_path = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, reg_path, 0, winreg.KEY_SET_VALUE)
+            winreg.SetValueEx(key, "AppsUseLightTheme", 0, winreg.REG_DWORD, val)
+            winreg.SetValueEx(key, "SystemUsesLightTheme", 0, winreg.REG_DWORD, val)
+            winreg.CloseKey(key)
+
+            HWND_BROADCAST = 0xFFFF
+            WM_SETTINGCHANGE = 0x001A
+            SMTO_ABORTIFHUNG = 0x0002
+            result = ctypes.c_long()
+            ctypes.windll.user32.SendMessageTimeoutW(
+                HWND_BROADCAST, WM_SETTINGCHANGE, 0, "ImmersiveColorSet",
+                SMTO_ABORTIFHUNG, 2000, ctypes.byref(result)
+            )
+            return {
+                "status": "success",
+                "component": "theme",
+                "mode": m,
+                "message": f"Theme switched to {m} mode."
+            }
+        except Exception as e:
+            return {"status": "error", "code": "REGISTRY_ERROR", "details": str(e)}
+
+    @staticmethod
+    def get_audio() -> dict[str, Any]:
+        """Reads master system volume level and mute state."""
+        if not HAS_PYCAW:
+            return {"status": "error", "code": "MISSING_DEPENDENCY", "package": "pycaw"}
+
+        try:
+            import comtypes
+            comtypes.CoInitialize()
+            try:
+                devices = AudioUtilities.GetSpeakers()
+                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                volume = cast(interface, POINTER(IAudioEndpointVolume))
+                level = int(round(volume.GetMasterVolumeLevelScalar() * 100))
+                muted = bool(volume.GetMute())
+                return {"status": "success", "component": "audio", "volume_level": level, "muted": muted}
+            finally:
+                comtypes.CoUninitialize()
+        except Exception as e:
+            return {"status": "error", "code": "AUDIO_ERROR", "details": str(e)}
+
+    @staticmethod
+    def set_audio(level: int | None = None, mute: bool | None = None) -> dict[str, Any]:
+        """Controls master system volume (0-100) and mute state."""
+        if not HAS_PYCAW:
+            return {"status": "error", "code": "MISSING_DEPENDENCY", "package": "pycaw"}
+
+        try:
+            import comtypes
+            comtypes.CoInitialize()
+            try:
+                devices = AudioUtilities.GetSpeakers()
+                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                volume = cast(interface, POINTER(IAudioEndpointVolume))
+
+                state: dict[str, Any] = {}
+                msg_parts = []
+                if mute is not None:
+                    volume.SetMute(1 if mute else 0, None)
+                    state["muted"] = mute
+                    msg_parts.append("muted" if mute else "unmuted")
+
+                if level is not None:
+                    clamped = max(0, min(100, int(level)))
+                    volume.SetMasterVolumeLevelScalar(clamped / 100.0, None)
+                    state["volume_level"] = clamped
+                    msg_parts.append(f"volume set to {clamped}%")
+
+                return {
+                    "status": "success",
+                    "component": "audio",
+                    **state,
+                    "message": " and ".join(msg_parts).capitalize() if msg_parts else "Audio settings updated."
+                }
+            finally:
+                comtypes.CoUninitialize()
+        except Exception as e:
+            return {"status": "error", "code": "AUDIO_ERROR", "details": str(e)}
+
+    @staticmethod
+    def get_brightness() -> dict[str, Any]:
+        """Reads display brightness percentage."""
+        if HAS_SBC:
+            try:
+                val = sbc.get_brightness()
+                level = val[0] if isinstance(val, list) and val else int(val)
+                return {"status": "success", "component": "brightness", "level": level}
+            except Exception:
+                pass
+        return {"status": "error", "code": "BRIGHTNESS_UNAVAILABLE"}
+
+    @staticmethod
+    def set_brightness(level: int) -> dict[str, Any]:
+        """Sets display brightness percentage (0-100)."""
+        clamped = max(0, min(100, int(level)))
+        if HAS_SBC:
+            try:
+                sbc.set_brightness(clamped)
+                return {
+                    "status": "success",
+                    "component": "brightness",
+                    "level": clamped,
+                    "message": f"Brightness set to {clamped}%."
+                }
+            except Exception:
+                pass
+
+        try:
+            ps_cmd = (
+                "Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods "
+                f"| Invoke-CimMethod -MethodName WmiSetBrightness -Arguments @{{Timeout=1; Brightness={clamped}}}"
+            )
+            r = WindowsSystemController._run_powershell(ps_cmd)
+            if r.returncode == 0 and not r.stderr.strip():
+                return {
+                    "status": "success",
+                    "component": "brightness",
+                    "level": clamped,
+                    "message": f"Brightness set to {clamped}%."
+                }
+            return {"status": "error", "code": "CIM_BRIGHTNESS_FAILED", "details": r.stderr.strip()}
+        except Exception as e:
+            return {"status": "error", "code": "BRIGHTNESS_ERROR", "details": str(e)}
+
+    @staticmethod
+    def open_settings_page(uri_target: str) -> dict[str, Any]:
+        """Opens any specific Windows Settings page via ms-settings URI scheme."""
+        uri_map = {
+            "wifi": "ms-settings:network-wifi",
+            "bluetooth": "ms-settings:bluetooth",
+            "display": "ms-settings:display",
+            "sound": "ms-settings:sound",
+            "theme": "ms-settings:personalization-colors",
+            "nightlight": "ms-settings:nightlight",
+            "battery": "ms-settings:batterysaver",
+            "windowsupdate": "ms-settings:windowsupdate",
+            "apps": "ms-settings:appsfeatures"
+        }
+        uri = uri_map.get(uri_target.lower(), f"ms-settings:{uri_target.lower()}")
+        try:
+            subprocess.Popen(["explorer.exe", uri])
+            return {"status": "success", "opened_uri": uri, "message": f"Opened {uri_target} settings."}
+        except Exception as e:
+            return {"status": "error", "code": "URI_OPEN_FAILED", "details": str(e)}
+
+    @staticmethod
+    def system_power(action: str) -> dict[str, Any]:
+        """Executes system power or session state transitions."""
+        act = action.lower().strip()
+        try:
+            if act == "lock":
+                ctypes.windll.user32.LockWorkStation()
+            elif act == "sleep":
+                ctypes.windll.powrprof.SetSuspendState(0, 1, 0)
+            elif act == "shutdown":
+                subprocess.Popen(["shutdown", "/s", "/t", "5"])
+            elif act == "restart":
+                subprocess.Popen(["shutdown", "/r", "/t", "5"])
+            else:
+                return {
+                    "status": "error",
+                    "code": "INVALID_POWER_ACTION",
+                    "supported": ["lock", "sleep", "shutdown", "restart"]
+                }
+            return {"status": "success", "power_action": act, "message": f"Executing system {act}."}
+        except Exception as e:
+            return {"status": "error", "code": "POWER_ACTION_FAILED", "details": str(e)}
+
+
+_CATEGORY_ALIASES_CACHE: dict[str, Any] | None = None
+
+
+def _get_category_aliases() -> dict[str, Any]:
+    global _CATEGORY_ALIASES_CACHE
+    if _CATEGORY_ALIASES_CACHE is None:
+        try:
+            import json
+            alias_data = json.loads(CATEGORY_ALIAS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            alias_data = {}
+        alias_to_canon = {}
+        for canon, names in alias_data.items():
+            if canon != "power_actions" and isinstance(names, list):
+                for a in names:
+                    alias_to_canon[str(a).lower()] = canon
+        _CATEGORY_ALIASES_CACHE = {
+            "map": alias_to_canon,
+            "power_actions": set(alias_data.get("power_actions") or []),
+        }
+    return _CATEGORY_ALIASES_CACHE
+
+
+def control_windows_system(
+    category: str,
+    enabled: bool | None = None,
+    mode: str | None = None,
+    level: int | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Helper to dispatch control commands to WindowsSystemController."""
+    cat = (category or "").lower().strip()
+    aliases = _get_category_aliases()
+    canon = aliases["map"].get(cat, cat)
+    if canon == "wifi":
+        if enabled is not None:
+            return WindowsSystemController.set_radio_state("wifi", bool(enabled))
+        return WindowsSystemController.get_wifi_status()
+    if canon == "bluetooth":
+        if enabled is not None:
+            return WindowsSystemController.set_radio_state("bluetooth", bool(enabled))
+        return WindowsSystemController.get_radio_state("bluetooth")
+    if canon == "theme":
+        target_mode = mode or ("dark" if enabled is False else "light" if enabled is True else "dark")
+        return WindowsSystemController.set_color_theme(target_mode)
+    if canon == "audio":
+        return WindowsSystemController.set_audio(level=level, mute=(not enabled if enabled is not None else None))
+    if canon == "brightness":
+        if level is not None:
+            return WindowsSystemController.set_brightness(level)
+        return WindowsSystemController.get_brightness()
+    if canon == "settings":
+        return WindowsSystemController.open_settings_page(mode or kwargs.get("uri", ""))
+    if canon == "power":
+        power_actions = aliases["power_actions"]
+        return WindowsSystemController.system_power(cat if cat in power_actions else (mode or "sleep"))
+    return {"status": "error", "message": f"Unknown category: {category}"}
+
+
+# --------------------------------------------------------------------------- #
+# Screen Pen Integration Forwarders
+# --------------------------------------------------------------------------- #
+try:
+    from amigo.services.screen_pen import (
+        ScreenPenOverlay,
+        screen_pen_annotate,
+        PEN_TOOL_DEFINITION,
+    )
+except Exception as _pen_err:
+    log.warning("Screen pen overlay unavailable: %s", _pen_err)
+    ScreenPenOverlay = None  # type: ignore
+
+    def screen_pen_annotate(*args, **kwargs):
+        return {"status": "error", "code": "PEN_UNAVAILABLE"}
+
+    PEN_TOOL_DEFINITION = {}  # type: ignore
+
+

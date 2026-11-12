@@ -215,8 +215,8 @@ def get_active_model_info() -> dict:
         models = get_llm_available_models() or {}
         info = next(iter(models.values()), {})
 
-    name = info.get("name", "NVIDIA Nemotron 3.5 Bolt")
-    key = info.get("key", "nemotron-3.5-bolt")
+    name = info.get("name", "LFM 3 Omni 2B")
+    key = info.get("key", "lfm-3-omni")
     vision_ok = is_vision_ready()
     ctx_len = int(os.getenv("AMIGO_LLM_N_CTX", "8192"))
     return {
@@ -237,7 +237,7 @@ def get_active_model_info() -> dict:
 
 def get_available_models() -> list[dict]:
     try:
-        active_key = get_active_model_info().get("key", "nemotron-3.5-bolt")
+        active_key = get_active_model_info().get("key", "lfm-3-omni")
         return [
             {
                 "key": k,
@@ -249,7 +249,7 @@ def get_available_models() -> list[dict]:
         ]
     except Exception:
         return [
-            {"key": "nemotron-3.5-bolt", "name": "NVIDIA Nemotron 3.5 Bolt", "status": "active", "type": "local"},
+            {"key": "lfm-3-omni", "name": "LFM 3 Omni 2B", "status": "active", "type": "local"},
         ]
 
 
@@ -483,7 +483,7 @@ def index():
     return jsonify({
         "status": "online",
         "service": "Amigo AI Engine & Windows 11 Voice Assistant Backend",
-        "model": info.get("name", "NVIDIA Nemotron 3.5 Bolt"),
+        "model": info.get("name", "LFM 3 Omni 2B"),
     })
 
 
@@ -590,7 +590,7 @@ def api_assistant_process():
         return jsonify({
             "status": "online",
             "message": "Amigo AI Engine online",
-            "model": info.get("name", "NVIDIA Nemotron 3.5 Bolt"),
+            "model": info.get("name", "LFM 3 Omni 2B"),
             "version": "Windows 11 Voice Assistant",
         })
 
@@ -946,8 +946,8 @@ def handle_settings():
         "user_profile": u_prof,
         "user_name": get_current_user_name(),
         "voice": curr_voice,
-        "model": info.get("key", "nemotron-3.5-bolt"),
-        "model_name": info.get("name", "NVIDIA Nemotron 3.5 Bolt"),
+        "model": info.get("key", "lfm-3-omni"),
+        "model_name": info.get("name", "LFM 3 Omni 2B"),
         "thinking_enabled": is_thinking_enabled(),
         "available_models": get_available_models(),
         "available_voices": get_voice_catalog(),

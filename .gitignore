@@ -21,6 +21,8 @@ amigo_reminders.json
 amigo_screenshot.png
 rag_data/
 *.log
+*_log.txt
+scratch/
 .DS_Store
 Thumbs.db
 

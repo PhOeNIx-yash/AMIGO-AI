@@ -39,214 +39,26 @@ import {
 } from "./services/assistantApi";
 import { Sparkles, ChevronUp, Shuffle, Copy, Check, Volume2, X } from "lucide-react";
 import { ErrorState } from "@/components/ui/error-state";
+import { SparklesCore } from "./components/ui/sparkles-core";
 
 function cn(...classes: (string | undefined | null | false)[]) {
   return classes.filter(Boolean).join(" ");
 }
 
-interface AnimatedGradientBackgroundProps {
+interface SparklesBackgroundProps {
   className?: string;
-  children?: React.ReactNode;
-  intensity?: "subtle" | "medium" | "strong";
   isDark?: boolean;
+  children?: React.ReactNode;
 }
 
-interface Beam {
-  x: number;
-  y: number;
-  width: number;
-  length: number;
-  angle: number;
-  speed: number;
-  opacity: number;
-  hue: number;
-  pulse: number;
-  pulseSpeed: number;
-}
+const DARK_SPARKLES = ["#ffffff", "#38bdf8", "#818cf8", "#c084fc", "#67e8f9"];
+const LIGHT_SPARKLES = ["#0284c7", "#6366f1", "#06b6d4", "#3b82f6"];
 
-function createBeam(width: number, height: number, isDarkMode: boolean): Beam {
-  const angle = -35 + Math.random() * 10;
-  const hueBase = isDarkMode ? 190 : 210;
-  const hueRange = isDarkMode ? 70 : 50;
-
-  return {
-    x: Math.random() * width * 1.5 - width * 0.25,
-    y: Math.random() * height * 1.5 - height * 0.25,
-    width: 30 + Math.random() * 60,
-    length: height * 2.5,
-    angle,
-    speed: 0.6 + Math.random() * 1.2,
-    opacity: 0.12 + Math.random() * 0.16,
-    hue: hueBase + Math.random() * hueRange,
-    pulse: Math.random() * Math.PI * 2,
-    pulseSpeed: 0.02 + Math.random() * 0.03,
-  };
-}
-
-function BeamsBackground({
+const SparklesBackground = React.memo(function SparklesBackground({
   className,
-  intensity = "strong",
   isDark,
   children,
-}: AnimatedGradientBackgroundProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const beamsRef = useRef<Beam[]>([]);
-  const animationFrameRef = useRef<number>(0);
-  const MINIMUM_BEAMS = 20;
-  const isDarkModeRef = useRef<boolean>(typeof isDark === "boolean" ? isDark : false);
-
-  const opacityMap = {
-    subtle: 0.7,
-    medium: 0.85,
-    strong: 1,
-  };
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    // Check for dark mode
-    const updateDarkMode = () => {
-      isDarkModeRef.current =
-        typeof isDark === "boolean"
-          ? isDark
-          : document.documentElement.classList.contains("dark");
-    };
-
-    const observer = new MutationObserver(updateDarkMode);
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["class"],
-    });
-
-    updateDarkMode();
-
-    const updateCanvasSize = () => {
-      // Downscale ambient background buffer to 0.5x; bilinear upscaling gives a natural velvety blur with 75% lower GPU fill rate
-      const scale = 0.5;
-      const w = Math.ceil(window.innerWidth * scale);
-      const h = Math.ceil(window.innerHeight * scale);
-      canvas.width = w;
-      canvas.height = h;
-      canvas.style.width = "100%";
-      canvas.style.height = "100%";
-
-      const totalBeams = 10;
-      beamsRef.current = Array.from({ length: totalBeams }, () =>
-        createBeam(w, h, isDarkModeRef.current)
-      );
-    };
-
-    updateCanvasSize();
-    window.addEventListener("resize", updateCanvasSize);
-
-    function resetBeam(beam: Beam, index: number, totalBeams: number) {
-      if (!canvas) return beam;
-
-      const column = index % 3;
-      const spacing = canvas.width / 3;
-
-      const hueBase = isDarkModeRef.current ? 190 : 210;
-      const hueRange = isDarkModeRef.current ? 70 : 50;
-
-      beam.y = canvas.height + 60;
-      beam.x =
-        column * spacing + spacing / 2 + (Math.random() - 0.5) * spacing * 0.5;
-      beam.width = 60 + Math.random() * 50;
-      beam.speed = 0.4 + Math.random() * 0.3;
-      beam.hue = hueBase + (index * hueRange) / totalBeams;
-      beam.opacity = 0.16 + Math.random() * 0.08;
-      return beam;
-    }
-
-    function drawBeam(ctx: CanvasRenderingContext2D, beam: Beam) {
-      ctx.save();
-      ctx.translate(beam.x, beam.y);
-      ctx.rotate((beam.angle * Math.PI) / 180);
-
-      const pulsingOpacity =
-        beam.opacity *
-        (0.8 + Math.sin(beam.pulse) * 0.2) *
-        opacityMap[intensity];
-
-      const gradient = ctx.createLinearGradient(0, 0, 0, beam.length);
-
-      const saturation = isDarkModeRef.current ? "85%" : "75%";
-      const lightness = isDarkModeRef.current ? "65%" : "45%";
-
-      gradient.addColorStop(
-        0,
-        `hsla(${beam.hue}, ${saturation}, ${lightness}, 0)`
-      );
-      gradient.addColorStop(
-        0.15,
-        `hsla(${beam.hue}, ${saturation}, ${lightness}, ${pulsingOpacity * 0.5
-        })`
-      );
-      gradient.addColorStop(
-        0.5,
-        `hsla(${beam.hue}, ${saturation}, ${lightness}, ${pulsingOpacity})`
-      );
-      gradient.addColorStop(
-        0.85,
-        `hsla(${beam.hue}, ${saturation}, ${lightness}, ${pulsingOpacity * 0.5
-        })`
-      );
-      gradient.addColorStop(
-        1,
-        `hsla(${beam.hue}, ${saturation}, ${lightness}, 0)`
-      );
-
-      ctx.fillStyle = gradient;
-      ctx.fillRect(-beam.width / 2, 0, beam.width, beam.length);
-      ctx.restore();
-    }
-
-    let isPaused = false;
-
-    function animate() {
-      if (!(canvas && ctx)) return;
-
-      if (!isPaused) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-        const totalBeams = beamsRef.current.length;
-        beamsRef.current.forEach((beam, index) => {
-          beam.y -= beam.speed;
-          beam.pulse += beam.pulseSpeed;
-
-          // Reset beam when it goes off screen
-          if (beam.y + beam.length < -60) {
-            resetBeam(beam, index, totalBeams);
-          }
-
-          drawBeam(ctx, beam);
-        });
-      }
-
-      animationFrameRef.current = requestAnimationFrame(animate);
-    }
-
-    const handleVisibilityChange = () => {
-      isPaused = document.hidden;
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    animate();
-
-    return () => {
-      window.removeEventListener("resize", updateCanvasSize);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
-      observer.disconnect();
-    };
-  }, [intensity, isDark]);
-
+}: SparklesBackgroundProps) {
   return (
     <div
       className={cn(
@@ -254,16 +66,26 @@ function BeamsBackground({
         className
       )}
     >
-      <canvas
-        className="absolute inset-0 pointer-events-none"
-        ref={canvasRef}
-        style={{
-          filter: "blur(2.5px)",
-          contain: "strict",
-          willChange: "transform",
-          transform: "translate3d(0, 0, 0)",
-        }}
-      />
+      {/* Sparkles Core Main Background */}
+      <div className="absolute inset-0 pointer-events-none z-0">
+        <SparklesCore
+          id="amigo-main-sparkles"
+          background="transparent"
+          minSize={0.6}
+          maxSize={2.0}
+          particleDensity={isDark ? 80 : 50}
+          className="w-full h-full"
+          particleColor={isDark ? "#ffffff" : "#0284c7"}
+          particleColors={isDark ? DARK_SPARKLES : LIGHT_SPARKLES}
+          speed={0.8}
+          twinkle={true}
+          twinkleSpeed={1.2}
+          interactive={true}
+          cursorMode="repulse"
+          cursorRadius={130}
+          clickPush={8}
+        />
+      </div>
 
       <div
         className="pointer-events-none absolute inset-0 bg-neutral-900/10 dark:bg-neutral-950/20"
@@ -272,7 +94,7 @@ function BeamsBackground({
       {children}
     </div>
   );
-}
+});
 
 function renderFormattedContent(text: string) {
   if (!text) return null;
@@ -648,8 +470,9 @@ export default function App() {
         const reversed = formatted.reverse();
         setHistory(reversed);
 
-        // Restore latest conversation onto stage on mount if stage is currently idle/greeting
-        if (reversed.length > 0 && !activePromptRef.current) {
+        // Restore latest conversation onto stage ONCE on initial mount only
+        if (!initialRestoreDoneRef.current && reversed.length > 0 && !activePromptRef.current) {
+          initialRestoreDoneRef.current = true;
           const latest = reversed[0];
           const reply = latest.response.speechReply || latest.response.executionSummary?.details;
           if (reply) {
@@ -706,6 +529,7 @@ export default function App() {
   }, []);
 
 
+  const initialRestoreDoneRef = useRef<boolean>(false);
   const [state, setState] = useState<AssistantState>("idle");
   const [activePrompt, setActivePrompt] = useState<string>("");
   const activePromptRef = useRef<string>("");
@@ -787,7 +611,7 @@ export default function App() {
                 setIsListening(false);
                 if (!loadingRef.current) {
                   setState((current) => {
-                    if (current === "action_card" || current === "completed" || current === "generated_content") {
+                    if (current === "action_card" || current === "completed" || current === "generated_content" || current === "processing" || current === "working") {
                       return current;
                     }
                     if (activePromptRef.current) {
@@ -960,17 +784,24 @@ export default function App() {
 
   // Update greeting text only if currently in idle state and no active prompt/response displayed
   useEffect(() => {
-    if (state === "idle" && autoCycleGreetings && !activePrompt) {
+    if (state === "idle" && autoCycleGreetings && !activePrompt && !isListening) {
       const activeText = GREETING_PRESETS[greetingIndex]?.text || GREETING_PRESETS[0].text;
       setGreetingText(activeText);
       setDisplayText((current) => (GREETING_PRESETS.some((g) => g.text === current) ? activeText : current));
     }
-  }, [greetingIndex, autoCycleGreetings, state, activePrompt]);
+  }, [greetingIndex, autoCycleGreetings, state, activePrompt, isListening]);
 
   // Quick cycle to next greeting phrase on click
   const handleShuffleGreeting = () => {
     sfx.playClick();
-    setGreetingIndex((prevIndex) => (prevIndex + 1) % GREETING_PRESETS.length);
+    const nextIndex = (greetingIndex + 1) % GREETING_PRESETS.length;
+    setGreetingIndex(nextIndex);
+    const nextText = GREETING_PRESETS[nextIndex]?.text || GREETING_PRESETS[0].text;
+    setGreetingText(nextText);
+    setDisplayText(nextText);
+    try {
+      localStorage.setItem("windows11_voice_assistant_greeting", nextText);
+    } catch (_) {}
   };
 
   // Set listening state with synchronized assistant state
@@ -979,7 +810,12 @@ export default function App() {
     if (listening) {
       setState("listening");
     } else if (state === "listening" && !loading) {
-      setState("idle");
+      setState((current) => {
+        if (current === "listening") {
+          return activePromptRef.current ? "completed" : "idle";
+        }
+        return current;
+      });
     }
   };
 
@@ -1374,7 +1210,7 @@ export default function App() {
   };
 
   return (
-    <BeamsBackground isDark={isDark} className="relative w-full h-[var(--visual-viewport-height,100dvh)] min-h-0 flex items-center justify-center">
+    <SparklesBackground isDark={isDark} className="relative w-full h-[var(--visual-viewport-height,100dvh)] min-h-0 flex items-center justify-center">
       {/* Floating Trigger Button when Plugin is Minimized */}
       {!isOpen && (
         <motion.button
@@ -1529,8 +1365,10 @@ export default function App() {
                             <div className="w-full flex flex-col items-center justify-center my-auto transition-opacity duration-200 max-w-2xl">
                               {/* 3D Orb Avatar (Positioned above text, never covered) */}
                               <div
-                                className={`relative flex items-center justify-center transition-all duration-500 ease-out ${isCompact ? "h-0 opacity-0 overflow-hidden mb-0" : "h-[15rem] sm:h-[16rem] shrink-0 mb-3 sm:mb-4"
-                                  }`}
+                                className={`relative flex items-center justify-center transition-all duration-500 ease-out select-none ${isCompact ? "h-0 opacity-0 overflow-hidden mb-0" : "h-[15rem] sm:h-[16rem] shrink-0 mb-3 sm:mb-4"
+                                  } ${state === "idle" ? "cursor-pointer active:scale-95 transition-transform" : ""}`}
+                                onClick={state === "idle" ? handleShuffleGreeting : undefined}
+                                title={state === "idle" ? "Click to change greeting phrase" : undefined}
                               >
                                 <CanvasVisualizer
                                   mode={visualizerMode}
@@ -1825,6 +1663,6 @@ export default function App() {
           </motion.div>
         )}
       </AnimatePresence>
-    </BeamsBackground>
+    </SparklesBackground>
   );
 }

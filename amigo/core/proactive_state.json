@@ -1,14 +1,20 @@
 {
-  "last_weather_check": 1793800961.8788917,
-  "last_calendar_check": 1793802345.5377088,
-  "last_system_check": 1793802587.4275575,
-  "last_notification_time": 1793081288.7210577,
+  "last_weather_check": 1794396439.2519763,
+  "last_calendar_check": 1794396439.2519763,
+  "last_system_check": 1794397048.2226415,
+  "last_notification_time": 1794396441.0781217,
   "last_priority_alert_time": 0,
-  "suggestions_this_hour": 0,
-  "last_hour_reset": 1793799141.3266149,
-  "active_window_start": 1793802587.4275575,
+  "suggestions_this_hour": 1,
+  "last_hour_reset": 1794396439.2519763,
+  "active_window_start": 1794061903.722518,
   "current_window_title": "amigo-main - Antigravity IDE - server.py",
-  "recent_suggestions": [],
+  "recent_suggestions": [
+    {
+      "id": "wellness_break",
+      "text": "You should take a quick stretch break soon Yash.",
+      "time": 1794396439.2519763
+    }
+  ],
   "learned_patterns": {},
   "user_routines": {},
   "dismissed_suggestions": [],

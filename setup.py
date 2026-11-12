@@ -17,7 +17,7 @@ def main():
 
     print("=" * 60)
     print("   AMIGO VOICE ASSISTANT v1.3 — ONE-CLICK EASY SETUP")
-    print("   Agentic Voice Assistant powered by LFM 3 1.7B")
+    print("   Agentic Voice Assistant powered by LFM 3 Omni 2B")
     print("=" * 60)
 
     # 1. Check Python & Git Environment
@@ -89,12 +89,12 @@ def main():
 
 
     # Local LLM GGUF Model Check
-    model_name_display = "LFM 3 1.7B"
+    model_name_display = "LFM 3 Omni 2B"
     try:
         from amigo.core.llm_agent import get_active_model_info, get_model_path, ensure_model_downloaded
         model_info = get_active_model_info()
-        model_name_display = model_info.get("name", "LFM 3 1.7B")
-        print(f" -> Checking Agent LLM (System 2): {model_name_display} (~{model_info.get('size_gb', 2.60)}GB)...")
+        model_name_display = model_info.get("name", "LFM 3 Omni 2B")
+        print(f" -> Checking Agent LLM (System 2): {model_name_display} (~{model_info.get('size_gb', 1.10)}GB)...")
         model_path = get_model_path()
         if os.path.exists(model_path) and os.path.getsize(model_path) > 500_000_000:
             print(f"    {model_name_display} is ready at {model_path}.")

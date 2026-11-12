@@ -1,0 +1,415 @@
+[
+  {
+    "file": "amigo/utils/tool_registry.py",
+    "function": "_tool_open_website",
+    "kind": "regex_on_query_or_text",
+    "pattern": "if re.match(r\"^https?://\", raw_url, re.I):",
+    "reason": "Protocol scheme check on target URL (not intent matching on user query)."
+  },
+  {
+    "file": "amigo/utils/tool_registry.py",
+    "function": "_tool_read_screen",
+    "kind": "params_get_default_val",
+    "pattern": "q = params.get(\"question\", query) if isinstance(params, dict) else query",
+    "reason": "Forwards caller's original query text when optional question parameter is omitted."
+  },
+  {
+    "file": "amigo/utils/tool_registry.py",
+    "function": "_tool_click_screen",
+    "kind": "params_get_default_val",
+    "pattern": "x, y, button = params.get(\"x\"), params.get(\"y\"), params.get(\"button\", \"left\")",
+    "reason": "Standard mouse left-click convention when click button is omitted."
+  },
+  {
+    "file": "amigo/utils/tool_registry.py",
+    "function": "_tool_clarification",
+    "kind": "params_get_default_val",
+    "pattern": "q = params.get(\"query\", query)",
+    "reason": "Displays user's original query in clarification prompt when query param is omitted."
+  },
+  {
+    "file": "amigo/utils/tool_registry.py",
+    "function": "resolve_document_path",
+    "kind": "regex_on_query_or_text",
+    "pattern": "tokens = re.findall(r\"[a-z0-9']+\", clean.lower())",
+    "reason": "Alphanumeric tokenization for document path lookup (not intent keyword matching)."
+  },
+  {
+    "file": "amigo/utils/tool_registry.py",
+    "function": "_tool_screen_pen_annotate",
+    "kind": "params_get_default_val",
+    "pattern": "x = params.get(\"x\", 500)",
+    "reason": "Normalized screen-center X coordinate (500/1000) for pen annotation overlay."
+  },
+  {
+    "file": "amigo/utils/tool_registry.py",
+    "function": "_tool_screen_pen_annotate",
+    "kind": "params_get_default_val",
+    "pattern": "y = params.get(\"y\", 500)",
+    "reason": "Normalized screen-center Y coordinate (500/1000) for pen annotation overlay."
+  },
+  {
+    "file": "amigo/utils/tool_registry.py",
+    "function": "_tool_screen_pen_annotate",
+    "kind": "params_get_default_val",
+    "pattern": "color = params.get(\"color\", \"#00F0FF\")",
+    "reason": "Default UI highlight color hex for screen pen annotation overlay."
+  },
+  {
+    "file": "amigo/utils/tool_registry.py",
+    "function": "_tool_screen_pen_annotate",
+    "kind": "params_get_default_val",
+    "pattern": "duration = float(params.get(\"duration\", 4.0))",
+    "reason": "Default display duration (4s) before annotation overlay fades."
+  },
+  {
+    "file": "amigo/utils/tool_registry.py",
+    "function": "_extract_final_response",
+    "kind": "keyword_in_query",
+    "pattern": "if \"{\" in clean:",
+    "reason": "Structural JSON delimiter check when stripping raw JSON blocks from spoken text."
+  },
+  {
+    "file": "amigo/utils/tool_registry.py",
+    "function": "_fetch_live_media_worker",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['closed', 'stopped']",
+    "reason": "WinRT media playback status constants returned by OS media session API."
+  },
+  {
+    "file": "amigo/utils/tool_registry.py",
+    "function": "_tool_window_management",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['close_app', 'close_window']",
+    "reason": "Dispatches window close actions emitted by LLM to _tool_close_app."
+  },
+  {
+    "file": "amigo/utils/tool_registry.py",
+    "function": "_tool_system_control",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['shutdown', 'shutdown_pc']",
+    "reason": "Internal power_control/system_control schema action identifiers."
+  },
+  {
+    "file": "amigo/utils/tool_registry.py",
+    "function": "_tool_system_control",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['empty_bin', 'empty_recycle_bin', 'recycle_bin']",
+    "reason": "Internal recycle bin schema action identifiers."
+  },
+  {
+    "file": "amigo/utils/tool_registry.py",
+    "function": "_tool_open_settings",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['close', 'dismiss', 'hide']",
+    "reason": "UI drawer state commands for closing the frontend settings panel."
+  },
+  {
+    "file": "amigo/utils/tool_registry.py",
+    "function": "_tool_control_windows_system",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['already_connected', 'already_off', 'already_on', 'success']",
+    "reason": "Status enum keys returned by WindowsSystemController."
+  },
+  {
+    "file": "amigo/utils/tool_registry.py",
+    "function": "_tool_open_history",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['close', 'hide']",
+    "reason": "UI drawer action strings to dismiss history panel."
+  },
+  {
+    "file": "amigo/utils/tool_registry.py",
+    "function": "_validate_action_plan",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['set', 'set_volume']",
+    "reason": "Schema enum action check requiring numeric level when setting volume."
+  },
+  {
+    "file": "amigo/utils/tool_registry.py",
+    "function": "execute_actions",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['code', 'content', 'context', 'data', 'prompt', 'query', 'text']",
+    "reason": "Multi-step pipeline parameter names eligible to receive prior step output."
+  },
+  {
+    "file": "amigo/utils/tool_registry.py",
+    "function": "execute_actions",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['content', 'context', 'prompt', 'text']",
+    "reason": "Fallback parameter keys for chaining output across multi-tool plans."
+  },
+  {
+    "file": "amigo/utils/tool_registry.py",
+    "function": "build_action_cards",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['find_document', 'find_file']",
+    "reason": "UI card rendering alias; remove find_document once Step 2.3b verification is complete."
+  },
+  {
+    "file": "amigo/utils/tool_registry.py",
+    "function": "build_action_cards",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['get_stock_quote', 'market_quote', 'stock_price', 'stock_quote']",
+    "reason": "Legacy tool-name UI card aliases; remove legacy names after Step 2.3b verification."
+  },
+  {
+    "file": "amigo/utils/tool_registry.py",
+    "function": "build_action_cards",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['set_timer', 'stopwatch', 'timer']",
+    "reason": "Legacy tool-name UI card aliases; remove legacy names after Step 2.3b verification."
+  },
+  {
+    "file": "amigo/utils/tool_registry.py",
+    "function": "build_action_cards",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['ask_about_screen', 'read_screen', 'screen_vision']",
+    "reason": "Legacy tool-name UI card aliases; remove legacy names after Step 2.3b verification."
+  },
+  {
+    "file": "amigo/utils/tool_registry.py",
+    "function": "build_action_cards",
+    "kind": "word_container_literal",
+    "pattern": "AST:List:['chat', 'web_search']",
+    "reason": "Default clarification UI candidate tools when candidates list is empty."
+  },
+  {
+    "file": "amigo/utils/tool_registry.py",
+    "function": "build_action_cards",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['change_setting', 'get_setting', 'open_settings']",
+    "reason": "Settings tool family identifiers rendered as Settings UI cards."
+  },
+  {
+    "file": "amigo/core/llm_agent.py",
+    "function": "_strip_reasoning",
+    "kind": "keyword_in_query",
+    "pattern": "if \"</think>\" in clean.lower():",
+    "reason": "Strips model reasoning XML tag from LLM output (not user query matching)."
+  },
+  {
+    "file": "amigo/core/llm_agent.py",
+    "function": "_strip_reasoning",
+    "kind": "keyword_in_query",
+    "pattern": "elif \"<think>\" in clean.lower():",
+    "reason": "Strips unclosed model reasoning XML tag from LLM output."
+  },
+  {
+    "file": "amigo/core/llm_agent.py",
+    "function": "stream_sentence_chunks",
+    "kind": "keyword_in_query",
+    "pattern": "if \"</think>\" in clean:",
+    "reason": "Checks streamed chunk boundary for model reasoning closing tag."
+  },
+  {
+    "file": "amigo/core/llm_agent.py",
+    "function": "_setup_cuda_dll_directory",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['cublas', 'cuda_nvrtc', 'cuda_runtime']",
+    "reason": "NVIDIA CUDA runtime Python package namespaces for DLL loading."
+  },
+  {
+    "file": "amigo/services/os_automation.py",
+    "function": "<module>",
+    "kind": "word_container_literal",
+    "pattern": "AST:Set:['csrss', 'ctfmon', 'dwm', 'fontdrvhost', 'lsass', 'msmpeng', 'registry', 'runtimebroker', 'searchhost', 'securityhealthservice', 'services', 'shellexperiencehost', 'sihost', 'smss', 'startmenuexperiencehost', 'svchost', 'system', 'system idle process', 'taskhostw', 'textinputhost', 'wininit', 'winlogon']",
+    "reason": "Windows OS critical system process safety blocklist preventing accidental termination."
+  },
+  {
+    "file": "amigo/services/os_automation.py",
+    "function": "<module>",
+    "kind": "word_container_literal",
+    "pattern": "AST:Set:['applicationframehost', 'explorer']",
+    "reason": "Windows shell/UWP container hosts whose windows may close without killing host process."
+  },
+  {
+    "file": "amigo/services/os_automation.py",
+    "function": "<module>",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['d', 'win']",
+    "reason": "PyAutoGUI keyboard shortcut keys for Show Desktop (Win+D)."
+  },
+  {
+    "file": "amigo/services/os_automation.py",
+    "function": "<module>",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['up', 'win']",
+    "reason": "PyAutoGUI keyboard shortcut keys for Maximize Window (Win+Up)."
+  },
+  {
+    "file": "amigo/services/os_automation.py",
+    "function": "<module>",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['down', 'win']",
+    "reason": "PyAutoGUI keyboard shortcut keys for Restore/Minimize Window (Win+Down)."
+  },
+  {
+    "file": "amigo/services/os_automation.py",
+    "function": "<module>",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['alt', 'tab']",
+    "reason": "PyAutoGUI keyboard shortcut keys for Switch Window (Alt+Tab)."
+  },
+  {
+    "file": "amigo/services/os_automation.py",
+    "function": "close_app",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['amigo', 'amigo assistant', 'amigo voice assistant']",
+    "reason": "Self-preservation guard preventing close_app from terminating Amigo itself."
+  },
+  {
+    "file": "amigo/services/os_automation.py",
+    "function": "close_app",
+    "kind": "word_container_literal",
+    "pattern": "AST:List:['name', 'pid']",
+    "reason": "psutil.process_iter requested process attribute field names."
+  },
+  {
+    "file": "amigo/services/os_automation.py",
+    "function": "set_color_theme",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['dark', 'light']",
+    "reason": "Valid Windows personalization color theme modes."
+  },
+  {
+    "file": "amigo/services/os_automation.py",
+    "function": "set_color_theme",
+    "kind": "word_container_literal",
+    "pattern": "AST:List:['dark', 'light']",
+    "reason": "Valid Windows theme values reported in controller error response."
+  },
+  {
+    "file": "amigo/services/os_automation.py",
+    "function": "system_power",
+    "kind": "word_container_literal",
+    "pattern": "AST:List:['lock', 'restart', 'shutdown', 'sleep']",
+    "reason": "Supported OS power action identifiers reported in controller error response."
+  },
+  {
+    "file": "amigo/services/os_settings.py",
+    "function": "<module>",
+    "kind": "word_container_literal",
+    "pattern": "AST:Set:['action', 'choice', 'number', 'text', 'toggle']",
+    "reason": "Catalog schema kind discriminator constants."
+  },
+  {
+    "file": "amigo/services/os_settings.py",
+    "function": "<module>",
+    "kind": "word_container_literal",
+    "pattern": "AST:Set:['callable', 'command', 'radio', 'registry', 'spi']",
+    "reason": "Catalog OS target backend mechanism identifiers."
+  },
+  {
+    "file": "amigo/services/os_settings.py",
+    "function": "_ps_radio_op",
+    "kind": "word_container_literal",
+    "pattern": "AST:Set:['off', 'on']",
+    "reason": "Normalized WinRT radio operational states."
+  },
+  {
+    "file": "amigo/services/os_settings.py",
+    "function": "go",
+    "kind": "word_container_literal",
+    "pattern": "AST:Set:['off', 'on']",
+    "reason": "Valid target states for Windows radio write operation."
+  },
+  {
+    "file": "amigo/services/os_settings.py",
+    "function": "__init__",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['choice', 'toggle']",
+    "reason": "Setting kinds backed by discrete option values."
+  },
+  {
+    "file": "amigo/services/os_settings.py",
+    "function": "options",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['on', 'on']",
+    "reason": "First (value, label) pair inside [('on', 'on'), ('off', 'off')] toggle options list (both elements denote state 'on' and display label 'on')."
+  },
+  {
+    "file": "amigo/services/os_settings.py",
+    "function": "pick_state",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['off', 'on']",
+    "reason": "Toggle read-back verification values."
+  },
+  {
+    "file": "amigo/services/os_settings.py",
+    "function": "write",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['choice', 'toggle']",
+    "reason": "Setting kinds whose write payload selects discrete option values."
+  },
+  {
+    "file": "amigo/services/os_settings.py",
+    "function": "describe",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['ac', 'plugged in']",
+    "reason": "Human-readable power source label formatting when reading powercfg."
+  },
+  {
+    "file": "amigo/services/os_settings.py",
+    "function": "_parse_power",
+    "kind": "word_container_literal",
+    "pattern": "AST:Set:['ac', 'alias', 'dc', 'inc', 'max', 'min', 'opt_index', 'opt_name', 'setting', 'subgroup', 'unit']",
+    "reason": "powercfg /qh parser regex group field keys."
+  },
+  {
+    "file": "amigo/services/os_settings.py",
+    "function": "_parse_power",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['alias', 'unit']",
+    "reason": "powercfg metadata string fields carried per setting."
+  },
+  {
+    "file": "amigo/services/os_settings.py",
+    "function": "_parse_power",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['ac', 'dc', 'inc', 'max', 'min']",
+    "reason": "powercfg hexadecimal numeric fields parsed to ints."
+  },
+  {
+    "file": "amigo/services/os_settings.py",
+    "function": "_verified",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['choice', 'toggle']",
+    "reason": "Setting kinds verified by case-insensitive string equality."
+  },
+  {
+    "file": "amigo/services/os_settings.py",
+    "function": "_change",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['choice', 'toggle']",
+    "reason": "Setting kinds resolved through Setting.pick_state."
+  },
+  {
+    "file": "amigo/services/os_settings.py",
+    "function": "validate_catalog",
+    "kind": "word_container_literal",
+    "pattern": "AST:Tuple:['fillers', 'off', 'on']",
+    "reason": "Required catalog language section keys validated by static checker."
+  },
+  {
+    "file": "amigo/services/os_settings.py",
+    "function": "validate_catalog",
+    "kind": "word_container_literal",
+    "pattern": "AST:Set:['hive', 'name', 'path']",
+    "reason": "Required Windows registry target keys in catalog schema validation."
+  },
+  {
+    "file": "amigo/services/os_settings.py",
+    "function": "validate_catalog",
+    "kind": "word_container_literal",
+    "pattern": "AST:Set:['get', 'get_metric']",
+    "reason": "Callable target descriptor keys checked during catalog schema validation."
+  },
+  {
+    "file": "amigo/services/os_settings.py",
+    "function": "validate_catalog",
+    "kind": "word_container_literal",
+    "pattern": "AST:Set:['off', 'on']",
+    "reason": "Toggle target value keys checked during catalog schema validation."
+  }
+]

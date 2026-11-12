@@ -1,6 +1,6 @@
 # Amigo Voice Assistant 🎙️✨
 
-A private, intelligent, and agentic personal voice assistant powered locally by the **LFM 3 1.7B (Q4_K_M)** GGUF model, **Vosk** offline neural speech recognition, and neural speech synthesis.
+A private, intelligent, and agentic personal voice assistant powered locally by the **LFM 3 Omni 2B (Q4_K_M)** GGUF model, **Vosk** offline neural speech recognition, and neural speech synthesis.
 
 Amigo provides desktop automation, browser & window control, document intelligence (invoices, PDFs, spreadsheets), live interactive action widgets (countdown timers, stopwatches, weather telemetry), deep web browsing, app management, and an adaptive RAG-powered vector memory system — completely offline, with **zero API keys and zero cloud dependencies**.
 
@@ -9,7 +9,7 @@ Amigo provides desktop automation, browser & window control, document intelligen
 ## 🚀 What's New (v2.0)
 
 ### 🧠 **LLM-Based Agentic Reasoning Architecture** (NEW)
-- **Full natural language understanding & formal deductive reasoning** via LFM 3 1.7B with structured tool calling
+- **Full natural language understanding & formal deductive reasoning** via LFM 3 Omni 2B with structured tool calling
 - **Internal reasoning scratchpad** with `<think>...</think>` support and intelligent tool decision-making
 - **Multi-step compound command chains** — "Open Notepad and type Hello World" executes atomically
 - **Context-aware follow-ups** — "Play it again", "Close that", "Search for that" resolve from conversation history
@@ -57,7 +57,7 @@ Amigo provides desktop automation, browser & window control, document intelligen
 
 ## 🌟 Key Capabilities & Features
 
-- **100% Offline Local AI** — Powered by `LFM 3 1.7B` via `llama-cpp-python` with optional CUDA GPU acceleration for near-instant inference.
+- **100% Offline Local AI** — Powered by `LFM 3 Omni 2B` via `llama-cpp-python` with optional CUDA GPU acceleration for near-instant inference.
 - **⚡ Natural Language Intent Agent** — Neural agent architecture that understands conversational intent, extracts structured tool parameters, and dispatches actions directly to the desktop environment.
 - **Multi-Step Compound Command Chains** — Execute complex commands like *"Open Notepad and type Hello World"* or *"Minimize all windows and check weather in Tokyo"* as atomically decomposed sequential action chains.
 - **Desktop & Windows Automation** — Type text, press keys, click screen coordinates, manage windows (minimize all, maximize, switch), and launch or close any Windows application.
@@ -103,7 +103,7 @@ User Voice / Text Input
   ┌─────────────────────────────────────────────────────┐
   │  Tier 2: LLM-Based Agent (Natural Language Intent)  │
   │  llm_agent.get_agent_action()                       │
-  │  • LFM 3 1.7B reasons about user intent             │
+  │  • LFM 3 Omni 2B reasons about user intent          │
   │  • Full conversation context & memory integration   │
   │  • Handles ambiguity, follow-ups, anaphora naturally│
   │  • Structured tool calling with validated schemas   │
@@ -111,7 +111,7 @@ User Voice / Text Input
         │
         ▼
   ┌─────────────────────────────────────────────────────┐
-  │  Tier 3: LFM 3 1.7B (Conversational)                │
+  │  Tier 3: LFM 3 Omni 2B (Conversational)             │
   │  query_local_llm() — chat, Q&A, math, explanation   │
   └─────────────────────────────────────────────────────┘
 ```
@@ -147,7 +147,7 @@ amigo-main/
 │   ├── core/               # Core AI & reasoning modules
 │   │   ├── __init__.py
 │   │   ├── ai.py                   # RAG memory bridge & voice prompt constructor
-│   │   ├── llm_agent.py            # LFM 3 1.7B GGUF engine & agentic reasoning pipeline
+│   │   ├── llm_agent.py            # LFM 3 Omni 2B GGUF engine & agentic reasoning pipeline
 │   │   ├── rag_engine.py           # Memvid memory capsule, instant retrieval & prompt injection
 │   │   ├── rag_indexer.py          # Background file crawling & incremental hash indexer
 │   │   ├── reminder_timer.py       # Background timer & reminder scheduling engine
@@ -173,7 +173,7 @@ amigo-main/
 │       ├── tool_registry.py        # Central tool registry, dispatcher & action cards
 │       └── tts.py                  # Unified speech engine (Supertonic 3 TTS & Sherpa-ONNX STT)
 ├── models/                 # AI model weights
-│   ├── LFM3-1.7B-Q4_K_M.gguf       # LFM 3 1.7B GGUF weights
+│   ├── LFM3-Omni-2B-Q4_K_M.gguf # LFM 3 Omni 2B GGUF weights
 │   └── vosk/                       # Vosk offline STT model
 ├── rag_data/               # RAG vector database & uploads
 │   ├── amigo_memory.mv2    # Single-file serverless memory capsule
@@ -209,7 +209,7 @@ This automatically:
 1. Creates a virtual environment (`venv/`) for isolated dependencies.
 2. Installs all Python dependencies via `pip install -r requirements.txt`.
 3. Initializes the `Supertonic 3` neural voice engine (44.1kHz studio quality).
-4. Downloads or loads the `LFM 3 1.7B` quantized GGUF model (~1.1 GB).
+4. Downloads or loads the `LFM 3 Omni 2B` GGUF model (~1.10 GB).
 5. Downloads the `Sherpa-ONNX` streaming Zipformer STT model (~80 MB).
 6. Initializes RAG vector data storage directories and default profile.
 7. Verifies or compiles the Web Dashboard production build (`ui_app/dist`).
@@ -398,7 +398,7 @@ User Input
     │
     ▼
 ┌──────────────────────────────────────────┐
-│  Tier 4: LLM Agent (LFM 3 1.7B)          │
+│  Tier 4: LLM Agent (LFM 3 Omni 2B)       │
 │  • Full conversation context             │
 │  • RAG memory integration                │
 │  • Structured tool calling (JSON)        │
