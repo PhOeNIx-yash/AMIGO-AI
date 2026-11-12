@@ -1405,6 +1405,7 @@ _OVERLAY_BRIDGE_SCRIPT = (
     "const msg = JSON.parse(ev.data);"
     "if (msg.type === 'ink') window.Roamie?.ink?.play(msg);"
     "else if (msg.type === 'ink_clear') window.Roamie?.ink?.clear(msg);"
+    "else if (msg.type === 'sfx') (window.Roamie?.sfx?.[msg.name] || window.Roamie?.sfx?.play)?.(msg.name);"
     "} catch (e) {}"
     "};"
     "let lastHot = null;"

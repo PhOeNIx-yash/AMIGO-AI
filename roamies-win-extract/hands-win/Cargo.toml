@@ -1,0 +1,45 @@
+# Hands helper for Roamies on Windows (the twin of hands/main.swift on macOS): the same commands and the same
+# JSON. Built by build.sh and bundled as binaries/roamies-hands-<target>.exe. Only logic.rs builds elsewhere,
+# so `cargo test` runs its checks on any system.
+[package]
+name = "roamies-hands"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+publish = false
+
+[dependencies]
+serde_json = "=1.0.154"
+
+[target.'cfg(windows)'.dependencies]
+image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png"] }
+windows = { version = "=0.62.2", features = [
+  "Foundation",
+  "Foundation_Collections",
+  "Globalization",
+  "Graphics_Imaging",
+  "Media_Ocr",
+  "Storage_Streams",
+  "Win32_Foundation",
+  "Win32_Graphics_Dwm",
+  "Win32_Graphics_Gdi",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_Storage_Xps",
+  "Win32_System_Com",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Ole",
+  "Win32_System_SystemInformation",
+  "Win32_System_Threading",
+  "Win32_System_Variant",
+  "Win32_UI_Accessibility",
+  "Win32_UI_HiDpi",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

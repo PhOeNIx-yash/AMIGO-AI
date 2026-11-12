@@ -149,6 +149,86 @@ def ocr_find(target: str, text: str, *, all_matches: bool = False) -> dict[str, 
     return run_hands(args, timeout=15.0)
 
 
+def select_area(out_path: str) -> dict[str, Any]:
+    """Let the user interactively drag-select a screen region and save it to *out_path*."""
+    return run_hands(["select", out_path], timeout=60.0)
+
+
+def refine(target: str, boxes: list[list[float]]) -> dict[str, Any]:
+    """Refine coarse pixel boxes in *target* using `roamies-hands refine`."""
+    return run_hands(["refine", target, json.dumps(boxes)], timeout=10.0)
+
+
+def get_screen_bounds() -> tuple[float, float]:
+    """Return logical screen `(width, height)` via the Rust native `roamies-hands` binary."""
+    if is_available():
+        try:
+            res = windows()
+            win_list = res.get("windows") if isinstance(res, dict) else None
+            if isinstance(win_list, list) and win_list:
+                max_x = max(float(w["bounds"][0]) + float(w["bounds"][2]) for w in win_list if isinstance(w, dict) and isinstance(w.get("bounds"), list) and len(w["bounds"]) == 4)
+                max_y = max(float(w["bounds"][1]) + float(w["bounds"][3]) for w in win_list if isinstance(w, dict) and isinstance(w.get("bounds"), list) and len(w["bounds"]) == 4)
+                if max_x > 0 and max_y > 0:
+                    return max_x, max_y
+        except Exception:
+            pass
+    return 1920.0, 1080.0
+
+
+def shot_map(bounds: list[float], img_w: float, img_h: float) -> dict[str, Any]:
+    """Build a coordinate map from screenshot pixels (`img_w` x `img_h`) to screen `bounds` `[x, y, w, h]`."""
+    x, y, w, h = [float(v) for v in bounds[:4]]
+    return {
+        "origin": [x, y],
+        "sx": w / max(1.0, float(img_w)),
+        "sy": h / max(1.0, float(img_h)),
+        "size": [float(img_w), float(img_h)],
+    }
+
+
+def shot_fits(bounds: list[float], img_w: float, img_h: float) -> bool:
+    """Return True if an image of `img_w`x`img_h` matches the aspect ratio of `bounds`."""
+    _, _, w, h = [float(v) for v in bounds[:4]]
+    if w <= 0 or h <= 0 or img_w <= 0 or img_h <= 0:
+        return False
+    return abs((w / h) / (img_w / img_h) - 1.0) <= 0.02
+
+
+def to_screen(mapping: dict[str, Any], x: float, y: float) -> tuple[int, int]:
+    """Map screenshot pixel `(x, y)` back to screen coordinates using *mapping*."""
+    ox, oy = mapping["origin"]
+    return round(ox + float(x) * mapping["sx"]), round(oy + float(y) * mapping["sy"])
+
+
+def snap_rect(rect: list[float], controls: list[dict[str, Any] | list[float]]) -> list[float] | None:
+    """Snap a coarse screen `[x, y, w, h]` rect to the best-overlapping UIA control rect."""
+    x, y, w, h = [float(v) for v in rect[:4]]
+    area = w * h
+    if area <= 0:
+        return None
+    best: list[float] | None = None
+    best_fit = 0.35
+    for item in controls or []:
+        b = item.get("bounds") if isinstance(item, dict) else item
+        if not isinstance(b, (list, tuple)) or len(b) < 4:
+            continue
+        bx, by, bw, bh = float(b[0]), float(b[1]), float(b[2]), float(b[3])
+        if bw <= 0 or bh <= 0:
+            continue
+        ratio = (bw * bh) / area
+        if ratio < 0.4 or ratio > 2.5:
+            continue
+        ix = max(0.0, min(x + w, bx + bw) - max(x, bx))
+        iy = max(0.0, min(y + h, by + bh) - max(y, by))
+        inter = ix * iy
+        union = area + bw * bh - inter
+        fit = inter / union if union > 0 else 0.0
+        if fit > best_fit:
+            best_fit = fit
+            best = [bx, by, bw, bh]
+    return best
+
+
 def act(
     plan: dict[str, Any],
     *,

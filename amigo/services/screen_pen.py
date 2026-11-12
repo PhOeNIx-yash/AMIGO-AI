@@ -70,8 +70,35 @@ def push_overlay_event(event: Dict[str, Any]) -> int:
 def _to_screen_points(x: int | float, y: int | float, normalized: bool) -> tuple[float, float]:
     if not normalized:
         return float(x), float(y)
-    # 0-1000 normalized -> 1920x1080 logical points fallback when screen dimensions aren't passed
-    return round((float(x) / 1000.0) * 1920.0, 1), round((float(y) / 1000.0) * 1080.0, 1)
+    # 0-1000 normalized -> real logical screen dimensions via Windows GetSystemMetrics
+    from amigo.services.hands import get_screen_bounds
+    sw, sh = get_screen_bounds()
+    return round((float(x) / 1000.0) * sw, 1), round((float(y) / 1000.0) * sh, 1)
+
+
+def play_overlay_sfx(name: str = "ink") -> int:
+    """Trigger a Roamies WebAudio `sfx.js` sound effect on connected overlays."""
+    return push_overlay_event({"type": "sfx", "name": str(name or "ink").strip()})
+
+
+def _resolve_target_rect(label: str, app: str | None = None) -> list[float] | None:
+    """Resolve real on-screen bounds `[x, y, w, h]` for *label* via Rust `hands` (`front` -> `screen`)."""
+    targets = [f"app:{app}"] if app else ["front", "screen"]
+    try:
+        from amigo.services import hands
+        for tgt in targets:
+            hit = hands.find_text(tgt, str(label), scroll=False)
+            matches = hit.get("matches") or []
+            if not matches:
+                hit = hands.ocr_find(tgt, str(label))
+                matches = hit.get("matches") or []
+            if matches and isinstance(matches[0], dict) and isinstance(matches[0].get("bounds"), list):
+                b = matches[0]["bounds"]
+                if len(b) == 4:
+                    return [float(b[0]), float(b[1]), max(24.0, float(b[2])), max(24.0, float(b[3]))]
+    except Exception:
+        pass
+    return None
 
 
 def _color_to_tone(color: str) -> str:
@@ -157,16 +184,21 @@ def _generate_visual_diagram_beats(topic: str) -> tuple[list[dict[str, Any]], st
     prompt = (
         f"Explain '{topic}' visually as compact JSON with keys: "
         f"'summary' (1-2 short sentences), "
-        f"'visual_type' ('flow' | 'table' | 'timeline' | 'bars' | 'math'), "
+        f"'visual_type' ('flow'|'table'|'timeline'|'bars'|'math'|'model3d'|'quiz'|'geometry'|'map'), "
         f"'steps' (3-4 short stage strings in order, for flow/timeline), "
-        f"'parts' (3-4 key component/item strings), "
-        f"'columns' (optional 2-3 headers for table), 'rows' (optional 2-4 rows for table), "
-        f"'bars' (optional array of {{\"label\":\"...\",\"value\":10}} for bars), "
-        f"'tex' (optional LaTeX formula for math). Output ONLY valid JSON."
+        f"'parts' (3-4 items or {{\"shape\":\"sphere|torus|cone|cylinder|box\",\"label\":\"name\",\"tone\":\"sky|amber|coral|teal\"}} for model3d/list), "
+        f"'columns' (optional headers for table), 'rows' (optional rows for table), "
+        f"'bars' (optional [{{\"label\":\"...\",\"value\":10}}] for bars), "
+        f"'tex' (optional LaTeX for math), "
+        f"'questions' (optional [{{\"text\":\"...\",\"options\":[\"A\",\"B\",\"C\"],\"right\":0,\"explain\":\"...\"}}] for quiz), "
+        f"'view' (optional [west,south,east,north] for map), 'places' (optional [{{\"name\":\"...\",\"lon\":0,\"lat\":0}}] for map). "
+        f"Output ONLY valid JSON."
     )
-    raw = query_local_llm(prompt, max_tokens=380)
+    raw = query_local_llm(prompt, max_tokens=420)
     summary = f"Here is a visual breakdown of {topic}."
     marks: list[dict[str, Any]] = []
+    offsets = [(0, 0.7, 0), (0, -0.7, 0), (1.3, 0, 0), (-1.3, 0, 0)]
+    motions = [{"do": "pulse"}, {"do": "spin"}, {"do": "orbit"}, {"do": "spin"}]
     tones = ["sky", "amber", "coral", "teal"]
 
     if raw:
@@ -179,6 +211,7 @@ def _generate_visual_diagram_beats(topic: str) -> tuple[list[dict[str, Any]], st
 
                 vtype = str(parsed.get("visual_type") or "flow").strip().lower()
                 raw_steps = parsed.get("steps") or []
+
                 if vtype == "table" and isinstance(parsed.get("columns"), list) and isinstance(parsed.get("rows"), list) and parsed["rows"]:
                     cols = [str(c)[:30] for c in parsed["columns"][:6]]
                     rows = [[str(cell)[:80] for cell in r[:len(cols)]] for r in parsed["rows"][:12] if isinstance(r, list)]
@@ -196,6 +229,54 @@ def _generate_visual_diagram_beats(topic: str) -> tuple[list[dict[str, Any]], st
                     marks.append({"kind": "timeline", "part": f"p{len(marks) + 1}", "title": topic.title()[:40], "events": events})
                 elif vtype == "math" and parsed.get("tex"):
                     marks.append({"kind": "math", "part": f"p{len(marks) + 1}", "title": topic.title()[:40], "tex": str(parsed["tex"])[:300]})
+                elif vtype == "quiz" and isinstance(parsed.get("questions"), list) and parsed["questions"]:
+                    qs = []
+                    for q in parsed["questions"][:5]:
+                        if isinstance(q, dict) and q.get("text") and isinstance(q.get("options"), list):
+                            qs.append({
+                                "text": str(q["text"])[:140],
+                                "options": [str(o)[:60] for o in q["options"][:4]],
+                                "right": int(q.get("right") or 0),
+                                "explain": str(q.get("explain") or "")[:140],
+                            })
+                    if qs:
+                        marks.append({"kind": "quiz", "part": f"p{len(marks) + 1}", "title": f"{topic.title()[:28]} Quiz", "questions": qs})
+                elif vtype == "map" and isinstance(parsed.get("view"), list) and len(parsed["view"]) == 4:
+                    places = [
+                        {"name": str(pl.get("name") or "")[:30], "lon": float(pl.get("lon") or 0), "lat": float(pl.get("lat") or 0), "tone": tones[i % len(tones)]}
+                        for i, pl in enumerate(parsed.get("places") or []) if isinstance(pl, dict) and pl.get("name")
+                    ]
+                    marks.append({
+                        "kind": "map",
+                        "part": f"p{len(marks) + 1}",
+                        "title": topic.title()[:40],
+                        "view": [float(v) for v in parsed["view"]],
+                        "places": places,
+                    })
+                elif vtype == "geometry" and isinstance(parsed.get("vertices"), list) and parsed["vertices"]:
+                    marks.append({
+                        "kind": "geometry",
+                        "part": f"p{len(marks) + 1}",
+                        "title": topic.title()[:40],
+                        "vertices": parsed["vertices"][:12],
+                        "lines": parsed.get("lines") or [],
+                        "angles": parsed.get("angles") or [],
+                        "tone": "teal",
+                    })
+                elif vtype == "model3d" and isinstance(parsed.get("parts"), list) and parsed["parts"]:
+                    model_parts = []
+                    for idx, p in enumerate(parsed["parts"][:4]):
+                        if isinstance(p, dict):
+                            model_parts.append({
+                                "shape": str(p.get("shape") or "sphere").split("|", 1)[0].strip(),
+                                "label": str(p.get("label") or f"Part {idx + 1}")[:24],
+                                "tone": str(p.get("tone") or tones[idx % len(tones)]).split("|", 1)[0].strip(),
+                                "pos": offsets[idx % len(offsets)],
+                                "size": [0.7, 0.7, 0.7],
+                                "motion": motions[idx % len(motions)],
+                            })
+                    if model_parts:
+                        marks.append({"kind": "model3d", "part": f"p{len(marks) + 1}", "title": topic.title()[:40], "parts": model_parts})
 
                 if not marks and isinstance(raw_steps, list) and len(raw_steps) >= 2:
                     nodes = []
@@ -215,7 +296,7 @@ def _generate_visual_diagram_beats(topic: str) -> tuple[list[dict[str, Any]], st
                     })
 
                 raw_parts = parsed.get("parts") or []
-                if isinstance(raw_parts, list) and raw_parts:
+                if isinstance(raw_parts, list) and raw_parts and vtype != "model3d":
                     items = []
                     for idx, p in enumerate(raw_parts[:5]):
                         if isinstance(p, dict):
@@ -288,23 +369,7 @@ def screen_pen_annotate(
             "event": event,
         }
 
-    # Resolve real on-screen bounds via Rust `hands` when label/target is given without explicit pixel coords
-    resolved_rect: list[float] | None = None
-    if label and normalized and x == 500 and y == 500:
-        try:
-            from amigo.services import hands
-            hit = hands.find_text("front", str(label), scroll=False)
-            matches = hit.get("matches") or []
-            if not matches:
-                hit = hands.ocr_find("front", str(label))
-                matches = hit.get("matches") or []
-            if matches and isinstance(matches[0], dict) and isinstance(matches[0].get("bounds"), list):
-                b = matches[0]["bounds"]
-                if len(b) == 4:
-                    resolved_rect = [float(b[0]), float(b[1]), max(24.0, float(b[2])), max(24.0, float(b[3]))]
-        except Exception:
-            pass
-
+    resolved_rect = _resolve_target_rect(label) if (label and normalized and x == 500 and y == 500) else None
     px, py = _to_screen_points(x, y, normalized)
     tone = _color_to_tone(color)
 
@@ -354,8 +419,78 @@ def screen_pen_annotate(
         "drawn": act,
         "engine": "roamies-ink-js",
         "coordinates": {"x": x, "y": y, "normalized": normalized},
+        "resolved_rect": resolved_rect,
         "auto_fade_seconds": duration,
         "label": label,
+        "subscribers": subscribers,
+        "event": event,
+    }
+
+
+def screen_pen_guide(
+    steps: list[dict[str, Any] | str],
+    app: str | None = None,
+    duration: float = 14.0,
+) -> Dict[str, Any]:
+    """Draw a multi-step Roamies visual walkthrough (`ring` + `caption`) over live UI targets."""
+    if not isinstance(steps, list) or not steps:
+        return {"status": "error", "code": "NO_STEPS", "error": "steps must be a non-empty list."}
+
+    tones = ["teal", "amber", "sky", "coral"]
+    beats: list[dict[str, Any]] = []
+    resolved_count = 0
+
+    for idx, raw_step in enumerate(steps[:8]):
+        if isinstance(raw_step, str):
+            target = raw_step.strip()
+            caption = f"Step {idx + 1}: {target}"
+        elif isinstance(raw_step, dict):
+            target = str(raw_step.get("target") or raw_step.get("label") or "").strip()
+            caption = str(raw_step.get("caption") or f"Step {idx + 1}: {target}").strip()
+        else:
+            continue
+
+        rect = _resolve_target_rect(target, app=app) if target else None
+        tone = tones[idx % len(tones)]
+        marks: list[dict[str, Any]] = []
+        if rect:
+            resolved_count += 1
+            marks.append({
+                "kind": "ring",
+                "part": f"step{idx + 1}",
+                "at": {"rect": rect},
+                "label": f"{idx + 1}. {target}"[:36],
+                "tone": tone,
+            })
+        else:
+            marks.append({
+                "kind": "card",
+                "part": f"step{idx + 1}",
+                "title": f"Step {idx + 1}",
+                "text": caption[:120],
+                "tone": tone,
+            })
+        beats.append({"marks": marks, "caption": caption[:140]})
+
+    if not beats:
+        return {"status": "error", "code": "NO_VALID_STEPS", "error": "No valid guide steps."}
+
+    event = {
+        "type": "ink",
+        "id": f"guide-{int(time.time() * 1000)}",
+        "seg": 0,
+        "last": True,
+        "fade": max(4.0, float(duration)),
+        "beats": beats,
+    }
+    subscribers = push_overlay_event(event)
+    play_overlay_sfx("ink")
+    return {
+        "status": "success",
+        "drawn": "guide",
+        "engine": "roamies-ink-js",
+        "step_count": len(beats),
+        "resolved_targets": resolved_count,
         "subscribers": subscribers,
         "event": event,
     }

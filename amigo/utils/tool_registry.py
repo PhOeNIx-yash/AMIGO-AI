@@ -1394,7 +1394,16 @@ def _tool_screen_pen_annotate(params, query, spoken):
     normalized = bool(params.get("normalized", True))
 
     try:
-        from amigo.services.screen_pen import screen_pen_annotate
+        from amigo.services.screen_pen import screen_pen_annotate, screen_pen_guide
+        if action == "guide":
+            res = screen_pen_guide(
+                steps=params.get("steps") or ([label] if label else []),
+                app=params.get("app"),
+                duration=duration,
+            )
+            msg = f"Showing a {res.get('step_count', 0)}-step visual guide on screen." if res.get("status") == "success" else str(res.get("error") or "Could not draw guide.")
+            return msg, None, res
+
         res = screen_pen_annotate(
             action=action, x=x, y=y, x2=x2, y2=y2,
             label=label, color=color, duration=duration, normalized=normalized,
@@ -1906,12 +1915,13 @@ TOOL_DEFINITIONS = [
           {"setting": _p("string", "Settings section name or 'home'")}),
     _tool("control_windows_system", "Control hardware power profiles (battery saver, balanced, high performance). Never use for lock/sleep/restart/shutdown (use power_control), window layout (use window_mgmt), or standard Windows settings (use change_setting). Ex: 'turn on battery saver', 'switch to power saver mode', 'switch to balanced power'.",
           {"action": _p("string", "Action name")}),
-    _tool("screen_pen_annotate", "Draw callouts or visual diagrams/explanations (action='diagram', topic) when asked to explain/show visually or visibly. Ex: 'circle the download button on screen', 'explain gravity visually with a diagram', 'show how an engine works visibly'.",
-          {"action": _p("string", "circle | arrow | box | underline | diagram | clear"),
+    _tool("screen_pen_annotate", "Point out UI elements on screen, draw callouts, step-by-step guides (action='guide', steps), or visual diagrams/explanations (action='diagram', topic). Ex: 'where is the research button?', 'point out the download button', 'circle Save on screen', 'explain gravity visually with a diagram'.",
+          {"action": _p("string", "circle | arrow | box | underline | diagram | guide | clear"),
            "topic": _p("string", "Topic for visual diagram"),
            "x": _p("integer", "X coordinate 0-1000"),
            "y": _p("integer", "Y coordinate 0-1000"),
-           "label": _p("string", "Annotation note")}, ["action"]),
+           "label": _p("string", "UI element text to point out or annotation note"),
+           "steps": _p("array", "Optional list of step targets/captions for action='guide'")}, ["action"]),
     _tool("change_setting", "Change, toggle, turn on/off a named Windows toggle/setting (Wi-Fi, Bluetooth, dark mode, night light). Set value='on', 'off', or 'toggle' matching user words (use 'off' for turn off, 'toggle' only for toggle/switch). Never guess dark mode if setting name is missing — ask via chat. Ex: 'toggle bluetooth', 'turn wi-fi off', 'switch night light on'.",
           {"setting": _p("string", "Concrete setting name"),
            "value": _p("string", "on | off | toggle (match user intent)")}, ["setting"]),

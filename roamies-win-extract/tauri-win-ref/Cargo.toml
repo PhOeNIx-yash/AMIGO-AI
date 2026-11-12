@@ -1,0 +1,34 @@
+[package]
+name = "roamies"
+version = "0.1.34"
+edition = "2021"
+license = "AGPL-3.0-only"
+description = "Roamies: AI desktop companions"
+repository = "https://github.com/KenKaiii/Roamies"
+homepage = "https://github.com/KenKaiii/Roamies"
+
+[build-dependencies]
+tauri-build = { version = "=2.7.4", features = [] }
+
+[dependencies]
+tauri = { version = "=2.12.5", features = ["tray-icon", "macos-private-api"] }
+serde_json = "=1.0.154"
+global-hotkey = "=0.9.0"
+tauri-plugin-single-instance = "=2.5.4"
+tauri-plugin-updater = "=2.14.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.5"
+objc2-service-management = { version = "=0.3.2", default-features = false, features = ["std", "SMAppService", "objc2", "objc2-foundation"] }
+
+# Linux: the overlay's input shape, clipboard and screenshots (GTK, the version Tauri uses), the pointer on X11,
+# and the desktop portal on Wayland. All three are already in Cargo.lock through Tauri and its plugins.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "=0.18.2"
+x11rb = "=0.13.2"
+zbus = "=5.19.0"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
