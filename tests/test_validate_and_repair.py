@@ -254,9 +254,8 @@ class TestValidateAndRepair(SafeOSTestCase):
             self.assertTrue(res["ok"])
             self.assertEqual(events, [{"ev": "step", "do": "click"}])
 
-        # 3. screen_vision.inspect_screen enriches context from hands when available
-        with patch("amigo.services.hands.is_available", return_value=True), \
-             patch("amigo.services.hands.describe_active_window", return_value={
+        # 3. screen_vision.inspect_screen uses hands.describe_active_window() directly (no Python fallback)
+        with patch("amigo.services.hands.describe_active_window", return_value={
                  "ok": True,
                  "app": "Notepad",
                  "window_title": "notes.txt - Notepad",
@@ -271,7 +270,7 @@ class TestValidateAndRepair(SafeOSTestCase):
             self.assertEqual(vis["window_title"], "notes.txt - Notepad")
             self.assertIn("Hello from UIA", mock_ai.call_args.kwargs["doc_context"])
 
-        # 4. screen_act validation & execution
+        # 4. screen_act validation & execution (Rust native hands.act, no Python fallback)
         self.assertEqual(len(_validate_action_plan([{"tool": "screen_act", "params": {"action": "click"}}])), 1)
         self.assertEqual(len(_validate_action_plan([{"tool": "screen_act", "params": {"action": "fill", "target": "Search"}}])), 1)
         self.assertEqual(
@@ -283,12 +282,25 @@ class TestValidateAndRepair(SafeOSTestCase):
             [],
         )
 
-        with patch("amigo.services.hands.is_available", return_value=True), \
-             patch("amigo.services.hands.act", return_value={"ok": True, "done": ["clicked Save"]}) as mock_act:
+        with patch("amigo.services.hands.act", return_value={"ok": True, "done": ["clicked Save"]}) as mock_act:
             msg, _, meta = execute_tool("screen_act", {"action": "click", "target": "Save"}, "click Save", "")
             mock_act.assert_called_once()
             self.assertIn("clicked Save", msg)
             self.assertTrue(meta["hands_used"])
+
+        # 5. screen_pen_annotate emits Roamies JS ink.js beats to SSE subscribers (no tkinter)
+        from amigo.services.screen_pen import screen_pen_annotate, subscribe_overlay_events, unsubscribe_overlay_events
+
+        q = subscribe_overlay_events()
+        try:
+            pen_res = screen_pen_annotate("box", x=60, y=130, x2=100, y2=150, label="Found", normalized=False)
+            self.assertEqual(pen_res["engine"], "roamies-ink-js")
+            ev = q.get_nowait()
+            self.assertEqual(ev["type"], "ink")
+            self.assertEqual(ev["beats"][0]["marks"][0]["kind"], "rect")
+            self.assertEqual(ev["beats"][0]["marks"][0]["label"], "Found")
+        finally:
+            unsubscribe_overlay_events(q)
 
 
 if __name__ == "__main__":

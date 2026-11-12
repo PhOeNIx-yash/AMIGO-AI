@@ -804,39 +804,15 @@ def _tool_screen_act(params, query, spoken):
 
     from amigo.services import hands
 
-    if hands.is_available():
-        plan = {"steps": [step]}
-        if app:
-            plan["app"] = app
-        res = hands.act(plan)
-        if res.get("ok"):
-            done = res.get("done")
-            summary = ", ".join(done) if isinstance(done, list) and done else f"Completed {action}"
-            return f"{summary}.", None, {"hands_used": True, "plan": plan}
-        return str(res.get("error") or f"Could not {action} on screen."), None, {"hands_used": True, "error": res.get("error")}
-
-    # Fallback when roamies-hands.exe is not compiled yet
-    if action == "type":
-        os_automation.type_text(text)
-        return "Typed the text.", None, {"hands_used": False}
-    if action == "press":
-        keys = text or target
-        os_automation.press_shortcut(keys)
-        return f"Pressed {keys}.", None, {"hands_used": False}
-    if action == "scroll":
-        if target.lower() == "up":
-            os_automation.scroll_up()
-        else:
-            os_automation.scroll_down()
-        scroll_dir = "up" if target.lower() == "up" else "down"
-        return f"Scrolled {scroll_dir}.", None, {"hands_used": False}
-
-    return (
-        "UI element clicking and filling require roamies-hands.exe, which is not built yet. "
-        "Build roamies-win-extract/hands-win with Visual Studio C++ Build Tools first.",
-        None,
-        {"hands_used": False, "missing_binary": True},
-    )
+    plan = {"steps": [step]}
+    if app:
+        plan["app"] = app
+    res = hands.act(plan)
+    if res.get("ok"):
+        done = res.get("done")
+        summary = ", ".join(done) if isinstance(done, list) and done else f"Completed {action}"
+        return f"{summary}.", None, {"hands_used": True, "plan": plan}
+    return str(res.get("error") or f"Could not {action} on screen."), None, {"hands_used": True, "error": res.get("error")}
 
 
 _audio_playing_cache = {"status": False, "time": 0.0}

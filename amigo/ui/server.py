@@ -1394,6 +1394,84 @@ def initialize_amigo_async():
     print("[ AMIGO ] All systems ready!")
 
 
+_OVERLAY_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "roamies-win-extract", "overlay")
+)
+_OVERLAY_BRIDGE_SCRIPT = (
+    "<script>(() => {"
+    "const es = new EventSource('/api/overlay/stream');"
+    "es.onmessage = (ev) => {"
+    "try {"
+    "const msg = JSON.parse(ev.data);"
+    "if (msg.type === 'ink') window.Roamie?.ink?.play(msg);"
+    "else if (msg.type === 'ink_clear') window.Roamie?.ink?.clear(msg);"
+    "} catch (e) {}"
+    "};"
+    "})();</script>"
+)
+
+
+@app.route("/overlay/")
+@app.route("/overlay/<path:filename>")
+def serve_roamies_overlay(filename: str = "desktop.html"):
+    from flask import Response, send_from_directory
+
+    if not os.path.isdir(_OVERLAY_DIR):
+        return jsonify({"error": "Roamies overlay directory not found"}), 404
+    if filename in ("", "desktop.html"):
+        html_path = os.path.join(_OVERLAY_DIR, "desktop.html")
+        with open(html_path, "r", encoding="utf-8") as fh:
+            html = fh.read()
+        html = html.replace("</body>", f"{_OVERLAY_BRIDGE_SCRIPT}</body>")
+        return Response(html, mimetype="text/html")
+    return send_from_directory(_OVERLAY_DIR, filename)
+
+
+@app.route("/api/overlay/stream")
+def api_overlay_stream():
+    import queue as _queue
+    from flask import Response
+    from amigo.services.screen_pen import subscribe_overlay_events, unsubscribe_overlay_events
+
+    q = subscribe_overlay_events()
+
+    def gen():
+        try:
+            yield ": connected\n\n"
+            while True:
+                try:
+                    ev = q.get(timeout=20)
+                    yield f"data: {json.dumps(ev)}\n\n"
+                except _queue.Empty:
+                    yield ": keepalive\n\n"
+        finally:
+            unsubscribe_overlay_events(q)
+
+    return Response(gen(), mimetype="text/event-stream")
+
+
+@app.route("/api/overlay/draw", methods=["POST"])
+def api_overlay_draw():
+    from amigo.services.screen_pen import push_overlay_event, screen_pen_annotate
+
+    data = request.get_json(silent=True) or {}
+    if data.get("type") in ("ink", "ink_clear"):
+        delivered = push_overlay_event(data)
+        return jsonify({"status": "success", "delivered": delivered})
+    res = screen_pen_annotate(
+        action=str(data.get("action") or "circle"),
+        x=data.get("x", 500),
+        y=data.get("y", 500),
+        x2=data.get("x2"),
+        y2=data.get("y2"),
+        label=data.get("label"),
+        color=str(data.get("color") or "#00F0FF"),
+        duration=float(data.get("duration", 4.0)),
+        normalized=bool(data.get("normalized", True)),
+    )
+    return jsonify(res)
+
+
 def launch_server(port: int = 5000, open_browser: bool = True) -> None:
     def sig_handler(_signum, _frame):
         _cleanup_all()
