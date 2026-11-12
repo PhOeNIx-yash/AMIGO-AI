@@ -131,6 +131,16 @@ def _sanitize_mark(mk: dict[str, Any]) -> dict[str, Any]:
                 cp["motion"] = {"do": cp["motion"].split("|", 1)[0].strip()}
             clean_parts.append(cp)
         out["parts"] = clean_parts
+    if out.get("kind") == "flow" and isinstance(out.get("nodes"), list):
+        node_ids = {str(n.get("id")) for n in out["nodes"] if isinstance(n, dict) and n.get("id")}
+        if isinstance(out.get("links"), list):
+            for lk in out["links"]:
+                if isinstance(lk, dict):
+                    for end in ("from", "to"):
+                        nid = str(lk.get(end) or "").strip()
+                        if nid and nid not in node_ids:
+                            node_ids.add(nid)
+                            out["nodes"].append({"id": nid, "text": nid.title(), "tone": "teal"})
     return out
 
 
@@ -139,32 +149,64 @@ def _generate_visual_diagram_beats(topic: str) -> tuple[list[dict[str, Any]], st
     from amigo.core.llm_agent import query_local_llm, sanitize_for_tts
 
     prompt = (
-        f"Create a visual explanation diagram for '{topic}' as strict JSON with keys 'summary' (1-2 sentences) "
-        f"and 'marks' (array of 2-3 Roamies ink marks). Use concrete single values (never '|'). Allowed mark kinds: "
-        f"1) {{\"kind\":\"model\",\"title\":\"...\",\"parts\":[{{\"shape\":\"sphere\",\"at\":[0,0,0],\"size\":[1,1,1],\"tone\":\"teal\",\"label\":\"...\",\"motion\":{{\"do\":\"spin\"}}}}]}}, "
-        f"2) {{\"kind\":\"flow\",\"title\":\"...\",\"nodes\":[{{\"id\":\"a\",\"text\":\"...\",\"tone\":\"teal\"}}],\"links\":[{{\"from\":\"a\",\"to\":\"b\",\"flow\":true}}]}}, "
-        f"3) {{\"kind\":\"card\",\"title\":\"...\",\"text\":\"...\"}}, "
-        f"4) {{\"kind\":\"circle\",\"at\":{{\"rect\":[400,250,180,180]}},\"label\":\"...\",\"tone\":\"teal\"}}. "
-        f"Output ONLY valid JSON."
+        f"Explain '{topic}' visually as compact JSON with 3 keys: "
+        f"'summary' (1-2 short sentences), "
+        f"'parts' (3 objects: {{\"shape\":\"sphere|torus|cone|cylinder|box\",\"label\":\"2-word name\",\"tone\":\"sky|amber|coral|teal\"}}), "
+        f"'steps' (3-4 short stage strings in order). Output ONLY valid JSON."
     )
-    raw = query_local_llm(prompt, max_tokens=450)
-    summary = f"Drew a visual diagram for {topic}."
+    raw = query_local_llm(prompt, max_tokens=320)
+    summary = f"Here is a visual breakdown of {topic}."
     marks: list[dict[str, Any]] = []
+    offsets = [(0, 0.7, 0), (0, -0.7, 0), (1.3, 0, 0), (-1.3, 0, 0)]
+    motions = [{"do": "pulse"}, {"do": "spin"}, {"do": "orbit"}, {"do": "spin"}]
+    tones = ["sky", "amber", "coral", "teal"]
+
     if raw:
         m = re.search(r"\{.*\}", raw, re.DOTALL)
         if m:
             try:
                 parsed = json.loads(m.group(0))
-                if isinstance(parsed.get("marks"), list):
-                    marks = [_sanitize_mark(mk) for mk in parsed["marks"] if isinstance(mk, dict) and mk.get("kind")]
                 if parsed.get("summary"):
                     summary = sanitize_for_tts(str(parsed["summary"])) or summary
+
+                raw_parts = parsed.get("parts") or []
+                valid_shapes = {"box", "sphere", "cylinder", "cone", "torus"}
+                default_shapes = ["cylinder", "torus", "cone", "box"]
+                if isinstance(raw_parts, list) and raw_parts:
+                    model_parts = []
+                    for idx, p in enumerate(raw_parts[:4]):
+                        if not isinstance(p, dict):
+                            continue
+                        raw_shape = str(p.get("shape") or "").split("|", 1)[0].strip().lower()
+                        shape = raw_shape if raw_shape in valid_shapes else default_shapes[idx % len(default_shapes)]
+                        tone = str(p.get("tone") or tones[idx % len(tones)]).split("|", 1)[0].strip()
+                        label = str(p.get("label") or f"Part {idx + 1}")[:24]
+                        model_parts.append({
+                            "shape": shape,
+                            "at": list(offsets[idx % len(offsets)]),
+                            "size": [1.0, 1.0, 0.5] if shape == "torus" else [1.0, 1.1, 1.0],
+                            "tone": tone,
+                            "label": label,
+                            "motion": motions[idx % len(motions)],
+                        })
+                    if model_parts:
+                        marks.append({"kind": "model", "title": topic.title()[:40], "parts": model_parts})
+
+                raw_steps = parsed.get("steps") or []
+                if isinstance(raw_steps, list) and len(raw_steps) >= 2:
+                    nodes = []
+                    links = []
+                    for idx, st in enumerate(raw_steps[:5]):
+                        nid = f"s{idx + 1}"
+                        nodes.append({"id": nid, "text": str(st)[:60], "tone": tones[idx % len(tones)]})
+                        if idx > 0:
+                            links.append({"from": f"s{idx}", "to": nid, "flow": True})
+                    marks.append({"kind": "flow", "title": f"{topic.title()[:28]} Flow", "nodes": nodes, "links": links})
             except Exception:
                 pass
 
-    if not marks:
-        marks = [{"kind": "card", "title": topic.title()[:60], "text": summary, "tone": "teal"}]
-    return [{"marks": marks, "wait": 6.0}], summary
+    marks.append({"kind": "card", "title": topic.title()[:60], "text": summary, "tone": "teal"})
+    return [{"marks": marks, "wait": 10.0}], summary
 
 
 def screen_pen_annotate(
@@ -203,7 +245,7 @@ def screen_pen_annotate(
             "id": f"ink-{int(time.time() * 1000)}",
             "seg": 0,
             "last": True,
-            "fade": max(4.0, float(duration)),
+            "fade": max(18.0, float(duration)),
             "beats": diag_beats,
         }
         subscribers = push_overlay_event(event)
