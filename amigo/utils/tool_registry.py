@@ -1350,9 +1350,9 @@ def _tool_screen_pen_annotate(params, query, spoken):
 
 def _tool_change_setting(params, query, spoken):
     params = params if isinstance(params, dict) else {}
-    if not params.get("setting") and query:
-        logger.warning("[SHADOW-FALLBACK] change_setting: setting fallback to query fired: '%s'", query)
-    s = str(params.get("setting") or query or "").strip()
+    s = str(params.get("setting") or "").strip()
+    if not s:
+        return "Which setting would you like to change?", None
     val = params.get("value")
     confirmed = bool(params.get("confirmed", False))
 
