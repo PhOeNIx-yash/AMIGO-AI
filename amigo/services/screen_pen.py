@@ -190,7 +190,7 @@ def _generate_visual_diagram_beats(topic: str) -> tuple[list[dict[str, Any]], st
                             "motion": motions[idx % len(motions)],
                         })
                     if model_parts:
-                        marks.append({"kind": "model", "title": topic.title()[:40], "parts": model_parts})
+                        marks.append({"kind": "model", "part": f"p{len(marks) + 1}", "title": topic.title()[:40], "parts": model_parts})
 
                 raw_steps = parsed.get("steps") or []
                 if isinstance(raw_steps, list) and len(raw_steps) >= 2:
@@ -201,12 +201,12 @@ def _generate_visual_diagram_beats(topic: str) -> tuple[list[dict[str, Any]], st
                         nodes.append({"id": nid, "text": str(st)[:60], "tone": tones[idx % len(tones)]})
                         if idx > 0:
                             links.append({"from": f"s{idx}", "to": nid, "flow": True})
-                    marks.append({"kind": "flow", "title": f"{topic.title()[:28]} Flow", "nodes": nodes, "links": links})
+                    marks.append({"kind": "flow", "part": f"p{len(marks) + 1}", "title": f"{topic.title()[:28]} Flow", "nodes": nodes, "links": links})
             except Exception:
                 pass
 
-    marks.append({"kind": "card", "title": topic.title()[:60], "text": summary, "tone": "teal"})
-    return [{"marks": marks, "wait": 10.0}], summary
+    marks.append({"kind": "card", "part": f"p{len(marks) + 1}", "title": topic.title()[:60], "text": summary, "tone": "teal"})
+    return [{"marks": marks}], summary
 
 
 def screen_pen_annotate(
@@ -278,6 +278,7 @@ def screen_pen_annotate(
 
     if label:
         mark["label"] = str(label)[:40]
+    mark["part"] = "p1"
 
     event = {
         "type": "ink",
@@ -285,7 +286,7 @@ def screen_pen_annotate(
         "seg": 0,
         "last": True,
         "fade": max(2.0, float(duration)),
-        "beats": [{"marks": [mark], "wait": max(0.5, float(duration))}],
+        "beats": [{"marks": [mark]}],
     }
     subscribers = push_overlay_event(event)
     return {
