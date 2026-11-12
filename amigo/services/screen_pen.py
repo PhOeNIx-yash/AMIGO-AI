@@ -10,6 +10,7 @@ import json
 import queue
 import re
 import threading
+import time
 from typing import Any, Dict, Optional
 
 _SUBSCRIBERS_LOCK = threading.Lock()
@@ -186,7 +187,14 @@ def screen_pen_annotate(
             summary = f"Drew a visual diagram for {diag_topic}."
         else:
             diag_beats, summary = _generate_visual_diagram_beats(diag_topic)
-        event = {"type": "ink", "beats": diag_beats}
+        event = {
+            "type": "ink",
+            "id": f"ink-{int(time.time() * 1000)}",
+            "seg": 0,
+            "last": True,
+            "fade": max(4.0, float(duration)),
+            "beats": diag_beats,
+        }
         subscribers = push_overlay_event(event)
         return {
             "status": "success",
@@ -220,6 +228,10 @@ def screen_pen_annotate(
 
     event = {
         "type": "ink",
+        "id": f"ink-{int(time.time() * 1000)}",
+        "seg": 0,
+        "last": True,
+        "fade": max(2.0, float(duration)),
         "beats": [{"marks": [mark], "wait": max(0.5, float(duration))}],
     }
     subscribers = push_overlay_event(event)
