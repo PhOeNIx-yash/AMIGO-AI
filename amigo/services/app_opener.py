@@ -32,6 +32,7 @@ _SKIP_DIRS = frozenset({
     "windows", "system32", "syswow64", "winsxs", "drivers",
     "node_modules", ".git", "__pycache__", ".venv", "venv",
     "temp", "tmp", "cache", "logs", "appdata", "programdata",
+    "scratch", "rag_data",
 })
 
 _CLEAN_WORDS = frozenset({
@@ -42,6 +43,14 @@ _CLEAN_WORDS = frozenset({
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, "..", ".."))
+_PROJECT_ROOT_REAL = os.path.realpath(_PROJECT_ROOT).lower()
+
+
+def _is_excluded_project_path(path: str) -> bool:
+    if not path:
+        return False
+    p_real = os.path.realpath(os.path.abspath(path)).lower()
+    return p_real == _PROJECT_ROOT_REAL or p_real.startswith(_PROJECT_ROOT_REAL + os.sep)
 
 APP_CACHE_FILE = os.path.join(_PROJECT_ROOT, "rag_data", "app_index.json")
 FILE_CACHE_FILE = os.path.join(_PROJECT_ROOT, "rag_data", "file_index.json")
@@ -340,8 +349,9 @@ def _load_cached_file_index() -> bool:
                 data = json.load(f)
             files = data.get("files", [])
             if files and isinstance(files, list):
+                filtered = [tuple(item) for item in files if item and not _is_excluded_project_path(str(item[0]))]
                 with _file_index_lock:
-                    _file_index = [tuple(item) for item in files]
+                    _file_index = filtered
                     _file_index_built = True
                 return True
         except Exception:
@@ -378,7 +388,15 @@ def _build_file_index() -> None:
             continue
         try:
             for root, dirs, files in os.walk(base, topdown=True):
-                dirs[:] = [d for d in dirs if not d.startswith((".", "$")) and d.lower() not in _SKIP_DIRS]
+                if _is_excluded_project_path(root):
+                    dirs.clear()
+                    continue
+                dirs[:] = [
+                    d for d in dirs
+                    if not d.startswith((".", "$"))
+                    and d.lower() not in _SKIP_DIRS
+                    and not _is_excluded_project_path(os.path.join(root, d))
+                ]
                 rel_depth = len(os.path.relpath(root, base).split(os.sep))
                 if rel_depth > max_depth:
                     dirs.clear()
@@ -447,18 +465,7 @@ def _find_best_app(query: str) -> Tuple[Optional[str], Optional[str]]:
     return None, None
 
 
-def is_known_app(app_name: str) -> bool:
-    """Validate an application name using existing app_opener PATH lookup and _find_best_app index scorer."""
-    raw = (app_name or "").strip().lower()
-    if not raw:
-        return False
-    norm_q = _normalize(raw)
-    if not norm_q:
-        return False
-    for cand in (norm_q, raw, norm_q.replace(" ", "")):
-        if shutil.which(cand) or shutil.which(f"{cand}.exe"):
-            return True
-
+def _ensure_app_cache_loaded() -> None:
     if not _app_dict and os.path.isfile(APP_CACHE_FILE):
         try:
             with open(APP_CACHE_FILE, "r", encoding="utf-8") as f:
@@ -470,20 +477,30 @@ def is_known_app(app_name: str) -> bool:
     if not _app_dict:
         ensure_built()
 
-    _, path = _find_best_app(raw)
-    return bool(path)
+
+def is_known_app(app_name: str) -> bool:
+    """Validate app name by reusing _find_best_app against app_index.json and system PATH."""
+    raw = (app_name or "").strip().lower()
+    if not raw:
+        return False
+    norm_q = _normalize(raw)
+    if not norm_q:
+        return False
+    if shutil.which(norm_q) or shutil.which(f"{norm_q}.exe") or shutil.which(raw):
+        return True
+    _ensure_app_cache_loaded()
+    matched_name, _ = _find_best_app(raw)
+    return matched_name is not None
 
 
 def is_known_folder(folder_name: str) -> bool:
-    """Validate a folder name against real directories on disk."""
+    """Validate folder name against real directories on disk."""
     raw = (folder_name or "").strip()
     if not raw:
         return False
     if os.path.isdir(raw):
         return True
-    clean = re.sub(r"\b(?:folder|directory|my|open|show)\b", "", raw.lower()).strip()
-    if not clean or len(clean) < 3:
-        return False
+    clean = raw.lower()
     home = os.path.expanduser("~")
     onedrive = os.environ.get("OneDrive") or os.environ.get("OneDriveConsumer") or os.path.join(home, "OneDrive")
     for base in (home, onedrive):
@@ -491,10 +508,8 @@ def is_known_folder(folder_name: str) -> bool:
             try:
                 with os.scandir(base) as entries:
                     for entry in entries:
-                        if entry.is_dir() and not entry.name.startswith("."):
-                            d_low = entry.name.lower()
-                            if clean == d_low or (clean in d_low or d_low in clean):
-                                return True
+                        if entry.is_dir() and not entry.name.startswith(".") and entry.name.lower() == clean:
+                            return True
             except OSError:
                 pass
     return False

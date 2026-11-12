@@ -1,0 +1,11 @@
+{
+  "wifi": ["wifi", "wi-fi", "wireless"],
+  "bluetooth": ["bluetooth", "bt"],
+  "theme": ["theme", "darkmode", "lightmode", "color_theme"],
+  "audio": ["audio", "sound", "volume"],
+  "brightness": ["brightness", "display"],
+  "settings": ["settings", "page"],
+  "power": ["power", "sleep", "restart", "shutdown", "lock"],
+  "power_actions": ["sleep", "restart", "shutdown", "lock"]
+}
+

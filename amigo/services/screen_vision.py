@@ -1,158 +1,73 @@
 """
 Screen Vision & OCR Module for Amigo Voice Assistant.
-Captures screen content, extracts visible text using native Windows OCR (winocr / pytesseract),
-and answers contextual visual questions about open windows, errors, code, or documents.
+Uses native Rust `roamies-hands.exe` (`amigo/services/hands.py`) for foreground window,
+browser URL, UI Automation (UIA) control tree/text, screen capture, and Windows OCR.
 """
 
+from __future__ import annotations
+
 import asyncio
-import ctypes
 import logging
 import os
 import re
+import tempfile
+import threading
 from PIL import Image
+
+from amigo.services import hands
 
 logger = logging.getLogger("amigo.screen_vision")
 
-try:
-    import pyautogui
-except ImportError:
-    pyautogui = None
-
-try:
-    from PIL import ImageGrab
-except ImportError:
-    ImageGrab = None
-
-# winocr and pytesseract are imported lazily in read_text_from_image to prevent Direct3D/Vulkan loader conflicts
-
 
 def get_active_window_title() -> str:
-    """Returns the title bar text of the currently active foreground window on Windows."""
-    try:
-        user32 = ctypes.windll.user32
-        hwnd = user32.GetForegroundWindow()
-        if not hwnd:
-            return ""
-        length = user32.GetWindowTextLengthW(hwnd)
-        if length > 0:
-            buf = ctypes.create_unicode_buffer(length + 1)
-            user32.GetWindowTextW(hwnd, buf, length + 1)
-            return buf.value.strip()
-    except Exception:
-        pass
+    """Return the active foreground window title using native Rust `hands.front()`."""
+    res = hands.front()
+    if res.get("ok"):
+        return str(res.get("title") or res.get("app") or "").strip()
     return ""
 
 
 def wait_for_window_active(target_name: str, timeout: float = 5.0, poll_interval: float = 0.1) -> bool:
-    """
-    Waits for a window containing target_name in its title to become the active foreground window.
-    
-    Args:
-        target_name: Partial name/title of the window to wait for (case-insensitive)
-        timeout: Maximum time to wait in seconds
-        poll_interval: How often to check the active window in seconds
-    
-    Returns:
-        True if the window became active within timeout, False otherwise
-    """
+    """Wait for a window containing *target_name* in its title/app to become foreground."""
     import time
     target_lower = target_name.lower()
     start_time = time.time()
-    
+
     while time.time() - start_time < timeout:
-        active_title = get_active_window_title()
-        if active_title and target_lower in active_title.lower():
+        res = hands.front()
+        haystack = f"{res.get('app', '')} {res.get('title', '')}".lower()
+        if target_lower in haystack:
             return True
         time.sleep(poll_interval)
-    
+
     return False
 
 
-def capture_screen_image(save_path: str | None = "amigo_screenshot.png"):
-    """
-    Captures the current desktop screen and optionally saves it as an image file.
-    Uses multiple fallbacks (pyautogui -> PIL ImageGrab -> ctypes GDI) for reliability.
-    """
-    screenshot = None
+def capture_screen_image(save_path: str | None = "amigo_screenshot.png", target: str = "screen"):
+    """Capture the screen (or target window) via native Rust `hands.capture()` and return a PIL Image."""
+    out_path = save_path
+    cleanup = False
+    if not out_path:
+        fd, out_path = tempfile.mkstemp(suffix=".png", prefix="amigo_cap_")
+        os.close(fd)
+        cleanup = True
 
-    # Method 1: pyautogui
-    if pyautogui is not None:
-        try:
-            screenshot = pyautogui.screenshot()
-        except Exception:
-            screenshot = None
+    try:
+        res = hands.capture(out_path, target=target)
+        if not res.get("ok") or not os.path.exists(out_path):
+            return None
+        with Image.open(out_path) as img:
+            return img.copy()
+    except Exception as exc:
+        logger.debug(f"[Screen Vision] hands.capture failed: {exc}")
+        return None
+    finally:
+        if cleanup and out_path and os.path.exists(out_path):
+            try:
+                os.remove(out_path)
+            except OSError:
+                pass
 
-    # Method 2: PIL ImageGrab
-    if screenshot is None and ImageGrab is not None:
-        try:
-            screenshot = ImageGrab.grab(all_screens=True)
-        except Exception:
-            screenshot = None
-
-    # Method 3: Windows GDI via ctypes
-    if screenshot is None:
-        try:
-            user32 = ctypes.windll.user32
-            gdi32 = ctypes.windll.gdi32
-
-            width = user32.GetSystemMetrics(0)
-            height = user32.GetSystemMetrics(1)
-
-            hdc_screen = user32.GetDC(0)
-            hdc_mem = gdi32.CreateCompatibleDC(hdc_screen)
-            hbm = gdi32.CreateCompatibleBitmap(hdc_screen, width, height)
-            gdi32.SelectObject(hdc_mem, hbm)
-
-            # Copy screen to memory DC
-            gdi32.BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, 0, 0, 0x00CC0020)  # SRCCOPY
-
-            # Convert bitmap data to PIL Image
-            class BITMAPINFOHEADER(ctypes.Structure):
-                _fields_ = [
-                    ("biSize", ctypes.c_uint32),
-                    ("biWidth", ctypes.c_int32),
-                    ("biHeight", ctypes.c_int32),
-                    ("biPlanes", ctypes.c_uint16),
-                    ("biBitCount", ctypes.c_uint16),
-                    ("biCompression", ctypes.c_uint32),
-                    ("biSizeImage", ctypes.c_uint32),
-                    ("biXPelsPerMeter", ctypes.c_int32),
-                    ("biYPelsPerMeter", ctypes.c_int32),
-                    ("biClrUsed", ctypes.c_uint32),
-                    ("biClrImportant", ctypes.c_uint32),
-                ]
-
-            bmi = BITMAPINFOHEADER()
-            bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
-            bmi.biWidth = width
-            bmi.biHeight = -height  # top-down
-            bmi.biPlanes = 1
-            bmi.biBitCount = 32
-            bmi.biCompression = 0
-
-            buffer_len = width * height * 4
-            raw_data = ctypes.create_string_buffer(buffer_len)
-            gdi32.GetDIBits(hdc_mem, hbm, 0, height, raw_data, ctypes.byref(bmi), 0)
-
-            screenshot = Image.frombuffer("RGBA", (width, height), raw_data, "raw", "BGRA", 0, 1).convert("RGB")
-
-            # Cleanup GDI handles
-            gdi32.DeleteObject(hbm)
-            gdi32.DeleteDC(hdc_mem)
-            user32.ReleaseDC(0, hdc_screen)
-        except Exception:
-            screenshot = None
-
-    if screenshot is not None and save_path:
-        try:
-            screenshot.save(save_path)
-        except Exception:
-            pass
-
-    return screenshot
-
-
-import threading
 
 _ocr_loop: asyncio.AbstractEventLoop | None = None
 _ocr_loop_lock = threading.Lock()
@@ -167,76 +82,75 @@ def _get_ocr_loop() -> asyncio.AbstractEventLoop:
 
 
 def read_text_from_image(image) -> str:
-    """Extracts text from a PIL Image using native Windows OCR (winocr) or pytesseract."""
+    """Extract text from a PIL Image using native Windows Media OCR (`winocr`)."""
     if image is None:
         return ""
-
-    # 1. winocr (native Windows Media OCR - 100% offline, hardware-accelerated)
     try:
         import winocr
     except ImportError:
-        winocr = None
+        return ""
 
-    if winocr is not None:
-        try:
-            loop = _get_ocr_loop()
-            res = loop.run_until_complete(winocr.recognize_pil(image))
-            text = res.text if hasattr(res, "text") else str(res)
-            if text and len(text.strip()) > 3:
-                return text.strip()
-        except Exception:
-            pass
-
-    # 2. pytesseract fallback
     try:
-        import pytesseract
-    except ImportError:
-        pytesseract = None
-
-    if pytesseract is not None:
-        try:
-            text = pytesseract.image_to_string(image)
-            if text and len(text.strip()) > 3:
-                return text.strip()
-        except Exception:
-            pass
-
-    return ""
+        loop = _get_ocr_loop()
+        res = loop.run_until_complete(winocr.recognize_pil(image))
+        text = res.text if hasattr(res, "text") else str(res)
+        return text.strip() if text and len(text.strip()) > 3 else ""
+    except Exception:
+        return ""
 
 
 def get_screen_vision_context() -> str:
-    """
-    Captures the desktop screen and returns clean text extracted from the screen
-    along with active window context.
-    """
-    img = capture_screen_image()
+    """Return clean visible text from the active window via native Rust `hands`."""
+    info = hands.describe_active_window()
+    texts = info.get("texts") or ""
+    if isinstance(texts, list):
+        texts = "\n".join(str(t) for t in texts)
+    if texts:
+        return re.sub(r"\n{3,}", "\n\n", str(texts))[:2500]
+    img = capture_screen_image(save_path=None)
     if img is None:
         return ""
     text = read_text_from_image(img)
-    if text:
-        clean = re.sub(r"\n{3,}", "\n\n", text)
-        return clean[:2500]
-    return ""
+    return re.sub(r"\n{3,}", "\n\n", text)[:2500] if text else ""
 
 
 def inspect_screen(question: str = "") -> dict:
     """
-    Captures the desktop screen, extracts visible text and active window info,
-    and returns rich multimodal vision analysis and metadata.
+    Inspect the active screen/window via native Rust `hands` (UIA controls, browser URL,
+    foreground app/title, and screenshot capture) and answer *question*.
     """
-    window_title = get_active_window_title() or "Active Window"
-    save_path = "amigo_screenshot.png"
-    screenshot = capture_screen_image(save_path=save_path)
+    hands_info = hands.describe_active_window()
+    hands_used = bool(hands_info.get("ok"))
+    window_title = str(hands_info.get("window_title") or "Active Window").strip()
 
-    screen_text = ""
-    if screenshot is not None:
-        screen_text = read_text_from_image(screenshot)
-        if screen_text:
-            screen_text = re.sub(r"\n{3,}", "\n\n", screen_text)[:3000]
+    save_path = "amigo_screenshot.png"
+    screenshot = capture_screen_image(save_path=save_path, target="front" if hands_used else "screen")
+
+    uia_raw = hands_info.get("texts") or ""
+    if isinstance(uia_raw, list):
+        uia_raw = "\n".join(str(t) for t in uia_raw)
+    uia_texts = str(uia_raw).strip()
+
+    controls = hands_info.get("controls") or []
+    ctrl_lines = [f"[{c.get('id')}] {c.get('role')}: {c.get('label')}" for c in controls[:25] if c.get("label")]
+
+    ocr_text = ""
+    if not uia_texts and not ctrl_lines and screenshot is not None:
+        ocr_text = read_text_from_image(screenshot)
+        if ocr_text:
+            ocr_text = re.sub(r"\n{3,}", "\n\n", ocr_text)[:3000]
+
+    screen_text = uia_texts[:3000] if uia_texts else ocr_text
 
     context_parts = []
     if window_title:
-        context_parts.append(f"Active Foreground Window: {window_title}")
+        app_name = hands_info.get("app")
+        title_line = f"{app_name} - {window_title}" if app_name and app_name not in window_title else window_title
+        context_parts.append(f"Active Foreground Window: {title_line}")
+    if hands_info.get("url"):
+        context_parts.append(f"Browser URL: {hands_info['url']}")
+    if ctrl_lines:
+        context_parts.append("Interactive Controls:\n" + "\n".join(ctrl_lines))
     if screen_text:
         context_parts.append(f"Visible Screen Text & Code:\n{screen_text}")
     else:
@@ -263,25 +177,21 @@ def inspect_screen(question: str = "") -> dict:
         "window_title": window_title,
         "screen_text": screen_text,
         "screenshot_path": save_path,
+        "hands_used": hands_used,
+        "controls": controls,
+        "url": hands_info.get("url", ""),
     }
 
 
 def answer_screen_question(question: str) -> str:
-    """
-    High-level visual Q&A: captures screen and returns a concise spoken explanation
-    tailored to the user's specific question.
-    """
+    """Capture/inspect the screen via `hands` and return a spoken explanation."""
     res = inspect_screen(question)
     return res.get("reply", "I analyzed your screen.")
 
 
 def analyze_image(image_input, question: str = "Describe what you see in this image in detail.") -> str:
-    """
-    Analyzes an arbitrary image file, PIL Image, or screenshot using native vision or OCR fallback.
-    """
-    # OCR text extraction fallback
+    """Analyze an arbitrary image file or PIL Image using native Windows OCR + local LLM."""
     try:
-        from PIL import Image
         img = None
         if isinstance(image_input, str) and os.path.exists(image_input):
             img = Image.open(image_input)
@@ -295,6 +205,6 @@ def analyze_image(image_input, question: str = "Describe what you see in this im
                 reply = query_local_llm(prompt, max_tokens=250)
                 return sanitize_for_tts(reply) if reply else "I read the text in this image."
     except Exception as e:
-        logger.debug(f"[Analyze Image] OCR fallback note: {e}")
+        logger.debug(f"[Analyze Image] OCR note: {e}")
 
     return "I was unable to analyze this image."

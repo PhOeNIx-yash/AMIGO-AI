@@ -28,6 +28,8 @@ from amigo.services.os_automation import (
     set_volume,
     get_system_status,
     get_system_media_info,
+    WindowsSystemController,
+    control_windows_system,
 )
 from amigo.services.os_settings import (
     change_setting,
@@ -35,6 +37,10 @@ from amigo.services.os_settings import (
     toggle_setting,
     list_settings,
     reload_catalog,
+)
+from amigo.services.screen_pen import (
+    ScreenPenOverlay,
+    screen_pen_annotate,
 )
 from amigo.services.screen_vision import (
     read_text_from_image,
@@ -80,7 +86,10 @@ __all__ = [
     "toggle_setting",
     "list_settings",
     "reload_catalog",
-    # Screen Vision
+    "WindowsSystemController",
+    "control_windows_system",
+    "ScreenPenOverlay",
+    "screen_pen_annotate",
     "read_text_from_image",
     "analyze_image",
     "capture_screen_image",

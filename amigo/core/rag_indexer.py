@@ -16,6 +16,7 @@ logger = logging.getLogger("amigo.rag_indexer")
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.abspath(os.path.join(_BASE_DIR, "..", ".."))
+_PROJECT_ROOT_REAL = os.path.realpath(_PROJECT_ROOT).lower()
 _HOME = os.path.expanduser("~")
 
 FILE_HASHES_PATH = os.path.join(_PROJECT_ROOT, "rag_data", "file_hashes.json")
@@ -33,7 +34,7 @@ DEFAULT_SCAN_DIRS = [
 SKIP_DIRS = {
     "node_modules", ".git", ".venv", "venv", "env", "envs", "__pycache__",
     ".idea", ".vscode", ".cache", ".npm", ".nuget", "appdata", ".checkpoints",
-    "rag_data", "dist", "build", ".next", ".turbo", "vendor", "target",
+    "rag_data", "scratch", "dist", "build", ".next", ".turbo", "vendor", "target",
     "bin", "obj", "packages", "site-packages", "temp", "tmp",
     "models", ".models", "weights",
 }
@@ -144,7 +145,16 @@ class RAGIndexer:
                 continue
             try:
                 for root, dirs, filenames in os.walk(scan_dir, topdown=True):
-                    dirs[:] = [d for d in dirs if d.lower() not in SKIP_DIRS and not d.startswith(".")]
+                    root_real = os.path.realpath(os.path.abspath(root)).lower()
+                    if root_real == _PROJECT_ROOT_REAL or root_real.startswith(_PROJECT_ROOT_REAL + os.sep):
+                        dirs.clear()
+                        continue
+                    dirs[:] = [
+                        d for d in dirs
+                        if d.lower() not in SKIP_DIRS
+                        and not d.startswith(".")
+                        and os.path.realpath(os.path.join(root, d)).lower() != _PROJECT_ROOT_REAL
+                    ]
 
                     for fname in filenames:
                         if fname.startswith("~$") or fname.startswith(".~"):

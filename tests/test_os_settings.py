@@ -2,12 +2,13 @@
 Tests for os_settings.py and settings_catalog.json integration in Amigo.
 """
 import unittest
+from tests import SafeOSTestCase
 from amigo.services import os_settings
 from amigo.services import os_automation
 from amigo.utils import tool_registry
 
 
-class TestOSSettings(unittest.TestCase):
+class TestOSSettings(SafeOSTestCase):
     def test_catalog_is_valid(self):
         """Verify settings_catalog.json syntax, schema, and references."""
         errors = os_settings.validate_catalog()
@@ -57,6 +58,35 @@ class TestOSSettings(unittest.TestCase):
         # Test tool registry recognizes change_setting tool name
         self.assertIn("change_setting", tool_registry.VALID_TOOL_NAMES)
         self.assertIn("get_setting", tool_registry.VALID_TOOL_NAMES)
+
+    def test_wifi_toggle_and_off_use_generic_catalog_path(self):
+        """'toggle wifi' flips state and 'turn wifi off' uses os_settings generic catalog path without touching hardware."""
+        from unittest.mock import patch
+        from amigo.utils.tool_registry import execute_tool
+
+        # Simulate hardware radio state = On initially, then flipped to Off after write
+        state = {"radio": "on"}
+
+        def fake_radio(kind, new_state=None):
+            if new_state is None:
+                return state["radio"]
+            state["radio"] = str(new_state).lower()
+            return state["radio"]
+
+        with patch("amigo.services.os_settings._radio_op", side_effect=fake_radio), \
+             patch("amigo.services.os_settings._ps_radio_op", side_effect=fake_radio), \
+             patch("amigo.services.os_settings.VERIFY_DELAY", 0.0):
+            spoken_tog, _, _ = execute_tool("change_setting", {"setting": "wifi", "value": "toggle"}, "toggle wifi", "")
+            self.assertEqual(state["radio"], "off")
+            self.assertIn("off", spoken_tog.lower())
+
+            spoken_tog2, _, _ = execute_tool("change_setting", {"setting": "wifi", "value": "toggle"}, "toggle wifi", "")
+            self.assertEqual(state["radio"], "on")
+            self.assertIn("on", spoken_tog2.lower())
+
+            spoken_off, _, _ = execute_tool("change_setting", {"setting": "wifi", "value": "off"}, "turn wifi off", "")
+            self.assertEqual(state["radio"], "off")
+            self.assertIn("off", spoken_off.lower())
 
 
 if __name__ == "__main__":

@@ -89,7 +89,12 @@ class TestAntiLeakage(unittest.TestCase):
         with open(allowlist_path, encoding="utf-8") as f:
             allowlist = json.load(f)
 
-        allowed_patterns = {e["pattern"].strip() for e in allowlist}
+        allowed_keys = set()
+        for e in allowlist:
+            self.assertNotIn("line", e, f"Allowlist entry must not contain line numbers: {e}")
+            self.assertTrue(e.get("file") and e.get("function") and e.get("pattern") and e.get("reason"),
+                            f"Allowlist entry must define file, function, pattern, and reason: {e}")
+            allowed_keys.add((e["file"].replace("\\", "/"), e["function"].strip(), e["pattern"].strip()))
 
         files = [
             "amigo/utils/tool_registry.py",
@@ -100,8 +105,8 @@ class TestAntiLeakage(unittest.TestCase):
 
         guard_patterns = [
             (r're\.(?:search|match|findall)\([^)\n]*(?:query|clean|raw)', 'regex_on_query_or_text'),
-            (r'\bin\s+(?:query|raw|clean)(?:\.lower\(\))?', 'keyword_in_query'),
-            (r'params\.get\(\s*["\'][^"\']+["\']\s*,\s*(?!None\b|""|\'\'|\[\]|\{\}|0\b|False\b|True\b)[^)]+\)', 'params_get_default_val'),
+            (r'(?<!for\s)\bin\s+(?:query|raw|clean)(?:\b|\.lower\(\))(?!\s*\.\s*(?:items|keys|values|get))', 'keyword_in_query'),
+            (r'params\.get\(\s*["\'][^"\']+["\']\s*,(?!\s*(?:None\b|""|\'\'|\[\]|\{\}|0\b|False\b|True\b))\s*[^)]+\)', 'params_get_default_val'),
         ]
 
         violations = []
@@ -112,17 +117,25 @@ class TestAntiLeakage(unittest.TestCase):
             with open(fp, encoding="utf-8") as f:
                 src = f.read()
             lines = src.splitlines()
+            tree = ast.parse(src, filename=fp)
+            fn_map = {}
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    end_ln = getattr(node, "end_lineno", node.lineno) or node.lineno
+                    for ln in range(node.lineno, end_ln + 1):
+                        fn_map[ln] = node.name
+
             for line_no, line in enumerate(lines, 1):
                 stripped = line.strip()
                 if stripped.startswith("#"):
                     continue
+                fn_name = fn_map.get(line_no, "<module>")
                 for p, kind in guard_patterns:
                     if re.search(p, stripped):
-                        if stripped not in allowed_patterns:
-                            violations.append(f"{norm_fp}:{line_no} [{kind}] -> {stripped}")
+                        if (norm_fp, fn_name, stripped) not in allowed_keys:
+                            violations.append(f"{norm_fp}:{line_no} ({fn_name}) [{kind}] -> {stripped}")
 
             # AST scan for set/tuple/list literals of >=2 natural-language words
-            tree = ast.parse(src, filename=fp)
             seen_lines = set()
             for node in ast.walk(tree):
                 if isinstance(node, (ast.Set, ast.Tuple, ast.List)):
@@ -139,11 +152,12 @@ class TestAntiLeakage(unittest.TestCase):
                         if ln not in seen_lines:
                             seen_lines.add(ln)
                             line_txt = lines[ln - 1].strip()
-                            if line_txt.startswith('_tool(') or ('_p(' in line_txt and 'enum=' in line_txt) or '["message", "time"]' in line_txt or '["type", "topic"]' in line_txt:
+                            if line_txt.startswith('_tool(') or '["message", "time"]' in line_txt or '["type", "topic"]' in line_txt:
                                 continue
                             pat = f"AST:{type(node).__name__}:{sorted(word_elts)}"
-                            if pat not in allowed_patterns:
-                                violations.append(f"{norm_fp}:{ln} [word_container_literal] -> {pat}")
+                            fn_name = fn_map.get(ln, "<module>")
+                            if (norm_fp, fn_name, pat) not in allowed_keys:
+                                violations.append(f"{norm_fp}:{ln} ({fn_name}) [word_container_literal] -> {pat}")
 
         self.assertEqual(
             violations,

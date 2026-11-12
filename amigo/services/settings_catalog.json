@@ -1,4 +1,4 @@
-﻿{
+{
   "_": "Edit freely. Add your own entries in settings_user.json; same id overrides. See os_settings.py.",
   "language": {
     "on": [
@@ -2047,6 +2047,18 @@
       "disk": [
         "Storage",
         "ms-settings:storagesense"
+      ],
+      "home": [
+        "Windows",
+        "ms-settings:"
+      ],
+      "app settings": [
+        "Windows",
+        "ms-settings:"
+      ],
+      "settings": [
+        "Windows",
+        "ms-settings:"
       ]
     }
   }

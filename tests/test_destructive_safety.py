@@ -4,10 +4,11 @@ import sys
 
 sys.path.insert(0, os.path.abspath("."))
 
+from tests import SafeOSTestCase
 from amigo.utils.tool_registry import execute_tool, execute_actions, get_pending_confirmation
 
 
-class TestDestructiveSafety(unittest.TestCase):
+class TestDestructiveSafety(SafeOSTestCase):
     """
     Guarantees that destructive tools (shutdown, restart, sleep, empty_recycle_bin)
     require user confirmation when confirmed is False/omitted, and that model-generated
@@ -32,6 +33,18 @@ class TestDestructiveSafety(unittest.TestCase):
             meta.get("requires_confirmation"),
             "Model must not be able to skip confirmation on system_control shutdown via params.confirmed=True!",
         )
+
+    def test_power_control_schema_and_safety(self):
+        """Merged power_control must not expose confirmed in schema and must enforce confirmation."""
+        from amigo.utils.tool_registry import get_tool_schema
+        schema = get_tool_schema("power_control")
+        self.assertIsNotNone(schema)
+        props = (schema.get("parameters") or {}).get("properties") or {}
+        self.assertNotIn("confirmed", props)
+        for act in ("restart", "sleep", "shutdown"):
+            results = execute_actions([{"tool": "power_control", "params": {"action": act, "confirmed": True}}])
+            _, _, meta = results[0]
+            self.assertTrue(meta.get("requires_confirmation"), f"power_control action={act} must require confirmation")
 
     def test_empty_recycle_bin_safety(self):
         msg, url, meta = execute_tool("empty_recycle_bin", {})
@@ -152,24 +165,24 @@ class TestDestructiveSafety(unittest.TestCase):
         tool_registry._PENDING_CONFIRMATION["created"] = time.time() - 35.0
         self.assertIsNone(get_pending_confirmation())
 
-    def test_power_control_cannot_skip_confirmation(self):
-        """Merged power_control must omit confirmed from schema and require confirmation for restart/sleep/shutdown."""
-        from amigo.utils.tool_registry import get_tool_schema
+    def test_no_real_shutdown_restart_or_rundll32_in_tests(self):
+        """Tripwire fails if any test reaches subprocess or os.system with shutdown, restart, or rundll32."""
+        import subprocess as _sub
+        import os as _os
 
-        schema = get_tool_schema("power_control")
-        self.assertIsNotNone(schema)
-        props = (schema.get("parameters") or {}).get("properties") or {}
-        self.assertNotIn("confirmed", props)
+        for fn, arg in (
+            (_sub.run, ["shutdown", "/r", "/t", "30"]),
+            (_sub.Popen, ["rundll32.exe", "powrprof.dll,SetSuspendState"]),
+            (_os.system, "shutdown /s /t 0"),
+            (_os.system, "restart"),
+        ):
+            with self.assertRaises(AssertionError):
+                fn(arg)
 
-        for action in ("restart", "sleep", "shutdown"):
-            results = execute_actions([{"tool": "power_control", "params": {"action": action, "confirmed": True}}])
-            msg, url, meta = results[0]
-            self.assertTrue(
-                meta.get("requires_confirmation"),
-                f"power_control(action='{action}', confirmed=True) must still require confirmation!",
-            )
-            self.assertEqual(meta.get("status"), "requires_confirmation")
-
+        execute_tool("restart_pc", {})
+        msg_ok, _, _ = execute_tool("confirm_action", {"action": "restart"})
+        self.assertIn("restarting", msg_ok.lower())
+        self.os_mocks["restart_pc"].assert_called_once()
 
 
 if __name__ == "__main__":

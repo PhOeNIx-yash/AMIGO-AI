@@ -1,6 +1,6 @@
 """
 LLM-Based Agent for Amigo Voice Assistant.
-Clean, streamlined inference engine for NVIDIA Nemotron 3.5 Bolt:
+Clean, streamlined inference engine for LFM 3 Omni 2B:
 - Direct GGUF inference via llama-cpp-python on RTX 3050 GPU (with CPU fallback)
 - Fast KV-cache reuse with unified system prompt prefix
 - Multi-turn conversation context and RAG profile integration
@@ -60,7 +60,7 @@ def _setup_cuda_dll_directory() -> None:
             if cuda_home := os.environ.get(env_key):
                 cuda_dirs.append(os.path.join(cuda_home, "bin"))
 
-        # Prioritize bundled modern llama.cpp binary directory
+        # Prioritize bundled modern llama.cpp binary directory (supports lfm3 architecture)
         bundled_llama = os.path.join(str(_PROJECT_ROOT), "amigo", "lib", "llama")
         if not os.path.isdir(bundled_llama):
             bundled_llama = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib", "llama")
@@ -130,13 +130,7 @@ _CONFIG_LOCK = threading.Lock()
 _internet_status_cache = {"status": "Connected (Online)", "online": True, "timestamp": 0.0}
 _INTERNET_CACHE_TTL = 30.0
 
-_CLIPBOARD_KEYWORDS = ("clipboard", "copied", "what did i copy", "paste")
 _RE_SPEAKER_PREFIX = re.compile(r"^(Amigo|Assistant|AI):\s*", flags=re.IGNORECASE)
-_RE_PROBE_GUARD = re.compile(
-    r"\b(what (?:tools?|functions?|capabilities) do you have|list your tools|how were you built|"
-    r"what model are you|what is your prompt|output your json|tell me a secret)\b",
-    re.IGNORECASE,
-)
 _RE_THINK = re.compile(r"<think>([\s\S]*?)(?:</think>|$)", re.IGNORECASE)
 
 _last_screen_text = ""
@@ -150,6 +144,7 @@ _STATIC_VOICE_SYSTEM_PROMPT = (
     "- Answer ONLY the user's current question. Never bring up past topics, previous commands, active links, or background media unless the user specifically asks about them.\n"
     "- Speak naturally and confidently. Never use robotic filler phrases like 'Certainly!', 'Sure thing!', 'As an AI', or 'According to my knowledge'.\n"
     "- Never deflect with multi-choice question menus. Answer directly with what you know.\n"
+    "- Never claim you opened, launched, changed, or executed an OS/file/app action unless a tool actually ran and reported that result.\n"
     "- Only reference 'available documents' or 'in your files' if the user specifically asked about their personal files.\n"
     "- For riddles, physics puzzles, and logical word problems, reason carefully through physical space, geometry, and real-world mechanics before giving the direct answer.\n"
     "- Resolve pronouns ('it', 'that', 'they', 'he', 'she', 'there') and follow-up questions naturally from conversation history and active environment state."
@@ -350,31 +345,39 @@ def _build_ai_messages(
 # ── Model Configuration & Lifecycle ────────────────────────────
 
 MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "models"))
-MODEL_NAME = "NVIDIA Nemotron 3.5 Bolt"
-MODEL_FILENAME = "NVIDIA-Nemotron-3.5-Bolt-E4B-UD-IQ2_M.gguf"
+MODEL_NAME = "LFM 3 Omni 2B"
+MODEL_FILENAME = "LFM3-Omni-2B-Q4_K_M.gguf"
 MODEL_PATH = os.path.join(MODEL_DIR, MODEL_FILENAME)
 MODEL_TARGETS = [
-    ("unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF", "NVIDIA-Nemotron-3.5-Bolt-E4B-UD-IQ2_M.gguf"),
+    ("LiquidAI/LFM3-Omni-2B-GGUF", "LFM3-Omni-2B-Q4_K_M.gguf"),
+    ("ggml-org/LFM3-Omni-2B-GGUF", "LFM3-Omni-2B-Q4_K_M.gguf"),
 ]
 
 STOP_TOKENS = ["<eos>", "<turn|>", "<|turn|>", "<|endoftext|>", "<|im_end|>", "<|im_start|>", "<|eot_id|>"]
 
 AVAILABLE_MODELS = {
-    "nemotron-3.5-bolt": {
-        "key": "nemotron-3.5-bolt",
-        "name": "NVIDIA Nemotron 3.5 Bolt",
-        "repo": "unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF",
-        "filename": "NVIDIA-Nemotron-3.5-Bolt-E4B-UD-IQ2_M.gguf",
-        "path": os.path.join(MODEL_DIR, "NVIDIA-Nemotron-3.5-Bolt-E4B-UD-IQ2_M.gguf"),
+    "lfm-3-omni": {
+        "key": "lfm-3-omni",
+        "name": "LFM 3 Omni 2B",
+        "repo": "LiquidAI/LFM3-Omni-2B-GGUF",
+        "filename": "LFM3-Omni-2B-Q4_K_M.gguf",
+        "path": os.path.join(MODEL_DIR, "LFM3-Omni-2B-Q4_K_M.gguf"),
+        "mmproj_filename": "mmproj-LFM3-Omni-2B-Q4_K_M.gguf",
+        "mmproj_path": os.path.join(MODEL_DIR, "mmproj-LFM3-Omni-2B-Q4_K_M.gguf"),
         "targets": [
-            ("unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF", "NVIDIA-Nemotron-3.5-Bolt-E4B-UD-IQ2_M.gguf"),
+            ("LiquidAI/LFM3-Omni-2B-GGUF", "LFM3-Omni-2B-Q4_K_M.gguf"),
+            ("ggml-org/LFM3-Omni-2B-GGUF", "LFM3-Omni-2B-Q4_K_M.gguf"),
         ],
-        "downloaded": os.path.exists(os.path.join(MODEL_DIR, "NVIDIA-Nemotron-3.5-Bolt-E4B-UD-IQ2_M.gguf")) and os.path.getsize(os.path.join(MODEL_DIR, "NVIDIA-Nemotron-3.5-Bolt-E4B-UD-IQ2_M.gguf")) > 500_000_000,
-        "size_gb": 3.29,
+        "mmproj_targets": [
+            ("LiquidAI/LFM3-Omni-2B-GGUF", "mmproj-LFM3-Omni-2B-Q4_K_M.gguf"),
+            ("ggml-org/LFM3-Omni-2B-GGUF", "mmproj-LFM3-Omni-2B-Q4_K_M.gguf"),
+        ],
+        "downloaded": os.path.exists(os.path.join(MODEL_DIR, "LFM3-Omni-2B-Q4_K_M.gguf")) and os.path.getsize(os.path.join(MODEL_DIR, "LFM3-Omni-2B-Q4_K_M.gguf")) > 500_000_000,
+        "size_gb": 1.10,
     },
 }
 
-_active_model_key = "nemotron-3.5-bolt"
+_active_model_key = "lfm-3-omni"
 _local_llm_instance = None
 _model_load_failed = False
 _model_load_error = None
@@ -512,7 +515,7 @@ def ensure_model_downloaded() -> str:
     if os.path.exists(path) and os.path.getsize(path) > 500_000_000:
         return path
     m_info = AVAILABLE_MODELS.get(_active_model_key, {})
-    repo = m_info.get("repo", "unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF")
+    repo = m_info.get("repo", "LiquidAI/LFM3-Omni-2B-GGUF")
     filename = m_info.get("filename", MODEL_FILENAME)
     logger.info("Downloading %s (%s) to %s...", m_info.get("name", "Model"), filename, path)
     os.makedirs(MODEL_DIR, exist_ok=True)
@@ -651,7 +654,7 @@ def get_available_models() -> dict:
     return AVAILABLE_MODELS
 
 
-def set_active_model(model_key: str = "nemotron-3.5-bolt") -> bool:
+def set_active_model(model_key: str = "lfm-3-omni") -> bool:
     global _active_model_key, _local_llm_instance, _LLM_CONFIG
     if model_key not in AVAILABLE_MODELS:
         return False
@@ -677,8 +680,8 @@ def get_active_model_info() -> dict:
         "filename": m_info["filename"],
         "path": m_path,
         "downloaded": os.path.exists(m_path) and os.path.getsize(m_path) > 500_000_000,
-        "size_gb": m_info.get("size_gb", 3.29),
-        "vision_ready": False,
+        "size_gb": m_info.get("size_gb", 1.10),
+        "vision_ready": is_vision_ready(),
         "accelerator": "NVIDIA(CUDA)" if has_gpu else "CPU",
         "gpu_offload": has_gpu,
         "flash_attn": has_gpu,

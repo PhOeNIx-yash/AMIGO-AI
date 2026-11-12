@@ -935,6 +935,11 @@ def _playback_worker():
             time.sleep(0.08)
             if _speech_queue.empty() and _playback_queue.empty():
                 _update_state("idle")
+                try:
+                    from amigo.utils.tool_registry import start_pending_confirmation_timer
+                    start_pending_confirmation_timer()
+                except Exception:
+                    pass
 
 
 threading.Thread(target=_playback_worker, daemon=True, name="TTS-Playback").start()

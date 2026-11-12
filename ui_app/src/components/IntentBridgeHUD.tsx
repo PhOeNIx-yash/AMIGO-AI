@@ -39,37 +39,13 @@ export const NON_ACTION_INTENTS = new Set([
   "unknown",
 ]);
 
-// Polite conversational prefixes to strip when evaluating user prompts
-const POLITE_PREFIXES =
-  /^(?:hey\s+amigo|amigo|please|could\s+you(?:\s+please)?|can\s+you(?:\s+please)?|would\s+you(?:\s+mind)?|kindly|i\s+want\s+to|i\s+need\s+to|help\s+me(?:\s+to)?|tell\s+me|what\s+is|what's|how\s+is|how's|check)\s+/i;
-
-// Precompiled action triggers at module level
-const ACTION_TRIGGERS = [
-  /\b(?:open|launch)\s+([a-z0-9_.-]+)/i,
-  /\b(?:play|stream|listen\s+to)\s+/i,
-  /\b(?:pause|resume|skip|mute|unmute)\b/i,
-  /\b(?:set|start)\s+(?:a\s+)?(?:timer|alarm|stopwatch|countdown)\b/i,
-  /\b(?:turn\s+up|turn\s+down|adjust)\s+(?:volume|brightness)\b/i,
-  /\b(?:take\s+a\s+)?(?:screenshot|snip|screen\s+capture)\b/i,
-  /\b(?:weather\s+in|forecast\s+for|check\s+weather)\b/i,
-  /\b(?:search\s+for|google\s+for|browse\s+for|look\s+up)\b/i,
-  /\b(?:send\s+(?:an?\s+)?(?:email|mail|message))\b/i,
-  /\b(?:find\s+file|open\s+folder|open\s+file)\b/i,
-  /\b(?:lock|sleep|restart|reboot|shutdown)\s+(?:pc|computer|system|screen)\b/i,
-  /\b(?:calculate|compute|solve)\s+[0-9]/i,
-];
-
 // Generalized Action Intent Detection
-export function isActionIntent(text: string, intent?: string): boolean {
+export function isActionIntent(_text: string, intent?: string): boolean {
   if (intent !== undefined && intent !== null && intent.trim() !== "") {
     return !NON_ACTION_INTENTS.has(intent.toLowerCase().trim());
   }
 
-  if (!text || !text.trim()) return false;
-  let clean = text.toLowerCase().replace(/[_]/g, " ").trim();
-  clean = clean.replace(POLITE_PREFIXES, "").trim();
-
-  return ACTION_TRIGGERS.some((p) => p.test(clean));
+  return false;
 }
 
 interface ActionVisualInfo {
@@ -162,14 +138,13 @@ function resolveActionInfo(
 ): ActionVisualInfo {
   const cleanIntent = (intent || "").toLowerCase().trim();
   const p = params || {};
-  const pr = (prompt || "").toLowerCase().trim();
   const paramVal = extractDynamicParam(p, prompt);
 
   // File Search / Explorer
   if (
     cleanIntent.includes("file") ||
     cleanIntent.includes("folder") ||
-    (pr.includes("file") && cleanIntent === "find_files")
+    cleanIntent === "find_files"
   ) {
     const q = paramVal || "Documents";
     return {
@@ -184,10 +159,7 @@ function resolveActionInfo(
   }
 
   // YouTube
-  if (
-    cleanIntent.includes("youtube") ||
-    (pr.includes("youtube") && /\b(play|watch|stream|listen)\b/.test(pr))
-  ) {
+  if (cleanIntent.includes("youtube")) {
     const q = paramVal || "YouTube Video";
     return {
       name: "YouTube",
@@ -220,8 +192,7 @@ function resolveActionInfo(
   if (
     cleanIntent === "google_search" ||
     cleanIntent === "web_search" ||
-    cleanIntent === "search" ||
-    pr.includes("search")
+    cleanIntent === "search"
   ) {
     const q = paramVal || prompt || "Web Knowledge";
     return {
@@ -236,11 +207,7 @@ function resolveActionInfo(
   }
 
   // Screen Vision / Screenshot
-  if (
-    cleanIntent.includes("screen") ||
-    cleanIntent.includes("vision") ||
-    pr.includes("screenshot")
-  ) {
+  if (cleanIntent.includes("screen") || cleanIntent.includes("vision")) {
     return {
       name: "Screen Vision",
       category: "Perception",
@@ -253,10 +220,7 @@ function resolveActionInfo(
   }
 
   // Weather Radar
-  if (
-    cleanIntent.includes("weather") ||
-    (pr.includes("weather") && !cleanIntent)
-  ) {
+  if (cleanIntent.includes("weather")) {
     const loc = paramVal || "Local Area";
     return {
       name: "Weather Radar",
@@ -318,17 +282,10 @@ function resolveActionInfo(
   // Application Launcher
   if (
     cleanIntent.includes("open") ||
-    cleanIntent.includes("launch") ||
-    pr.startsWith("open ") ||
-    pr.startsWith("launch ")
+    cleanIntent.includes("launch")
   ) {
     let appName = paramVal || (p.app_name || p.application);
-    if (!appName || appName === "Application") {
-      const match = pr.match(/^(?:open|launch|start|run)\s+(.+)$/i);
-      appName = match ? formatIntentName(match[1]) : "Application";
-    } else {
-      appName = formatIntentName(appName);
-    }
+    appName = appName && appName !== "Application" ? formatIntentName(appName) : "Application";
 
     return {
       name: appName,

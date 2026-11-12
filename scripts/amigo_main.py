@@ -273,23 +273,6 @@ if __name__ == "__main__":
                     query = input("Voice didn't catch that. Type here: ").strip()
 
             if query and query.lower() != "none":
-                q_clean = query.lower().strip().rstrip(".?!")
-                if q_clean in ("voices", "list voices", "voice list"):
-                    catalog = get_voice_catalog()
-                    print("\n--- AVAILABLE 10 OFFLINE VOICES ---")
-                    for k, v in catalog.items():
-                        current = " [ACTIVE]" if k == get_active_voice() else ""
-                        print(f"  • {k:<8} [{v['engine'].title()} - {v['gender']}, {v['accent']}]: {v['desc']}{current}")
-                    print("\nSay or type 'voice <name>' (e.g. 'voice ryan' or 'voice bella') to switch.\n")
-                    speak(f"You have 10 voices available. Current voice is {get_active_voice()}.")
-                    continue
-                elif q_clean.startswith("voice ") or q_clean.startswith("switch voice to ") or q_clean.startswith("change voice to "):
-                    target = q_clean.replace("switch voice to ", "").replace("change voice to ", "").replace("voice ", "").strip()
-                    if target in get_voice_catalog():
-                        vname = set_voice(target)
-                        speak(f"Voice switched to {vname}.")
-                        continue
-
                 process_agent_query(query)
 
         except KeyboardInterrupt:

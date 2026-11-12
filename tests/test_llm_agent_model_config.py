@@ -18,7 +18,8 @@ class TestLlmAgentModelConfig(unittest.TestCase):
 
     def test_available_models_contains_lfm3_omni(self):
         self.assertIn("lfm-3-omni", llm_agent.AVAILABLE_MODELS)
-        self.assertNotIn("lfm-3-1.7b", llm_agent.AVAILABLE_MODELS)
+        self.assertNotIn("nemotron-3.5-bolt", llm_agent.AVAILABLE_MODELS)
+        self.assertNotIn("nemotron-dory-1.0", llm_agent.AVAILABLE_MODELS)
 
 
 if __name__ == "__main__":

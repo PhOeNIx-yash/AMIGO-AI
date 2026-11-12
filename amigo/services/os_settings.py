@@ -570,11 +570,10 @@ def _winrt_radio_api():
     return Radio, RadioAccessStatus, RadioState
 
 
-def _radio_op_ps(want: str, new_state: str | None):
-    """PowerShell WinRT fallback for systems without Python winsdk/winrt bindings."""
-    if not _IS_WINDOWS:
-        raise OSError("Windows radio control is only supported on Windows")
-    target_state = "On" if new_state == "on" else ("Off" if new_state == "off" else "")
+def _ps_radio_op(kind: str, new_state: str | None):
+    """PowerShell WinRT fallback for _radio_op when Python winsdk/winrt bindings are absent."""
+    want = kind.lower().replace("_", "")
+    target_state = ("On" if new_state == "on" else "Off") if new_state is not None else ""
     ps_script = f"""
     Add-Type -AssemblyName System.Runtime.WindowsRuntime
     $asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | ? {{
@@ -589,43 +588,46 @@ def _radio_op_ps(want: str, new_state: str | None):
     }}
     [Windows.Devices.Radios.Radio,Windows.System.Devices,ContentType=WindowsRuntime] | Out-Null
     [Windows.Devices.Radios.RadioAccessStatus,Windows.System.Devices,ContentType=WindowsRuntime] | Out-Null
-    [Windows.Devices.Radios.RadioState,Windows.System.Devices,ContentType=WindowsRuntime] | Out-Null
     Await ([Windows.Devices.Radios.Radio]::RequestAccessAsync()) ([Windows.Devices.Radios.RadioAccessStatus]) | Out-Null
     $radios = Await ([Windows.Devices.Radios.Radio]::GetRadiosAsync()) ([System.Collections.Generic.IReadOnlyList[Windows.Devices.Radios.Radio]])
     $want = '{want}'
-    $matched = @($radios | ? {{ $want -eq 'all' -or ($_.Kind.ToString().ToLower().Replace('_','') -eq $want) }})
+    $matched = @($radios | ? {{ $want -eq 'all' -or $_.Kind.ToString().ToLower().Replace('_', '') -eq $want }})
     if ($matched.Count -eq 0) {{ throw "NO_RADIO" }}
-    if ('{target_state}' -eq '') {{
-        $states = @($matched | % {{ $_.State.ToString().ToLower() }} | Select-Object -Unique)
-        if ($states.Count -eq 1 -and ($states[0] -eq 'on' -or $states[0] -eq 'off')) {{ Write-Output $states[0] }}
+    $targetState = '{target_state}'
+    if (-not $targetState) {{
+        $states = @($matched | % {{ $_.State.ToString().ToLower() }} | Sort-Object -Unique)
+        Write-Output ($states -join ',')
     }} else {{
-        $t = [Windows.Devices.Radios.RadioState]::'{target_state}'
         foreach ($r in $matched) {{
-            $res = Await ($r.SetStateAsync($t)) ([Windows.Devices.Radios.RadioAccessStatus])
-            if ($res -ne 'Allowed') {{ throw "SET_REFUSED" }}
+            $res = Await ($r.SetStateAsync($targetState)) ([Windows.Devices.Radios.RadioAccessStatus])
+            if ($res.ToString() -ne 'Allowed') {{ throw "REFUSED" }}
         }}
         Write-Output '{new_state or ""}'
     }}
     """
-    r = _run([_resolve_exe("powershell"), "-NoProfile", "-NonInteractive", "-Command", ps_script], timeout=RADIO_TIMEOUT)
-    if r.returncode != 0:
-        err = (r.stderr or r.stdout or "").strip()
-        if "ACCESS_DENIED" in err or "SET_REFUSED" in err:
-            raise PermissionError(f"Windows refused radio access: {err}")
-        raise OSError(f"Radio query failed for {want}: {err}")
-    out = (r.stdout or "").strip().lower()
+    r = _run([_resolve_exe("powershell"), "-NoProfile", "-NonInteractive", "-Command", ps_script],
+             timeout=RADIO_TIMEOUT)
+    out = (r.stdout or "").strip()
+    err = (r.stderr or "").strip()
+    if "ACCESS_DENIED" in err or "ACCESS_DENIED" in out:
+        raise PermissionError("Windows blocked radio access (Settings > Privacy & security)")
+    if "NO_RADIO" in err or "NO_RADIO" in out:
+        raise OSError(f"no {kind} radio found on this device")
+    if "REFUSED" in err or "REFUSED" in out:
+        raise PermissionError(f"Windows refused to switch the {kind} radio")
     if new_state is None:
-        return out if out in ("on", "off") else None
+        states = {s.strip().lower() for s in out.split(",") if s.strip()}
+        return next(iter(states)) if len(states) == 1 and states <= {"on", "off"} else None
     return new_state
 
 
 def _radio_op(kind: str, new_state: str | None):
     """new_state None -> read ('on'/'off'/None for mixed); else set it."""
-    want = kind.lower().replace("_", "")
     try:
         Radio, Access, RadioState = _winrt_radio_api()
-    except ModuleNotFoundError:
-        return _radio_op_ps(want, new_state)
+    except ImportError:
+        return _ps_radio_op(kind, new_state)
+    want = kind.lower().replace("_", "")
 
     async def go():
         if await Radio.request_access_async() != Access.ALLOWED:
@@ -1283,9 +1285,6 @@ def _change(setting, value, confirmed) -> tuple[bool, str]:
             return False, f"What should I set {st.name} to?"
         if st.spec.get("must_exist") and not os.path.exists(text):
             return False, f"I can't find {text}."
-
-    if st.kind == "toggle" and req.polarity != "toggle" and state in ("on", "off") and st.read(req.source) == state:
-        return True, f"{st.name} is already {state}."
 
     try:
         st.write(state=state, number=number, text=text, source=req.source)

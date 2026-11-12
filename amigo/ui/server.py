@@ -131,7 +131,6 @@ except Exception:
     pass
 
 logger = logging.getLogger("amigo.ui_server")
-_RE_FILE_MATCH_COUNT = re.compile(r"I found (\d+) matching file")
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
@@ -215,8 +214,8 @@ def get_active_model_info() -> dict:
         models = get_llm_available_models() or {}
         info = next(iter(models.values()), {})
 
-    name = info.get("name", "NVIDIA Nemotron 3.5 Bolt")
-    key = info.get("key", "nemotron-3.5-bolt")
+    name = info.get("name", "LFM 3 Omni 2B")
+    key = info.get("key", "lfm-3-omni")
     vision_ok = is_vision_ready()
     ctx_len = int(os.getenv("AMIGO_LLM_N_CTX", "8192"))
     return {
@@ -237,7 +236,7 @@ def get_active_model_info() -> dict:
 
 def get_available_models() -> list[dict]:
     try:
-        active_key = get_active_model_info().get("key", "nemotron-3.5-bolt")
+        active_key = get_active_model_info().get("key", "lfm-3-omni")
         return [
             {
                 "key": k,
@@ -249,7 +248,7 @@ def get_available_models() -> list[dict]:
         ]
     except Exception:
         return [
-            {"key": "nemotron-3.5-bolt", "name": "NVIDIA Nemotron 3.5 Bolt", "status": "active", "type": "local"},
+            {"key": "lfm-3-omni", "name": "LFM 3 Omni 2B", "status": "active", "type": "local"},
         ]
 
 
@@ -483,7 +482,7 @@ def index():
     return jsonify({
         "status": "online",
         "service": "Amigo AI Engine & Windows 11 Voice Assistant Backend",
-        "model": info.get("name", "NVIDIA Nemotron 3.5 Bolt"),
+        "model": info.get("name", "LFM 3 Omni 2B"),
     })
 
 
@@ -590,7 +589,7 @@ def api_assistant_process():
         return jsonify({
             "status": "online",
             "message": "Amigo AI Engine online",
-            "model": info.get("name", "NVIDIA Nemotron 3.5 Bolt"),
+            "model": info.get("name", "LFM 3 Omni 2B"),
             "version": "Windows 11 Voice Assistant",
         })
 
@@ -652,10 +651,9 @@ def api_assistant_process():
     speech_reply = _extract_text_from_json(speech_reply)
     speech_reply = re.sub(r'(?:\n+|\s+)(?:\[?(?:Sources?|References?|Citations?)\]?\s*:)\s*[\s\S]*$', '', speech_reply, flags=re.IGNORECASE).strip()
     speech_reply = re.sub(r'\[(?:\d+|Source\s*\d+[^\]]*)\]', '', speech_reply, flags=re.IGNORECASE)
-    if "matching file" in speech_reply and "\n" in speech_reply:
-        m_count = _RE_FILE_MATCH_COUNT.search(speech_reply)
-        c_num = m_count.group(1) if m_count else "some"
-        speech_reply = f"I found {c_num} matching files. Choose one on your screen or say 'Open number 1'."
+    file_results = result_metadata.get("file_results")
+    if isinstance(file_results, list) and file_results:
+        speech_reply = f"I found {len(file_results)} matching files. Choose one on your screen or say 'Open number 1'."
 
     status = result_metadata.get("status") or "completed"
     headlines = {
@@ -946,8 +944,8 @@ def handle_settings():
         "user_profile": u_prof,
         "user_name": get_current_user_name(),
         "voice": curr_voice,
-        "model": info.get("key", "nemotron-3.5-bolt"),
-        "model_name": info.get("name", "NVIDIA Nemotron 3.5 Bolt"),
+        "model": info.get("key", "lfm-3-omni"),
+        "model_name": info.get("name", "LFM 3 Omni 2B"),
         "thinking_enabled": is_thinking_enabled(),
         "available_models": get_available_models(),
         "available_voices": get_voice_catalog(),
@@ -1394,6 +1392,100 @@ def initialize_amigo_async():
 
     init_proactive_intelligence(speak_callback=speak, broadcast_callback=broadcaster.broadcast)
     print("[ AMIGO ] All systems ready!")
+
+
+_OVERLAY_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "roamies-win-extract", "overlay")
+)
+_OVERLAY_BRIDGE_SCRIPT = (
+    "<script>(() => {"
+    "const es = new EventSource('/api/overlay/stream');"
+    "es.onmessage = (ev) => {"
+    "try {"
+    "const msg = JSON.parse(ev.data);"
+    "if (msg.type === 'ink') window.Roamie?.ink?.play(msg);"
+    "else if (msg.type === 'ink_clear') window.Roamie?.ink?.clear(msg);"
+    "else if (msg.type === 'sfx') (window.Roamie?.sfx?.[msg.name] || window.Roamie?.sfx?.play)?.(msg.name);"
+    "} catch (e) {}"
+    "};"
+    "let lastHot = null;"
+    "const reportHot = (x, y) => {"
+    "const hot = !!(window.Roamie?.inkHit?.(x, y));"
+    "if (hot !== lastHot) { lastHot = hot; window.parent?.postMessage({ type: 'amg_hot', hot }, '*'); }"
+    "};"
+    "window.addEventListener('message', (ev) => {"
+    "if (ev.data?.type === 'amg_ptr') reportHot(ev.data.x, ev.data.y);"
+    "});"
+    "window.addEventListener('pointermove', (e) => reportHot(e.clientX, e.clientY), true);"
+    "window.addEventListener('pointerup', (e) => setTimeout(() => reportHot(e.clientX, e.clientY), 60), true);"
+    "})();</script>"
+)
+
+
+@app.route("/overlay/")
+@app.route("/overlay/<path:filename>")
+def serve_roamies_overlay(filename: str = "desktop.html"):
+    from flask import Response, send_from_directory
+
+    if not os.path.isdir(_OVERLAY_DIR):
+        return jsonify({"error": "Roamies overlay directory not found"}), 404
+    if filename in ("", "desktop.html"):
+        html_path = os.path.join(_OVERLAY_DIR, "desktop.html")
+        with open(html_path, "r", encoding="utf-8") as fh:
+            html = fh.read()
+        html = html.replace(
+            "</head>",
+            "<style>html,body{background:transparent!important;color-scheme:dark;}</style></head>",
+        )
+        html = html.replace("<script>Roamie.bootDesktop", "<script>window.ROAMIE_ONLY=['none'];Roamie.bootDesktop")
+        html = html.replace("</body>", f"{_OVERLAY_BRIDGE_SCRIPT}</body>")
+        return Response(html, mimetype="text/html")
+    return send_from_directory(_OVERLAY_DIR, filename)
+
+
+@app.route("/api/overlay/stream")
+def api_overlay_stream():
+    import queue as _queue
+    from flask import Response
+    from amigo.services.screen_pen import subscribe_overlay_events, unsubscribe_overlay_events
+
+    q = subscribe_overlay_events()
+
+    def gen():
+        try:
+            yield ": connected\n\n"
+            while True:
+                try:
+                    ev = q.get(timeout=20)
+                    yield f"data: {json.dumps(ev)}\n\n"
+                except _queue.Empty:
+                    yield ": keepalive\n\n"
+        finally:
+            unsubscribe_overlay_events(q)
+
+    return Response(gen(), mimetype="text/event-stream")
+
+
+@app.route("/api/overlay/draw", methods=["POST"])
+def api_overlay_draw():
+    from amigo.services.screen_pen import push_overlay_event, screen_pen_annotate
+
+    data = request.get_json(silent=True) or {}
+    if data.get("type") in ("ink", "ink_clear"):
+        delivered = push_overlay_event(data)
+        return jsonify({"status": "success", "delivered": delivered})
+    res = screen_pen_annotate(
+        action=str(data.get("action") or "circle"),
+        x=data.get("x", 500),
+        y=data.get("y", 500),
+        x2=data.get("x2"),
+        y2=data.get("y2"),
+        label=data.get("label"),
+        color=str(data.get("color") or "#00F0FF"),
+        duration=float(data.get("duration", 4.0)),
+        normalized=bool(data.get("normalized", True)),
+    )
+    return jsonify(res)
 
 
 def launch_server(port: int = 5000, open_browser: bool = True) -> None:

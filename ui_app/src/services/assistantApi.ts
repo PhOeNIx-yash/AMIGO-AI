@@ -348,10 +348,9 @@ export function normalizeBackendResponse(raw: any, originalPrompt: string): Assi
       actionCards.length === 0 &&
       (raw.intent === "set_timer" ||
         raw.intent === "timer" ||
-        raw.intent === "stopwatch" ||
-        /\b(timer|countdown|stopwatch)\b/i.test(originalPrompt))
+        raw.intent === "stopwatch")
     ) {
-      const isStopwatch = raw.intent === "stopwatch" || originalPrompt.toLowerCase().includes("stopwatch");
+      const isStopwatch = raw.intent === "stopwatch";
       const seconds = parseSecondsFromPrompt(originalPrompt);
       const mins = Math.floor(seconds / 60);
       const secs = seconds % 60;
@@ -487,77 +486,6 @@ function parseSecondsFromPrompt(prompt: string): number {
 }
 
 function generateDynamicResponse(prompt: string): AssistantResponse {
-  const lower = prompt.toLowerCase();
-
-  // Timer & Countdown
-  if (/\b(timer|countdown|stopwatch)\b/i.test(lower)) {
-    const isStopwatch = lower.includes("stopwatch");
-    const seconds = parseSecondsFromPrompt(prompt);
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-
-    return {
-      speechReply: isStopwatch ? "Starting stopwatch." : `Setting a timer for ${mins > 0 ? `${mins} minutes` : `${secs} seconds`}.`,
-      displayTitle: prompt,
-      intent: isStopwatch ? "stopwatch" : "set_timer",
-      requiresDisambiguation: false,
-      actionCards: [
-        {
-          id: `act-timer-${Date.now()}`,
-          type: isStopwatch ? "stopwatch" : "timer",
-          title: isStopwatch ? "Stopwatch" : "Countdown Timer",
-          subtitle: isStopwatch ? "Active Stopwatch" : `${mins}m ${secs}s countdown`,
-          selected: true,
-          badge: isStopwatch ? "Stopwatch" : "Timer",
-          payload: {
-            tool: isStopwatch ? "stopwatch" : "set_timer",
-            duration_seconds: seconds,
-            seconds,
-            mode: isStopwatch ? "stopwatch" : "timer",
-            label: isStopwatch ? "Stopwatch" : "Timer",
-          },
-        },
-      ],
-      executionSummary: {
-        status: "completed",
-        headline: isStopwatch ? "Stopwatch Active" : "Timer Set",
-        details: isStopwatch ? "Stopwatch running." : `Timer active for ${mins}m ${secs}s.`,
-      },
-    };
-  }
-
-  // Weather
-  if (/\b(weather|temperature|forecast|climate)\b/i.test(lower)) {
-    const cityMatch = prompt.match(/\b(?:in|of|for|at)\s+([a-zA-Z\s]+)/i);
-    const targetCity = cityMatch ? cityMatch[1].trim() : "";
-
-    return {
-      speechReply: targetCity ? `Checking the live weather in ${targetCity}.` : `Checking the local live weather.`,
-      displayTitle: prompt,
-      intent: "get_weather",
-      requiresDisambiguation: false,
-      actionCards: [
-        {
-          id: `act-weather-${Date.now()}`,
-          type: "weather",
-          title: targetCity ? `Weather in ${targetCity}` : "Local Weather",
-          subtitle: "Live Meteorological Telemetry",
-          selected: true,
-          badge: "Weather",
-          payload: {
-            tool: "get_weather",
-            city: targetCity,
-          },
-        },
-      ],
-      executionSummary: {
-        status: "completed",
-        headline: "Weather Telemetry",
-        details: targetCity ? `Fetching live atmospheric data for ${targetCity}.` : "Fetching live meteorological conditions.",
-      },
-    };
-  }
-
   return {
     speechReply: `Processing: "${prompt}".`,
     displayTitle: prompt,

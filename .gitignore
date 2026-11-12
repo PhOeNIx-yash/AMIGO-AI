@@ -21,6 +21,8 @@ amigo_reminders.json
 amigo_screenshot.png
 rag_data/
 *.log
+*_log.txt
+scratch/
 .DS_Store
 Thumbs.db
 
@@ -38,3 +40,9 @@ ui_app/npm-debug.log*
 # ── Checkpoints (local backups) ────────────────────────────────
 .checkpoints/
 skills.md
+
+# ── Rust Source & Build Artifacts ──────────────────────────────
+roamies-win-extract/**/target/
+roamies-win-extract/hands-win/
+roamies-win-extract/voice-win/
+roamies-win-extract/tauri-win-ref/
