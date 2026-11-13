@@ -1241,6 +1241,22 @@
     nd.rows.forEach((r, k) => typed(b, r, x + w / 2, y + 19 + k * 15, NODEF, TEXT, (age - 0.05) / 0.25, { anchor: 'middle' }));
   }
   async function drawFlow(m) {
+    // Fallback topological layer builder if `m.lay` was not precomputed by the backend
+    if (!m.lay) {
+      const ids = (m.nodes ?? []).map((n) => n.id);
+      const rank = new Map(ids.map((id) => [id, 0]));
+      for (let step = 0; step < ids.length; step++) {
+        for (const lk of m.links ?? []) {
+          if (rank.has(lk.from) && rank.has(lk.to) && lk.from !== lk.to) {
+            rank.set(lk.to, Math.max(rank.get(lk.to), rank.get(lk.from) + 1));
+          }
+        }
+      }
+      const maxR = Math.max(0, ...rank.values());
+      const layers = Array.from({ length: maxR + 1 }, () => []);
+      for (const id of ids) layers[rank.get(id)].push(id);
+      m.lay = { layers: layers.filter((l) => l.length), via: {}, back: [] };
+    }
     const S = scr(), maxW = Math.min(S[2] - S[0] - 48, 860), maxH = maxCardH() - 26, first = m.dir === 'right';
     // The way it was asked for; turned the other way, or with narrower nodes, when that fits the screen and this doesn't.
     const tries = [[first, 124], [!first, 124], [first, 92], [!first, 92]].map(([r, ww]) => layoutFlow(m, r, ww));

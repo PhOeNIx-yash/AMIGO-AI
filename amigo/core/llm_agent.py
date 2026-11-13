@@ -3,7 +3,7 @@ LLM-Based Agent for Amigo Voice Assistant.
 Clean, streamlined inference engine for Qwen 3 4B Instruct:
 - Direct GGUF inference via llama-cpp-python on RTX 3050 GPU (with CPU fallback)
 - Fast KV-cache reuse with unified system prompt prefix
-- Multi-turn conversation context and RAG profile integration
+- Multi-turn conversation context (single & multi-step) and RAG profile integration
 - Clean, non-destructive streaming sentence synthesis for TTS
 """
 
@@ -11,17 +11,17 @@ import datetime
 import json
 import logging
 import os
+
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import re
 import sys
 import threading
 import time
-from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Generator, cast
 
 if TYPE_CHECKING:
-    from llama_cpp.llama_types import ChatCompletionRequestMessage, CreateChatCompletionStreamResponse
+    from llama_cpp.llama_types import ChatCompletionRequestMessage
 
 try:
     import pyperclip
@@ -50,17 +50,31 @@ def _setup_cuda_dll_directory() -> None:
     _cuda_dirs_setup = True
     try:
         import site
-        sp_list = [*(site.getsitepackages() or []), site.getusersitepackages(), sys.prefix, os.path.join(sys.prefix, "Lib", "site-packages")]
+
+        sp_list = [
+            *(site.getsitepackages() or []),
+            site.getusersitepackages(),
+            sys.prefix,
+            os.path.join(sys.prefix, "Lib", "site-packages"),
+        ]
         cuda_dirs = [
             os.path.join(sp, "nvidia", sub, "bin")
-            for sp in sp_list if isinstance(sp, str)
+            for sp in sp_list
+            if isinstance(sp, str)
             for sub in ("cuda_runtime", "cublas", "cuda_nvrtc")
         ]
-        for env_key in ("CUDA_PATH", "CUDA_HOME", "CUDA_PATH_V12_4", "CUDA_PATH_V12_5", "CUDA_PATH_V12_0", "CUDA_PATH_V11_8"):
+        for env_key in (
+            "CUDA_PATH",
+            "CUDA_HOME",
+            "CUDA_PATH_V12_4",
+            "CUDA_PATH_V12_5",
+            "CUDA_PATH_V12_0",
+            "CUDA_PATH_V11_8",
+        ):
             if cuda_home := os.environ.get(env_key):
                 cuda_dirs.append(os.path.join(cuda_home, "bin"))
 
-        # Prioritize bundled modern llama.cpp binary directory (supports lfm3 architecture)
+        # Prioritize bundled modern llama.cpp binary directory
         bundled_llama = os.path.join(str(_PROJECT_ROOT), "amigo", "lib", "llama")
         if not os.path.isdir(bundled_llama):
             bundled_llama = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib", "llama")
@@ -71,6 +85,7 @@ def _setup_cuda_dll_directory() -> None:
         else:
             try:
                 import llama_cpp
+
                 lib_dir = os.path.join(os.path.dirname(llama_cpp.__file__), "lib")
                 if os.path.isdir(lib_dir):
                     cuda_dirs.append(lib_dir)
@@ -93,17 +108,20 @@ def _setup_cuda_dll_directory() -> None:
             active_lib = os.environ.get("LLAMA_CPP_LIB_PATH")
             if not active_lib:
                 import llama_cpp
+
                 active_lib = os.path.join(os.path.dirname(llama_cpp.__file__), "lib")
             base_dll = os.path.join(active_lib, "ggml-base.dll")
             if os.path.exists(base_dll):
                 try:
                     import ctypes
+
                     ctypes.CDLL(base_dll)
                 except Exception:
                     pass
             ggml_dll = os.path.join(active_lib, "ggml.dll")
             if os.path.exists(ggml_dll):
                 import ctypes
+
                 ggml = ctypes.CDLL(ggml_dll)
                 if hasattr(ggml, "ggml_backend_load_all_from_path"):
                     ggml.ggml_backend_load_all_from_path(active_lib.encode("utf-8"))
@@ -303,15 +321,26 @@ def build_unified_history_messages(
         a = str(turn.get("assistant") or turn.get("assistant_reply") or turn.get("response") or "").strip()
         tool = str(turn.get("tool") or "").strip()
         params = turn.get("params")
+        actions = turn.get("actions")
         if u:
             clean_a, _ = _strip_reasoning(a) if a else ("", "")
             spoken = (clean_a.strip() or a)[:400]
             formatted.append({"role": "user", "content": u[:300]})
-            if for_router and tool and tool != "chat" and isinstance(params, dict):
-                action_content = json.dumps({"actions": [{"tool": tool, "params": params}]})
-                formatted.append({"role": "assistant", "content": action_content})
-            else:
-                formatted.append({"role": "assistant", "content": spoken or "Done."})
+            if for_router:
+                if isinstance(actions, list) and actions:
+                    clean_actions = [
+                        {"tool": act.get("tool"), "params": act.get("params", {})}
+                        for act in actions
+                        if isinstance(act, dict) and act.get("tool")
+                    ]
+                    if clean_actions:
+                        formatted.append({"role": "assistant", "content": json.dumps({"actions": clean_actions})})
+                        continue
+                if tool and tool != "chat" and isinstance(params, dict):
+                    action_content = json.dumps({"actions": [{"tool": tool, "params": params}]})
+                    formatted.append({"role": "assistant", "content": action_content})
+                    continue
+            formatted.append({"role": "assistant", "content": spoken or "Done."})
     return formatted
 
 
@@ -366,7 +395,8 @@ AVAILABLE_MODELS = {
             ("unsloth/Qwen3-4B-Instruct-2507-GGUF", "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"),
             ("lmstudio-community/Qwen3-4B-Instruct-2507-GGUF", "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"),
         ],
-        "downloaded": os.path.exists(os.path.join(MODEL_DIR, "Qwen3-4B-Instruct-2507-Q4_K_M.gguf")) and os.path.getsize(os.path.join(MODEL_DIR, "Qwen3-4B-Instruct-2507-Q4_K_M.gguf")) > 500_000_000,
+        "downloaded": os.path.exists(os.path.join(MODEL_DIR, "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"))
+        and os.path.getsize(os.path.join(MODEL_DIR, "Qwen3-4B-Instruct-2507-Q4_K_M.gguf")) > 500_000_000,
         "size_gb": 2.50,
     },
 }
@@ -416,6 +446,7 @@ def _get_physical_cores() -> int:
     if _PHYSICAL_CORES is None:
         try:
             import psutil
+
             _PHYSICAL_CORES = psutil.cpu_count(logical=False) or os.cpu_count() or 4
         except Exception:
             _PHYSICAL_CORES = os.cpu_count() or 4
@@ -432,6 +463,7 @@ def _get_llm_config() -> dict:
         has_gpu = False
         try:
             import llama_cpp
+
             has_gpu = bool(llama_cpp.llama_supports_gpu_offload())
         except Exception:
             pass
@@ -463,6 +495,7 @@ def _download_hf_file(targets: list[tuple[str, str]], target_path: str, min_size
     for repo, fname in targets:
         try:
             from huggingface_hub import hf_hub_download
+
             downloaded = hf_hub_download(repo_id=repo, filename=fname, local_dir=MODEL_DIR)
             if os.path.exists(downloaded) and os.path.getsize(downloaded) >= min_size:
                 if downloaded != target_path and not os.path.exists(target_path):
@@ -479,7 +512,6 @@ def get_model_path() -> str:
     if os.path.exists(target_path) and os.path.getsize(target_path) >= 500_000_000:
         return target_path
 
-    # Try downloading the active model
     downloaded = _download_hf_file(
         active_info.get("targets", MODEL_TARGETS),
         target_path,
@@ -489,7 +521,6 @@ def get_model_path() -> str:
     if os.path.exists(downloaded) and os.path.getsize(downloaded) >= 500_000_000:
         return downloaded
 
-    # Fallback to any already downloaded model if available on disk
     for m in AVAILABLE_MODELS.values():
         if os.path.exists(m["path"]) and os.path.getsize(m["path"]) >= 500_000_000:
             logger.info("[Local AI Engine] Falling back to available model on disk: %s", m["name"])
@@ -515,15 +546,17 @@ def ensure_model_downloaded() -> str:
     os.makedirs(MODEL_DIR, exist_ok=True)
     try:
         import subprocess
+
         url = f"https://huggingface.co/{repo}/resolve/main/{filename}"
         subprocess.run(
             ["curl.exe", "-4", "-L", "-C", "-", "--retry", "5", "--retry-delay", "2", "-o", path, url],
-            check=True
+            check=True,
         )
         return path
     except Exception as e:
         logger.warning("curl download failed (%s), trying hf_hub_download...", e)
         from huggingface_hub import hf_hub_download
+
         return hf_hub_download(
             repo_id=repo,
             filename=filename,
@@ -535,17 +568,21 @@ def ensure_model_downloaded() -> str:
 def _setup_chat_formatter(llm) -> None:
     try:
         from llama_cpp import llama_chat_format
+
         handler = llm.chat_handler or getattr(llm, "_chat_handlers", {}).get(llm.chat_format)
         if handler and getattr(handler, "__closure__", None):
             for c in handler.__closure__:
                 formatter = c.cell_contents
                 if hasattr(formatter, "template"):
+
                     class _Formatter:
                         def __init__(self, base):
                             self.base = base
+
                         def __call__(self, *args, **kwargs):
                             kwargs["enable_thinking"] = _thinking_enabled
                             return self.base(*args, **kwargs)
+
                     llm.chat_handler = llama_chat_format.chat_formatter_to_chat_completion_handler(_Formatter(formatter))
                     break
     except Exception as e:
@@ -574,6 +611,7 @@ def init_local_llm(force_reload: bool = False):
                 return None
 
             from llama_cpp import Llama
+
             config = _get_llm_config()
             kwargs = {
                 "model_path": model_file,
@@ -597,8 +635,17 @@ def init_local_llm(force_reload: bool = False):
             active_info = AVAILABLE_MODELS.get(_active_model_key, next(iter(AVAILABLE_MODELS.values())))
             try:
                 _local_llm_instance = Llama(**kwargs)
-                logger.info("[Local AI Engine] Initialized %s on GPU (n_gpu_layers=%s, n_ctx=%s)", active_info["name"], kwargs["n_gpu_layers"], kwargs["n_ctx"])
-                print(f"[Local AI Engine] {active_info['name']} is running on GPU: NVIDIA GeForce RTX 3050 (n_gpu_layers={kwargs['n_gpu_layers']}, n_ctx={kwargs['n_ctx']}, flash_attn={kwargs['flash_attn']})", flush=True)
+                logger.info(
+                    "[Local AI Engine] Initialized %s on GPU (n_gpu_layers=%s, n_ctx=%s)",
+                    active_info["name"],
+                    kwargs["n_gpu_layers"],
+                    kwargs["n_ctx"],
+                )
+                print(
+                    f"[Local AI Engine] {active_info['name']} is running on GPU: NVIDIA GeForce RTX 3050 "
+                    f"(n_gpu_layers={kwargs['n_gpu_layers']}, n_ctx={kwargs['n_ctx']}, flash_attn={kwargs['flash_attn']})",
+                    flush=True,
+                )
             except Exception as gpu_err:
                 logger.warning("[Local AI Engine] GPU load failed (%s), falling back to CPU", gpu_err)
                 kwargs["n_gpu_layers"] = 0
@@ -622,7 +669,8 @@ def init_local_llm(force_reload: bool = False):
 
 def warmup_router_prefix() -> float:
     """Pre-evaluates the static router prefix into GPU KV cache so first turn takes ~450ms instead of ~7.8s."""
-    from amigo.utils.tool_registry import get_static_master_prompt, _ROUTER_STOP
+    from amigo.utils.tool_registry import _ROUTER_STOP, get_static_master_prompt
+
     t0 = time.perf_counter()
     init_local_llm()
     try:
@@ -665,6 +713,7 @@ def get_active_model_info() -> dict:
     has_gpu = False
     try:
         import llama_cpp
+
         has_gpu = bool(llama_cpp.llama_supports_gpu_offload())
     except Exception:
         pass
@@ -690,7 +739,6 @@ def _strip_reasoning(text: str, fallback_to_thought: bool = False) -> tuple[str,
     thoughts: list[str] = []
     clean = text
 
-    # 1. Handle orphan </think> or standard <think>...</think> blocks
     if "</think>" in clean.lower():
         parts = re.split(r"</think>", clean, flags=re.IGNORECASE)
         for part in parts[:-1]:
@@ -718,6 +766,7 @@ def sanitize_for_tts(text: str) -> str:
         return ""
     try:
         from amigo.utils.tts import normalize_text_for_tts
+
         return normalize_text_for_tts(text)
     except Exception:
         clean, _ = _strip_reasoning(text)
@@ -949,8 +998,6 @@ def get_ai_response(
     response = _RE_SPEAKER_PREFIX.sub("", response).strip()
     response, thought = _strip_reasoning(response, fallback_to_thought=True)
     _thread_local.last_thought = thought
-    # Return pristine response with full formatting for UI display and memory.
-    # Note: TTS speech is normalized separately inside tts.speak() on its own copy.
     return response.strip() or "How can I help you today?"
 
 
@@ -1040,36 +1087,42 @@ def query_local_vision(*args, **kwargs) -> str | None:
 
 def parse_user_intent_fast(query: str):
     from amigo.utils.tool_registry import parse_user_intent_fast as _fn
+
     return _fn(query)
 
 
 def get_agent_actions(query: str, conversation_history: list | None = None):
     from amigo.utils.tool_registry import get_agent_actions as _fn
+
     return _fn(query, conversation_history)
 
 
 def get_agent_actions_with_response(query: str, conversation_history: list | None = None):
     from amigo.utils.tool_registry import get_agent_actions_with_response as _fn
+
     return _fn(query, conversation_history)
 
 
 def get_agent_action(query: str, conversation_history: list | None = None):
     from amigo.utils.tool_registry import get_agent_action as _fn
+
     return _fn(query, conversation_history)
 
 
 def get_last_played_song(conversation_history: list | None = None):
     from amigo.utils.tool_registry import get_last_played_song as _fn
+
     return _fn(conversation_history)
 
 
 def format_clarification_prompt(tool_a: str, tool_b: str, query: str) -> str:
     from amigo.utils.tool_registry import format_clarification_prompt as _fn
+
     return _fn(tool_a, tool_b, query)
 
 
 if __name__ == "__main__":
-    from amigo.ui.server import launch_server, initialize_amigo_async
+    from amigo.ui.server import initialize_amigo_async, launch_server
 
     _info = get_active_model_info()
     print("==================================================")
@@ -1078,4 +1131,3 @@ if __name__ == "__main__":
     print("==================================================")
     initialize_amigo_async()
     launch_server(port=5000, open_browser=True)
-

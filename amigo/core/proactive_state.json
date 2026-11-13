@@ -1,24 +1,14 @@
 {
-  "last_weather_check": 1794491965.1480858,
-  "last_calendar_check": 1794491965.1480858,
-  "last_system_check": 1794492146.7536995,
+  "last_weather_check": 1794569126.6278603,
+  "last_calendar_check": 1794570088.9636154,
+  "last_system_check": 1794570869.8018632,
   "last_notification_time": 1794486188.7522712,
   "last_priority_alert_time": 0,
   "suggestions_this_hour": 0,
-  "last_hour_reset": 1794489814.9721732,
-  "active_window_start": 1794492026.6074898,
-  "current_window_title": "Amigo - Windows 11 Voice Assistant and 3 more pages - Personal - Microsoft\u200b Edge",
+  "last_hour_reset": 1794569066.539828,
+  "active_window_start": 1794570809.7661285,
+  "current_window_title": "amigo-main - Antigravity IDE - amigo_profile.json",
   "recent_suggestions": [
-    {
-      "id": "wellness_break",
-      "text": "You've been in the zone for quite a while, there. Don't forget to take a quick stretch and hydrate.",
-      "time": 1794478408.3012302
-    },
-    {
-      "id": "wellness_break",
-      "text": "Friendly reminder to rest your eyes for a moment, there\u2014you've been working hard.",
-      "time": 1794482008.849591
-    },
     {
       "id": "wellness_break",
       "text": "Great focus session so far, there! Good time to stand up and grab some water when you hit a pause.",

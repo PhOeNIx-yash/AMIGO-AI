@@ -1,14 +1,13 @@
 """
 Screen Pen & Visual Overlay Bridge for Amigo Voice Assistant.
-Drives the JavaScript-native Roamies overlay (`roamies-win-extract/overlay/desktop.html` + `ink.js` + `ink3d.js`)
-via SSE events with full support for branching flowcharts, 2D graphs, LaTeX math trees, molecules,
-maps, quizzes, tables, timelines, bar charts, geometry, and 3D models.
+Drives the JavaScript-native Roamies overlay (`desktop.html` + `ink.js` + `ink3d.js`)
+with support for branching flowcharts, 2D graphs, LaTeX math trees, molecules,
+maps, quizzes, tables, timelines, bar charts, geometry, 3D models, and live UI guides.
 """
 
 from __future__ import annotations
 
 import json
-import math
 import queue
 import re
 import threading
@@ -19,21 +18,16 @@ _SUBSCRIBERS_LOCK = threading.Lock()
 _SUBSCRIBERS: list[queue.Queue] = []
 _LAST_EVENT: tuple[float, Dict[str, Any]] | None = None
 
-_COLOR_TONES = {
-    "#00F0FF": "teal",
-    "#78FFE2": "teal",
-    "#FF3366": "coral",
-    "#FF6B6B": "red",
-    "#FFCC00": "amber",
-    "#FFCF5C": "amber",
-    "#B9A4FF": "lilac",
-    "#7CC8FF": "sky",
-    "#B6F36B": "lime",
-    "#E8FFFA": "white",
-}
-
 _VALID_TONES = {"teal", "amber", "coral", "lilac", "sky", "lime", "red", "white", "accent"}
 _VALID_3D_SHAPES = {"sphere", "torus", "cone", "cylinder", "box"}
+_DIAGRAM_KINDS = {
+    "diagram", "flow", "graph", "bars", "table", "timeline",
+    "math", "geometry", "molecule", "map", "quiz", "model", "card", "note", "list",
+}
+_SCREEN_MARK_KINDS = {
+    "circle", "ring", "arrow", "box", "rect", "underline",
+    "strike", "highlight", "spotlight", "point", "target", "hover",
+}
 
 # Exact index order from world.js so `drawMap` can shade countries by name
 _WORLD_COUNTRIES = [
@@ -64,14 +58,6 @@ _WORLD_COUNTRIES = [
     "Kosovo", "Trinidad and Tobago", "South Sudan",
 ]
 _COUNTRY_INDEX = {name.lower(): idx for idx, name in enumerate(_WORLD_COUNTRIES)}
-_COUNTRY_CENTERS: dict[str, tuple[float, float]] = {
-    "india": (78.9, 21.0), "united states": (-98.5, 39.8), "united kingdom": (-2.0, 54.0),
-    "china": (104.1, 35.8), "japan": (138.2, 36.2), "germany": (10.4, 51.1), "france": (2.2, 46.2),
-    "brazil": (-51.9, -14.2), "australia": (133.7, -25.2), "canada": (-106.3, 56.1),
-    "russia": (105.3, 61.5), "egypt": (30.8, 26.8), "south africa": (22.9, -30.5),
-    "italy": (12.5, 41.8), "spain": (-3.7, 40.4), "mexico": (-102.5, 23.6),
-    "united arab emirates": (53.8, 23.4), "saudi arabia": (45.0, 23.8), "singapore": (103.8, 1.35),
-}
 
 
 def subscribe_overlay_events() -> queue.Queue:
@@ -94,30 +80,35 @@ def unsubscribe_overlay_events(q: queue.Queue) -> None:
             _SUBSCRIBERS.remove(q)
 
 
+def _wrap_roamie_host_event(inner_event: Dict[str, Any]) -> Dict[str, Any]:
+    """Wrap an ink event into the `{kind: 'agent', e: {...}}` envelope expected by `main.rs` / `desktop.html`."""
+    etype = inner_event.get("type")
+    if etype == "ink_clear":
+        return {"kind": "agent", "e": {"type": "clear", "all": bool(inner_event.get("all", True))}}
+    if etype == "ink":
+        draw_payload = {k: v for k, v in inner_event.items() if k != "type"}
+        draw_payload["type"] = "draw"
+        return {"kind": "agent", "e": draw_payload}
+    return {"kind": "agent", "e": inner_event}
+
+
 def push_overlay_event(event: Dict[str, Any]) -> int:
-    """Broadcast a Roamies overlay event (`ink`, `ink_clear`, `sfx`, etc.) to connected JS overlays."""
+    """Broadcast a Roamies overlay event to all connected JS overlays."""
     global _LAST_EVENT
+    envelope = _wrap_roamie_host_event(event)
+    is_transient = event.get("type") in ("ink_clear", "sfx")
     with _SUBSCRIBERS_LOCK:
-        _LAST_EVENT = (time.time(), event) if event.get("type") not in ("ink_clear", "sfx") else _LAST_EVENT
-        if event.get("type") == "ink_clear":
-            _LAST_EVENT = None
+        _LAST_EVENT = None if event.get("type") == "ink_clear" else (_LAST_EVENT if is_transient else (time.time(), envelope))
         targets = list(_SUBSCRIBERS)
+
     delivered = 0
     for q in targets:
         try:
-            q.put_nowait(event)
+            q.put_nowait(envelope)
             delivered += 1
         except queue.Full:
             pass
     return delivered
-
-
-def _to_screen_points(x: int | float, y: int | float, normalized: bool) -> tuple[float, float]:
-    if not normalized:
-        return float(x), float(y)
-    from amigo.services.hands import get_screen_bounds
-    sw, sh = get_screen_bounds()
-    return round((float(x) / 1000.0) * sw, 1), round((float(y) / 1000.0) * sh, 1)
 
 
 def play_overlay_sfx(name: str = "ink") -> int:
@@ -125,76 +116,133 @@ def play_overlay_sfx(name: str = "ink") -> int:
     return push_overlay_event({"type": "sfx", "name": str(name or "ink").strip()})
 
 
+def _get_viewport_bounds() -> tuple[float, float]:
+    """Query active display bounds dynamically from `hands` without hardcoded screen dimensions."""
+    from amigo.services.hands import get_screen_bounds
+    sw, sh = get_screen_bounds()
+    return float(sw), float(sh)
+
+
+def _to_screen_points(x: int | float, y: int | float, normalized: bool) -> tuple[float, float]:
+    if not normalized:
+        return float(x), float(y)
+    sw, sh = _get_viewport_bounds()
+    return round((float(x) / 1000.0) * sw, 1), round((float(y) / 1000.0) * sh, 1)
+
+
 def _resolve_target_rect(label: str, app: str | None = None) -> list[float] | None:
     """Resolve real on-screen bounds `[x, y, w, h]` for *label* via Rust `hands` (`front` -> `screen`)."""
+    target_text = str(label or "").strip().strip("\"'")
+    if not target_text:
+        return None
+
+    # Multilingual Unicode-aware tokenization: no hardcoded language-specific stop words
+    tokens = [t for t in re.findall(r"\w+", target_text, flags=re.UNICODE) if len(t) >= 2]
+    t_low = target_text.lower()
     targets = [f"app:{app}"] if app else ["front", "screen"]
+
     try:
         from amigo.services import hands
-        for tgt in targets:
-            hit = hands.find_text(tgt, str(label), scroll=False)
-            matches = hit.get("matches") or []
-            if not matches:
-                hit = hands.ocr_find(tgt, str(label))
+
+        # 1. Inspect structured UIA controls first (fast, precise, role-aware)
+        ui_res = hands.ui("front")
+        if ui_res.get("ok"):
+            controls = ui_res.get("controls") or []
+            best_c = None
+            best_score = -1.0
+
+            for c in controls:
+                if not isinstance(c, dict):
+                    continue
+                b = c.get("bounds")
+                if not isinstance(b, list) or len(b) != 4 or b[2] <= 0 or b[3] <= 0:
+                    continue
+                lbl = str(c.get("label") or c.get("name") or c.get("value") or "").strip().lower()
+                role = str(c.get("role") or c.get("type") or "").strip().lower()
+                if not lbl:
+                    continue
+
+                score = 0.0
+                if lbl == t_low:
+                    score += 100.0
+                elif re.search(rf"\b{re.escape(t_low)}\b", lbl):
+                    score += 80.0
+                elif t_low in lbl:
+                    score += 50.0
+                elif tokens:
+                    matched_count = sum(1 for tok in tokens if re.search(rf"\b{re.escape(tok.lower())}\b", lbl))
+                    if matched_count > 0:
+                        score += 35.0 * (matched_count / len(tokens))
+
+                if score <= 0.0:
+                    continue
+
+                # OS Accessibility role adjustments (platform constants, language-independent)
+                if role in ("button", "menuitem", "tabitem", "hyperlink", "link", "checkbox", "radiobutton", "edit"):
+                    score += 40.0
+                elif role in ("text", "static"):
+                    score += 10.0
+                elif role in ("pane", "window", "group", "container"):
+                    score -= 30.0
+
+                # Penalize oversized containers so centering won't land in empty space
+                bw, bh = float(b[2]), float(b[3])
+                if bw > 300.0 and bh < 60.0:
+                    score -= 35.0
+
+                if score > best_score:
+                    best_score = score
+                    best_c = c
+
+            if best_c and best_score >= 35.0:
+                b = best_c["bounds"]
+                bw = min(float(b[2]), max(80.0, float(len(target_text) * 14.0))) if float(b[2]) > 220.0 else float(b[2])
+                return [float(b[0]), float(b[1]), bw, float(b[3])]
+
+        # 2. Fall back to OCR / text search across active display
+        queries = [target_text]
+        if len(tokens) > 1:
+            for tok in sorted(tokens, key=len, reverse=True):
+                if tok not in queries:
+                    queries.append(tok)
+
+        for q in queries:
+            for tgt in targets:
+                hit = hands.find_text(tgt, q, scroll=False)
                 matches = hit.get("matches") or []
-            if matches and isinstance(matches[0], dict) and isinstance(matches[0].get("bounds"), list):
-                b = matches[0]["bounds"]
-                if len(b) == 4:
-                    return [float(b[0]), float(b[1]), max(24.0, float(b[2])), max(24.0, float(b[3]))]
+                if not matches:
+                    hit = hands.ocr_find(tgt, q)
+                    matches = hit.get("matches") or []
+                if matches and isinstance(matches[0], dict) and isinstance(matches[0].get("bounds"), list):
+                    b = matches[0]["bounds"]
+                    if len(b) == 4 and b[2] > 0 and b[3] > 0:
+                        bw = min(float(b[2]), max(80.0, float(len(q) * 14.0))) if float(b[2]) > 220.0 else float(b[2])
+                        return [float(b[0]), float(b[1]), bw, float(b[3])]
     except Exception:
         pass
     return None
 
 
-def _color_to_tone(color: str) -> str:
+def _resolve_tone(color: str | None) -> str:
+    """Map user/LLM color names or hex values into Roamies CSS palette tokens."""
     c = str(color or "").strip().lower()
     if c in _VALID_TONES:
         return c
-    return _COLOR_TONES.get(c.upper(), "teal")
-
-
-PEN_TOOL_DEFINITION = {
-    "type": "function",
-    "function": {
-        "name": "screen_pen_annotate",
-        "description": (
-            "Draws visual explanations, interactive diagrams, flowcharts, 2D graphs, LaTeX math steps, "
-            "molecules, world maps, tables, bar charts, quizzes, 3D models, or screen UI annotations "
-            "(circle, arrow, box, underline, spotlight) on the desktop overlay."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": [
-                        "diagram", "flow", "graph", "bars", "table", "timeline",
-                        "math", "geometry", "molecule", "map", "quiz", "model",
-                        "card", "note", "list", "circle", "ring", "arrow", "box",
-                        "underline", "highlight", "spotlight", "guide", "clear",
-                    ],
-                    "description": (
-                        "Use 'diagram' (or specific visual types like 'flow', 'graph', 'math', 'molecule', 'map', "
-                        "'table', 'bars', 'timeline', 'quiz', 'model') to visually explain any topic, or use "
-                        "'circle'/'ring'/'arrow'/'box'/'underline'/'spotlight'/'guide' to mark live screen UI elements."
-                    ),
-                },
-                "topic": {
-                    "type": "string",
-                    "description": "The concept, question, system, or process to visually explain.",
-                },
-                "x": {"type": "integer", "description": "Target X coordinate for screen annotations."},
-                "y": {"type": "integer", "description": "Target Y coordinate for screen annotations."},
-                "x2": {"type": "integer", "description": "Optional secondary X coordinate."},
-                "y2": {"type": "integer", "description": "Optional secondary Y coordinate."},
-                "label": {"type": "string", "description": "UI element text to locate on screen, or label for the mark."},
-                "color": {"type": "string", "description": "Color or tone ('teal', 'coral', 'amber', 'sky', 'lilac', 'lime')."},
-                "duration": {"type": "number", "description": "Duration in seconds before auto-fading."},
-                "normalized": {"type": "boolean", "description": "Whether x/y are 0-1000 normalized (default true)."},
-            },
-            "required": ["action"],
-        },
-    },
-}
+    if c.startswith("#") and len(c) == 7:
+        r, g, b = int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16)
+        if r > 200 and g < 110:
+            return "coral" if b > 90 else "red"
+        if r > 200 and g > 170 and b < 110:
+            return "amber"
+        if g > 200 and r < 140 and b > 180:
+            return "teal"
+        if b > 200 and r > 140:
+            return "lilac"
+        if b > 200:
+            return "sky"
+        if g > 200:
+            return "lime"
+    return "teal"
 
 
 # ---------------------------------------------------------------------------
@@ -253,7 +301,7 @@ def _build_flow_layout(nodes: list[dict[str, Any]], links: list[dict[str, Any]])
         for nid in layer:
             rank[nid] = r_idx
 
-    via: dict[int, list[str]] = {}
+    via: dict[str, list[str]] = {}
     for k, lk in enumerate(links):
         u, v = str(lk.get("from") or ""), str(lk.get("to") or "")
         if u not in rank or v not in rank or u == v:
@@ -266,7 +314,7 @@ def _build_flow_layout(nodes: list[dict[str, Any]], links: list[dict[str, Any]])
                 lane_id = f"__lane_{k}_{r_mid}"
                 layers[r_mid].append(lane_id)
                 lanes.append(lane_id)
-            via[k] = lanes
+            via[str(k)] = lanes
 
     return {"layers": layers, "via": via, "back": back_edges}
 
@@ -349,11 +397,10 @@ def _tex_to_tree(expr: str) -> dict[str, Any]:
                 grp_s, i = _extract_group(text, i)
                 children.append(_parse(grp_s))
             else:
-                matched_fn = None
-                for fn in _FN_NAMES:
-                    if text.startswith(fn, i) and (i + len(fn) == n or not text[i + len(fn)].isalpha()):
-                        matched_fn = fn
-                        break
+                matched_fn = next(
+                    (fn for fn in _FN_NAMES if text.startswith(fn, i) and (i + len(fn) == n or not text[i + len(fn)].isalpha())),
+                    None,
+                )
                 if matched_fn:
                     children.append({"t": "s", "s": matched_fn, "k": "fn"})
                     i += len(matched_fn)
@@ -366,9 +413,7 @@ def _tex_to_tree(expr: str) -> dict[str, Any]:
                     kind = "rel" if ch in _REL_CHARS else ("op" if ch in _OP_CHARS else "ord")
                     children.append({"t": "s", "s": "−" if ch == "-" else ch, "k": kind})
                     i += 1
-        if len(children) == 1:
-            return children[0]
-        return {"t": "row", "c": children}
+        return children[0] if len(children) == 1 else {"t": "row", "c": children}
 
     return _parse(s)
 
@@ -385,7 +430,7 @@ def _parse_smiles_to_mol(smiles: str) -> dict[str, Any]:
     prev: Optional[int] = None
     next_order: float = 1.0
     i = 0
-    s = str(smiles or "CCO").strip()
+    s = str(smiles or "").strip()
 
     while i < len(s):
         ch = s[i]
@@ -434,13 +479,11 @@ def _parse_smiles_to_mol(smiles: str) -> dict[str, Any]:
             used = sum(int(round(b["order"])) for b in bonds if b["a"] == idx or b["b"] == idx)
             a["h"] = max(0, _VALENCE[a["el"]] - used)
 
-    if not atoms:
-        return {"atoms": [{"el": "O", "h": 2, "charge": 0}], "bonds": []}
-    return {"atoms": atoms, "bonds": bonds}
+    return {"atoms": atoms, "bonds": bonds} if atoms else {"atoms": [{"el": "O", "h": 2, "charge": 0}], "bonds": []}
 
 
 # ---------------------------------------------------------------------------
-# Normalization & Multi-Modal Visual Beat Generation
+# Normalization & Dynamic Visual Beat Generation
 # ---------------------------------------------------------------------------
 
 def _vec3(val: Any, default: list[float], lo: float, hi: float) -> list[float]:
@@ -453,34 +496,34 @@ def _vec3(val: Any, default: list[float], lo: float, hi: float) -> list[float]:
 
 
 def _sanitize_mark(mk: dict[str, Any]) -> dict[str, Any]:
-    """Normalize LLM-generated mark fields into strict Roamies `ink.js`/`ink3d.js` shapes."""
+    """Normalize mark fields into strict Roamies `ink.js`/`ink3d.js` shapes."""
     out = dict(mk)
     for key in ("kind", "tone"):
         if isinstance(out.get(key), str) and "|" in out[key]:
             out[key] = out[key].split("|", 1)[0].strip().lower()
     if out.get("tone") not in _VALID_TONES:
-        out["tone"] = "teal"
+        out["tone"] = _resolve_tone(out.get("tone"))
     if out.get("kind") == "model3d":
         out["kind"] = "model"
 
     at_val = out.get("at")
     if isinstance(at_val, dict) and "rect" not in at_val and all(k in at_val for k in ("x", "y")):
-        out["at"] = {"rect": [float(at_val["x"]), float(at_val["y"]), float(at_val.get("w", 160)), float(at_val.get("h", 160))]}
+        out["at"] = {"rect": [float(at_val["x"]), float(at_val["y"]), float(at_val.get("w", 120)), float(at_val.get("h", 40))]}
 
     if isinstance(out.get("parts"), list):
-        offsets = [(0.0, 0.9, 0.0), (0.0, 0.0, 0.0), (0.0, -0.9, 0.0), (1.0, 0.2, 0.0), (-1.0, 0.2, 0.0), (0.0, 0.4, 0.9)]
-        tones_cycle = ["coral", "amber", "sky", "teal", "lilac", "lime"]
         clean_parts = []
-        for idx, p in enumerate(out["parts"][:6]):
+        count = max(1, min(8, len(out["parts"])))
+        for idx, p in enumerate(out["parts"][:8]):
             if not isinstance(p, dict):
                 continue
             cp = dict(p)
             shape = str(cp.get("shape") or "sphere").split("|", 1)[0].strip().lower()
             cp["shape"] = shape if shape in _VALID_3D_SHAPES else "sphere"
-            tone = str(cp.get("tone") or tones_cycle[idx % len(tones_cycle)]).split("|", 1)[0].strip().lower()
-            cp["tone"] = tone if tone in _VALID_TONES else "teal"
-            cp["at"] = _vec3(cp.pop("pos", None) if "at" not in cp else cp.get("at"), list(offsets[idx % len(offsets)]), -2.5, 2.5)
-            cp["size"] = _vec3(cp.get("size"), [0.65, 0.65, 0.65], 0.15, 2.5)
+            cp["tone"] = _resolve_tone(cp.get("tone"))
+            # Distribute vertically/radially only when coordinates are omitted
+            default_y = round(1.2 * (1.0 - (2.0 * idx / max(1, count - 1))), 2) if count > 1 else 0.0
+            cp["at"] = _vec3(cp.pop("pos", None) if "at" not in cp else cp.get("at"), [0.0, default_y, 0.0], -3.0, 3.0)
+            cp["size"] = _vec3(cp.get("size"), [0.6, 0.6, 0.6], 0.1, 3.0)
             if isinstance(cp.get("rot"), (list, tuple)) and len(cp["rot"]) == 3:
                 cp["rot"] = _vec3(cp["rot"], [0.0, 0.0, 0.0], -360.0, 360.0)
             if isinstance(cp.get("motion"), str):
@@ -501,9 +544,9 @@ def _sanitize_mark(mk: dict[str, Any]) -> dict[str, Any]:
                 shape = "diamond" if "?" in str(n.get("text") or "") else "box"
             clean_nodes.append({
                 "id": nid,
-                "text": str(n.get("text") or nid)[:64],
+                "text": str(n.get("text") or nid)[:72],
                 "shape": shape,
-                "tone": _color_to_tone(str(n.get("tone") or "teal")),
+                "tone": _resolve_tone(n.get("tone")),
             })
         clean_links = []
         if isinstance(out.get("links"), list):
@@ -521,7 +564,7 @@ def _sanitize_mark(mk: dict[str, Any]) -> dict[str, Any]:
                 clean_links.append({
                     "from": u,
                     "to": v,
-                    "label": str(lk.get("label") or "")[:28] if lk.get("label") else None,
+                    "label": str(lk.get("label") or "")[:32] if lk.get("label") else None,
                     "flow": bool(lk.get("flow", True)),
                 })
         out["nodes"] = clean_nodes
@@ -533,10 +576,10 @@ def _sanitize_mark(mk: dict[str, Any]) -> dict[str, Any]:
         if not raw_steps and out.get("tex"):
             raw_steps = [{"tex": str(out["tex"]), "note": ""}]
         clean_steps = []
-        for st in raw_steps[:8]:
+        for st in raw_steps[:10]:
             if isinstance(st, dict):
                 tree = st.get("tree") if isinstance(st.get("tree"), dict) else _tex_to_tree(str(st.get("tex") or st.get("formula") or ""))
-                clean_steps.append({"tree": tree, "note": str(st.get("note") or "")[:90]})
+                clean_steps.append({"tree": tree, "note": str(st.get("note") or "")[:100]})
             elif isinstance(st, str):
                 clean_steps.append({"tree": _tex_to_tree(st), "note": ""})
         out["steps"] = clean_steps
@@ -544,64 +587,122 @@ def _sanitize_mark(mk: dict[str, Any]) -> dict[str, Any]:
     if out.get("kind") == "map":
         pins = out.get("pins") or out.get("places") or []
         clean_pins = [
-            {"name": str(p.get("name") or "")[:28], "lon": float(p.get("lon") or 0), "lat": float(p.get("lat") or 0)}
-            for p in pins[:10] if isinstance(p, dict) and p.get("name")
+            {"name": str(p.get("name") or "")[:32], "lon": float(p.get("lon") or 0), "lat": float(p.get("lat") or 0)}
+            for p in pins[:12] if isinstance(p, dict) and p.get("name")
         ]
         out["pins"] = clean_pins
         shade_in = out.get("shade") or out.get("countries") or []
         clean_shade = []
-        tones_cycle = ["teal", "amber", "coral", "sky", "lime", "lilac"]
-        for idx, item in enumerate(shade_in[:8]):
+        palette = ["teal", "amber", "coral", "sky", "lime", "lilac"]
+        for idx, item in enumerate(shade_in[:10]):
             cname = str(item.get("name") if isinstance(item, dict) else item).strip().lower()
             c_idx = _COUNTRY_INDEX.get(cname)
             if c_idx is not None:
-                center = _COUNTRY_CENTERS.get(cname, (0.0, 20.0))
+                lon = float(item.get("lon")) if isinstance(item, dict) and "lon" in item else 0.0
+                lat = float(item.get("lat")) if isinstance(item, dict) and "lat" in item else 0.0
                 clean_shade.append({
                     "i": c_idx,
                     "name": _WORLD_COUNTRIES[c_idx],
-                    "tone": tones_cycle[idx % len(tones_cycle)],
-                    "at": [center[0], center[1]],
+                    "tone": _resolve_tone(item.get("tone")) if isinstance(item, dict) and item.get("tone") else palette[idx % len(palette)],
+                    "at": [lon, lat],
                 })
         out["shade"] = clean_shade
-        if not isinstance(out.get("view"), list) or len(out["view"]) != 4:
-            if clean_pins:
-                lons = [p["lon"] for p in clean_pins]
-                lats = [p["lat"] for p in clean_pins]
-                out["view"] = [min(lons) - 18, min(lats) - 12, max(lons) + 18, max(lats) + 12]
+        view_raw = out.get("view")
+        valid_view = False
+        if isinstance(view_raw, list) and len(view_raw) == 4:
+            try:
+                out["view"] = [float(v) for v in view_raw]
+                valid_view = True
+            except (ValueError, TypeError):
+                valid_view = False
+        if not valid_view:
+            coords = [(p["lon"], p["lat"]) for p in clean_pins] + [
+                (s["at"][0], s["at"][1]) for s in clean_shade if s["at"] != [0.0, 0.0]
+            ]
+            if coords:
+                lons = [c[0] for c in coords]
+                lats = [c[1] for c in coords]
+                pad_lon = max(12.0, (max(lons) - min(lons)) * 0.25)
+                pad_lat = max(8.0, (max(lats) - min(lats)) * 0.25)
+                out["view"] = [min(lons) - pad_lon, min(lats) - pad_lat, max(lons) + pad_lon, max(lats) + pad_lat]
             else:
-                out["view"] = [-25.0, -35.0, 145.0, 65.0]
+                out["view"] = [-170.0, -55.0, 175.0, 75.0]
 
     if out.get("kind") == "molecule" and "mol" not in out:
-        out["mol"] = _parse_smiles_to_mol(str(out.get("smiles") or "CCO"))
+        smiles = str(out.get("smiles") or "").strip()
+        if smiles:
+            out["mol"] = _parse_smiles_to_mol(smiles)
 
     return out
 
 
-def _generate_visual_diagram_beats(topic: str, preferred_kind: Optional[str] = None) -> tuple[list[dict[str, Any]], str]:
+def _extract_json_object(raw: str) -> dict[str, Any]:
+    if not raw:
+        return {}
+    cleaned = re.sub(r"```(?:json)?\s*", "", raw).replace("```", "").strip()
+    m = re.search(r"\{.*", cleaned, re.DOTALL)
+    if not m:
+        return {}
+    candidate = re.sub(r",\s*([\]}])", r"\1", m.group(0))
+    open_k = candidate.count("[") - candidate.count("]")
+    open_b = candidate.count("{") - candidate.count("}")
+    if open_k > 0:
+        candidate += "]" * open_k
+    if open_b > 0:
+        candidate += "}" * open_b
+    try:
+        return json.loads(candidate)
+    except Exception:
+        last_brace = candidate.rfind("}")
+        while last_brace > 0:
+            try:
+                return json.loads(candidate[: last_brace + 1])
+            except Exception:
+                last_brace = candidate.rfind("}", 0, last_brace)
+    return {}
+
+
+def _generate_visual_diagram_beats(
+    topic: str,
+    preferred_kind: Optional[str] = None,
+    structured_data: Optional[dict[str, Any]] = None,
+) -> tuple[list[dict[str, Any]], str]:
     """
-    Generate rich, multi-card Roamies `ink.js` / `ink3d.js` visual beats dynamically for *topic*.
-    Supports 3D models, branching/cyclic flowcharts, 2D graphs, LaTeX math ASTs, SMILES molecules,
-    world maps, geometry, bar charts, timelines, tables, and interactive quizzes.
+    Build Roamies `ink.js` / `ink3d.js` visual beats from structured payload or dynamic LLM synthesis.
     """
     from amigo.core.llm_agent import query_local_llm, sanitize_for_tts
 
-    tones = ["teal", "coral", "amber", "sky", "lilac", "lime"]
+    parsed: dict[str, Any] = dict(structured_data) if isinstance(structured_data, dict) else {}
 
-    prompt = (
-        f"Explain '{topic}' visually as compact valid JSON (no markdown, no comments).\n"
-        f"Pick 'visual_type' from: 'flow', 'model', 'graph', 'bars', 'table', 'timeline', 'math', 'geometry', 'molecule', 'map', 'quiz'.\n"
-        f"Required keys:\n"
-        f"- \"summary\": \"1-2 short spoken sentences\"\n"
-        f"- \"visual_type\": \"{preferred_kind or 'flow'}\"\n"
-        f"- \"flow\": {{\"nodes\":[{{\"id\":\"n1\",\"text\":\"Short step\",\"shape\":\"round|box|diamond\",\"tone\":\"teal|sky|coral|amber\"}}],\"links\":[{{\"from\":\"n1\",\"to\":\"n2\",\"flow\":true}}]}} (4-6 connected nodes)\n"
-        f"- \"parts\": 4-5 3D parts [{{\"shape\":\"sphere|torus|cone|cylinder|box\",\"label\":\"1-3 words\",\"at\":[x,y,z],\"size\":[sx,sy,sz],\"rot\":[rx,ry,rz],\"tone\":\"coral|amber|sky|teal|lilac\",\"glass\":false,\"motion\":{{\"do\":\"spin|orbit|slide|pulse\",\"axis\":\"y\"}}}}] (spread 'at' across -1.4..1.4)\n"
-        f"- Include ONLY if relevant to visual_type: \"table\" ({{\"columns\":[...],\"rows\":[[...]]}}), \"bars\" ([{{\"label\":\"...\",\"value\":10}}]), \"graph\" ({{\"plots\":[{{\"label\":\"...\",\"points\":[[0,0],[1,1]]}}]}}), \"math_steps\" ([{{\"tex\":\"...\",\"note\":\"...\"}}]), \"timeline\" ([{{\"when\":\"...\",\"text\":\"...\"}}]), \"geometry\" ({{\"vertices\":[...],\"lines\":[...]}}), \"map\" ({{\"countries\":[...],\"pins\":[...]}}), \"smiles\" (string), or \"questions\" (quiz).\n"
-        f"Output ONLY valid JSON."
-    )
+    if not parsed:
+        kind_hint = f"Use visual_type='{preferred_kind}'." if preferred_kind else (
+            "Choose the single best visual_type from: 'flow', 'model', 'graph', 'bars', 'table', "
+            "'timeline', 'math', 'geometry', 'molecule', 'map', 'quiz', 'card'."
+        )
+        prompt = (
+            f"Create a visual explanation of '{topic}' as compact valid JSON (no markdown).\n"
+            f"{kind_hint}\n"
+            f"Include 'summary' (1-2 spoken sentences), 'visual_type', and ONLY the matching payload key:\n"
+            f"- flow: \"flow\": {{\"dir\":\"down|right\",\"nodes\":[{{\"id\":\"n1\",\"text\":\"...\",\"shape\":\"round|box|diamond\",\"tone\":\"teal|sky|coral|amber\"}}],\"links\":[{{\"from\":\"n1\",\"to\":\"n2\",\"label\":\"optional\",\"flow\":true}}]}}\n"
+            f"- model: \"parts\": [{{\"shape\":\"sphere|torus|cone|cylinder|box\",\"label\":\"...\",\"at\":[x,y,z],\"size\":[sx,sy,sz],\"rot\":[rx,ry,rz],\"tone\":\"coral|amber|sky|teal|lilac\",\"motion\":{{\"do\":\"spin|orbit|slide|pulse\",\"axis\":\"y\"}}}}]\n"
+            f"- table: \"table\": {{\"title\":\"...\",\"columns\":[...],\"rows\":[[...]]}}\n"
+            f"- bars: \"bars\": [{{\"label\":\"...\",\"value\":10}}], \"unit\": \"optional\"\n"
+            f"- graph: \"graph\": {{\"plots\":[{{\"label\":\"...\",\"tone\":\"teal\",\"points\":[[x,y],...]}}]}}\n"
+            f"- math: \"math_steps\": [{{\"tex\":\"...\",\"note\":\"...\"}}]\n"
+            f"- timeline: \"timeline\": [{{\"when\":\"...\",\"text\":\"...\"}}]\n"
+            f"- geometry: \"geometry\": {{\"vertices\":[{{\"id\":\"A\",\"x\":0,\"y\":0}}],\"lines\":[{{\"from\":\"A\",\"to\":\"B\",\"label\":\"...\"}}],\"angles\":[...],\"circles\":[...]}}\n"
+            f"- map: \"map\": {{\"view\":[west,south,east,north],\"countries\":[{{\"name\":\"...\",\"lon\":0,\"lat\":0}}],\"pins\":[{{\"name\":\"...\",\"lon\":0,\"lat\":0}}],\"routes\":[{{\"from\":\"...\",\"to\":\"...\"}}]}}\n"
+            f"- molecule: \"smiles\": \"valid SMILES string\"\n"
+            f"- quiz: \"questions\": [{{\"text\":\"...\",\"options\":[...],\"right\":0,\"explain\":\"...\"}}]\n"
+            f"Output ONLY valid JSON."
+        )
+        raw = query_local_llm(prompt, max_tokens=1100, thinking=False)
+        parsed = _extract_json_object(raw)
 
-    raw = query_local_llm(prompt, max_tokens=900, thinking=False)
-    summary = f"Here is a visual breakdown of {topic}."
-    beats: list[dict[str, Any]] = []
+    summary = sanitize_for_tts(str(parsed.get("summary") or "")) or f"Here is a visual breakdown of {topic}."
+    vtype = str(preferred_kind or parsed.get("visual_type") or "flow").strip().lower()
+    palette = ["teal", "coral", "amber", "sky", "lilac", "lime"]
+
     part_counter = 1
 
     def _next_part() -> str:
@@ -610,34 +711,6 @@ def _generate_visual_diagram_beats(topic: str, preferred_kind: Optional[str] = N
         part_counter += 1
         return pid
 
-    parsed: dict[str, Any] = {}
-    if raw:
-        cleaned = re.sub(r"```(?:json)?\s*", "", raw).replace("```", "").strip()
-        m = re.search(r"\{.*", cleaned, re.DOTALL)
-        if m:
-            candidate = re.sub(r",\s*([\]}])", r"\1", m.group(0))
-            open_k = candidate.count("[") - candidate.count("]")
-            open_b = candidate.count("{") - candidate.count("}")
-            if open_k > 0:
-                candidate += "]" * open_k
-            if open_b > 0:
-                candidate += "}" * open_b
-            try:
-                parsed = json.loads(candidate)
-            except Exception:
-                # Try trimming after the last complete '}'
-                last_brace = candidate.rfind("}")
-                while last_brace > 0:
-                    try:
-                        parsed = json.loads(candidate[: last_brace + 1])
-                        break
-                    except Exception:
-                        last_brace = candidate.rfind("}", 0, last_brace)
-
-    if parsed.get("summary"):
-        summary = sanitize_for_tts(str(parsed["summary"])) or summary
-
-    vtype = str(preferred_kind or parsed.get("visual_type") or "flow").strip().lower()
     primary_marks: list[dict[str, Any]] = []
 
     # 3D Model (`drawModel` / `ink3d.js`)
@@ -646,28 +719,36 @@ def _generate_visual_diagram_beats(topic: str, preferred_kind: Optional[str] = N
         primary_marks.append(_sanitize_mark({
             "kind": "model",
             "part": _next_part(),
-            "title": f"{topic.title()[:26]} · 3D",
+            "title": f"{topic.title()[:28]} · 3D",
             "parts": raw_parts,
         }))
 
     # Branching / Cyclic Flowchart (`drawFlow`)
-    flow_data = parsed.get("flow") if isinstance(parsed.get("flow"), dict) else None
+    flow_data = parsed.get("flow") if isinstance(parsed.get("flow"), dict) else (
+        {"nodes": parsed["nodes"], "links": parsed.get("links", []), "dir": parsed.get("dir", "down")}
+        if isinstance(parsed.get("nodes"), list) else None
+    )
     if flow_data and isinstance(flow_data.get("nodes"), list) and len(flow_data["nodes"]) >= 2:
         primary_marks.append(_sanitize_mark({
             "kind": "flow",
             "part": _next_part(),
-            "title": f"{topic.title()[:28]} · Pathway",
+            "title": f"{topic.title()[:28]} · Flow",
             "dir": str(flow_data.get("dir") or "down"),
-            "nodes": flow_data["nodes"][:9],
+            "nodes": flow_data["nodes"][:12],
             "links": flow_data.get("links") or [
                 {"from": flow_data["nodes"][i]["id"], "to": flow_data["nodes"][i + 1]["id"], "flow": True}
                 for i in range(len(flow_data["nodes"]) - 1)
             ],
         }))
-    elif isinstance(parsed.get("steps"), list) and len(parsed["steps"]) >= 2:
-        raw_steps = parsed["steps"][:7]
+    elif isinstance(parsed.get("steps"), list) and len(parsed["steps"]) >= 2 and vtype == "flow":
+        raw_steps = parsed["steps"][:8]
         nodes = [
-            {"id": f"s{i + 1}", "text": str(st)[:54], "shape": "round" if i in (0, len(raw_steps) - 1) else "box", "tone": tones[i % len(tones)]}
+            {
+                "id": f"s{i + 1}",
+                "text": str(st)[:60],
+                "shape": "round" if i in (0, len(raw_steps) - 1) else "box",
+                "tone": palette[i % len(palette)],
+            }
             for i, st in enumerate(raw_steps)
         ]
         links = [{"from": f"s{i}", "to": f"s{i + 1}", "flow": True} for i in range(1, len(nodes))]
@@ -679,93 +760,93 @@ def _generate_visual_diagram_beats(topic: str, preferred_kind: Optional[str] = N
             "links": links,
         }))
 
-    # 2D Line/Curve Graph (`drawGraph`)
+    # 2D Graph (`drawGraph`)
     graph_data = parsed.get("graph") if isinstance(parsed.get("graph"), dict) else None
-    if vtype == "graph" or (graph_data and isinstance(graph_data.get("plots"), list) and graph_data["plots"]):
-        plots = (graph_data or {}).get("plots") or [
-            {"label": topic.title()[:20], "tone": "teal", "points": [[x, round(math.sin(x * 0.6) * 40 + 50, 1)] for x in range(0, 11)]}
-        ]
+    if graph_data and isinstance(graph_data.get("plots"), list) and graph_data["plots"]:
         primary_marks.append(_sanitize_mark({
             "kind": "graph",
             "part": _next_part(),
             "title": f"{topic.title()[:28]} · Graph",
-            "x_range": (graph_data or {}).get("x_range"),
-            "y_range": (graph_data or {}).get("y_range"),
-            "plots": plots[:4],
-            "dots": (graph_data or {}).get("dots") or [],
+            "x_range": graph_data.get("x_range"),
+            "y_range": graph_data.get("y_range"),
+            "plots": graph_data["plots"][:4],
+            "dots": graph_data.get("dots") or [],
         }))
 
     # Math LaTeX AST (`drawMath`)
     math_steps = parsed.get("math_steps") or ([{"tex": parsed["tex"]}] if parsed.get("tex") else [])
-    if (vtype == "math" or math_steps) and math_steps:
+    if math_steps:
         primary_marks.append(_sanitize_mark({
             "kind": "math",
             "part": _next_part(),
-            "title": f"{topic.title()[:28]} · Equations",
+            "title": f"{topic.title()[:28]} · Math",
             "steps": math_steps,
         }))
 
-    # Chemistry Molecule (`drawMolecule`)
+    # Molecule (`drawMolecule`)
     smiles_str = parsed.get("smiles")
-    if vtype == "molecule" or smiles_str:
+    if smiles_str:
         primary_marks.append(_sanitize_mark({
             "kind": "molecule",
             "part": _next_part(),
-            "title": f"{topic.title()[:28]} · Structure",
-            "smiles": str(smiles_str or "c1ccccc1"),
+            "title": f"{topic.title()[:28]} · Molecule",
+            "smiles": str(smiles_str),
             "label": topic.title()[:32],
         }))
 
     # Geometry (`drawGeometry`)
     geom_data = parsed.get("geometry") if isinstance(parsed.get("geometry"), dict) else None
-    if (vtype == "geometry" or geom_data) and isinstance((geom_data or parsed).get("vertices"), list):
-        src_g = geom_data or parsed
-        if src_g.get("vertices"):
-            primary_marks.append(_sanitize_mark({
-                "kind": "geometry",
-                "part": _next_part(),
-                "title": f"{topic.title()[:28]} · Geometry",
-                "vertices": src_g["vertices"][:12],
-                "lines": src_g.get("lines") or [],
-                "angles": src_g.get("angles") or [],
-                "circles": src_g.get("circles") or [],
-                "tone": "teal",
-            }))
+    if geom_data and isinstance(geom_data.get("vertices"), list) and geom_data["vertices"]:
+        primary_marks.append(_sanitize_mark({
+            "kind": "geometry",
+            "part": _next_part(),
+            "title": f"{topic.title()[:28]} · Geometry",
+            "vertices": geom_data["vertices"][:14],
+            "lines": geom_data.get("lines") or [],
+            "angles": geom_data.get("angles") or [],
+            "circles": geom_data.get("circles") or [],
+            "tone": "teal",
+        }))
 
     # World Map (`drawMap`)
-    map_data = parsed.get("map") if isinstance(parsed.get("map"), dict) else None
-    if vtype == "map" or (map_data and (map_data.get("pins") or map_data.get("countries"))):
-        src_m = map_data or parsed
+    map_data = parsed.get("map") if isinstance(parsed.get("map"), dict) else (parsed if vtype == "map" else None)
+    if map_data and (map_data.get("pins") or map_data.get("countries") or map_data.get("shade")):
         primary_marks.append(_sanitize_mark({
             "kind": "map",
             "part": _next_part(),
             "title": f"{topic.title()[:28]} · Map",
-            "view": src_m.get("view"),
-            "countries": src_m.get("countries") or [],
-            "pins": src_m.get("pins") or src_m.get("places") or [],
-            "routes": src_m.get("routes") or [],
+            "view": map_data.get("view"),
+            "countries": map_data.get("countries") or [],
+            "shade": map_data.get("shade") or [],
+            "pins": map_data.get("pins") or [],
+            "routes": map_data.get("routes") or [],
         }))
 
     # Bar Chart (`drawBars`)
-    bars_data = parsed.get("bars") if isinstance(parsed.get("bars"), list) else None
+    bars_data = parsed.get("bars") if isinstance(parsed.get("bars"), list) else (parsed.get("data") if vtype == "bars" and isinstance(parsed.get("data"), list) else None)
     if bars_data:
         clean_bars = [
-            {"label": str(b.get("label") or "")[:28], "value": float(b.get("value") or 0), "tone": tones[i % len(tones)]}
-            for i, b in enumerate(bars_data[:10]) if isinstance(b, dict) and b.get("label")
+            {
+                "label": str(b.get("label") or "")[:32],
+                "value": float(b.get("value") or 0),
+                "tone": _resolve_tone(b.get("tone")) if b.get("tone") else palette[i % len(palette)],
+            }
+            for i, b in enumerate(bars_data[:12]) if isinstance(b, dict) and b.get("label")
         ]
         if clean_bars:
             primary_marks.append(_sanitize_mark({
                 "kind": "bars",
                 "part": _next_part(),
-                "title": f"{topic.title()[:28]} · Metrics",
+                "title": f"{topic.title()[:28]} · Chart",
+                "unit": parsed.get("unit"),
                 "bars": clean_bars,
             }))
 
     # Timeline (`timeline`)
     tl_data = parsed.get("timeline") if isinstance(parsed.get("timeline"), list) else None
-    if vtype == "timeline" and tl_data and len(tl_data) >= 2:
+    if tl_data and len(tl_data) >= 2:
         events = [
-            {"when": str(ev.get("when") or f"Step {i + 1}")[:18], "text": str(ev.get("text") or "")[:56]}
+            {"when": str(ev.get("when") or f"{i + 1}")[:20], "text": str(ev.get("text") or "")[:64]}
             for i, ev in enumerate(tl_data[:8]) if isinstance(ev, dict) and ev.get("text")
         ]
         if len(events) >= 2:
@@ -777,13 +858,13 @@ def _generate_visual_diagram_beats(topic: str, preferred_kind: Optional[str] = N
             }))
 
     # Interactive Quiz (`drawQuiz`)
-    if vtype == "quiz" and isinstance(parsed.get("questions"), list) and parsed["questions"]:
+    if isinstance(parsed.get("questions"), list) and parsed["questions"]:
         qs = [
             {
-                "text": str(q["text"])[:140],
-                "options": [str(o)[:60] for o in q["options"][:4]],
+                "text": str(q["text"])[:160],
+                "options": [str(o)[:70] for o in q["options"][:4]],
                 "right": int(q.get("right") or 0),
-                "explain": str(q.get("explain") or "")[:140],
+                "explain": str(q.get("explain") or "")[:160],
             }
             for q in parsed["questions"][:5]
             if isinstance(q, dict) and q.get("text") and isinstance(q.get("options"), list)
@@ -799,86 +880,182 @@ def _generate_visual_diagram_beats(topic: str, preferred_kind: Optional[str] = N
     # Table (`drawTable`)
     tbl_data = parsed.get("table") if isinstance(parsed.get("table"), dict) else None
     if tbl_data and isinstance(tbl_data.get("columns"), list) and isinstance(tbl_data.get("rows"), list) and tbl_data["rows"]:
-        cols = [str(c)[:28] for c in tbl_data["columns"][:5]]
-        rows = [[str(cell)[:70] for cell in r[:len(cols)]] for r in tbl_data["rows"][:8] if isinstance(r, list)]
+        cols = [str(c)[:32] for c in tbl_data["columns"][:6]]
+        rows = [[str(cell)[:80] for cell in r[: len(cols)]] for r in tbl_data["rows"][:10] if isinstance(r, list)]
         if cols and rows:
             primary_marks.append(_sanitize_mark({
                 "kind": "table",
                 "part": _next_part(),
-                "title": str(tbl_data.get("title") or f"{topic.title()[:24]} · Reference")[:36],
+                "title": str(tbl_data.get("title") or f"{topic.title()[:24]} · Table")[:36],
                 "columns": cols,
                 "rows": rows,
             }))
 
-    for mk in primary_marks[:3]:
+    beats: list[dict[str, Any]] = []
+    for idx, mk in enumerate(primary_marks[:3]):
         beats.append({
-            "caption": summary if not beats else f"Breaking down {topic} step by step.",
+            "voiced": idx == 0,
+            "caption": summary if idx == 0 else f"{topic.title()} — detail {idx + 1}",
             "marks": [mk],
         })
 
-    highlights = [str(h)[:90] for h in (parsed.get("highlights") or [])[:4] if str(h).strip()]
-    beats.append({
-        "caption": summary,
-        "marks": [_sanitize_mark({
-            "kind": "card",
-            "part": _next_part(),
-            "title": topic.title()[:40],
-            "heading": topic.title()[:32],
-            "text": summary,
-            "items": highlights,
-            "tone": "teal",
-        })],
-    })
+    # Always append a summary card if no primary visual was built, or when highlights exist
+    highlights = [str(h)[:100] for h in (parsed.get("highlights") or [])[:5] if str(h).strip()]
+    if not beats or highlights:
+        beats.append({
+            "voiced": not beats,
+            "caption": summary,
+            "marks": [_sanitize_mark({
+                "kind": "card",
+                "part": _next_part(),
+                "title": topic.title()[:40],
+                "heading": topic.title()[:36],
+                "text": summary,
+                "items": highlights,
+                "tone": "teal",
+            })],
+        })
 
     return beats, summary
 
 
+# ---------------------------------------------------------------------------
+# Tool Definitions & Execution Handlers
+# ---------------------------------------------------------------------------
+
+PEN_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "screen_pen_annotate",
+        "description": (
+            "Draws visual explanations, branching flowcharts, 2D graphs, LaTeX math steps, molecules, "
+            "world maps, tables, bar charts, timelines, quizzes, 3D models, or live screen UI marks "
+            "(circle, ring, arrow, box, underline, highlight, spotlight) on the Roamies desktop overlay."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "diagram", "flow", "graph", "bars", "table", "timeline",
+                        "math", "geometry", "molecule", "map", "quiz", "model",
+                        "card", "note", "list", "circle", "ring", "arrow", "box",
+                        "underline", "highlight", "spotlight", "clear",
+                    ],
+                    "description": (
+                        "Visual type to draw: 'flow' for flowcharts/processes, 'model' for 3D models, "
+                        "'graph'/'bars'/'table'/'timeline'/'math'/'geometry'/'molecule'/'map'/'quiz'/'card' "
+                        "for visual explanations, or 'circle'/'ring'/'arrow'/'box'/'underline'/'highlight'/'spotlight' "
+                        "to mark live on-screen UI elements."
+                    ),
+                },
+                "topic": {
+                    "type": "string",
+                    "description": "Concept, system, or process to visually explain.",
+                },
+                "data": {
+                    "type": "object",
+                    "description": (
+                        "Optional structured diagram data matching the chosen action (e.g. "
+                        "{nodes:[{id,text,shape,tone}], links:[{from,to,label}]} for 'flow', "
+                        "{parts:[...]} for 'model', {columns:[...], rows:[...]} for 'table', etc.)."
+                    ),
+                },
+                "x": {"type": "number", "description": "Target X coordinate for screen marks (0-1000 normalized by default)."},
+                "y": {"type": "number", "description": "Target Y coordinate for screen marks (0-1000 normalized by default)."},
+                "x2": {"type": "number", "description": "Optional secondary X coordinate for arrows/boxes/underlines."},
+                "y2": {"type": "number", "description": "Optional secondary Y coordinate for arrows/boxes."},
+                "label": {"type": "string", "description": "On-screen UI element text to locate via OCR/UIA, or label chip text."},
+                "color": {"type": "string", "description": "Palette tone ('teal', 'coral', 'amber', 'sky', 'lilac', 'lime')."},
+                "duration": {"type": "number", "description": "Seconds before auto-fading."},
+                "normalized": {"type": "boolean", "description": "Whether x/y are 0-1000 normalized (default true)."},
+            },
+            "required": ["action"],
+        },
+    },
+}
+
+GUIDE_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "screen_pen_guide",
+        "description": (
+            "Draws a step-by-step interactive on-screen walkthrough highlighting live UI controls "
+            "with numbered rings and captions."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "steps": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "target": {"type": "string", "description": "Visible UI button/menu/field text to locate on screen."},
+                            "caption": {"type": "string", "description": "Instructional caption for this step."},
+                        },
+                        "required": ["target"],
+                    },
+                    "description": "Ordered list of UI targets and instructions.",
+                },
+                "topic": {"type": "string", "description": "Title of the walkthrough."},
+                "app": {"type": "string", "description": "Optional target application name to scope UI search."},
+                "duration": {"type": "number", "description": "Seconds before auto-fading."},
+            },
+            "required": ["steps"],
+        },
+    },
+}
+
+
 def screen_pen_annotate(
     action: str,
-    x: int = 500,
-    y: int = 500,
-    x2: Optional[int] = None,
-    y2: Optional[int] = None,
+    x: Optional[int | float] = None,
+    y: Optional[int | float] = None,
+    x2: Optional[int | float] = None,
+    y2: Optional[int | float] = None,
     label: Optional[str] = None,
-    color: str = "#00F0FF",
-    duration: float = 4.0,
+    color: str = "teal",
+    duration: float = 12.0,
     normalized: bool = True,
     topic: Optional[str] = None,
+    data: Optional[dict[str, Any]] = None,
     beats: Optional[list[dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    """Emit a Roamies JavaScript `ink.js` / `ink3d.js` beat event for the requested screen annotation or diagram."""
-    diagram_actions = {"diagram", "flow", "graph", "bars", "table", "timeline", "math", "geometry", "molecule", "map", "quiz", "model"}
-    screen_actions = {"circle", "arrow", "box", "underline", "clear", "point_out", "point", "highlight", "ring", "spotlight"}
+    """Emit a Roamies JavaScript `ink.js` / `ink3d.js` beat event for screen annotations or visual diagrams."""
     act = str(action or "").strip().lower()
-
     if act in {"point_out", "point"}:
         act = "ring"
-    if act not in (diagram_actions | screen_actions):
-        act = "diagram" if (topic or label) else "ring"
+    if act == "box":
+        act = "rect"
 
     if act == "clear":
         event: Dict[str, Any] = {"type": "ink_clear", "all": True}
         subscribers = push_overlay_event(event)
         return {"status": "success", "drawn": "clear", "engine": "roamies-ink-js", "subscribers": subscribers, "event": event}
 
-    if act in diagram_actions:
-        diag_topic = str(topic or label or "concept").strip()
+    if act not in (_DIAGRAM_KINDS | _SCREEN_MARK_KINDS):
+        act = "diagram" if (topic or data or beats) else "ring"
+
+    if act in _DIAGRAM_KINDS:
+        diag_topic = str(topic or label or "Visual Explanation").strip()
         preferred = None if act == "diagram" else act
         if isinstance(beats, list) and beats:
             diag_beats = [
-                {"caption": b.get("caption", ""), "marks": [_sanitize_mark(m) for m in (b.get("marks") or [])]}
+                {"caption": b.get("caption", ""), "voiced": b.get("voiced", True), "marks": [_sanitize_mark(m) for m in (b.get("marks") or [])]}
                 for b in beats if isinstance(b, dict)
             ]
-            summary = f"Drew a visual diagram for {diag_topic}."
+            summary = f"Drew visual explanation for {diag_topic}."
         else:
-            diag_beats, summary = _generate_visual_diagram_beats(diag_topic, preferred_kind=preferred)
+            diag_beats, summary = _generate_visual_diagram_beats(diag_topic, preferred_kind=preferred, structured_data=data)
 
         event = {
             "type": "ink",
             "id": f"ink-{int(time.time() * 1000)}",
             "seg": 0,
             "last": True,
-            "fade": max(22.0, float(duration)),
+            "fade": max(24.0, float(duration)),
             "beats": diag_beats,
         }
         subscribers = push_overlay_event(event)
@@ -893,23 +1070,47 @@ def screen_pen_annotate(
             "event": event,
         }
 
-    resolved_rect = _resolve_target_rect(label) if (label and normalized and x == 500 and y == 500) else None
-    px, py = _to_screen_points(x, y, normalized)
-    tone = _color_to_tone(color)
+    # Screen UI mark resolution: locate by label when explicit coordinates aren't supplied
+    has_explicit_coords = x is not None and y is not None
+    resolved_rect = _resolve_target_rect(label) if (label and not has_explicit_coords) else None
+    if label and not has_explicit_coords and not resolved_rect:
+        return {
+            "status": "error",
+            "code": "TARGET_NOT_FOUND",
+            "error": f"Could not locate '{label}' on screen.",
+        }
+
+    sw, sh = _get_viewport_bounds()
+    px, py = _to_screen_points(x if x is not None else 500, y if y is not None else 500, normalized)
+    tone = _resolve_tone(color)
+
+    # Dynamic proportional sizing relative to active display
+    default_span_x = round(sw * 0.06, 1)
+    default_span_y = round(sh * 0.05, 1)
 
     if act == "arrow":
         if resolved_rect:
             rx, ry, rw, rh = resolved_rect
-            tx, ty = rx + rw / 2, ry + rh / 2
-            mark: Dict[str, Any] = {"kind": "arrow", "points": [[tx + 90, ty - 70], [tx, ty]], "tone": tone}
+            tx, ty = rx + rw / 2.0, ry + rh / 2.0
+            offset_x = -default_span_x if tx > sw * 0.75 else default_span_x
+            offset_y = default_span_y if ty < sh * 0.25 else -default_span_y
+            mark: Dict[str, Any] = {"kind": "arrow", "points": [[tx + offset_x, ty + offset_y], [tx, ty]], "tone": tone}
         else:
-            px2, py2 = _to_screen_points(x2 if x2 is not None else x + 120, y2 if y2 is not None else y - 80, normalized)
+            px2, py2 = _to_screen_points(
+                x2 if x2 is not None else (x or 500) + 80,
+                y2 if y2 is not None else (y or 500) - 60,
+                normalized,
+            )
             mark = {"kind": "arrow", "points": [[px2, py2], [px, py]], "tone": tone}
-    elif act == "box":
+    elif act == "rect":
         if resolved_rect:
             mark = {"kind": "rect", "at": {"rect": resolved_rect}, "tone": tone}
         else:
-            px2, py2 = _to_screen_points(x2 if x2 is not None else x + 120, y2 if y2 is not None else y + 60, normalized)
+            px2, py2 = _to_screen_points(
+                x2 if x2 is not None else (x or 500) + 80,
+                y2 if y2 is not None else (y or 500) + 50,
+                normalized,
+            )
             bx, by = min(px, px2), min(py, py2)
             bw, bh = max(24.0, abs(px2 - px)), max(24.0, abs(py2 - py))
             mark = {"kind": "rect", "at": {"rect": [bx, by, bw, bh]}, "tone": tone}
@@ -917,13 +1118,14 @@ def screen_pen_annotate(
         if resolved_rect:
             mark = {"kind": "underline", "at": {"rect": resolved_rect}, "tone": tone}
         else:
-            w = max(40.0, abs(_to_screen_points(x2, y, normalized)[0] - px)) if x2 is not None else 140.0
-            mark = {"kind": "underline", "at": {"rect": [px - w / 2, py - 12, w, 24]}, "tone": tone}
+            w = max(32.0, abs(_to_screen_points(x2, y or 500, normalized)[0] - px)) if x2 is not None else default_span_x * 1.5
+            mark = {"kind": "underline", "at": {"rect": [px - w / 2.0, py - 10.0, w, 20.0]}, "tone": tone}
     elif act in {"highlight", "spotlight", "ring"}:
-        rect = resolved_rect or [px - 50, py - 22, 100, 44]
+        rect = resolved_rect or [px - default_span_x / 2.0, py - default_span_y / 2.0, default_span_x, default_span_y]
         mark = {"kind": act, "at": {"rect": rect}, "tone": tone}
     else:
-        rect = resolved_rect or [px - 45, py - 45, 90, 90]
+        r_size = min(default_span_x, default_span_y)
+        rect = resolved_rect or [px - r_size / 2.0, py - r_size / 2.0, r_size, r_size]
         mark = {"kind": "circle", "at": {"rect": rect}, "tone": tone}
 
     if label:
@@ -935,8 +1137,8 @@ def screen_pen_annotate(
         "id": f"ink-{int(time.time() * 1000)}",
         "seg": 0,
         "last": True,
-        "fade": max(3.0, float(duration)),
-        "beats": [{"marks": [mark]}],
+        "fade": max(4.0, float(duration)),
+        "beats": [{"voiced": True, "caption": label or "", "marks": [mark]}],
     }
     subscribers = push_overlay_event(event)
     play_overlay_sfx("ink")
@@ -944,40 +1146,65 @@ def screen_pen_annotate(
         "status": "success",
         "drawn": act,
         "engine": "roamies-ink-js",
-        "coordinates": {"x": x, "y": y, "normalized": normalized},
         "resolved_rect": resolved_rect,
-        "auto_fade_seconds": duration,
-        "label": label,
         "subscribers": subscribers,
         "event": event,
     }
 
 
 def screen_pen_guide(
-    steps: list[dict[str, Any] | str],
+    steps: Any,
+    topic: str | None = None,
     app: str | None = None,
-    duration: float = 14.0,
+    duration: float = 18.0,
 ) -> Dict[str, Any]:
     """Draw a multi-step Roamies visual walkthrough (`ring` + `caption`) over live UI targets."""
-    if not isinstance(steps, list) or not steps:
-        return {"status": "error", "code": "NO_STEPS", "error": "steps must be a non-empty list."}
+    parsed_steps: list[Any] = []
+    if isinstance(steps, str):
+        steps_str = steps.strip()
+        if steps_str.startswith("[") and steps_str.endswith("]"):
+            try:
+                candidate = json.loads(steps_str)
+                if isinstance(candidate, list):
+                    parsed_steps = candidate
+            except Exception:
+                pass
+        if not parsed_steps:
+            for line in re.split(r"\r?\n+", steps_str):
+                cleaned = re.sub(r"^(?:\d+[\.\)]|\-|\*)\s*", "", line).strip()
+                if cleaned:
+                    parsed_steps.append(cleaned)
+    elif isinstance(steps, list):
+        parsed_steps = list(steps)
 
-    tones = ["teal", "amber", "sky", "coral"]
+    if not parsed_steps:
+        return {"status": "error", "code": "NO_STEPS", "error": "steps must be provided as a non-empty list."}
+
+    palette = ["teal", "amber", "sky", "coral"]
     beats: list[dict[str, Any]] = []
     resolved_count = 0
 
-    for idx, raw_step in enumerate(steps[:8]):
+    for idx, raw_step in enumerate(parsed_steps[:8]):
+        target = ""
+        caption = ""
         if isinstance(raw_step, str):
-            target = raw_step.strip()
-            caption = f"Step {idx + 1}: {target}"
+            text_step = raw_step.strip()
+            if ":" in text_step and len(text_step.split(":", 1)[0].split()) <= 4:
+                target, caption = [s.strip() for s in text_step.split(":", 1)]
+                caption = caption or f"Step {idx + 1}: {target}"
+            else:
+                target = text_step
+                caption = f"Step {idx + 1}: {target}"
         elif isinstance(raw_step, dict):
-            target = str(raw_step.get("target") or raw_step.get("label") or "").strip()
-            caption = str(raw_step.get("caption") or f"Step {idx + 1}: {target}").strip()
+            target = str(raw_step.get("target") or raw_step.get("label") or raw_step.get("name") or "").strip()
+            caption = str(raw_step.get("caption") or raw_step.get("text") or f"Step {idx + 1}: {target}").strip()
+            if not target and caption:
+                target = caption[:32]
         else:
             continue
 
         rect = _resolve_target_rect(target, app=app) if target else None
-        tone = tones[idx % len(tones)]
+        tone = palette[idx % len(palette)]
         marks: list[dict[str, Any]] = []
         if rect:
             resolved_count += 1
@@ -992,11 +1219,16 @@ def screen_pen_guide(
             marks.append({
                 "kind": "card",
                 "part": f"step{idx + 1}",
-                "title": f"Step {idx + 1}",
-                "text": caption[:120],
+                "heading": f"Step {idx + 1}",
+                "title": f"{topic or 'Guide'} · {idx + 1}"[:32],
+                "text": caption[:150],
                 "tone": tone,
             })
-        beats.append({"marks": marks, "caption": caption[:140]})
+        beats.append({
+            "voiced": True,
+            "marks": marks,
+            "caption": caption[:150],
+        })
 
     if not beats:
         return {"status": "error", "code": "NO_VALID_STEPS", "error": "No valid guide steps."}
@@ -1006,7 +1238,7 @@ def screen_pen_guide(
         "id": f"guide-{int(time.time() * 1000)}",
         "seg": 0,
         "last": True,
-        "fade": max(4.0, float(duration)),
+        "fade": max(8.0, float(duration)),
         "beats": beats,
     }
     subscribers = push_overlay_event(event)
@@ -1022,20 +1254,33 @@ def screen_pen_guide(
     }
 
 
+def get_screen_pen_tools() -> list[dict[str, Any]]:
+    """Return OpenAI-compatible tool schemas for registration in Amigo's tool registry."""
+    return [PEN_TOOL_DEFINITION, GUIDE_TOOL_DEFINITION]
+
+
 class ScreenPenOverlay:
     """Compatibility wrapper forwarding overlay dispatch calls to Roamies JS `ink.js`."""
 
     def dispatch(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if payload.get("action") == "guide" or "steps" in payload:
+            return screen_pen_guide(
+                steps=payload.get("steps"),
+                topic=payload.get("topic"),
+                app=payload.get("app"),
+                duration=float(payload.get("duration", 18.0)),
+            )
         return screen_pen_annotate(
-            action=str(payload.get("action") or "circle"),
-            x=payload.get("x", 500),
-            y=payload.get("y", 500),
+            action=str(payload.get("action") or "diagram"),
+            x=payload.get("x"),
+            y=payload.get("y"),
             x2=payload.get("x2"),
             y2=payload.get("y2"),
             label=payload.get("label"),
-            color=str(payload.get("color") or "#00F0FF"),
-            duration=float(payload.get("duration", 4.0)),
+            color=str(payload.get("color") or "teal"),
+            duration=float(payload.get("duration", 12.0)),
             normalized=bool(payload.get("normalized", True)),
             topic=payload.get("topic"),
+            data=payload.get("data"),
             beats=payload.get("beats"),
         )

@@ -1,11 +1,11 @@
 """
 Tool Registry & Action Dispatcher for Amigo Voice Assistant.
 Features:
-- Multi-turn conversational routing with 100% static system prompt prefix (instant KV cache hit in llama.cpp).
-- Eliminates redundant vector searches inside router prompt assembly.
-- Context-aware follow-up resolution across web_search, document_qa, weather, and chat.
-- Consolidated duplicate document/file handlers and debounced Windows media inspection.
-- Backward-compatible forwarders and structured UI action card builders.
+- Pure LLM-driven single-step and multi-step intent understanding (zero hardcoded keywords/phrase lists).
+- 100% static system prompt prefix for instant KV cache reuse in llama.cpp.
+- Inter-step output & state chaining ($prev / {{prev}} + automatic active_file/content propagation).
+- Multi-step confirmation queue resumption.
+- Context-aware follow-up resolution across web_search, document_qa, weather, files, and chat.
 """
 
 import collections
@@ -101,10 +101,11 @@ def get_active_state(clean_expired: bool = False) -> dict:
     return rag_engine.get_active_state(clean_expired=clean_expired)
 
 
-# ── Pre-compiled Regex Patterns ────────────────────────────────
+# ── Pre-compiled Structural Patterns ───────────────────────────
 
 _RE_URLS = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]*[^\s<>"{}|\\^`\[\].,;:!?]')
 _RE_MEDIA_CLEAN_TITLE = re.compile(r"^(?:play|playing)\s*:\s*", re.IGNORECASE)
+_RE_PREV_PLACEHOLDER = re.compile(r"(?:\$prev|\{\{\s*prev\s*\}\})", re.IGNORECASE)
 
 _media_update_cb = None
 _ui_broadcast_cb = None
@@ -141,7 +142,7 @@ def _offline_reply(query: str, what: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  Tool Handlers (With Automatic Context & Follow-Up Resolution)
+#  Tool Handlers (Context & Multi-Step Aware)
 # ═══════════════════════════════════════════════════════════════
 
 def _tool_web_search(params, query, spoken):
@@ -342,7 +343,6 @@ def _tool_get_current_media(params, query, spoken):
             return f"'{clean_title}'{by_artist} is paused.", None
         return f"Currently playing '{clean_title}'{by_artist}.", None
 
-    # Fallback 1: check direct system media info & active audio process windows
     try:
         sys_media = os_automation.get_system_media_info()
         if sys_media and sys_media.get("title"):
@@ -357,7 +357,6 @@ def _tool_get_current_media(params, query, spoken):
     except Exception:
         pass
 
-    # Fallback 2: check active assistant session and conversation history
     last_played = get_last_played_song()
     if last_played and last_played.get("title"):
         clean_title = _RE_MEDIA_CLEAN_TITLE.sub("", last_played["title"]).strip()
@@ -467,11 +466,11 @@ def _tool_get_weather(params, query, spoken):
         result = weather_command(city if city else query)
     except Exception:
         result = ""
-    if result and "offline" not in result.lower() and "could not" not in result.lower():
+    if result:
         return result, None
     if not is_internet_connected():
         return _offline_reply(query, "live weather cannot be fetched"), None, {"status": "offline"}
-    return result or f"I couldn't fetch weather information for {city or 'your area'}.", None
+    return f"I couldn't fetch weather information for {city or 'your area'}.", None
 
 
 def is_app_already_running(app_name: str) -> bool:
@@ -497,7 +496,7 @@ def _tool_open_app(params, query, spoken):
 
     clean_target = app_name.strip()
     if not is_known_app(clean_target) and not is_app_already_running(clean_target):
-        return "Which application would you like to open?", None
+        return f"I couldn't find an app called '{clean_target.title()}' installed on your PC.", None
     if open_windows_app(clean_target):
         update_active_state("active_app", {"name": clean_target})
         return f"Opened {clean_target.title()}.", None, {"status": "completed", "app": clean_target}
@@ -563,7 +562,6 @@ def _tool_find_file(params, query, spoken):
         for i, f in enumerate(file_results[:5], 1):
             clean_t = os.path.splitext(f["name"])[0].replace("_", " ").replace("-", " ").title()
             lines.append(f"{i}. {clean_t} ({f['extension']})")
-        lines.append("Say 'Open number 1' or ask a question about it.")
         return "\n".join(lines), None, {"file_results": file_results}
 
     return summary or f"No files found matching '{q}'.", None, {"file_results": []}
@@ -594,6 +592,45 @@ def _tool_read_screen(params, query, spoken):
         }
     except Exception:
         return "Could not inspect the screen right now.", None
+
+
+def _tool_read_window(params, query, spoken):
+    """List controls, text, and structure of the front or named window using native `hands.ui`."""
+    params = params if isinstance(params, dict) else {}
+    target = str(params.get("target") or params.get("app") or "front").strip()
+    if not target or target.lower() in ("front", "current", "active"):
+        t = "front"
+    else:
+        t = f"app:{target}"
+    from amigo.services import hands
+    if not hands.is_available():
+        return "roamies-hands helper is not available.", None, {"ok": False}
+    res = hands.ui(t)
+    if not res.get("ok"):
+        return f"Could not inspect window for '{target}': {res.get('error', 'unknown error')}", None, res
+    win = res.get("window") or {}
+    controls = res.get("controls") or []
+    texts = res.get("texts") or []
+    elsewhere = res.get("elsewhere") or []
+    app_name = win.get("app") or target
+    title = win.get("title") or ""
+    header = f"{app_name}{f' — {title}' if title else ''}"
+    lines = [header]
+    if controls:
+        lines.append(f"Found {len(controls)} controls:")
+        for c in controls[:30]:
+            cid = c.get("id", "")
+            role = c.get("role", "")
+            lbl = c.get("label") or c.get("name") or ""
+            val = c.get("value")
+            off = " (offscreen)" if c.get("offscreen") else ""
+            val_str = f' = "{val}"' if val else ""
+            lines.append(f"  [{cid}] {role} \"{lbl}\"{val_str}{off}")
+    if texts:
+        lines.append("\nVisible text: " + " | ".join(str(t) for t in texts[:15]))
+    if elsewhere:
+        lines.append("\nElsewhere (scrollable): " + " | ".join(str(e) for e in elsewhere[:10]))
+    return "\n".join(lines), None, res
 
 
 def _tool_memory_recall(params, query, spoken):
@@ -648,7 +685,6 @@ def _tool_ask_document(params, query, spoken, conversation_history=None):
         if isinstance(act_f, dict) and act_f.get("path") and os.path.exists(act_f["path"]):
             target_path = act_f["path"]
 
-    # 1. Primary: Grounded document evidence with passage citations
     evidence, sources = rag_engine.build_document_evidence(
         question,
         top_k=5,
@@ -716,21 +752,27 @@ def _tool_chat(params, query, spoken, conversation_history=None):
     """Conversational reply with clean multi-turn dialogue context."""
     params = params if isinstance(params, dict) else {}
     doc_context = str(params.get("context") or params.get("doc_context") or "").strip()
-    direct_reply = (spoken or params.get("reply") or params.get("response") or params.get("question") or params.get("message") or "").strip()
+    direct_reply = (
+        spoken
+        or params.get("reply")
+        or params.get("response")
+        or params.get("question")
+        or params.get("message")
+        or ""
+    ).strip()
 
     conv_history = _get_conv_history(conversation_history)
 
-    # Check for repetitive echo: if direct_reply repeats the previous assistant turn, discard it
     is_repetition = False
     if direct_reply and conv_history:
         last_turn = conv_history[-1]
-        last_assistant = str(last_turn.get("assistant") or last_turn.get("assistant_reply") or last_turn.get("response") or "").strip()
+        last_assistant = str(
+            last_turn.get("assistant") or last_turn.get("assistant_reply") or last_turn.get("response") or ""
+        ).strip()
         if last_assistant and len(direct_reply) > 10:
             if direct_reply in last_assistant or last_assistant in direct_reply:
                 is_repetition = True
 
-    # Fast path: If the router produced a unique, complete conversational response
-    # and no attached document requires re-reading, return immediately (avoids slow 2nd LLM round-trip)
     is_complete = bool(direct_reply and direct_reply.rstrip()[-1:] in ('.', '!', '?', '"', "'", '`', '}', '\n'))
     if direct_reply and not doc_context and len(direct_reply) >= 3 and is_complete and not is_repetition:
         return direct_reply, None, {"doc_context_used": False}
@@ -771,36 +813,59 @@ _SCROLL_DIRS = {"up": "up", "down": "down", "left": "left", "right": "right"}
 
 
 def _tool_screen_act(params, query, spoken):
-    """Execute a structured on-screen UI action via `hands` (with safe OS fallback for type/press/scroll)."""
+    """Execute a structured on-screen UI action via `hands`."""
     params = params if isinstance(params, dict) else {}
-    action = str(params.get("action") or "").strip().lower()
-    target = str(params.get("target") or "").strip()
-    text = str(params.get("text") or "").strip()
     app = str(params.get("app") or "").strip()
 
-    if action not in _SCREEN_ACT_ACTIONS:
-        return "Which on-screen action should I perform: click, fill, type, press, or scroll?", None
+    raw_steps = params.get("steps")
+    if isinstance(raw_steps, str) and raw_steps.strip().startswith("["):
+        try:
+            raw_steps = json.loads(raw_steps)
+        except Exception:
+            pass
 
-    if action == "click":
-        if not target:
-            return "Which button or element on screen should I click?", None
-        step = {"do": "click", "id": int(target)} if target.isdigit() else {"do": "click_text", "text": target}
-    elif action == "fill":
-        if not target or not text:
-            return "Which field should I fill and what text should I enter?", None
-        step = {"do": "fill", "field": target, "text": text}
-    elif action == "type":
-        if not text:
-            return "What text should I type?", None
-        step = {"do": "type", "text": text}
-    elif action == "press":
-        keys = text or target
-        if not keys:
-            return "Which key or shortcut should I press?", None
-        step = {"do": "press", "keys": keys}
+    if isinstance(raw_steps, list) and raw_steps:
+        if not app:
+            raw_target = str(params.get("target") or "").strip()
+            if raw_target and raw_target.lower() not in ("front", "current", "active", "screen"):
+                app = raw_target
+        plan_steps = [s for s in raw_steps if isinstance(s, dict)]
     else:
-        direction = _SCROLL_DIRS.get(target.lower(), "down")
-        step = {"do": "scroll", "direction": direction}
+        action = str(params.get("action") or params.get("do") or "").strip().lower()
+        target = str(params.get("target") or params.get("field") or params.get("text") or "").strip()
+        text = str(params.get("text") or params.get("option") or params.get("value") or "").strip()
+
+        if action in ("click", "click_text"):
+            if not target:
+                return "Which button or element on screen should I click?", None
+            step = {"do": "click", "id": int(target)} if target.isdigit() else {"do": "click_text", "text": target}
+        elif action == "fill":
+            if not target or not text:
+                return "Which field should I fill and what text should I enter?", None
+            step = {"do": "fill", "field": target, "text": text}
+        elif action in ("type", "type_text"):
+            if not text:
+                return "What text should I type?", None
+            step = {"do": "type", "text": text}
+        elif action in ("press", "key", "press_key"):
+            keys = text or target
+            if not keys:
+                return "Which key or shortcut should I press?", None
+            step = {"do": "key", "key": keys}
+        elif action in ("scroll", "scroll_down", "scroll_up"):
+            direction = _SCROLL_DIRS.get(target.lower(), "down")
+            step = {"do": "scroll", "direction": direction}
+        elif action == "choose":
+            step = {"do": "choose", "field": target, "option": text}
+        elif action == "wait":
+            try:
+                secs = float(text or target or 1.0)
+            except ValueError:
+                secs = 1.0
+            step = {"do": "wait", "seconds": secs}
+        else:
+            return "Which on-screen action should I perform: click, fill, type, press, scroll, or choose?", None
+        plan_steps = [step]
 
     from amigo.services import hands, screen_pen
 
@@ -816,15 +881,15 @@ def _tool_screen_act(params, query, spoken):
                 "beats": [{"marks": [{"kind": "ring", "part": "p1", "at": {"rect": bounds}, "tone": "teal"}]}],
             })
 
-    plan = {"steps": [step]}
-    if app:
+    plan = {"steps": plan_steps}
+    if app and app.lower() not in ("front", "current", "active", "screen"):
         plan["app"] = app
     res = hands.act(plan, on_progress=_on_hands_progress)
     if res.get("ok"):
         done = res.get("done")
-        summary = ", ".join(done) if isinstance(done, list) and done else f"Completed {action}"
+        summary = ", ".join(done) if isinstance(done, list) and done else "Action completed"
         return f"{summary}.", None, {"hands_used": True, "plan": plan}
-    return str(res.get("error") or f"Could not {action} on screen."), None, {"hands_used": True, "error": res.get("error")}
+    return str(res.get("error") or "Could not complete on-screen action."), None, {"hands_used": True, "error": res.get("error")}
 
 
 _audio_playing_cache = {"status": False, "time": 0.0}
@@ -1009,7 +1074,10 @@ def _pending_confirmation_line() -> str:
     if not pending:
         return ""
     action_name = pending.get("action") or pending.get("tool") or "action"
-    return f"[Awaiting user confirmation: user was asked to confirm '{action_name}'. Use 'confirm_action' ONLY if user affirmatively agrees (e.g. 'yes', 'confirm', 'proceed'). If the user issues a new command, route to that tool directly.]"
+    return (
+        f"[Awaiting user confirmation: user was asked to confirm '{action_name}'. "
+        "Use 'confirm_action' ONLY if user affirmatively agrees. If the user issues a new command, route to that tool directly.]"
+    )
 
 
 def _require_confirmation(action_name: str, params: dict, query: str, spoken: str, tool: str | None = None) -> tuple[str, None, dict]:
@@ -1028,6 +1096,7 @@ def _require_confirmation(action_name: str, params: dict, query: str, spoken: st
             "action": action_text,
             "created": time.time(),
             "timer_started": None,
+            "remaining_actions": [],
         }
     return f"Do you want me to {action_text}? Say yes to go ahead.", None, {
         "status": "requires_confirmation",
@@ -1163,26 +1232,6 @@ def _tool_system_control(params, query, spoken):
 
 # ── Document Path Resolution ───────────────────────────────────
 
-_ORDINAL_WORDS = {
-    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
-    "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10,
-}
-
-
-def _ordinal_index(text: str, count: int):
-    low = text.lower()
-    if re.search(r"\blast\s+one\b", low):
-        return count - 1
-    m = re.search(r"\b(?:number|no\.?|#)?\s*(\d+)\b", low) or re.search(r"\b(\d+)(?:st|nd|rd|th)\b", low)
-    if m:
-        n = int(m.group(1))
-        return n - 1 if 1 <= n <= count else -1
-    for word, n in _ORDINAL_WORDS.items():
-        if re.search(rf"\b{word}\b", low):
-            return n - 1 if n <= count else -1
-    return None
-
-
 def resolve_document_path(query_or_target: str, target_index: int | None = None) -> str | None:
     state = get_active_state(clean_expired=False) or {}
     active_f = state.get("active_file")
@@ -1213,34 +1262,29 @@ def resolve_document_path(query_or_target: str, target_index: int | None = None)
     if os.path.isfile(raw):
         return raw
 
-    search_terms = [raw] if len(raw) >= 3 else []
+    search_terms = [raw] if len(raw) >= 2 else []
 
     for term in search_terms:
-        if len(term) >= 2:
-            matches, _ = find_files(term)
-            if matches:
-                update_active_state("active_file", {"path": matches[0], "name": os.path.basename(matches[0])})
-                return matches[0]
+        matches, _ = find_files(term)
+        if matches:
+            update_active_state("active_file", {"path": matches[0], "name": os.path.basename(matches[0])})
+            return matches[0]
 
-    if search_terms:
-        for term in search_terms:
-            if term and len(term) >= 3:
-                results = rag_engine.search_files_by_context(term, top_k=1)
-                if results and results[0].get("score", 0) > 0.35:
-                    fpath = results[0].get("filepath")
-                    if fpath and os.path.exists(fpath):
-                        update_active_state("active_file", {"path": fpath, "name": os.path.basename(fpath)})
-                        return fpath
+    for term in search_terms:
+        if len(term) >= 3:
+            results = rag_engine.search_files_by_context(term, top_k=1)
+            if results and results[0].get("score", 0) > 0.35:
+                fpath = results[0].get("filepath")
+                if fpath and os.path.exists(fpath):
+                    update_active_state("active_file", {"path": fpath, "name": os.path.basename(fpath)})
+                    return fpath
 
-    return None
+    return active_path if active_ok else None
 
 
 def _tool_file_action(params, query, spoken, default_action="open"):
     params = params if isinstance(params, dict) else {}
-    # Gracefully redirect to write_file if content was provided
-    if params.get("content"):
-        return _tool_write_file(params, query, spoken)
-    target = str(params.get("path") or params.get("name") or query or "").strip()
+    target = str(params.get("path") or params.get("name") or "").strip()
     action = params.get("action") or default_action
     t_idx = params.get("target_index")
 
@@ -1357,7 +1401,7 @@ def _tool_open_settings(params, query, spoken):
 
 def _tool_control_windows_system(params, query, spoken):
     params = params if isinstance(params, dict) else {}
-    category = str(params.get("category") or "").strip().lower()
+    category = str(params.get("category") or params.get("action") or "").strip().lower()
     enabled = params.get("enabled")
     mode = params.get("mode")
     level = params.get("level")
@@ -1379,35 +1423,65 @@ def _tool_control_windows_system(params, query, spoken):
         return f"Could not adjust system {category}: {exc}", None
 
 
-def _tool_screen_pen_annotate(params, query, spoken):
+def _tool_screen_pen_guide(params, query, spoken):
     params = params if isinstance(params, dict) else {}
-    action = str(params.get("action") or "circle").strip().lower()
-    x = params.get("x", 500)
-    y = params.get("y", 500)
+    from amigo.services.screen_pen import screen_pen_guide
+    duration = float(params.get("duration", 18.0))
+    res = screen_pen_guide(
+        steps=params.get("steps") or [],
+        topic=params.get("topic") or query,
+        app=params.get("app"),
+        duration=duration,
+    )
+    msg = (
+        f"Showing a {res.get('step_count', 0)}-step visual guide on screen."
+        if res.get("status") == "success"
+        else str(res.get("error") or "Could not draw guide.")
+    )
+    return msg, None, res
+
+
+def _tool_screen_pen_annotate(params, query, spoken):
+    """Pure schema-driven visual diagram & screen annotation dispatcher (zero hardcoded topic/keyword rules)."""
+    params = params if isinstance(params, dict) else {}
+    action = str(params.get("action") or "").strip().lower()
+    x = params.get("x")
+    y = params.get("y")
     x2 = params.get("x2")
     y2 = params.get("y2")
     label = params.get("label")
-    topic = params.get("topic") or label or query
+    topic = str(params.get("topic") or "").strip()
     beats = params.get("beats")
-    color = params.get("color", "#00F0FF")
-    duration = float(params.get("duration", 4.0))
+    data = params.get("data")
+    color = params.get("color", "teal")
+    duration = float(params.get("duration", 12.0))
     normalized = bool(params.get("normalized", True))
+
+    if not action:
+        action = "diagram" if (topic or data or beats) else "circle"
+    if not topic and (label or query):
+        topic = str(label or query)
 
     try:
         from amigo.services.screen_pen import screen_pen_annotate, screen_pen_guide
-        if action == "guide":
+        if action == "guide" or "steps" in params:
             res = screen_pen_guide(
                 steps=params.get("steps") or ([label] if label else []),
+                topic=params.get("topic") or topic or query,
                 app=params.get("app"),
                 duration=duration,
             )
-            msg = f"Showing a {res.get('step_count', 0)}-step visual guide on screen." if res.get("status") == "success" else str(res.get("error") or "Could not draw guide.")
+            msg = (
+                f"Showing a {res.get('step_count', 0)}-step visual guide on screen."
+                if res.get("status") == "success"
+                else str(res.get("error") or "Could not draw guide.")
+            )
             return msg, None, res
 
         res = screen_pen_annotate(
             action=action, x=x, y=y, x2=x2, y2=y2,
             label=label, color=color, duration=duration, normalized=normalized,
-            topic=topic, beats=beats,
+            topic=topic, data=data, beats=beats,
         )
         if res.get("status") == "success":
             if res.get("summary"):
@@ -1415,7 +1489,10 @@ def _tool_screen_pen_annotate(params, query, spoken):
             else:
                 msg = f"Highlighted on screen with {res.get('drawn', action)}." if not label else f"Marked '{label}' on screen."
         else:
-            msg = f"Screen pen action {action} could not be completed."
+            msg = str(
+                res.get("error")
+                or (f"Could not find '{label}' on screen." if label else f"Screen pen action {action} could not be completed.")
+            )
         return msg, None, res
     except Exception as exc:
         logger.error("[Screen Pen Annotate Error]: %s", exc)
@@ -1433,9 +1510,7 @@ def _tool_change_setting(params, query, spoken):
     try:
         from amigo.services.os_settings import change_setting
         ok, msg = change_setting(s, value=val, confirmed=confirmed)
-        if not ok and ("don't have a direct way" in msg.lower() or "which setting" in msg.lower()):
-            return "Which setting would you like to change?", None
-        if not ok and "confirm" in msg.lower():
+        if not ok and not confirmed:
             return msg, None, {"requires_confirmation": True, "action_type": "change_setting", "setting": s, "value": val}
         return msg, None
     except Exception as exc:
@@ -1450,9 +1525,7 @@ def _tool_get_setting(params, query, spoken):
         return "Which setting would you like to check?", None
     try:
         from amigo.services.os_settings import get_setting
-        ok, msg = get_setting(s)
-        if not ok and "don't know that setting" in msg.lower():
-            return "Which setting would you like to check?", None
+        _, msg = get_setting(s)
         return msg, None
     except Exception as exc:
         logger.error("[Get Setting Error]: %s", exc)
@@ -1649,8 +1722,19 @@ def _tool_confirm_action(params, query, spoken):
                 {"status": "action_mismatch", "error": "confirmation_action_mismatch"},
             )
 
+    remaining_actions = pending.get("remaining_actions") or []
     _PENDING_CONFIRMATION = None
-    return execute_tool(pending["tool"], {**pending["params"], "confirmed": True}, query=pending["query"], spoken="")
+    first_res = execute_tool(pending["tool"], {**pending["params"], "confirmed": True}, query=pending["query"], spoken="")
+
+    # Continue any remaining steps in a multi-step command after confirmation
+    if remaining_actions:
+        rest_results = execute_actions(remaining_actions, query=pending["query"])
+        all_spoken = [first_res[0]] + [r[0] for r in rest_results if r[0]]
+        last_url = next((r[1] for r in reversed(rest_results) if r[1]), first_res[1])
+        merged_meta = {**(first_res[2] or {}), "multi_step_resumed": True}
+        return " ".join(s for s in all_spoken if s).strip(), last_url, merged_meta
+
+    return first_res
 
 
 def _tool_cancel_action(params, query, spoken):
@@ -1669,45 +1753,34 @@ def _tool_get_clipboard(params, query, spoken):
 
 
 def _tool_manage_voices(params, query, spoken):
-    from amigo.utils.tts import get_voice_catalog, get_active_voice, set_voice
+    """Schema-driven TTS voice catalog & selection handler (zero hardcoded keyword checks)."""
+    from amigo.utils.tts import get_active_voice, get_voice_catalog, set_voice
+
     params = params if isinstance(params, dict) else {}
     action = str(params.get("action") or "list").strip().lower()
-    voice_param = str(params.get("voice") or "").strip()
+    voice_param = str(params.get("voice") or "").strip().lower()
+    gender_param = str(params.get("gender") or "").strip().lower()
     catalog = get_voice_catalog()
     active_key = get_active_voice()
     active_info = catalog.get(active_key, {})
     active_name = active_info.get("name", active_key)
 
-    if action != "list" or voice_param:
-        target = voice_param.lower()
-        if not target and query:
-            target = query.lower()
-
+    if action != "list" or voice_param or gender_param:
         chosen_key = None
-        if "male" in target and "female" not in target:
+        if gender_param:
             for k, v in catalog.items():
-                if v.get("gender", "").lower() == "male" and k != active_key:
+                if v.get("gender", "").lower() == gender_param and k != active_key:
                     chosen_key = k
                     break
             if not chosen_key:
                 for k, v in catalog.items():
-                    if v.get("gender", "").lower() == "male":
+                    if v.get("gender", "").lower() == gender_param:
                         chosen_key = k
                         break
-        elif "female" in target:
-            for k, v in catalog.items():
-                if v.get("gender", "").lower() == "female" and k != active_key:
-                    chosen_key = k
-                    break
-            if not chosen_key:
-                for k, v in catalog.items():
-                    if v.get("gender", "").lower() == "female":
-                        chosen_key = k
-                        break
-        else:
+        elif voice_param:
             for k, v in catalog.items():
                 name = v.get("name", "").lower()
-                if target == k.lower() or target == name or target in name or target in k.lower():
+                if voice_param == k.lower() or voice_param == name or voice_param in name or voice_param in k.lower():
                     chosen_key = k
                     break
 
@@ -1718,18 +1791,18 @@ def _tool_manage_voices(params, query, spoken):
                 "voice": chosen_key,
                 "display_name": display_name,
             }
-        else:
-            return f"I couldn't find a voice matching '{voice_param}'.", None, {
-                "action": "set",
-                "error": "voice_not_found",
-            }
+        return f"I couldn't find a voice matching '{voice_param or gender_param}'.", None, {
+            "action": "set",
+            "error": "voice_not_found",
+        }
 
-    # Action is "list" (or default)
     total_voices = len(catalog)
-    popular = ["Heart", "Bella", "Sarah", "Adam", "Michael"]
+    sample_names = [v.get("name", k) for k, v in list(catalog.items())[:5]]
     spoken_summary = (
         f"I have {total_voices} voices available. Currently using {active_name}. "
-        f"Popular options include {', '.join(popular[:-1])}, and {popular[-1]}."
+        f"Popular options include {', '.join(sample_names[:-1])}, and {sample_names[-1]}."
+        if len(sample_names) > 1
+        else f"I have {total_voices} voices available. Currently using {active_name}."
     )
     meta = {
         "action": "list",
@@ -1749,100 +1822,103 @@ def _tool_manage_voices(params, query, spoken):
 
 
 UI_TOOL_HANDLERS = {
-    "manage_voices":         _tool_manage_voices,
-    "get_clipboard":         _tool_get_clipboard,
-    "get_clipboard_content": _tool_get_clipboard,
-    "web_search":         _tool_web_search,
-    "open_website":       _tool_open_website,
-    "show_images":        _tool_show_images,
-    "play_youtube":       _tool_play_youtube,
-    "get_time":           _tool_get_time,
-    "get_date":           _tool_get_date,
-    "time_date":          _tool_time_date,
-    "get_datetime":       _tool_get_datetime,
-    "get_weather":        _tool_get_weather,
-    "open_app":           _tool_open_app,
-    "take_screenshot":    _tool_take_screenshot,
-    "read_screen":        _tool_read_screen,
-    "ask_about_screen":   _tool_read_screen,
-    "screen_vision":      _tool_read_screen,
-    "type_text":          _tool_type_text,
-    "search_and_type":    _tool_search_and_type,
-    "press_key":          _tool_press_key,
-    "click_screen":       _tool_click_screen,
-    "screen_act":         _tool_screen_act,
-    "new_tab":            _tool_new_tab,
-    "close_app":          _tool_close_app,
-    "window_management":  _tool_window_management,
-    "window_mgmt":        _tool_window_management,
-    "calculate":          _tool_calculate,
-    "set_volume":         _tool_set_volume,
-    "set_brightness":     _tool_set_brightness,
-    "open_settings":      _tool_open_settings,
-    "change_setting":     _tool_change_setting,
-    "get_setting":        _tool_get_setting,
-    "toggle_setting":     _tool_change_setting,
+    "manage_voices":          _tool_manage_voices,
+    "get_clipboard":          _tool_get_clipboard,
+    "get_clipboard_content":  _tool_get_clipboard,
+    "web_search":             _tool_web_search,
+    "open_website":           _tool_open_website,
+    "show_images":            _tool_show_images,
+    "play_youtube":           _tool_play_youtube,
+    "get_time":               _tool_get_time,
+    "get_date":               _tool_get_date,
+    "time_date":              _tool_time_date,
+    "get_datetime":           _tool_get_datetime,
+    "get_weather":            _tool_get_weather,
+    "open_app":               _tool_open_app,
+    "take_screenshot":        _tool_take_screenshot,
+    "read_screen":            _tool_read_screen,
+    "ask_about_screen":       _tool_read_screen,
+    "screen_vision":          _tool_read_screen,
+    "type_text":              _tool_type_text,
+    "search_and_type":        _tool_search_and_type,
+    "press_key":              _tool_press_key,
+    "click_screen":           _tool_click_screen,
+    "screen_act":             _tool_screen_act,
+    "act_in_app":             _tool_screen_act,
+    "read_window":            _tool_read_window,
+    "new_tab":                _tool_new_tab,
+    "close_app":              _tool_close_app,
+    "window_management":      _tool_window_management,
+    "window_mgmt":            _tool_window_management,
+    "calculate":              _tool_calculate,
+    "set_volume":             _tool_set_volume,
+    "set_brightness":         _tool_set_brightness,
+    "open_settings":          _tool_open_settings,
+    "change_setting":         _tool_change_setting,
+    "get_setting":            _tool_get_setting,
+    "toggle_setting":         _tool_change_setting,
     "control_windows_system": _tool_control_windows_system,
-    "screen_pen_annotate": _tool_screen_pen_annotate,
-    "screen_pen":         _tool_screen_pen_annotate,
-    "screen_annotate":    _tool_screen_pen_annotate,
-    "open_history":       _tool_open_history,
-    "system_status":      _tool_system_status,
-    "hardware_metrics":   _tool_system_status,
-    "system_control":     _tool_system_control,
-    "power_control":      _tool_system_control,
-    "restart_pc":         _tool_restart_pc,
-    "media_control":      _tool_media_control,
-    "pause_media":        _tool_pause_media,
-    "play_media":         _tool_play_media,
-    "resume_media":       _tool_play_media,
-    "resume_playback":    _tool_play_media,
-    "stock_quote":        _tool_stock_quote,
-    "get_stock_quote":    _tool_stock_quote,
-    "market_quote":       _tool_stock_quote,
-    "stock_price":        _tool_stock_quote,
-    "stop":               _tool_stop,
-    "stop_speaking":      _tool_stop_speaking,
-    "next_track":         _tool_next_track,
-    "prev_track":         _tool_prev_track,
-    "set_timer":          _tool_set_timer,
-    "stopwatch":          _tool_set_timer,
-    "set_reminder":       _tool_set_reminder,
-    "list_reminders":     _tool_list_reminders,
-    "cancel_reminder":    _tool_cancel_reminder,
-    "open_folder":        _tool_open_folder,
-    "find_file":          _tool_find_file,
-    "find_document":      _tool_find_file,
-    "open_file":          _tool_file_action,
-    "reveal_file":        _make_file_handler("reveal"),
-    "copy_file_path":     _make_file_handler("copy_path"),
-    "memory_recall":      _tool_memory_recall,
-    "memory_store":       _tool_memory_recall,
-    "current_media":      _tool_get_current_media,
-    "get_current_media":  _tool_get_current_media,
-    "clarification":      _tool_clarification,
-    "exit":               _tool_exit,
-    "chat":               _tool_chat,
-    "generate_content":   _tool_generate_content,
-    "regenerate_content": _tool_regenerate_content,
-    "revert_content":     _tool_revert_content,
-    "insert_content":     _tool_insert_content,
-    "empty_recycle_bin":  _tool_empty_recycle_bin,
-    "lock_pc":            _tool_lock_pc,
-    "sleep_pc":           _tool_sleep_pc,
-    "blocked":            _tool_blocked,
-    "ask_document":       _tool_ask_document,
-    "document_qa":        _tool_ask_document,
-    "summarize_document": _tool_summarize_document,
-    "search_knowledge":   _tool_search_knowledge,
-    "read_emails":        _tool_read_emails,
-    "search_emails":      _tool_search_emails,
-    "unread_emails":      _tool_unread_emails,
-    "draft_email":        _tool_draft_email,
-    "get_calendar":       _tool_get_calendar,
-    "search_calendar":    _tool_search_calendar,
-    "confirm_action":     _tool_confirm_action,
-    "cancel_action":      _tool_cancel_action,
+    "screen_pen_annotate":    _tool_screen_pen_annotate,
+    "screen_pen_guide":       _tool_screen_pen_guide,
+    "screen_pen":             _tool_screen_pen_annotate,
+    "screen_annotate":        _tool_screen_pen_annotate,
+    "open_history":           _tool_open_history,
+    "system_status":          _tool_system_status,
+    "hardware_metrics":       _tool_system_status,
+    "system_control":         _tool_system_control,
+    "power_control":          _tool_system_control,
+    "restart_pc":             _tool_restart_pc,
+    "media_control":          _tool_media_control,
+    "pause_media":            _tool_pause_media,
+    "play_media":             _tool_play_media,
+    "resume_media":           _tool_play_media,
+    "resume_playback":        _tool_play_media,
+    "stock_quote":            _tool_stock_quote,
+    "get_stock_quote":        _tool_stock_quote,
+    "market_quote":           _tool_stock_quote,
+    "stock_price":            _tool_stock_quote,
+    "stop":                   _tool_stop,
+    "stop_speaking":          _tool_stop_speaking,
+    "next_track":             _tool_next_track,
+    "prev_track":             _tool_prev_track,
+    "set_timer":              _tool_set_timer,
+    "stopwatch":              _tool_set_timer,
+    "set_reminder":           _tool_set_reminder,
+    "list_reminders":         _tool_list_reminders,
+    "cancel_reminder":        _tool_cancel_reminder,
+    "open_folder":            _tool_open_folder,
+    "find_file":              _tool_find_file,
+    "find_document":          _tool_find_file,
+    "open_file":              _tool_file_action,
+    "reveal_file":            _make_file_handler("reveal"),
+    "copy_file_path":         _make_file_handler("copy_path"),
+    "memory_recall":          _tool_memory_recall,
+    "memory_store":           _tool_memory_recall,
+    "current_media":          _tool_get_current_media,
+    "get_current_media":      _tool_get_current_media,
+    "clarification":          _tool_clarification,
+    "exit":                   _tool_exit,
+    "chat":                   _tool_chat,
+    "generate_content":       _tool_generate_content,
+    "regenerate_content":     _tool_regenerate_content,
+    "revert_content":         _tool_revert_content,
+    "insert_content":         _tool_insert_content,
+    "empty_recycle_bin":      _tool_empty_recycle_bin,
+    "lock_pc":                _tool_lock_pc,
+    "sleep_pc":               _tool_sleep_pc,
+    "blocked":                _tool_blocked,
+    "ask_document":           _tool_ask_document,
+    "document_qa":            _tool_ask_document,
+    "summarize_document":     _tool_summarize_document,
+    "search_knowledge":       _tool_search_knowledge,
+    "read_emails":            _tool_read_emails,
+    "search_emails":          _tool_search_emails,
+    "unread_emails":          _tool_unread_emails,
+    "draft_email":            _tool_draft_email,
+    "get_calendar":           _tool_get_calendar,
+    "search_calendar":        _tool_search_calendar,
+    "confirm_action":         _tool_confirm_action,
+    "cancel_action":          _tool_cancel_action,
 }
 
 for _key, (_func, _msg) in _SIMPLE_OS_ACTIONS.items():
@@ -1850,14 +1926,20 @@ for _key, (_func, _msg) in _SIMPLE_OS_ACTIONS.items():
 
 
 # ═══════════════════════════════════════════════════════════════
-#  Tool Definitions & Multi-Turn Context-Aware Router
+#  Tool Definitions & Multi-Turn / Multi-Step Intent Router
 # ═══════════════════════════════════════════════════════════════
 
 def _p(type_: str, description: str = "") -> dict:
     return {"type": type_, "description": description}
 
 
-def _tool(name: str, description: str, props: dict | None = None, required: list | None = None, tool_aliases: dict | None = None) -> dict:
+def _tool(
+    name: str,
+    description: str,
+    props: dict | None = None,
+    required: list | None = None,
+    tool_aliases: dict | None = None,
+) -> dict:
     entry = {
         "name": name,
         "description": description,
@@ -1869,131 +1951,361 @@ def _tool(name: str, description: str, props: dict | None = None, required: list
 
 
 TOOL_DEFINITIONS = [
-    _tool("chat", "General knowledge, explanations, creative conversation, greetings, bare assistant name/vocative, assistant capabilities questions, and chit-chat. Not for screen capture/reading (use take_screenshot/read_screen), hardware status (use system_status), or standalone documents/code (use generate_content). Ex: 'why do leaves change color in autumn?', 'Amigo', 'tell me a quick joke'.",
-          {"response": _p("string", "Direct spoken reply")}),
-    _tool("web_search", "Search the web for live news, sports, research, recipes, or real-time facts. Always use for online lookups; not for weather (use get_weather), direct ticker quotes (use stock_quote), or greetings/assistant name (use chat). Ex: 'check online who won the game yesterday', 'recipe for garlic pasta', 'recent space discoveries'.",
-          {"query": _p("string", "Search query")}, ["query"]),
-    _tool("stock_quote", "Fetch live price quote for a market ticker symbol (e.g. MSFT, NVDA, BTC). Never use for online search requests, market analysis, or research queries (use web_search). Ex: 'what is Nvidia trading at right now?', 'stock price for TSLA', 'how much is Ethereum worth'.",
-          {"symbol": _p("string", "Ticker or asset symbol")}, ["symbol"]),
-    _tool("time_date", "Report current local clock time, calendar date, or both (set action='time' for clock time, action='date' for calendar date, or action='both' only if both requested). Not for timers (use set_timer) or reminders (use set_reminder). Ex: 'what is the time', 'what day of the week is today?', 'what date is it today'.",
-          {"action": _p("string", "time | date | both")}, ["action"]),
-    _tool("media_control", "Control active media playback: action='play' (resume/unpause), 'pause' (hold/freeze), 'next' (next/skip song), 'previous' (prior track), or 'status' (what song/track is playing). ALWAYS use instead of play_youtube for play/resume/pause/next/previous/current song controls. Ex: 'pause the music', 'next song please', 'previous track', 'what track is currently on'.",
-          {"action": _p("string", "play | pause | next | previous | status")}, ["action"]),
-    _tool("play_youtube", "Search YouTube by song title, artist, or video name to start NEW playback. Never use for controlling or checking active playback (use media_control). Ex: 'stream ambient jazz on youtube', 'put on chopin nocturne', 'play the official trailer for dune'.",
-          {"query": _p("string", "Song, video title, or music search query")}, ["query"]),
-    _tool("set_volume", "Adjust system audio volume (action='volume_up', 'volume_down', 'mute', 'unmute', or 'set_volume' with numeric level 0-100). Omit 'level' for volume_up/down/mute. If no level or direction is stated, ask via chat instead of guessing. Ex: 'turn the volume up', 'make it louder', 'set volume to 50'.",
-          {"action": _p("string", "mute | unmute | volume_up | volume_down | set_volume"),
-           "level": _p("integer", "Numeric 0-100 ONLY when action='set_volume'")},
-          tool_aliases={"volume_up": {"action": "volume_up"}, "volume_down": {"action": "volume_down"}, "mute": {"action": "mute"}}),
-    _tool("set_brightness", "Adjust display brightness percentage (0-100). If level is missing, ask via chat instead of guessing. Ex: 'dim screen to 40 percent', 'brightness 80', 'increase screen brightness'.",
-          {"level": _p("integer", "Brightness percentage 0-100")}, ["level"]),
-    _tool("take_screenshot", "Capture full screenshot of monitor. Not for reading screen text (use read_screen). Ex: 'take a screenshot for me', 'can you grab a screenshot', 'screenshot'.",
-          {}),
-    _tool("read_screen", "Inspect visible GUI text, window titles, or UI elements via OCR/vision. Use ONLY when asking about visible screen contents. Never use for window state or desktop visibility (use window_mgmt) or files (use document_qa). Ex: 'what does this error message on screen say?', 'read the visible paragraph in this open window', 'can you see what button is highlighted'.",
-          {"question": _p("string", "Question about visible screen contents")}),
-    _tool("screen_act", "Click, fill, type, press keys, or scroll UI controls in the active or named app. Ask via chat if target is missing.",
-          {"action": _p("string", "click | fill | type | press | scroll"),
-           "target": _p("string", "Control text or direction"),
-           "text": _p("string", "Text or shortcut"),
-           "app": _p("string", "Optional app name")}, ["action"]),
-    _tool("open_website", "Open website, URL, domain, or web page in browser (e.g. .org, .com, github, site, page). 'url' must come from user words or context; if no domain is specified, ask via chat. Never use open_app for websites or URLs. Ex: 'navigate to wikipedia.org', 'browse to python.org', 'open github.com'.",
-          {"url": _p("string", "Concrete URL or domain"),
-           "title": _p("string", "Title")}, ["url"]),
-    _tool("open_app", "Launch an installed Windows desktop app by concrete name from user words or context. If no concrete app is named, ask via chat. Never use for websites, domains, or web pages (use open_website). Ex: 'can you open visual studio code?', 'launch spotify for me', 'notepad please'.",
-          {"name": _p("string", "Concrete application name")}, ["name"]),
-    _tool("close_app", "Close or terminate an external desktop application, window, or running program session (e.g. Chrome, Notepad, Spotify). Never use to stop assistant speech (use stop) or exit Amigo (use exit). Ex: 'could you close the notepad window?', 'shut down running Excel', 'close chrome please'.",
-          {"name": _p("string", "Application name")}),
-    _tool("window_mgmt", "Manage desktop window layout and desktop visibility (minimize_all, maximize, restore, switch_window). Not for reading contents (use read_screen). Ex: 'minimize all windows please', 'can you maximize this window?', 'switch to next application'.",
-          {"action": _p("string", "minimize_all | maximize | restore | switch_window")}, ["action"]),
-    _tool("power_control", "Control PC power state: action='lock' (lock workstation), 'sleep' (put PC/computer to sleep), 'restart' (reboot), 'shutdown', or 'cancel_shutdown'. Never use chat for sleep/lock/restart, and never use close_app or exit. Ex: 'lock my computer please', 'put computer to sleep', 'restart my pc'.",
-          {"action": _p("string", "lock | sleep | restart | shutdown | cancel_shutdown")}, ["action"]),
-    _tool("empty_recycle_bin", "Empty Windows Recycle Bin. Not for single files. Ex: 'empty the recycle bin please', 'clear trash bin now', 'delete trash bin items'.",
-          {}),
-    _tool("system_status", "Report PC hardware utilization (CPU load, RAM usage, disk space, battery level). Never use when asked about a Windows setting or 'setting state' (use get_setting or ask via chat), or assistant questions (use chat). Ex: 'how much memory is currently free?', 'check battery level and cpu usage', 'show me memory and cpu usage'.",
-          {}),
-    _tool("open_settings", "Open the Windows Settings GUI window (set setting='home' for general 'open settings', 'settings please', or 'app settings', or a named panel like 'display', 'bluetooth', or 'sound'). Never use when user asks to toggle/change/check a setting (use change_setting/get_setting). Ex: 'open the display settings window', 'could you show network configuration?', 'launch app settings'.",
-          {"setting": _p("string", "Settings section name or 'home'")}),
-    _tool("control_windows_system", "Control hardware power profiles (battery saver, balanced, high performance). Never use for lock/sleep/restart/shutdown (use power_control), window layout (use window_mgmt), or standard Windows settings (use change_setting). Ex: 'turn on battery saver', 'switch to power saver mode', 'switch to balanced power'.",
-          {"action": _p("string", "Action name")}),
-    _tool("screen_pen_annotate", "Point out UI elements on screen, draw callouts, step-by-step guides (action='guide', steps), or visual diagrams/explanations (action='diagram', topic). Ex: 'where is the research button?', 'point out the download button', 'circle Save on screen', 'explain gravity visually with a diagram'.",
-          {"action": _p("string", "circle | arrow | box | underline | diagram | guide | clear"),
-           "topic": _p("string", "Topic for visual diagram"),
-           "x": _p("integer", "X coordinate 0-1000"),
-           "y": _p("integer", "Y coordinate 0-1000"),
-           "label": _p("string", "UI element text to point out or annotation note"),
-           "steps": _p("array", "Optional list of step targets/captions for action='guide'")}, ["action"]),
-    _tool("change_setting", "Change, toggle, turn on/off a named Windows toggle/setting (Wi-Fi, Bluetooth, dark mode, night light). Set value='on', 'off', or 'toggle' matching user words (use 'off' for turn off, 'toggle' only for toggle/switch). Never guess dark mode if setting name is missing — ask via chat. Ex: 'toggle bluetooth', 'turn wi-fi off', 'switch night light on'.",
-          {"setting": _p("string", "Concrete setting name"),
-           "value": _p("string", "on | off | toggle (match user intent)")}, ["setting"]),
-    _tool("get_setting", "Read active state of a named feature/toggle (Bluetooth, dark mode, night light). Never use to open Settings (use open_settings) or toggle/change a setting (use change_setting). If vague/missing, ask via chat. Ex: 'is bluetooth currently turned on?', 'check if dark mode is active'.",
-          {"setting": _p("string", "Concrete setting name")}, ["setting"]),
-    _tool("open_history", "Open interaction history log. Not for personal facts (use memory_recall). Ex: 'open my chat history', 'show past conversations', 'open history panel'.",
-          {"action": _p("string", "open | close (default open)")}),
-    _tool("get_weather", "Fetch weather forecast or temperature for a city. Not for climate science (use chat). Ex: 'weather in Chicago today', 'is it going to rain in Seattle this evening?', 'what is the forecast for Paris'.",
-          {"city": _p("string", "Target city name")}),
-    _tool("set_timer", "Start countdown timer with duration. Not for clock times (use set_reminder). Ex: 'could you set a timer for 12 minutes?', 'ten minute pasta timer please', 'start countdown for 45 seconds'.",
-          {"duration": _p("string", "Duration (e.g. 10m, 2h)"),
-           "seconds": _p("integer", "Total seconds")}),
-    _tool("set_reminder", "Schedule reminder for a future time. Not for countdown timers (use set_timer). Ex: 'remind me tomorrow morning at nine to call the clinic', 'could you remind me to check the oven at 6:30pm?', 'set reminder to water plants on Saturday'.",
-          {"message": _p("string", "Reminder message"),
-           "time": _p("string", "Target time or interval")}, ["message", "time"]),
-    _tool("list_reminders", "List active scheduled reminders. Ex: 'what reminders do i have scheduled?', 'could you show all active reminders', 'list pending reminders'.",
-          {}),
-    _tool("cancel_reminder", "Cancel a scheduled reminder. Ex: 'cancel the clinic appointment reminder', 'delete reminder to water plants', 'could you clear all scheduled reminders?'.",
-          {"query": _p("string", "Reminder topic or 'all'")}),
-    _tool("find_file", "Search and list local file paths by keyword. Not for reading, summarizing, or asking what is inside a document (use document_qa). Ex: 'find the spreadsheet about marketing budget', 'search files matching budget', 'locate report files'.",
-          {"query": _p("string", "Search keyword or filename")}, ["query"]),
-    _tool("open_file", "Open an existing local file (PDF, doc, spreadsheet) in its default viewer. Use target_index for search results. If ambiguous or generic, ask via chat or use find_file. Ex: 'launch project_plan.pdf', 'open second spreadsheet from results', 'open report.docx'.",
-          {"path": _p("string", "Concrete filename or path"),
-           "target_index": _p("integer", "Ordinal index: 0=first, 1=second, -1=last")}, ["path"]),
-    _tool("document_qa", "Read, summarize, explain, or answer questions about local files, invoices, PDFs, or documents (loads indexed files automatically; ALWAYS call instead of chat or replying you lack document access). Not to launch a file without a content question (use open_file) or screen OCR. Ex: 'what does this document say?', 'summarize payment terms from first invoice', 'what is in this pdf?'.",
-          {"query": _p("string", "Question or summary request"),
-           "target_index": _p("integer", "Ordinal index: 0=first, 1=second, -1=last")}, ["query"]),
-    _tool("memory_recall", "Save ('store') or retrieve ('recall') personal user facts. Not for general knowledge or web facts. Ex: 'remember that my preferred airline is Delta', 'what did i say my favorite coffee was?', 'can you remember that my dog is named Milo?'.",
-          {"action": _p("string", "store | recall"),
-           "fact": _p("string", "Fact when store"),
-           "query": _p("string", "Query when recall")}, ["action"]),
-    _tool("get_calendar", "Retrieve upcoming calendar schedule and events. Not for reminders (use set_reminder). Ex: 'check my agenda for today', 'show calendar appointments this afternoon', 'any events scheduled tomorrow?'.",
-          {"days": _p("integer", "Days ahead (default 1)")}),
-    _tool("read_emails", "Fetch, search, or read Outlook emails (action='read', 'search', or 'unread'). Not for drafting emails. Ex: 'check recent emails from Alex', 'search inbox for travel confirmation', 'read latest message'.",
-          {"action": _p("string", "read | search | unread"),
-           "query": _p("string", "Search query or sender"),
-           "count": _p("integer", "Max emails to summarize (default 5)")}),
-    _tool("unread_emails", "Report unread Outlook email messages. Ex: 'do i have any unread emails right now?', 'check unread inbox messages', 'unread email count please'.",
-          {}),
-    _tool("draft_email", "Compose Outlook email draft (emails only, not articles/code). Ex: 'send an email to sarah about running late to sync', 'email supervisor about milestone', 'write email to Chris about dinner'.",
-          {"to": _p("string", "Recipient"),
-           "subject": _p("string", "Subject"),
-           "prompt": _p("string", "Instructions")}, ["prompt"]),
-    _tool("generate_content", "Draft standalone structured text, essays, reports, or source code. Not for short conversational replies (use chat) or Outlook emails (use draft_email). Ex: 'write a python function to compute fibonacci numbers', 'can you draft a blog post on sustainable gardening?', 'compose a recommendation letter for an intern'.",
-          {"type": _p("string", "code | letter | essay | summary"),
-           "topic": _p("string", "Topic"),
-           "tone": _p("string", "Tone"),
-           "destination": _p("string", "Target app")}, ["type", "topic"]),
-    _tool("regenerate_content", "Revise last generated draft. Ex: 'could you make that draft more concise and professional?', 'rewrite with a more energetic tone', 'shorten the generated text to one paragraph'.",
-          {"feedback": _p("string", "Revision instructions")}, ["feedback"]),
-    _tool("revert_content", "Undo draft to previous version. Ex: 'undo the last draft changes please', 'can we restore the previous version of the text?', 'revert to earlier draft'.",
-          {}),
-    _tool("insert_content", "Paste active generated AI draft into target app. Not for arbitrary typing (use type_text). Ex: 'insert the draft into notepad', 'paste the generated summary into word', 'paste this into my editor'.",
-          {"destination": _p("string", "Target app name")}, ["destination"]),
-    _tool("type_text", "Type user-supplied text into active window. Not for pasting AI drafts (use insert_content). Ex: 'type admin@company.org into the username box', 'could you write hello everyone into the active window', 'type 123456'.",
-          {"text": _p("string", "Text to type"),
-           "app": _p("string", "Target app")}, ["text"]),
-    _tool("press_key", "Send keyboard key or shortcut. Not for typing sentences (use type_text). Ex: 'press the enter key please', 'hit escape', 'send shortcut ctrl plus p'.",
-          {"keys": _p("string", "Key or combo")}, ["keys"]),
-    _tool("confirm_action", "Affirm a pending confirmation prompt previously asked by Amigo. Never use for standalone user commands; use only to reply affirmatively to an active confirmation. Ex: 'yes go ahead with that', 'yes please do that', 'confirmed'.",
-          {}),
-    _tool("cancel_action", "Abort pending action awaiting confirmation. Ex: 'no do not do that', 'abort the operation', 'cancel that request'.",
-          {}),
-    _tool("get_clipboard", "Read copied text on Windows clipboard. Ex: 'what do i have copied right now?', 'could you read the clipboard content please', 'show clipboard text'.",
-          {}),
-    _tool("stop", "Halt active assistant speech ONLY. Never use for volume (use set_volume), desktop apps/windows/sessions (use close_app), or exit (use exit). Ex: 'be quiet please', 'stop talking', 'hush'.",
-          {}),
-    _tool("exit", "Quit the Amigo process. Use ONLY for quitting Amigo. Ex: 'quit amigo completely', 'close amigo assistant', 'exit amigo'.",
-          {}),
-    _tool("manage_voices", "List TTS voices or switch speaking voice. Not for volume. Ex: 'could you list all available voices?', 'switch speaker voice to Sarah', 'change voice to male'.",
-          {"action": _p("string", "list | set"),
-           "voice": _p("string", "Voice name or ID")}, ["action"]),
+    _tool(
+        "chat",
+        "General knowledge, explanations, reasoning, creative conversation, greetings, assistant questions, and clarifying questions when required details are missing.",
+        {"response": _p("string", "Direct spoken reply")},
+    ),
+    _tool(
+        "web_search",
+        "Search the web for live news, sports, real-time facts, research, or online lookups.",
+        {"query": _p("string", "Search query")},
+        ["query"],
+    ),
+    _tool(
+        "stock_quote",
+        "Fetch live price quote for a financial ticker symbol or asset (e.g., MSFT, NVDA, BTC).",
+        {"symbol": _p("string", "Ticker or asset symbol")},
+        ["symbol"],
+    ),
+    _tool(
+        "time_date",
+        "Report current local clock time, calendar date, or both.",
+        {"action": _p("string", "time | date | both")},
+        ["action"],
+    ),
+    _tool(
+        "media_control",
+        "Control or inspect active media playback (play/resume, pause, next track, previous track, or current track status).",
+        {"action": _p("string", "play | pause | next | previous | status")},
+        ["action"],
+    ),
+    _tool(
+        "play_youtube",
+        "Search YouTube by song title, artist, or video name to start new playback.",
+        {"query": _p("string", "Song, video title, or search query")},
+        ["query"],
+    ),
+    _tool(
+        "set_volume",
+        "Adjust system audio volume (mute, unmute, volume_up, volume_down, or set_volume with numeric level 0-100).",
+        {
+            "action": _p("string", "mute | unmute | volume_up | volume_down | set_volume"),
+            "level": _p("integer", "Numeric 0-100 when action='set_volume'"),
+        },
+        tool_aliases={"volume_up": {"action": "volume_up"}, "volume_down": {"action": "volume_down"}, "mute": {"action": "mute"}},
+    ),
+    _tool(
+        "set_brightness",
+        "Adjust display brightness percentage (0-100).",
+        {"level": _p("integer", "Brightness percentage 0-100")},
+        ["level"],
+    ),
+    _tool(
+        "take_screenshot",
+        "Capture and save a screenshot of the monitor.",
+        {},
+    ),
+    _tool(
+        "read_screen",
+        "Inspect visible GUI text, active window contents, or visual UI elements via screen OCR/vision.",
+        {"question": _p("string", "Question about visible screen contents")},
+    ),
+    _tool(
+        "act_in_app",
+        "Perform UI automation inside desktop windows: clicking controls, filling fields, choosing dropdown options, scrolling pages, pressing keys, or executing ordered UI steps.",
+        {
+            "app": _p("string", "App name or 'front'"),
+            "steps": _p("array", "Ordered step objects: {do, text/field/option/key/direction}"),
+            "action": _p("string", "Single action: click | fill | type | press | scroll | choose"),
+            "target": _p("string", "Control text, field label, or scroll direction (up | down | left | right)"),
+            "text": _p("string", "Text to type/fill or key to press"),
+        },
+        tool_aliases={"screen_act": {}},
+    ),
+    _tool(
+        "read_window",
+        "Inspect structured UI controls (buttons, fields, labels, values) and visible text of the front or named application window.",
+        {"target": _p("string", "Window target: 'front' or application name")},
+    ),
+    _tool(
+        "open_website",
+        "Open a website, URL, or domain in the web browser.",
+        {
+            "url": _p("string", "Concrete URL or domain"),
+            "title": _p("string", "Optional page title"),
+        },
+        ["url"],
+    ),
+    _tool(
+        "open_app",
+        "Launch an installed Windows desktop application by name.",
+        {"name": _p("string", "Concrete application name")},
+        ["name"],
+    ),
+    _tool(
+        "close_app",
+        "Close or terminate a running desktop application or window.",
+        {"name": _p("string", "Application name")},
+    ),
+    _tool(
+        "window_mgmt",
+        "Manage desktop window layout and focus (minimize_all, maximize, restore, switch_window).",
+        {"action": _p("string", "minimize_all | maximize | restore | switch_window")},
+        ["action"],
+    ),
+    _tool(
+        "power_control",
+        "Control PC power state (lock, sleep, restart, shutdown, cancel_shutdown).",
+        {"action": _p("string", "lock | sleep | restart | shutdown | cancel_shutdown")},
+        ["action"],
+    ),
+    _tool(
+        "empty_recycle_bin",
+        "Empty the Windows Recycle Bin.",
+        {},
+    ),
+    _tool(
+        "system_status",
+        "Report PC hardware utilization (CPU load, RAM usage, disk space, battery level).",
+        {},
+    ),
+    _tool(
+        "open_settings",
+        "Open the Windows Settings GUI window (use setting='home' for general settings, or a named section like 'display', 'bluetooth', 'sound', 'network').",
+        {"setting": _p("string", "Settings section name or 'home'")},
+    ),
+    _tool(
+        "control_windows_system",
+        "Control hardware power profiles and modes (battery saver, balanced, high performance).",
+        {"action": _p("string", "Power profile or mode name")},
+    ),
+    _tool(
+        "screen_pen_annotate",
+        "Draw visual explanations, diagrams, flowcharts, 2D graphs, bar charts, tables, timelines, LaTeX math derivations, molecules, world maps, quizzes, 3D models, or live on-screen UI highlights/annotations.",
+        {
+            "action": _p(
+                "string",
+                "diagram | flow | graph | bars | table | timeline | math | geometry | molecule | map | quiz | model | card | circle | ring | arrow | box | underline | highlight | spotlight | clear",
+            ),
+            "topic": _p("string", "Concept, regions, comparison subject, or system to visualize"),
+            "data": _p("object", "Optional structured diagram payload"),
+            "label": _p("string", "Existing on-screen UI element text to locate and mark"),
+            "x": _p("number", "Target X coordinate (0-1000 normalized)"),
+            "y": _p("number", "Target Y coordinate (0-1000 normalized)"),
+            "color": _p("string", "Palette tone (teal, coral, amber, sky, lilac, lime)"),
+        },
+        tool_aliases={"screen_pen": {}, "screen_annotate": {}},
+    ),
+    _tool(
+        "screen_pen_guide",
+        "Draw a step-by-step interactive on-screen walkthrough highlighting UI controls with numbered rings and captions.",
+        {
+            "steps": _p("array", "Ordered UI steps: [{target: '...', caption: '...'}]"),
+            "topic": _p("string", "Title of the walkthrough"),
+            "app": _p("string", "Optional target application name"),
+        },
+    ),
+    _tool(
+        "change_setting",
+        "Change or toggle a named Windows setting (e.g., Wi-Fi, Bluetooth, dark mode, night light).",
+        {
+            "setting": _p("string", "Concrete setting name"),
+            "value": _p("string", "on | off | toggle"),
+        },
+        ["setting"],
+    ),
+    _tool(
+        "get_setting",
+        "Check the current on/off state of a named Windows setting.",
+        {"setting": _p("string", "Concrete setting name")},
+        ["setting"],
+    ),
+    _tool(
+        "open_history",
+        "Open or close the assistant conversation history panel.",
+        {"action": _p("string", "open | close")},
+    ),
+    _tool(
+        "get_weather",
+        "Fetch current weather or forecast for a city or local area.",
+        {"city": _p("string", "Target city name (optional if local)")},
+    ),
+    _tool(
+        "set_timer",
+        "Start a countdown timer for a specified duration.",
+        {
+            "duration": _p("string", "Duration (e.g. 10m, 2h)"),
+            "seconds": _p("integer", "Total seconds"),
+        },
+    ),
+    _tool(
+        "set_reminder",
+        "Schedule a reminder for a future time or interval.",
+        {
+            "message": _p("string", "Reminder message"),
+            "time": _p("string", "Target clock time or relative interval"),
+        },
+        ["message", "time"],
+    ),
+    _tool(
+        "list_reminders",
+        "List active scheduled reminders.",
+        {},
+    ),
+    _tool(
+        "cancel_reminder",
+        "Cancel one or all scheduled reminders.",
+        {"query": _p("string", "Reminder topic or 'all'")},
+    ),
+    _tool(
+        "find_file",
+        "Search and list local files by keyword or filename.",
+        {"query": _p("string", "Search keyword or filename")},
+        ["query"],
+    ),
+    _tool(
+        "open_file",
+        "Open an existing local file in its default application (supports concrete path/name or target_index from recent results).",
+        {
+            "path": _p("string", "Concrete filename or path"),
+            "target_index": _p("integer", "Ordinal index: 0=first, 1=second, -1=last"),
+        },
+    ),
+    _tool(
+        "summarize_document",
+        "Summarize the full contents of a local document or active file.",
+        {
+            "filepath": _p("string", "Optional concrete filename or path"),
+            "target_index": _p("integer", "Optional ordinal index: 0=first, 1=second, -1=last"),
+        },
+    ),
+    _tool(
+        "document_qa",
+        "Read, explain, or answer specific questions about local documents, PDFs, invoices, or files.",
+        {
+            "query": _p("string", "Question or inquiry about the document"),
+            "target_index": _p("integer", "Optional ordinal index: 0=first, 1=second, -1=last"),
+        },
+        ["query"],
+    ),
+    _tool(
+        "memory_recall",
+        "Store ('store') or retrieve ('recall') personal user facts and preferences.",
+        {
+            "action": _p("string", "store | recall"),
+            "fact": _p("string", "Fact to remember when action='store'"),
+            "query": _p("string", "Topic to recall when action='recall'"),
+        },
+        ["action"],
+    ),
+    _tool(
+        "get_calendar",
+        "Retrieve upcoming Outlook calendar schedule and events.",
+        {"days": _p("integer", "Days ahead (default 1)")},
+    ),
+    _tool(
+        "read_emails",
+        "Read, summarize, or search Outlook emails.",
+        {
+            "action": _p("string", "read | search | unread"),
+            "query": _p("string", "Search query or sender"),
+            "count": _p("integer", "Max emails to summarize (default 5)"),
+        },
+    ),
+    _tool(
+        "unread_emails",
+        "Report unread Outlook email count and subjects.",
+        {},
+    ),
+    _tool(
+        "draft_email",
+        "Compose an Outlook email draft (supports '$prev' in prompt to include prior step output).",
+        {
+            "to": _p("string", "Recipient"),
+            "subject": _p("string", "Subject"),
+            "prompt": _p("string", "Email instructions or content"),
+        },
+        ["prompt"],
+    ),
+    _tool(
+        "generate_content",
+        "Draft structured standalone content such as code, letters, essays, or summaries.",
+        {
+            "type": _p("string", "code | letter | essay | summary"),
+            "topic": _p("string", "Topic or specification"),
+            "tone": _p("string", "Optional tone"),
+            "destination": _p("string", "Optional target app"),
+        },
+        ["type", "topic"],
+    ),
+    _tool(
+        "regenerate_content",
+        "Revise the last generated draft based on feedback.",
+        {"feedback": _p("string", "Revision instructions")},
+        ["feedback"],
+    ),
+    _tool(
+        "revert_content",
+        "Revert the active draft to its previous version.",
+        {},
+    ),
+    _tool(
+        "insert_content",
+        "Paste the active generated AI draft into a target application.",
+        {"destination": _p("string", "Target app name")},
+        ["destination"],
+    ),
+    _tool(
+        "type_text",
+        "Type text into the active or target window (supports '$prev' to type prior step output).",
+        {
+            "text": _p("string", "Text to type"),
+            "app": _p("string", "Optional target app"),
+        },
+        ["text"],
+    ),
+    _tool(
+        "press_key",
+        "Send a keyboard key or shortcut combination.",
+        {"keys": _p("string", "Key or shortcut (e.g., enter, escape, ctrl+s)")},
+        ["keys"],
+    ),
+    _tool(
+        "confirm_action",
+        "Confirm and execute a pending action previously asked for confirmation by Amigo.",
+        {},
+    ),
+    _tool(
+        "cancel_action",
+        "Cancel a pending action awaiting confirmation.",
+        {},
+    ),
+    _tool(
+        "get_clipboard",
+        "Read text currently stored on the Windows clipboard.",
+        {},
+    ),
+    _tool(
+        "stop",
+        "Stop active assistant speech output.",
+        {},
+    ),
+    _tool(
+        "exit",
+        "Quit and exit the Amigo assistant application.",
+        {},
+    ),
+    _tool(
+        "manage_voices",
+        "List available TTS voices or switch the speaking voice by name or gender.",
+        {
+            "action": _p("string", "list | set"),
+            "voice": _p("string", "Voice name or ID when action='set'"),
+            "gender": _p("string", "Optional 'male' or 'female' when action='set'"),
+        },
+        ["action"],
+    ),
 ]
 
 VALID_TOOL_NAMES = {tool["name"] for tool in TOOL_DEFINITIONS} | set(UI_TOOL_HANDLERS.keys())
@@ -2041,27 +2353,52 @@ def _tools_block() -> str:
     return _TOOLS_BLOCK_CACHE
 
 
-_MASTER_SYSTEM_PROMPT = """You are Amigo, a voice and desktop assistant on the user's Windows PC.
+_MASTER_SYSTEM_PROMPT = """You are Amigo, an intelligent voice and desktop AI assistant on the user's Windows PC.
 
 CORE OPERATING PRINCIPLES:
-- Understand user intent and select the single best tool from TOOLS AVAILABLE below.
-- Date & Search: Current date/time are provided every turn. Always use 'web_search' for current events, live sports, real-time facts, recent news, or explicit online lookups; 'get_weather' for weather; 'document_qa' for questions or summaries about documents, PDFs, or invoices (never reply via 'chat' that documents are inaccessible); 'screen_pen_annotate' when asked to draw, diagram, point out, or explain something visually on screen; 'chat' for general knowledge, reasoning, and conversation.
-- Clarifications: If a command is missing required details or ambiguous, use 'chat' to ask a single short one-sentence clarifying question without making claims about system or network state.
-- Output Format: Output ONLY valid JSON matching this schema:
-{"actions": [{"tool": "<tool_name>", "params": {<parameters>}}]}
+1. Intent Understanding: Understand the user's underlying goal in any phrasing or language and map it to the exact tool(s) from TOOLS AVAILABLE below.
+2. Single-Step & Multi-Step Execution:
+   - If the user asks for one action, output an `actions` array with 1 tool object.
+   - If the user asks for multiple sequential or compound actions (e.g., "open X and do Y", "find file X and summarize it", "check weather in Y and set a reminder", "search for X and email it to Z"), decompose the request into an ordered list of tool objects in `actions`.
+   - Use `"$prev"` inside a subsequent step's string parameter whenever that step needs the text/result produced by the immediately preceding step.
+3. Parameter Grounding:
+   - Extract parameter values strictly from the user's message, conversation history, or active runtime context.
+   - Never fabricate app names, URLs, setting names, file paths, or numeric levels that were not stated or implied by context.
+   - If a required target or value is genuinely missing or ambiguous, use `chat` to ask one brief, natural clarifying question.
+4. Tool Selection Guidance:
+   - Use `act_in_app` for in-window UI interactions (clicking controls, filling fields, scrolling pages, pressing keys).
+   - Use `screen_pen_annotate` for visual diagrams, flowcharts, comparison bar charts, maps, math derivations, 3D models, or marking existing screen elements (`label`).
+   - Use `screen_pen_guide` for step-by-step interactive on-screen UI walkthroughs.
+   - Use `document_qa` or `summarize_document` when asking about or summarizing local files/documents, and `find_file` / `open_file` to locate or launch files.
+   - Use `web_search` for live online information, `get_weather` for weather, `stock_quote` for ticker prices, and `chat` for general knowledge, reasoning, and conversation.
+5. Output Format:
+   - Output ONLY valid JSON matching this exact schema:
+     {"actions": [{"tool": "<tool_name>", "params": {<parameters>}}]}
 
 TOOLS AVAILABLE:
 <<TOOLS>>
 
-FEW-SHOT EXAMPLES:
-User: could you open notepad for me?
-Assistant: {"actions": [{"tool": "open_app", "params": {"name": "notepad"}}]}
+EXAMPLES:
+User: open notepad and write a short haiku about rain
+Assistant: {"actions": [{"tool": "open_app", "params": {"name": "notepad"}}, {"tool": "generate_content", "params": {"type": "essay", "topic": "short haiku about rain"}}, {"tool": "insert_content", "params": {"destination": "notepad"}}]}
 
-User: search online for space telescope news
-Assistant: {"actions": [{"tool": "web_search", "params": {"query": "space telescope news"}}]}
+User: find my budget file and summarize it
+Assistant: {"actions": [{"tool": "find_file", "params": {"query": "budget"}}, {"tool": "summarize_document", "params": {"target_index": 0}}]}
 
-User: show me how a car engine works visually
-Assistant: {"actions": [{"tool": "screen_pen_annotate", "params": {"action": "diagram", "topic": "how a car engine works"}}]}
+User: search online for latest space telescope discoveries and draft an email to Alex about it
+Assistant: {"actions": [{"tool": "web_search", "params": {"query": "latest space telescope discoveries"}}, {"tool": "draft_email", "params": {"to": "Alex", "subject": "Latest Space Telescope Discoveries", "prompt": "$prev"}}]}
+
+User: show a comparison chart of Python, Rust, and Go popularity
+Assistant: {"actions": [{"tool": "screen_pen_annotate", "params": {"action": "bars", "topic": "Python, Rust, and Go popularity"}}]}
+
+User: show a world map highlighting Japan, Germany, and Brazil
+Assistant: {"actions": [{"tool": "screen_pen_annotate", "params": {"action": "map", "topic": "Japan, Germany, Brazil"}}]}
+
+User: scroll down on this page
+Assistant: {"actions": [{"tool": "act_in_app", "params": {"action": "scroll", "target": "down"}}]}
+
+User: walk me through changing my display scale in Settings
+Assistant: {"actions": [{"tool": "screen_pen_guide", "params": {"steps": [{"target": "System", "caption": "Open System settings"}, {"target": "Display", "caption": "Select Display options"}, {"target": "Scale", "caption": "Adjust the scale percentage"}], "topic": "Change Display Scale"}}]}
 """
 
 _MASTER_PROMPT_CACHE: str | None = None
@@ -2097,9 +2434,9 @@ def build_agent_system_prompt(query: str = "", conversation_history: list | None
 def _build_router_messages(query: str, conversation_history: list | None = None) -> list[dict]:
     """
     Build multi-turn chat messages for the router:
-    - Message 0 (`system`): 100% static unified schema shared with synthesis for 0ms prefix KV cache reuse.
-    - Messages 1..N (`user`/`assistant`): Last 3 turns formatted identically to Pass 2.
-    - Final Message (`user`): Complete runtime context (time, state, profile facts) + query + [Mode: Voice | Output: JSON].
+    - Message 0 (`system`): 100% static unified schema for instant KV cache reuse.
+    - Messages 1..N (`user`/`assistant`): Last 3 turns formatted in JSON action form.
+    - Final Message (`user`): Runtime context (time, active state, profile facts) + query.
     """
     messages: list[dict] = [{"role": "system", "content": get_static_master_prompt()}]
     messages.extend(build_unified_history_messages(conversation_history=conversation_history, max_turns=3, for_router=True))
@@ -2123,7 +2460,6 @@ def _clean_json_text(text: str) -> str:
     clean = re.sub(r'\{\s*["\']\s*\}', "{}", clean)
     clean = re.sub(r'\{\s*["\']\s*\]', "{}]", clean)
     clean = re.sub(r'\)\s*\]\s*\}?\s*$', "}]}", clean)
-    # Auto-balance braces and brackets if output was cleanly cut off at stop token
     open_b = clean.count("{") - clean.count("}")
     open_k = clean.count("[") - clean.count("]")
     if open_k > 0:
@@ -2186,8 +2522,6 @@ def _call_from_obj(obj) -> list[dict]:
 def _parse_tool_calls(response: str) -> list[dict]:
     calls: list[dict] = []
 
-    # 1. Native XML tool-calling blocks: <tool_call>, <invoke>, <function_call>
-    # Supports LiquidAI (<function=...>), Hermes/Qwen (<tool_call>{JSON}</tool_call>), and Claude (<invoke>)
     xml_blocks = re.findall(
         r'<(?:tool_call|invoke|function_call)(?:[^>]*)>([\s\S]*?)</(?:tool_call|invoke|function_call)>',
         response,
@@ -2204,11 +2538,9 @@ def _parse_tool_calls(response: str) -> list[dict]:
 
     for block in xml_blocks:
         block_str = block.strip()
-        # Case A: JSON within XML wrapper
         if "{" in block_str:
             for _, _, obj in _iter_json_objects(block_str):
                 calls.extend(_call_from_obj(obj))
-        # Case B: LiquidAI / parameter tag format (including inline args like <function=name(k="v")>)
         fn_match = re.search(r'<function=([a-zA-Z0-9_]+)(?:\((.*?)\)+)?>?([\s\S]*?)</function>', block_str, flags=re.I)
         if fn_match:
             fn_name = fn_match.group(1).strip().lower()
@@ -2223,16 +2555,14 @@ def _parse_tool_calls(response: str) -> list[dict]:
             if fn_name in VALID_TOOL_NAMES:
                 calls.append({"tool": fn_name, "params": params, "speak": ""})
 
-    # 2. Standard JSON objects anywhere in text (Amigo JSON, ChatML, OpenAI format)
     clean = _clean_json_text(response)
     for _, _, obj in _iter_json_objects(clean):
         calls.extend(_call_from_obj(obj))
 
-    # 3. Filter valid tools and deduplicate identical consecutive calls
     valid = [c for c in calls if c["tool"] in VALID_TOOL_NAMES]
     deduped: list[dict] = []
     for c in valid:
-        if not any(c["tool"] == d["tool"] and c.get("params") == d.get("params") for d in deduped):
+        if not deduped or not (c["tool"] == deduped[-1]["tool"] and c.get("params") == deduped[-1].get("params")):
             deduped.append(c)
     return deduped
 
@@ -2256,7 +2586,6 @@ def _extract_final_response(response: str, tool_calls: list) -> str:
                 val = m.group(1)
             return _clean_final_dialogue(val)
 
-    # Strip XML tool calls and markdown code blocks
     non_tool = re.sub(
         r'<(?:tool_call|invoke|function_call)(?:[^>]*)>[\s\S]*?</(?:tool_call|invoke|function_call)>',
         '',
@@ -2267,7 +2596,6 @@ def _extract_final_response(response: str, tool_calls: list) -> str:
     from amigo.core.llm_agent import _strip_reasoning
     non_tool, _ = _strip_reasoning(non_tool)
 
-    # If no tool calls were made and plain text dialogue remains, treat as direct spoken response
     if not tool_calls and non_tool and not non_tool.startswith("{") and not non_tool.startswith("["):
         return _clean_final_dialogue(non_tool)
     return ""
@@ -2278,7 +2606,7 @@ def _chat_action(text: str = "") -> dict:
 
 
 def parse_user_intent_fast(query: str) -> dict[str, Any] | None:
-    """Fast path for blank queries; routing delegates to LLM for universal multi-lingual intent understanding."""
+    """Fast path for empty input only; all non-empty queries go through LLM intent understanding."""
     if not query or not query.strip():
         return {"tool": "chat", "params": {"response": ""}, "speak": ""}
     return None
@@ -2332,14 +2660,16 @@ def _build_grounding_text(query: str, conversation_history: list | None = None) 
         for turn in conversation_history[-3:]:
             if isinstance(turn, dict):
                 parts.extend(
-                    str(v) for v in (
+                    str(v)
+                    for v in (
                         turn.get("user"),
                         turn.get("assistant"),
                         turn.get("assistant_reply"),
                         turn.get("response"),
                         turn.get("text"),
                         turn.get("content"),
-                    ) if v
+                    )
+                    if v
                 )
             elif turn:
                 parts.append(str(turn))
@@ -2347,16 +2677,16 @@ def _build_grounding_text(query: str, conversation_history: list | None = None) 
 
 
 def _is_tokens_grounded(value: str, grounding_text: str) -> bool:
-    """Return True if at least one meaningful token in value matches or fuzzy-matches grounding_text (zero word lists)."""
+    """Unicode-aware token grounding check across any language without hardcoded word lists."""
     if not value or not grounding_text:
         return False
     g_low = grounding_text.lower()
-    g_squash = re.sub(r"[^a-z0-9]+", "", g_low)
-    v_squash = re.sub(r"[^a-z0-9]+", "", value.lower())
+    g_squash = re.sub(r"[^\w]+", "", g_low, flags=re.UNICODE)
+    v_squash = re.sub(r"[^\w]+", "", value.lower(), flags=re.UNICODE)
     if len(v_squash) >= 3 and (v_squash in g_squash or (len(g_squash) >= 4 and g_squash in v_squash)):
         return True
-    g_toks = re.findall(r"[a-z0-9]+", g_low)
-    v_toks = [t for t in re.findall(r"[a-z0-9]+", value.lower()) if len(t) >= 2]
+    g_toks = re.findall(r"\w+", g_low, flags=re.UNICODE)
+    v_toks = [t for t in re.findall(r"\w+", value.lower(), flags=re.UNICODE) if len(t) >= 2]
     if not v_toks or not g_toks:
         return False
     for vt in v_toks:
@@ -2373,9 +2703,11 @@ def _is_tokens_grounded(value: str, grounding_text: str) -> bool:
 
 
 def _validate_action_plan(tool_calls: list[dict], grounding_text: str | None = None) -> list[str]:
-    """Validates that all tool calls in action plan satisfy schema required params, conditional requirements, and grounding."""
+    """Validates single-step and multi-step action plans for schema completeness and grounding."""
     errors = []
-    for call in tool_calls:
+    prior_tools: set[str] = set()
+
+    for idx, call in enumerate(tool_calls):
         if not isinstance(call, dict):
             continue
         t_name = call.get("tool")
@@ -2383,6 +2715,7 @@ def _validate_action_plan(tool_calls: list[dict], grounding_text: str | None = N
             continue
         schema = get_tool_schema(t_name)
         if not schema:
+            prior_tools.add(t_name)
             continue
         params_schema = schema.get("parameters") or {}
         required = list(params_schema.get("required") or [])
@@ -2390,23 +2723,31 @@ def _validate_action_plan(tool_calls: list[dict], grounding_text: str | None = N
             required.append("name")
         call_params = call.get("params") or {}
 
-        # Custom / conditional schema exemptions:
-        # open_file requires either 'path' or 'target_index'
+        # Multi-step exemption: open_file may omit path/target_index if an earlier step searched files
         if t_name == "open_file":
             has_path = bool(call_params.get("path") and str(call_params["path"]).strip())
             has_idx = call_params.get("target_index") is not None
-            if not has_path and not has_idx:
-                errors.append("Tool 'open_file' is missing required parameter: either 'path' or 'target_index' must be provided.")
+            has_prior_file = "find_file" in prior_tools
+            if not has_path and not has_idx and not has_prior_file:
+                errors.append("Tool 'open_file' requires either 'path' or 'target_index'.")
+            prior_tools.add(t_name)
             continue
 
-        missing = [
-            req for req in required
-            if req not in call_params or call_params[req] is None or str(call_params[req]).strip() == ""
-        ]
+        # Multi-step exemption: downstream text/draft steps may rely on prior step output
+        has_prior_output = idx > 0 and bool(
+            prior_tools & {"web_search", "generate_content", "read_screen", "read_window", "get_clipboard", "document_qa", "summarize_document", "find_file"}
+        )
+
+        missing = []
+        for req in required:
+            val = call_params.get(req)
+            if val is None or str(val).strip() == "":
+                if has_prior_output and req in ("prompt", "text", "query", "content"):
+                    continue
+                missing.append(req)
         if missing:
             errors.append(f"Tool '{t_name}' is missing required parameter(s): {', '.join(missing)}.")
 
-        # Conditional requirements
         if t_name == "set_volume":
             act = str(call_params.get("action") or "").lower()
             if act in ("set_volume", "set") or (not act and call_params.get("level") is not None):
@@ -2431,7 +2772,7 @@ def _validate_action_plan(tool_calls: list[dict], grounding_text: str | None = N
                 errors.append("Tool 'set_brightness' requires a numeric 'level' (0-100).")
         elif t_name == "memory_recall":
             act = str(call_params.get("action") or "").lower()
-            if act == "store" and not (call_params.get("fact") or call_params.get("content") or call_params.get("query")):
+            if act == "store" and not (call_params.get("fact") or call_params.get("content") or call_params.get("query") or has_prior_output):
                 errors.append("Tool 'memory_recall' with action='store' requires 'fact'.")
             elif act == "recall" and not (call_params.get("query") or call_params.get("fact")):
                 errors.append("Tool 'memory_recall' with action='recall' requires 'query'.")
@@ -2448,7 +2789,7 @@ def _validate_action_plan(tool_calls: list[dict], grounding_text: str | None = N
             act = str(call_params.get("action") or "").strip().lower()
             if act not in _MEDIA_ACTION_MAP:
                 errors.append("Tool 'media_control' requires 'action' in: resume, pause, next, prev, status.")
-        elif t_name == "time_date" or t_name == "get_datetime":
+        elif t_name in ("time_date", "get_datetime"):
             kind = str(call_params.get("action") or call_params.get("kind") or "").strip().lower()
             if kind not in _DATETIME_KIND_MAP:
                 errors.append(f"Tool '{t_name}' requires 'action' in: time, date, both.")
@@ -2456,158 +2797,74 @@ def _validate_action_plan(tool_calls: list[dict], grounding_text: str | None = N
             act = str(call_params.get("action") or "").strip().lower()
             if act not in _POWER_ACTION_MAP:
                 errors.append("Tool 'power_control' requires 'action' in: lock, sleep, restart, shutdown, cancel_shutdown.")
-        elif t_name == "screen_act":
-            act = str(call_params.get("action") or "").strip().lower()
-            tgt = str(call_params.get("target") or "").strip()
-            txt = str(call_params.get("text") or "").strip()
-            if act not in _SCREEN_ACT_ACTIONS:
-                errors.append("Tool 'screen_act' requires 'action' in: click, fill, type, press, scroll.")
-            elif act == "click" and not tgt:
-                errors.append("Tool 'screen_act' with action='click' requires 'target'.")
-            elif act == "fill" and (not tgt or not txt):
-                errors.append("Tool 'screen_act' with action='fill' requires 'target' and 'text'.")
-            elif act == "type" and not txt:
-                errors.append("Tool 'screen_act' with action='type' requires 'text'.")
-            elif act == "press" and not (txt or tgt):
-                errors.append("Tool 'screen_act' with action='press' requires 'text' or 'target'.")
+        elif t_name in ("screen_act", "act_in_app"):
+            raw_steps = call_params.get("steps")
+            if isinstance(raw_steps, list) and raw_steps:
+                pass
+            elif isinstance(raw_steps, str) and raw_steps.strip().startswith("["):
+                pass
+            else:
+                act = str(call_params.get("action") or call_params.get("do") or "").strip().lower()
+                tgt = str(call_params.get("target") or call_params.get("field") or "").strip()
+                txt = str(call_params.get("text") or call_params.get("option") or "").strip()
+                if act not in _SCREEN_ACT_ACTIONS and act not in ("click_text", "type_text", "press_key", "choose", "wait", "click_at"):
+                    errors.append(f"Tool '{t_name}' requires a valid 'action' or 'steps' array.")
+                elif act in ("click", "click_text") and not tgt:
+                    errors.append(f"Tool '{t_name}' with action='click' requires 'target'.")
+                elif act == "fill" and (not tgt or not txt):
+                    errors.append(f"Tool '{t_name}' with action='fill' requires 'target' and 'text'.")
+                elif act in ("type", "type_text") and not (txt or has_prior_output):
+                    errors.append(f"Tool '{t_name}' with action='type' requires 'text'.")
+                elif act in ("press", "key", "press_key") and not (txt or tgt):
+                    errors.append(f"Tool '{t_name}' with action='press' requires 'text' or 'target'.")
 
-        # C.6 Grounding check for state-changing tools (zero word lists)
+        # Grounding check for state-changing tools
         if grounding_text:
             if t_name == "open_app":
                 app_val = str(call_params.get("name") or "").strip()
                 if app_val and not _is_tokens_grounded(app_val, grounding_text):
-                    errors.append(f"Tool 'open_app' parameter name='{app_val}' does not appear in user's request or context.")
-            elif t_name == "change_setting" or t_name == "get_setting":
+                    errors.append(f"Tool 'open_app' parameter name='{app_val}' is not grounded in user's request or context.")
+            elif t_name in ("change_setting", "get_setting"):
                 set_val = str(call_params.get("setting") or "").strip()
                 if set_val and not _is_tokens_grounded(set_val, grounding_text):
-                    errors.append(f"Tool '{t_name}' parameter setting='{set_val}' does not appear in user's request or context.")
+                    errors.append(f"Tool '{t_name}' parameter setting='{set_val}' is not grounded in user's request or context.")
             elif t_name == "control_windows_system":
                 cat_val = str(call_params.get("category") or call_params.get("action") or call_params.get("mode") or "").strip()
                 if not cat_val or not _is_tokens_grounded(cat_val, grounding_text):
-                    errors.append(f"Tool 'control_windows_system' target '{cat_val}' does not appear in user's request or context.")
+                    errors.append(f"Tool 'control_windows_system' target '{cat_val}' is not grounded in user's request or context.")
             elif t_name == "open_website":
                 site_url = str(call_params.get("url") or "").strip()
                 parsed_url = urllib.parse.urlparse(site_url if "://" in site_url else f"https://{site_url}")
                 host_parts = [p for p in (parsed_url.netloc or "").lower().split(".") if p and p != "www"]
                 host_stem = " ".join(host_parts[:-1]) if len(host_parts) > 1 else " ".join(host_parts)
                 if not host_stem or not _is_tokens_grounded(host_stem, grounding_text):
-                    errors.append(f"Tool 'open_website' target '{site_url}' does not appear in user's request or context.")
-            elif t_name == "set_volume" or t_name == "set_brightness":
+                    errors.append(f"Tool 'open_website' target '{site_url}' is not grounded in user's request or context.")
+            elif t_name in ("set_volume", "set_brightness"):
                 act_v = str(call_params.get("action") or "").strip().lower()
                 lvl = call_params.get("level")
-                need_lvl = (t_name == "set_brightness" or not act_v or act_v == "set_volume" or act_v == "set")
+                need_lvl = t_name == "set_brightness" or not act_v or act_v in ("set_volume", "set")
                 if need_lvl and lvl is not None and not isinstance(lvl, bool):
                     try:
                         lvl_int = int(lvl)
                         if not re.search(rf"\b{lvl_int}\b", grounding_text):
-                            errors.append(f"Tool '{t_name}' level='{lvl_int}' does not appear in user's request or context.")
+                            errors.append(f"Tool '{t_name}' level='{lvl_int}' is not grounded in user's request or context.")
                     except (ValueError, TypeError):
                         pass
-            elif t_name == "screen_act":
-                act_s = str(call_params.get("action") or "").strip().lower()
-                tgt_s = str(call_params.get("target") or "").strip()
-                if tgt_s and not (act_s == "scroll" and tgt_s.lower() in _SCROLL_DIRS):
-                    if not _is_tokens_grounded(tgt_s, grounding_text):
-                        errors.append(f"Tool 'screen_act' target='{tgt_s}' does not appear in user's request or context.")
+            elif t_name in ("screen_act", "act_in_app"):
+                raw_steps = call_params.get("steps")
+                if not raw_steps:
+                    act_s = str(call_params.get("action") or "").strip().lower()
+                    tgt_s = str(call_params.get("target") or call_params.get("field") or "").strip()
+                    if tgt_s and not (act_s == "scroll" and tgt_s.lower() in _SCROLL_DIRS):
+                        if not _is_tokens_grounded(tgt_s, grounding_text):
+                            errors.append(f"Tool '{t_name}' target='{tgt_s}' is not grounded in user's request or context.")
+
+        prior_tools.add(t_name)
 
     return errors
 
 
-def _route_with_llm(query: str, conversation_history: list | None = None) -> tuple[list[dict], str]:
-    messages = _build_router_messages(query, conversation_history=conversation_history)
-    grounding_text = _build_grounding_text(query, conversation_history=conversation_history)
-    try:
-        response = query_local_llm(
-            messages,
-            system_prompt="",
-            max_tokens=512,
-            temperature=0.0,
-            repeat_penalty=1.0,
-            thinking=False,
-            sanitize=False,
-            stop=_ROUTER_STOP,
-            raise_on_error=True,
-        )
-    except Exception as e:
-        logger.error("[Tool Registry] Routing failed: %s", e)
-        msg = "I ran into a problem understanding that. Could you try again?"
-        return [_chat_action(msg)], msg
-
-    tool_calls = _parse_tool_calls(response)
-
-    # ── Step 2.5: Schema Validate-and-Repair Pipeline ───────────────────────
-    schema_errors = _validate_action_plan(tool_calls, grounding_text=grounding_text)
-    if schema_errors and tool_calls:
-        logger.info("[Tool Registry] Schema validation failed: %s. Attempting repair re-prompt.", schema_errors)
-        repair_msg = (
-            f"Your previous action plan had validation errors:\n"
-            + "\n".join(f"- {e}" for e in schema_errors)
-            + f"\nOriginal user query: '{query}'\n"
-            f"Output a corrected JSON action plan using ONLY values stated by the user or in context, or use 'chat' to ask a short clarifying question if unspecified."
-        )
-        repair_messages = list(messages)
-        repair_messages.append({"role": "assistant", "content": response})
-        repair_messages.append({"role": "user", "content": repair_msg})
-        try:
-            repair_response = query_local_llm(
-                repair_messages,
-                system_prompt="",
-                max_tokens=512,
-                temperature=0.0,
-                repeat_penalty=1.0,
-                thinking=False,
-                sanitize=False,
-                stop=_ROUTER_STOP,
-                raise_on_error=False,
-            )
-            repaired_calls = _parse_tool_calls(repair_response)
-            if repaired_calls and not _validate_action_plan(repaired_calls, grounding_text=grounding_text):
-                logger.info("[Tool Registry] Repair re-prompt succeeded: %s", repaired_calls)
-                tool_calls = repaired_calls
-                response = repair_response
-        except Exception as repair_err:
-            logger.warning("[Tool Registry] Repair re-prompt encountered error: %s", repair_err)
-
-    # If the action plan still has validation/grounding errors after repair attempt, ask clarifying question
-    post_repair_errors = _validate_action_plan(tool_calls, grounding_text=grounding_text)
-    if post_repair_errors:
-        logger.warning("[Tool Registry] Action plan invalid after repair: %s. Asking clarifying question.", post_repair_errors)
-        first_bad_tool = tool_calls[0].get("tool", "action") if tool_calls else "action"
-        friendly_tool = first_bad_tool.replace("_", " ")
-        clarify_msg = ""
-        try:
-            clarify_resp = query_local_llm(
-                [
-                    {"role": "system", "content": "You are Amigo, a voice assistant. Ask a single short plain-English clarifying question (under 12 words). Never mention tool names, code, JSON, 'parameter', or field names."},
-                    {"role": "user", "content": f"User said: '{query}'. The specific target or value needed to fulfill '{friendly_tool}' was missing or ungrounded. Ask a brief natural question."}
-                ],
-                system_prompt="",
-                max_tokens=48,
-                temperature=0.0,
-                repeat_penalty=1.0,
-                thinking=False,
-                sanitize=False,
-                stop=_ROUTER_STOP,
-                raise_on_error=False,
-            )
-            cand = (clarify_resp or "").strip().strip('"').strip("'")
-            if cand and "?" in cand and not cand.startswith("{") and len(cand) < 120:
-                clarify_msg = cand.split("?")[0].strip() + "?"
-        except Exception:
-            pass
-        if not clarify_msg:
-            subject = "application" if first_bad_tool == "open_app" else friendly_tool
-            clarify_msg = f"Which {subject} details would you like me to use?"
-        tool_calls = [{
-            "tool": "clarification",
-            "params": {"query": query, "message": clarify_msg, "candidate_tools": [first_bad_tool]},
-            "speak": clarify_msg,
-        }]
-        return tool_calls, clarify_msg
-
-    final_response = _extract_final_response(response, tool_calls)
-
-    # Normalize tool params from local LLM
+def _normalize_tool_calls(tool_calls: list[dict], final_response: str) -> None:
     for call in tool_calls:
         if call["tool"] in _TOOL_ALIAS_MAP:
             target_tool, defaults = _TOOL_ALIAS_MAP[call["tool"]]
@@ -2616,7 +2873,7 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
             for dk, dv in defaults.items():
                 p.setdefault(dk, dv)
 
-        if call["tool"] == "power_control" or call["tool"] == "system_control":
+        if call["tool"] in ("power_control", "system_control"):
             p = call.setdefault("params", {})
             p.pop("confirmed", None)
 
@@ -2643,7 +2900,7 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
 
         if call["tool"] == "read_emails":
             act = str((call.get("params") or {}).get("action") or "").lower().strip()
-            if act == "unread" or act == "unread_emails":
+            if act in ("unread", "unread_emails"):
                 call["tool"] = "unread_emails"
 
         if call["tool"] == "chat":
@@ -2660,6 +2917,114 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
                 call["params"]["reply"] = reply_val
                 if not call.get("speak"):
                     call["speak"] = reply_val
+
+
+def _route_with_llm(query: str, conversation_history: list | None = None) -> tuple[list[dict], str]:
+    messages = _build_router_messages(query, conversation_history=conversation_history)
+    grounding_text = _build_grounding_text(query, conversation_history=conversation_history)
+    try:
+        response = query_local_llm(
+            messages,
+            system_prompt="",
+            max_tokens=512,
+            temperature=0.0,
+            repeat_penalty=1.0,
+            thinking=False,
+            sanitize=False,
+            stop=_ROUTER_STOP,
+            raise_on_error=True,
+        )
+    except Exception as e:
+        logger.error("[Tool Registry] Routing failed: %s", e)
+        msg = "I ran into a problem understanding that. Could you try again?"
+        return [_chat_action(msg)], msg
+
+    tool_calls = _parse_tool_calls(response)
+
+    # Schema Validate-and-Repair Pipeline
+    schema_errors = _validate_action_plan(tool_calls, grounding_text=grounding_text)
+    if schema_errors and tool_calls:
+        logger.info("[Tool Registry] Schema validation failed: %s. Attempting repair re-prompt.", schema_errors)
+        repair_msg = (
+            "Your previous action plan had validation errors:\n"
+            + "\n".join(f"- {e}" for e in schema_errors)
+            + f"\nOriginal user query: '{query}'\n"
+            "Output a corrected JSON action plan using ONLY values stated by the user or in context, "
+            "or use 'chat' to ask a short clarifying question if unspecified."
+        )
+        repair_messages = list(messages)
+        repair_messages.append({"role": "assistant", "content": response})
+        repair_messages.append({"role": "user", "content": repair_msg})
+        try:
+            repair_response = query_local_llm(
+                repair_messages,
+                system_prompt="",
+                max_tokens=512,
+                temperature=0.0,
+                repeat_penalty=1.0,
+                thinking=False,
+                sanitize=False,
+                stop=_ROUTER_STOP,
+                raise_on_error=False,
+            )
+            repaired_calls = _parse_tool_calls(repair_response)
+            if repaired_calls and not _validate_action_plan(repaired_calls, grounding_text=grounding_text):
+                logger.info("[Tool Registry] Repair re-prompt succeeded: %s", repaired_calls)
+                tool_calls = repaired_calls
+                response = repair_response
+        except Exception as repair_err:
+            logger.warning("[Tool Registry] Repair re-prompt encountered error: %s", repair_err)
+
+    post_repair_errors = _validate_action_plan(tool_calls, grounding_text=grounding_text)
+    if post_repair_errors:
+        logger.warning("[Tool Registry] Action plan invalid after repair: %s. Asking clarifying question.", post_repair_errors)
+        first_bad_tool = tool_calls[0].get("tool", "action") if tool_calls else "action"
+        friendly_tool = first_bad_tool.replace("_", " ")
+        clarify_msg = ""
+        try:
+            clarify_resp = query_local_llm(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are Amigo, a voice assistant. Ask a single short plain-English clarifying question "
+                            "(under 12 words). Never mention tool names, code, JSON, 'parameter', or field names."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"User said: '{query}'. The specific target or value needed to fulfill '{friendly_tool}' "
+                            "was missing or ungrounded. Ask a brief natural question."
+                        ),
+                    },
+                ],
+                system_prompt="",
+                max_tokens=48,
+                temperature=0.0,
+                repeat_penalty=1.0,
+                thinking=False,
+                sanitize=False,
+                stop=_ROUTER_STOP,
+                raise_on_error=False,
+            )
+            cand = (clarify_resp or "").strip().strip('"').strip("'")
+            if cand and "?" in cand and not cand.startswith("{") and len(cand) < 120:
+                clarify_msg = cand.split("?")[0].strip() + "?"
+        except Exception:
+            pass
+        if not clarify_msg:
+            subject = "application" if first_bad_tool == "open_app" else friendly_tool
+            clarify_msg = f"Which {subject} details would you like me to use?"
+        tool_calls = [{
+            "tool": "clarification",
+            "params": {"query": query, "message": clarify_msg, "candidate_tools": [first_bad_tool]},
+            "speak": clarify_msg,
+        }]
+        return tool_calls, clarify_msg
+
+    final_response = _extract_final_response(response, tool_calls)
+    _normalize_tool_calls(tool_calls, final_response)
 
     if tool_calls:
         return tool_calls, final_response
@@ -2779,6 +3144,29 @@ def execute_tool(
         _call_ctx.value = None
 
 
+def _inject_prev_output(params: dict, last_tool_output: str) -> dict:
+    """Substitute '$prev' / '{{prev}}' placeholders and populate empty downstream content fields."""
+    if not last_tool_output:
+        return params
+    updated = dict(params)
+    replaced_explicit = False
+    for k, v in list(updated.items()):
+        if isinstance(v, str) and _RE_PREV_PLACEHOLDER.search(v):
+            updated[k] = _RE_PREV_PLACEHOLDER.sub(lambda _: last_tool_output, v)
+            replaced_explicit = True
+    if not replaced_explicit:
+        for key in ("content", "text", "context", "prompt", "query", "code", "data"):
+            if key in updated and not updated.get(key):
+                updated[key] = last_tool_output
+                break
+        else:
+            for key in ("content", "text", "context", "prompt"):
+                if not updated.get(key):
+                    updated[key] = last_tool_output
+                    break
+    return updated
+
+
 def execute_actions(
     actions: list[dict],
     query: str = "",
@@ -2786,25 +3174,16 @@ def execute_actions(
 ) -> list[tuple[str, str | None, dict]]:
     results = []
     last_tool_output = ""
-    for action in actions:
-        if not isinstance(action, dict):
-            continue
+    valid_actions = [a for a in actions if isinstance(a, dict)]
+
+    for idx, action in enumerate(valid_actions):
         tool = action.get("tool", "chat")
         params = action.get("params", {}) if isinstance(action.get("params"), dict) else {}
         # Safety Guard: Model-generated action parameters cannot bypass confirmation
         params = {k: v for k, v in params.items() if k != "confirmed"}
         spoken = action.get("speak", "") or params.get("speak", "") or params.get("reply", "") or params.get("response", "")
 
-        if last_tool_output:
-            for key in ("content", "text", "context", "prompt", "query", "code", "data"):
-                if key in params and not params.get(key):
-                    params[key] = last_tool_output
-                    break
-            else:
-                for key in ("content", "text", "context", "prompt"):
-                    if not params.get(key):
-                        params[key] = last_tool_output
-                        break
+        params = _inject_prev_output(params, last_tool_output)
 
         res_spoken, res_url, meta = execute_tool(
             tool,
@@ -2815,10 +3194,19 @@ def execute_actions(
         )
         results.append((res_spoken, res_url, meta))
 
-        if isinstance(meta, dict) and (meta.get("requires_confirmation") or meta.get("requires_clarification")):
-            break
+        if isinstance(meta, dict):
+            if meta.get("requires_confirmation"):
+                if _PENDING_CONFIRMATION is not None and idx + 1 < len(valid_actions):
+                    _PENDING_CONFIRMATION["remaining_actions"] = valid_actions[idx + 1 :]
+                break
+            if meta.get("requires_clarification"):
+                break
 
-        out_text = (meta.get("generated_content") or meta.get("screen_text") or meta.get("text_snippet") or meta.get("text")) if isinstance(meta, dict) else ""
+        out_text = (
+            (meta.get("generated_content") or meta.get("screen_text") or meta.get("text_snippet") or meta.get("text") or meta.get("clipboard"))
+            if isinstance(meta, dict)
+            else ""
+        )
         last_tool_output = str(out_text or res_spoken or "").strip()
 
     return results

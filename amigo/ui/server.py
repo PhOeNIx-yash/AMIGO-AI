@@ -1401,9 +1401,15 @@ _OVERLAY_BRIDGE_SCRIPT = (
     "es.onmessage = (ev) => {"
     "try {"
     "const msg = JSON.parse(ev.data);"
-    "if (msg.type === 'ink') window.Roamie?.ink?.play(msg);"
-    "else if (msg.type === 'ink_clear') window.Roamie?.ink?.clear(msg);"
-    "else if (msg.type === 'sfx') (window.Roamie?.sfx?.[msg.name] || window.Roamie?.sfx?.play)?.(msg.name);"
+    "if (window.__roamieHost) { window.__roamieHost(msg); }"
+    "else if (msg?.e?.type === 'draw' && window.Roamie?.ink) { window.Roamie.ink.play(msg.e); }"
+    "else if (msg?.e?.type === 'clear' && window.Roamie?.ink) { window.Roamie.ink.clear(msg.e); }"
+    "else if (msg?.type === 'ink' && window.Roamie?.ink) { window.Roamie.ink.play(msg); }"
+    "else if (msg?.type === 'ink_clear' && window.Roamie?.ink) { window.Roamie.ink.clear(msg); }"
+    "else if (msg?.e?.type === 'sfx' || msg?.type === 'sfx') {"
+    "const sfxName = msg.e?.name || msg.name;"
+    "(window.Roamie?.sfx?.[sfxName] || window.Roamie?.sfx?.play)?.(sfxName);"
+    "}"
     "} catch (e) {}"
     "};"
     "let lastHot = null;"
@@ -1442,6 +1448,7 @@ def serve_roamies_overlay(filename: str = "desktop.html"):
 
 
 @app.route("/api/overlay/stream")
+@app.route("/api/overlay/events")
 def api_overlay_stream():
     import queue as _queue
     from flask import Response
