@@ -1,20 +1,14 @@
 {
-  "last_weather_check": 1794569126.6278603,
-  "last_calendar_check": 1794570088.9636154,
-  "last_system_check": 1794570869.8018632,
+  "last_weather_check": 1794585835.542785,
+  "last_calendar_check": 1794585835.542785,
+  "last_system_check": 1794586317.4008038,
   "last_notification_time": 1794486188.7522712,
   "last_priority_alert_time": 0,
   "suggestions_this_hour": 0,
-  "last_hour_reset": 1794569066.539828,
-  "active_window_start": 1794570809.7661285,
-  "current_window_title": "amigo-main - Antigravity IDE - amigo_profile.json",
-  "recent_suggestions": [
-    {
-      "id": "wellness_break",
-      "text": "Great focus session so far, there! Good time to stand up and grab some water when you hit a pause.",
-      "time": 1794486187.1947043
-    }
-  ],
+  "last_hour_reset": 1794583188.8725314,
+  "active_window_start": 1794586017.2035825,
+  "current_window_title": "amigo-main - Antigravity IDE - server.py",
+  "recent_suggestions": [],
   "learned_patterns": {},
   "user_routines": {},
   "dismissed_suggestions": [],

@@ -9,7 +9,7 @@ import {
   useReducedMotion,
   useSpring,
   useTransform,
-} from "framer-motion";
+} from "motion/react";
 
 /* -------------------------------------------------------------------------- */
 /*  Interactive Area Chart — hand-written SVG, no chart library                */
@@ -380,11 +380,10 @@ export function InteractiveAreaChart({
               {formatPrice(shown.value, currency)}
             </span>
             <span
-              className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold font-mono tracking-tight shadow-sm ${
-                isPositive
+              className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold font-mono tracking-tight shadow-sm ${isPositive
                   ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30"
                   : "bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/30"
-              }`}
+                }`}
             >
               <span>{isPositive ? "+" : ""}{(delta * 100).toFixed(2)}%</span>
             </span>
@@ -404,11 +403,10 @@ export function InteractiveAreaChart({
                 type="button"
                 aria-selected={k === range}
                 onClick={() => changeRange(k)}
-                className={`relative z-10 rounded-lg px-2.5 sm:px-3 py-1 text-xs font-bold tracking-wider outline-none transition-[color,transform] duration-150 ease-out active:scale-[0.96] ${
-                  k === range
+                className={`relative z-10 rounded-lg px-2.5 sm:px-3 py-1 text-xs font-bold tracking-wider outline-none transition-[color,transform] duration-150 ease-out active:scale-[0.96] ${k === range
                     ? "text-neutral-900 dark:text-neutral-950 font-black"
                     : "opacity-60 hover:opacity-100 text-neutral-600 dark:text-neutral-400"
-                }`}
+                  }`}
               >
                 {k === range && (
                   <motion.span

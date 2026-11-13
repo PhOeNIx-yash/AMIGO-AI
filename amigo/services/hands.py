@@ -175,6 +175,46 @@ def get_screen_bounds() -> tuple[float, float]:
     return 1920.0, 1080.0
 
 
+_AMIGO_APP_NAMES = frozenset({"amigo", "python", "pythonw", "py", "amigo assistant"})
+_last_non_amigo_app: str | None = None
+_last_non_amigo_time: float = 0.0
+
+
+def remember_target_app(app_name: str) -> None:
+    """Record the last non-Amigo foreground app name for use in screen targeting."""
+    global _last_non_amigo_app, _last_non_amigo_time
+    import time
+    if app_name and app_name.lower().split(".")[0] not in _AMIGO_APP_NAMES:
+        _last_non_amigo_app = app_name
+        _last_non_amigo_time = time.time()
+
+
+def get_target_app() -> str | None:
+    """Return the most recent non-Amigo foreground app, or None if stale (>120s)."""
+    import time
+    if _last_non_amigo_app and (time.time() - _last_non_amigo_time) < 120.0:
+        return _last_non_amigo_app
+    return None
+
+
+def get_front_non_amigo() -> dict[str, Any]:
+    """Return the foreground window info, skipping Amigo/Python windows."""
+    win_res = windows()
+    win_list = win_res.get("windows") if isinstance(win_res, dict) else None
+    if isinstance(win_list, list):
+        for w in win_list:
+            if not isinstance(w, dict):
+                continue
+            app = str(w.get("app") or "").lower().split(".")[0]
+            if app and app not in _AMIGO_APP_NAMES and w.get("focused") is not False:
+                remember_target_app(str(w.get("app") or ""))
+                return {"ok": True, "app": w.get("app"), "title": w.get("title"), "bounds": w.get("bounds")}
+    cached = get_target_app()
+    if cached:
+        return {"ok": True, "app": cached, "title": "", "bounds": None}
+    return {"ok": False}
+
+
 def shot_map(bounds: list[float], img_w: float, img_h: float) -> dict[str, Any]:
     """Build a coordinate map from screenshot pixels (`img_w` x `img_h`) to screen `bounds` `[x, y, w, h]`."""
     x, y, w, h = [float(v) for v in bounds[:4]]
@@ -243,6 +283,8 @@ def describe_active_window(max_controls: int = 40) -> dict[str, Any]:
         return {"ok": False, "missing_binary": True}
 
     front_res = front()
+    if front_res.get("ok"):
+        remember_target_app(str(front_res.get("app") or ""))
     ui_res = ui("front")
     if not ui_res.get("ok"):
         return front_res if front_res.get("ok") else ui_res

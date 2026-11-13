@@ -139,13 +139,30 @@ def _resolve_target_rect(label: str, app: str | None = None) -> list[float] | No
     # Multilingual Unicode-aware tokenization: no hardcoded language-specific stop words
     tokens = [t for t in re.findall(r"\w+", target_text, flags=re.UNICODE) if len(t) >= 2]
     t_low = target_text.lower()
-    targets = [f"app:{app}"] if app else ["front", "screen"]
+    if app:
+        targets = [f"app:{app}"]
+    else:
+        try:
+            from amigo.services.hands import get_target_app
+            prev = get_target_app()
+            if prev:
+                targets = [f"app:{prev}", "front", "screen"]
+            else:
+                targets = ["front", "screen"]
+        except Exception:
+            targets = ["front", "screen"]
 
     try:
         from amigo.services import hands
 
         # 1. Inspect structured UIA controls first (fast, precise, role-aware)
-        ui_res = hands.ui("front")
+        try:
+            from amigo.services.hands import get_target_app as _gta
+            _prev = _gta()
+            _ui_target = f"app:{_prev}" if _prev else "front"
+        except Exception:
+            _ui_target = "front"
+        ui_res = hands.ui(_ui_target)
         if ui_res.get("ok"):
             controls = ui_res.get("controls") or []
             best_c = None
@@ -698,6 +715,30 @@ def _generate_visual_diagram_beats(
         )
         raw = query_local_llm(prompt, max_tokens=1100, thinking=False)
         parsed = _extract_json_object(raw)
+
+    # Retry with simplified prompt if first attempt produced empty/unusable data
+    _HAS_PAYLOAD = {"flow", "bars", "graph", "table", "timeline", "math_steps", "parts",
+                    "questions", "geometry", "smiles", "map", "molecule", "nodes"}
+    if not parsed or not any(k in parsed for k in _HAS_PAYLOAD):
+        pk = preferred_kind or "flow"
+        simple_fallbacks = {
+            "flow": {"visual_type": "flow", "flow": {"dir": "down", "nodes": [{"id": "s", "text": "Start", "shape": "round", "tone": "teal"}, {"id": "m", "text": topic[:40], "shape": "box", "tone": "sky"}, {"id": "e", "text": "End", "shape": "round", "tone": "coral"}], "links": [{"from": "s", "to": "m", "flow": True}, {"from": "m", "to": "e", "flow": True}]}},
+            "bars": {"visual_type": "bars", "bars": [{"label": "Option A", "value": 70}, {"label": "Option B", "value": 55}, {"label": "Option C", "value": 85}], "unit": "%"},
+            "table": {"visual_type": "table", "table": {"title": topic[:24], "columns": ["Item", "Detail"], "rows": [[topic[:20], "See description"]]}},
+            "timeline": {"visual_type": "timeline", "timeline": [{"when": "Step 1", "text": f"Beginning of {topic[:20]}"}, {"when": "Step 2", "text": "Middle phase"}, {"when": "Step 3", "text": "Completion"}]},
+            "map": {"visual_type": "map", "map": {"view": [-170.0, -55.0, 175.0, 75.0], "countries": [], "pins": []}},
+        }
+        simple_prompt = (
+            f"Output ONLY valid compact JSON for a '{pk}' visual of '{topic}'. "
+            f"Include summary and the {pk} payload. No markdown, no explanation."
+        )
+        raw2 = query_local_llm(simple_prompt, max_tokens=600, thinking=False)
+        parsed2 = _extract_json_object(raw2)
+        if parsed2 and any(k in parsed2 for k in _HAS_PAYLOAD):
+            parsed = parsed2
+        elif pk in simple_fallbacks:
+            parsed = simple_fallbacks[pk]
+        parsed.setdefault("summary", f"Here is a visual explanation of {topic}.")
 
     summary = sanitize_for_tts(str(parsed.get("summary") or "")) or f"Here is a visual breakdown of {topic}."
     vtype = str(preferred_kind or parsed.get("visual_type") or "flow").strip().lower()

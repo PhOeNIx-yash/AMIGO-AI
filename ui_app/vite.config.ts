@@ -1,7 +1,7 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
-import {defineConfig} from 'vite';
+import { defineConfig } from 'vite';
 
 export default defineConfig(() => {
   return {
@@ -33,7 +33,8 @@ export default defineConfig(() => {
             // Vendor chunks
             'vendor-react': ['react', 'react-dom'],
             'vendor-motion': ['motion'],
-            'vendor-ui': ['lucide-react', 'liquid-gooey', 'thinking-orbs'],
+            'vendor-shaders': ['@paper-design/shaders-react'],
+            'vendor-ui': ['lucide-react', 'thinking-orbs', '@hugeicons/react'],
             // App chunks - split by feature
             'app-core': ['src/App.tsx', 'src/main.tsx'],
           },
