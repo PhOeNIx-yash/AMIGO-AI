@@ -14,14 +14,15 @@
   },
   "scripts": {
     "build": "./bundle.sh",
-    "test": "node test/reply.test.mjs && node test/store.test.mjs && node test/brain.test.mjs && node test/pointing.test.mjs && node test/safety.test.mjs && node test/voicemodel.test.mjs && node test/agentstream.test.mjs && node test/claudecode.test.mjs && node test/providers.test.mjs && node test/toolschema.test.mjs && node test/hands.test.mjs && node test/toolplay.test.mjs && node test/marks.test.mjs && node test/draw.test.mjs && node test/markdown.test.mjs && node test/caret.test.mjs && node test/intro.test.mjs && node test/speech.test.mjs && node test/fish.test.mjs && node test/speaker.test.mjs && node test/secrets.test.mjs && node test/looks.test.mjs && node test/activity.test.mjs && node test/prompt.test.mjs && node test/platform.test.mjs && node test/hitrects.test.mjs && node test/diagnostics.test.mjs",
+    "test": "node test/reply.test.mjs && node test/store.test.mjs && node test/repeat.test.mjs && node test/brain.test.mjs && node test/pointing.test.mjs && node test/safety.test.mjs && node test/voicemodel.test.mjs && node test/agentstream.test.mjs && node test/claudecode.test.mjs && node test/providers.test.mjs && node test/toolschema.test.mjs && node test/hands.test.mjs && node test/toolplay.test.mjs && node test/marks.test.mjs && node test/draw.test.mjs && node test/markdown.test.mjs && node test/caret.test.mjs && node test/tagplace.test.mjs && node test/intro.test.mjs && node test/speech.test.mjs && node test/fish.test.mjs && node test/gemini.test.mjs && node test/voicestudio.test.mjs && node test/wintray.test.mjs && node test/speaker.test.mjs && node test/secrets.test.mjs && node test/looks.test.mjs && node test/activity.test.mjs && node test/prompt.test.mjs && node test/platform.test.mjs && node test/hitrects.test.mjs && node test/askbar.test.mjs && node test/diagnostics.test.mjs && node test/errors.test.mjs && node test/local.test.mjs && node test/about.test.mjs && node test/agents.test.mjs && node test/agentrun.test.mjs && node test/agenthome.test.mjs && node test/whatsnew.test.mjs",
     "test:live": "node bench/memory.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.318",
-    "@kenkaiiii/gg-agent": "5.95.0",
-    "@kenkaiiii/gg-ai": "5.95.0",
-    "@kenkaiiii/gg-core": "5.95.0",
+    "@kenkaiiii/gg-agent": "5.100.0",
+    "@kenkaiiii/gg-ai": "5.100.0",
+    "@kenkaiiii/gg-core": "5.100.0",
+    "@kenkaiiii/ggcoder": "5.100.0",
     "zod": "4.6.7"
   },
   "devDependencies": {
@@ -29,6 +30,7 @@
   },
   "overrides": {
     "undici": "7.30.1",
-    "@huggingface/transformers": "4.3.2"
+    "@huggingface/transformers": "4.3.2",
+    "@anthropic-ai/sandbox-runtime": { "zod": "$zod" }
   }
 }

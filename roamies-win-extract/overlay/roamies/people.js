@@ -1,7 +1,7 @@
-// Character looks for the sidekick: Anime Girl, Sarah and Adrian. Each is a head-and-shoulders hologram in the
-// LED palette that fades out at the bottom like the JARVIS globe's projector, with a face that blinks, follows
-// the cursor, talks with the real voice level and acts out moods. Hair moves with the body: the anime girl's
-// twin tails swing, Sarah's long hair sways, Adrian's quiff bounces.
+// Character looks for the sidekick: Anime Girl, Sarah, Adrian and Rita X. Each is a head-and-shoulders hologram
+// in the LED palette that fades out at the bottom like the JARVIS globe's projector, with a face that blinks,
+// follows the cursor, talks with the real voice level and acts out moods. Hair moves with the body: the anime
+// girl's twin tails swing, Sarah's long hair sways, Adrian's quiff bounces, Rita's swept waves swing.
 // 10-dither.js calls in here when the look is one of these, as it does jarvis.js. Pure drawing: it composes a
 // small grid of levels, then writes it through the kit's put.
 //
@@ -10,6 +10,8 @@
 // symmetrical, like a side parting). Letters are levels of the LED palette, 0 darkest to 4 brightest:
 //   h hair (1)  H hair shine (2)  s skin (3)  z skin shade (2)  c cloth (2)  C cloth shade (1)  k cloth light (3)
 //   w white (4)  t/T hair that swings (1/2)  0-4 that level.  The face (eyes, brows, mouth) is drawn over it.
+// over is drawn over the face (Rita's glasses): [row, column, levels, mirrored too]. mouths replaces the shared
+// mouths for that size.
 (() => {
   const R = window.Roamie;
   const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
@@ -88,6 +90,37 @@
         rows: ['...hhh', '..hhHH', '.hhhhh', '.hssss', 'zsssss', '.sssss', '.hhsss', '..hhhh', '..CCck'],
       },
     },
+    // Rita X: long waves swept over her right shoulder, bright cat-eye glasses, a drop earring on the bare side, a
+    // beauty mark, a narrow jaw and fuller lips; a blazer over an open blouse.
+    rita: {
+      L: {
+        w: 29, cy: 14, fade: 5, eye: [2, 12], mouth: 18, blush: [6, 16], tail: [11, 29],
+        patch: [[15, 5, 'w'], [16, 5, 'w'], [17, 20, '0']],
+        over: [[11, 6, '4444444', true], [10, 5, '4', true], [12, 6, '4', true], [12, 13, '4', true], [12, 14, '4']],
+        mouths: {
+          closed: ['.1.1.', '00000', '.111.'], talk1: ['.111.', '.000.', '.111.'], talk2: ['.111.', '00000', '01110', '00000', '.111.'],
+          shout: ['.111.', '00000', '01110', '01110', '00000'], o: ['.1.', '0.0', '.0.'], frown: ['.111.', '00000', '0...0'],
+          grin: ['1.....1', '0000000', '0444440', '.00000.'], flat: ['.111.', '00000'],
+        },
+        rows: [
+          '.............................', '...........hhhhhhh...........', '.........hhhHHHHHhhh.........', '.......hhhHhhhhhhhhhhh.......', '......hhhhhhhhhhhhhhhhhh.....', '.....hhhhhhhhhhhhhhhhhhhh....',
+          '.....hhhhhhhhhhhhhhhhhhhhh...', '....hhhhhhhhhhhhhhhhhhhhhh...', '....hhhhhhhhhhhhhhhhhhhhhhh..', '....hhhhhhhhhhhhhhhhhhhhhhh..', '....hhhhssssssssshhhhhhhhhhh.', '....hhhsssssssssssshhhhhhhhht',
+          '....hhssssssssssssssssshhhhtt', '....hsssssssssssssssssshhhhtt', '.....sssssssssssssssssshhhhtt', '......ssssssssssssssssshhhTtt', '......ssssssssssssssssshhhTtt', '.......sssssssssssssss.hhTtt.',
+          '........sssssssssssss..hhTtt.', '.........sssssssssss..hhhTtt.', '..........sssssssss..hhhhTtt.', '............sssss...hhhhhTtt.', '.............zsz...hhhhhTtt..', '.............zsz..hhhhhTtt...',
+          '......CCCCkwzssswkhhhhTtt....', '....CCCCCCkwsssswkhhhTtt.....', '..CCCCCCCCCkwssswkCChTttCC...', '.CCCCCCCCCCkwszswkCCCtttCCCC.', 'CCCCCCCCCCCkwwzwwkCCCCttCCCCC', 'CCCCCCCCCCCCkwwwkCCCCCCCCCCCC',
+        ],
+      },
+      S: {
+        w: 17, cy: 8, fade: 3, eye: [2, 8], mouth: 11, blush: [4, 10], tail: [7, 16],
+        over: [[7, 4, '4444', true], [7, 8, '4'], [6, 3, '4', true], [8, 4, '4', true]],
+        rows: ['.................', '......hhhhh......', '....hhhHHHhhh....', '...hhhhhhhhhhh...', '...hhhhhhhhhhhh..', '..hhhhhhhhhhhhhh.', '..hhhssssshhhhhh.', '..hssssssssssshht', '..hssssssssssshtt', '..sssssssssssshtt', '..w.ssssssssshTt.', '....sssssssss.hTt', '.....sssssss.hhTt', '.......zsz..hhTt.', '....CCkwswkhhTt..', '..CCCCCkwkCCTtCC.', 'CCCCCCCkwkCCCtCCC'],
+      },
+      X: {
+        w: 11, cy: 4, fade: 1, eye: [1, 3], mouth: 5, tail: [3, 8],
+        over: [[2, 3, '44', true], [2, 5, '4']],
+        rows: ['...hhhhh...', '..hhhhhhhh.', '.hhhssshhhh', '.hssssssshT', '.sssssssshT', '..ssssssshT', '...ssssshTt', '....zszhTt.', '..CCkwkCtCC'],
+      },
+    },
     // Ken Kai, who made Roamies (shown on the About page, not a look): a textured dark fringe over faded sides,
     // and a hoodie with its drawstrings.
     ken: {
@@ -131,6 +164,11 @@
     },
     sarah: {
       L: { open: ['.000.', '04100', '.111.'], wide: ['.000.', '04100', '01100', '.000.'], shut: ['.....', '.....', '0000.'], happy: ['.....', '.000.', '0...0'], dizzy: ['0.0', '.0.', '0.0'], sleepy: ['.....', '.....', '.000.'] },
+      S: { open: ['00', '40'], wide: ['00', '40', '00'], shut: ['..', '00'], happy: ['.0.', '0.0'], dizzy: ['0.0', '.0.'], sleepy: ['..', '00'] },
+      X: { open: ['0', '0'], wide: ['0', '0'], shut: ['.', '0'], happy: ['0'], dizzy: ['0'], sleepy: ['.', '0'] },
+    },
+    rita: {
+      L: { open: ['.22200', '00000.', '04110.', '01110.', '.222..'], wide: ['.22200', '00000.', '04110.', '01110.', '01110.', '.222..'], shut: ['......', '......', '....00', '00000.', '.0.0..'], happy: ['......', '......', '.000.0', '0...0.'], dizzy: ['0...0', '.0.0.', '..0..', '.0.0.', '0...0'], sleepy: ['......', '......', '......', '00000.', '....00'] },
       S: { open: ['00', '40'], wide: ['00', '40', '00'], shut: ['..', '00'], happy: ['.0.', '0.0'], dizzy: ['0.0', '.0.'], sleepy: ['..', '00'] },
       X: { open: ['0', '0'], wide: ['0', '0'], shut: ['.', '0'], happy: ['0'], dizzy: ['0'], sleepy: ['.', '0'] },
     },
@@ -199,15 +237,15 @@
 
     draw(k, cx, cy, st, size) {
       const a = ART[who][size], t = st.t, lvl = this.level(st), A = st.act;
-      // Body motion: a hop on hype, a shake when upset, a droop asleep. Talking moves only the mouth, so the head
-      // and the speech bubble beside it hold still while it speaks.
-      const hop = A === 'hype' ? -Math.round(Math.abs(Math.sin(st.actA * 9)) * (size === 'L' ? 2 : 1)) : 0;
+      // Body motion: a shake when upset, a droop asleep (the hop on hype is the kit's: by already has it, and a second
+      // hop of our own at another rate made it stutter). Talking moves only the mouth, so the head and the speech
+      // bubble beside it hold still while it speaks.
       const shake = A === 'upset' && st.actA % 0.9 < 0.32 ? Math.round(Math.sin(t * 48)) : 0;
       const droop = st.sleepy > 0.5 ? 1 : 0;
-      const x0 = cx - a.cx + shake, y0 = cy - a.cy + hop + droop;
+      const x0 = cx - a.cx + shake, y0 = cy - a.cy + droop;
       const G = grid(x0 - 3, y0 - 4, a.w + 6, a.rows.length + 8);
       // Swinging hair: against the way it moves, a little sway at rest, a toss on hype.
-      const swing = spring(st, clamp(-(st.vx ?? 0) / 260, -2.5, 2.5) + Math.sin(t * 1.6) * 0.35 + (A === 'hype' ? Math.sin(st.actA * 9) * 1.2 : 0), 30, 6);
+      const swing = spring(st, clamp(-(st.vx ?? 0) / 260, -2.5, 2.5) + Math.sin(t * 1.6) * 0.35 + (A === 'hype' ? Math.sin(st.actA * 6.5) * 1.2 : 0), 30, 6);
       const [tTop, tEnd] = a.tail ?? [0, 1];
       const fadeAt = a.rows.length - a.fade;
       a.rows.forEach((row, j) => {
@@ -257,12 +295,16 @@
       if (st.mode === 'talk') mouth = lvl > 0.62 ? 'talk2' : lvl > 0.22 ? 'talk1' : 'closed';
       if (!mouth || !MOUTHS[size][mouth]) mouth = st.happy > 0.5 ? 'grin' : 'closed';
       if (st.sleepy > 0.5) mouth = size === 'L' ? 'o' : 'flat';
-      const M = MOUTHS[size][mouth];
+      const M = a.mouths?.[mouth] ?? MOUTHS[size][mouth];
       stamp(G, M, x + lx - Math.floor((M[0].length - 1) / 2), y + a.mouth + Math.max(0, ly));
     },
 
     extra(c) {
       const { G, a, x, y, st, t, size } = c;
+      for (const [j, i, str, both] of a.over ?? []) for (let n = 0; n < str.length; n++) {
+        set(G, x - a.cx + i + n, y + j, +str[n]);
+        if (both) set(G, x + a.cx - i - n, y + j, +str[n]);
+      }
       // Adrian's beard: a dark band round the jaw under the mouth, drawn after the mouth so the mouth stays clear.
       // Sarah's stud earring, on the side her hair's tucked.
       if (a.earring) { set(G, x + a.earring[0], y + a.earring[1], 4); }
@@ -283,5 +325,5 @@
     },
   });
 
-  R.people = { anime: person('anime'), sarah: person('sarah'), adrian: person('adrian'), ken: person('ken') };
+  R.people = { anime: person('anime'), sarah: person('sarah'), adrian: person('adrian'), rita: person('rita'), ken: person('ken') };
 })();

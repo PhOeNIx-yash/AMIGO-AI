@@ -5,14 +5,14 @@ import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { createWebFetchTool, createWebSearchTool, runSideWebSearch, runSideWebSearchViaClaudeCode } from '@kenkaiiii/ggcoder/web';
 import { z } from 'zod';
 import { parseSipsSize, readProblem, rematch, sameBounds, shotFits, shotMap, shotProblem, snapRect, toScreen } from './pointing.mjs';
-import { ASK, BLOCK, checkDrawAction, checkOpen, checkRead, checkUrl, checkWrite, classifyCommand, isPrivateAddress, isRiskyClick, isYes, riskyKind } from './safety.mjs';
-import dns from 'node:dns/promises';
+import { ASK, BLOCK, checkDrawAction, checkFetch, checkOpen, checkRead, checkWrite, classifyCommand, isRiskyClick, isYes, riskyKind } from './safety.mjs';
 import { CARDS, DrawArgs, LIMITS, checkDraw, createParts, createPhotos, describeParts, faviconFor, pickTextMatch, quizNote, resolveTargets } from './draw.mjs';
 import { plain } from './intro.mjs';
 import { linuxSession, seesPointer } from './platform.mjs';
-import { addCommitment, forgetFact, parseDue, updateCommitment } from './store.mjs';
+import { addCommitment, forgetFact, parseDue, parseRepeat, repeatLabel, updateCommitment } from './store.mjs';
 
 const HOME = os.homedir();
 export const expand = (p) => path.resolve(String(p).replace(/^~(?=$|\/|\\)/, HOME));
@@ -33,6 +33,11 @@ export const run = (cmd, args, { onLine, ...opts } = {}) => new Promise((res) =>
 // failure says "Unable to find application", as macOS's open does.
 const WIN_OPEN = "try { if ($env:ROAMIES_OPEN_APP) { Start-Process -FilePath $env:ROAMIES_OPEN_APP -ArgumentList ('\"' + $env:ROAMIES_OPEN + '\"') -ErrorAction Stop } else { Start-Process -FilePath $env:ROAMIES_OPEN -ErrorAction Stop } } catch { [Console]::Error.WriteLine('Unable to find application: ' + $_.Exception.Message); exit 1 }";
 export const winOpen = (target, app = '') => run('powershell', ['-NoProfile', '-NonInteractive', '-Command', WIN_OPEN], { env: { ...process.env, ROAMIES_OPEN: target, ROAMIES_OPEN_APP: app } });
+// run_command's shell. Windows: cmd /d /s /c "…" passed as is (what Node's shell: true does); handed over as a plain
+// argument, Node escaped its quotes as \" which cmd doesn't read, so any command with quotes in it broke.
+export const shellFor = (command, platform = process.platform, env = process.env) => (platform === 'win32'
+  ? ['cmd.exe', ['/d', '/s', '/c', `"${command}"`], { windowsVerbatimArguments: true }]
+  : [env.SHELL || (platform === 'linux' ? '/bin/bash' : '/bin/zsh'), ['-lc', command], {}]);
 const THIS_COMPUTER = process.platform === 'darwin' ? 'this Mac' : 'this computer';
 const LINUX = process.platform === 'linux';
 // A Wayland session hides the pointer and clicks in other apps, so a drawing can't wait for them (platform.mjs).
@@ -202,8 +207,30 @@ const GIT_SAFE = {
   GIT_CONFIG_KEY_3: 'core.hooksPath', GIT_CONFIG_VALUE_3: '/dev/null',
 };
 
+/** Puts text on the clipboard; true when it got there. It goes in through stdin (Linux: through the app itself,
+ *  askShell), so nothing in it is ever parsed as a command. */
+export const copyText = (text, askShell) => (LINUX ? askShell({ type: 'clipboard', text: String(text) }).then((r) => !!r?.ok) : new Promise((res) => {
+  const [cmd, args] = process.platform === 'darwin' ? ['pbcopy', []] : process.platform === 'win32' ? ['powershell', ['-NoProfile', '-NonInteractive', '-Command', '$input | Set-Clipboard']] : ['xclip', ['-selection', 'clipboard']];
+  const p = execFile(cmd, args, { timeout: 5000, windowsHide: true }, (err) => res(!err));
+  p.stdin?.end(String(text));
+}));
+
 // askShell: Linux asks the app itself for screenshots and copying ({type:'screenshot'|'clipboard', …} → its answer).
-export function createTools({ allowActions, ui, ask, openUrl, onCommitments, showList, fmtWhen, commitmentsText, userName, onPlan = () => {}, speak = () => false, onHandoff = () => {}, watchClicks = () => {}, onInkGone = () => {}, askShell = async () => ({ ok: false, error: 'Roamies isn\'t running.' }) }) {
+/** GG Coder's side search for the sign-in in use, so a search's result pages never fill the main model's context: Claude
+ *  Code's WebSearch on a Claude sign-in ({ cc, cwd }), Anthropic's server search on an Anthropic key ({ apiKey, baseUrl }),
+ *  else null, and web_search uses its keyless engines (DuckDuckGo, Brave, Bing, Google). */
+export function sideSearchFor(route) {
+  if (route?.cc?.executable) return (req) => runSideWebSearchViaClaudeCode(req, { executable: route.cc.executable, env: route.cc.env ?? {}, cwd: route.cwd ?? HOME });
+  if (route?.apiKey) return (req) => runSideWebSearch(req, { apiKey: route.apiKey, ...(route.baseUrl ? { baseUrl: route.baseUrl } : {}) });
+  return null;
+}
+// Every request and redirect hop of web_fetch goes through safety.mjs, by name and by the addresses it resolves to.
+export const guardFetch = async (url) => { const v = await checkFetch(url); return v.level === BLOCK ? `Blocked for safety: ${v.reason}` : null; };
+
+export function createTools({ allowActions, ui, ask, openUrl, onCommitments, showList, fmtWhen, commitmentsText, userName, onPlan = () => {}, speak = () => false, onHandoff = () => {}, watchClicks = () => {}, onInkGone = () => {}, askShell = async () => ({ ok: false, error: 'Roamies isn\'t running.' }), workdir = HOME, own = null, sideSearch = async () => null }) {
+  // Relative paths (and run_command) start in workdir: the home folder for the chat, its own folder for an agent.
+  const at = (p) => { const s = String(p ?? ''); return /^~(?=$|\/|\\)/.test(s) || path.isAbsolute(s) || /^[a-z]:[\\/]/i.test(s) ? s : path.join(workdir, s); };
+  const where = workdir === HOME ? "the user's home folder" : `its working folder (${workdir})`;
   let axNudged = 0;
   let lastShot = null; // how the latest screenshot's pixels map to screen points (see pointing.mjs)
   let lastRead = null; // { win, controls } from the latest read_window, to catch ids that went stale
@@ -361,6 +388,10 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
   const quizzes = new Map(); // part id → the quiz drawn there, to score what was clicked
   // Parts of drawings that go by themselves (the tour, the setup showcase): about no window, so switching windows keeps them.
   const loose = new Set();
+  // Cards the user pinned (ink.js): the overlay keeps them through clears and window changes, so they're remembered here too.
+  const pinned = new Set();
+  const keepPinned = (id) => pinned.has(id);
+  const forgetInk = () => { parts.clear(keepPinned); for (const m of [buttons, quizzes]) for (const id of [...m.keys()]) if (!pinned.has(id)) m.delete(id); for (const id of [...loose]) if (!pinned.has(id)) loose.delete(id); };
   const windowBound = () => parts.ids.some((p) => !loose.has(p));
   const ink = { waits: new Map(), turn: -1, active: 0, front: '', win: null, page: '', watch: null, checks: [] };
   const inkWait = (key, ms, signal) => new Promise((resolve) => {
@@ -372,7 +403,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
     ink.waits.set(key, done);
   });
   const clearScreenInk = (stop = false) => { parts.clearScreen(); for (const id of buttons.keys()) if (!parts.has(id)) buttons.delete(id); ui({ kind: 'agent', e: { type: 'ink_clear', screen: true, stop } }); };
-  const clearAllInk = () => { parts.clear(); buttons.clear(); quizzes.clear(); loose.clear(); ui({ kind: 'agent', e: { type: 'ink_clear' } }); };
+  const clearAllInk = () => { forgetInk(); ui({ kind: 'agent', e: { type: 'ink_clear' } }); };
   // The window a drawing belongs to: the front window's id and place. Its title isn't part of it (a page updating
   // its title, a document being edited, isn't the screen changing).
   // Its rect and app too, so a click can be told to be in it.
@@ -392,7 +423,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
   };
   // The screen under the drawing changed: all of it fades (cards too), and the model is told nothing is there.
   function screenChanged(why) {
-    parts.clear(); buttons.clear(); loose.clear(); ink.front = ''; ink.win = null; ink.page = ''; watchClicks(false);
+    forgetInk(); ink.front = ''; ink.win = null; ink.page = ''; watchClicks(false);
     for (const t of ink.checks) clearTimeout(t);
     ink.checks = [];
     ui({ kind: 'agent', e: { type: 'ink_stale' } });
@@ -423,12 +454,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
   // Steps that change what a window shows: the agent doing one is the screen changing under a drawing.
   const CHANGING = new Set(['click', 'click_text', 'press_button', 'key', 'click_at', 'choose']);
   const agentChangesScreen = () => { if (windowBound() && !ink.active) screenChanged('agent'); };
-  // Copied text goes to the clipboard through stdin, so nothing in it is ever parsed as a command.
-  const toClipboard = (text) => (LINUX ? askShell({ type: 'clipboard', text: String(text) }).then((r) => !!r?.ok) : new Promise((res) => {
-    const [cmd, args] = process.platform === 'darwin' ? ['pbcopy', []] : process.platform === 'win32' ? ['powershell', ['-NoProfile', '-NonInteractive', '-Command', '$input | Set-Clipboard']] : ['xclip', ['-selection', 'clipboard']];
-    const p = execFile(cmd, args, { timeout: 5000, windowsHide: true }, (err) => res(!err));
-    p.stdin?.end(String(text));
-  }));
+  const toClipboard = (text) => copyText(text, askShell);
   // How each kind of place is found. retry: just after a click, when a menu or dialog may still be opening.
   function lookups(spec, retry) {
     let live = null, shotOk = null, controls = null, fitQueue = null, wins = null;
@@ -575,7 +601,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
     // A new drawing in a later request replaces the old one (cards too), unless it's editing what's there.
     if (ink.turn !== turn && !edits.length && parts.ids.length) clearAllInk();
     ink.turn = turn;
-    for (const e of edits) if (e.do === 'erase') parts.remove(e.part); else if (e.do === 'clear') parts.clear();
+    for (const e of edits) if (e.do === 'erase') parts.remove(e.part); else if (e.do === 'clear') { parts.clear(); pinned.clear(); }
     // One segment per beat: each is sent as soon as its places are found, so the first marks draw while the rest
     // are still being looked up (each lookup is a helper round trip). after: it comes after a click or hover.
     const segs = beats.map((b, i) => ({ from: i, to: i + 1, after: i > 0 && !!beats[i - 1].wait }));
@@ -612,7 +638,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
         if (opts.fade) for (const p of ids) loose.add(p);
         // Only a few cards stay up at once (the overlay closes the oldest as each new one is drawn), so the oldest are
         // forgotten here too. Eight cards at once covered the screen, and the last one landed on top of the first.
-        else for (const p of parts.trimCards(LIMITS.cardsShown, (q) => loose.has(q))) { shut.push(p); buttons.delete(p); }
+        else for (const p of parts.trimCards(LIMITS.cardsShown, (q) => loose.has(q) || pinned.has(q))) { shut.push(p); buttons.delete(p); }
         for (const b of seg) for (const m of b.marks) if (m.action && m.part) buttons.set(m.part, m.action);
         for (const b of seg) for (const m of b.marks) if (m.kind === 'quiz' && m.part) quizzes.set(m.part, m);
         const out = seg.map((b, j) => ({ ...b, n: sg.from + j + 1, caption: plain(b.say), voiced: !!speak(b.say) }));
@@ -650,7 +676,8 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
   const inkEvents = {
     started: (id, seg) => ink.waits.get(`${id}:start:${seg}`)?.('started'),
     waitDone: (id, beat, result) => ink.waits.get(`${id}:wait:${beat}`)?.(['clicked', 'hovered', 'skipped'].includes(result) ? result : 'skipped'),
-    closed: (part) => { parts.remove(String(part)); buttons.delete(String(part)); loose.delete(String(part)); },
+    closed: (part) => { parts.remove(String(part)); buttons.delete(String(part)); loose.delete(String(part)); pinned.delete(String(part)); },
+    pinned: (part, on) => { if (!on) pinned.delete(String(part)); else if (parts.has(String(part))) pinned.add(String(part)); },
     button: (part) => buttons.get(String(part)) ?? null,
     // A quiz was answered on screen (the option clicked for each question): how it went, in words for the model.
     quizDone: (part, picks) => quizNote(quizzes.get(String(part)), picks),
@@ -663,7 +690,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
       if (cancelled && ink.turn === turn && parts.ids.length) clearAllInk(); else clearScreenInk(true);
     },
     // The user sent the whole drawing away (Esc): nothing is on screen any more.
-    cleared: () => { for (const done of [...ink.waits.values()]) done('stopped'); parts.clear(); buttons.clear(); loose.clear(); },
+    cleared: () => { for (const done of [...ink.waits.values()]) done('stopped'); forgetInk(); },
     // The app takes its own drawing away (the setup showcase, when its step is left): everything goes.
     clear: () => { for (const done of [...ink.waits.values()]) done('stopped'); clearAllInk(); },
     describe: () => parts.describe(),
@@ -708,7 +735,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
       },
       {
         name: 'act_in_app',
-        description: "Do things in another app for the user: click, fill in forms, pick from dropdowns and date pickers, scroll, press keys. Steps run in order; put a whole task in one call. {do:'click_text', text} clicks a link, button or tab by its visible words (no read_window needed). {do:'fill', field, text} fills one text field: field is its label or placeholder as shown (or id), it replaces the text and checks it took; use one fill per field, never click a label and type. {do:'choose', field, option} picks an option in a dropdown, select menu, type-to-search box or picker: it opens it, types or scrolls through the list (hundreds of options, even lists that only load rows as they scroll) and picks; field is its label or id. Never scroll a dropdown list yourself. To go to a web address, use the open tool (instant), not the address bar. To search a site that has a search page (YouTube, Google, Amazon, Wikipedia…), open its search URL (e.g. https://www.youtube.com/results?search_query=…) instead of typing into its search box, unless the user asks you to use the box: then fill it (fill replaces any old search) and press return. Many identical buttons or fields (a Reply under every post): add near, words from that item (author or first words of the post), to click_text or fill and it uses the one belonging to that item, scrolling to it. {do:'scroll', direction:'down'|'up'|'left'|'right', amount, text or id} scrolls the page, or the list or panel under that text or control; needed only for content that loads as you scroll: {do:'scroll', direction:'down', to_end:true} keeps going until the feed stops loading more, in one step; then read_window lists everything that loaded. Things already on the page don't need scrolling: click_text, fill and draw find them anywhere on it and scroll there themselves. {do:'click', id}; {do:'key', key} e.g. 'return', 'tab', 'escape'; {do:'type', text} only when the cursor is already in a text field; {do:'click_at', x, y} pixels in your latest screenshot, last resort; {do:'wait', seconds}. Dates: fill the date field with the date as the page shows dates (e.g. 10/30/2026); if a calendar opens instead, choose the month and year, then click_text the day (its label often reads like 'Choose Friday, October 30th, 2026'). After the steps the result lists the window's controls and text as they are now (after scrolls too), with fresh ids and field values, so check them there instead of calling read_window again. Never submit payments, send messages or delete things unless the user clearly asked for exactly that; showing or pointing at a button is not a request to click it. Clicks on delete, pay, send or sign-out buttons always ask the user first, so when they asked you to click one, call act_in_app right away instead of asking in your reply; the app asks them.",
+        description: "Do things in another app for the user: click, fill in forms, pick from dropdowns and date pickers, scroll, press keys. Steps run in order; put a whole task in one call. {do:'click_text', text} clicks a link, button or tab by its visible words (no read_window needed). {do:'fill', field, text} fills one text field: field is its label or placeholder as shown (or id), it replaces the text and checks it took; use one fill per field, never click a label and type. {do:'choose', field, option} picks an option in a dropdown, select menu, type-to-search box or picker: it opens it, types or scrolls through the list (hundreds of options, even lists that only load rows as they scroll) and picks; field is its label or id. Never scroll a dropdown list yourself. To go to a web address, use the open tool (instant), not the address bar. To search a site that has a search page (YouTube, Google, Amazon, Wikipedia…), open its search URL (e.g. https://www.youtube.com/results?search_query=…) instead of typing into its search box, unless the user asks you to use the box: then fill it (fill replaces any old search) and press return. Many identical buttons or fields (a Reply under every post): add near, words from that item (author or first words of the post), to click_text or fill and it uses the one belonging to that item, scrolling to it. {do:'scroll', direction:'down'|'up'|'left'|'right', amount, text or id} scrolls the page, or the list or panel under that text or control; needed only for content that loads as you scroll: {do:'scroll', direction:'down', to_end:true} keeps going until the feed stops loading more, in one step; then read_window lists everything that loaded. Things already on the page don't need scrolling: click_text, fill and draw find them anywhere on it and scroll there themselves. {do:'click', id}; {do:'key', key} e.g. 'return', 'tab', 'escape'; {do:'type', text} only when the cursor is already in a text field; {do:'click_at', x, y} pixels in your latest screenshot, last resort; {do:'wait', seconds}. Dates: fill the date field with the date as the page shows dates (e.g. 10/30/2026); if a calendar opens instead, choose the month and year, then click_text the day (its label often reads like 'Choose Friday, October 30th, 2026'). After the steps the result lists the window's controls and text as they are now (after scrolls too), with fresh ids and field values, so check them there instead of calling read_window again. Every item on a long page ('reply to each post'): scroll with to_end if it loads more, one read_window, then one act_in_app call doing every item with near. Never survey a page by scrolling and screenshotting, and never stop at the first screenful. Never submit payments, send messages or delete things unless the user clearly asked for exactly that; showing or pointing at a button is not a request to click it. Clicks on delete, pay, send or sign-out buttons always ask the user first, so when they asked you to click one, call act_in_app right away instead of asking in your reply; the app asks them.",
         parameters: z.object({
           target: z.string().optional(),
           steps: z.array(z.object({
@@ -801,7 +828,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
     {
       name: 'draw',
       description: `Draw on the user's screen while you talk. Your Roamie turns into its cursor and draws with its tip, each beat's marks paced to its spoken line (also shown as a caption). One call holds a whole explanation or walkthrough.
-beats: [{say, marks, wait?}]. say: one short line, under 20 words, spoken while that beat's marks draw (don't repeat it in your reply). Keep 1 to 4 marks per beat, in the order you mention them.
+beats: [{say, marks, wait?}]. say: one short line, under 20 words, spoken and captioned while that beat's marks draw, so your reply after draw never repeats or rephrases it (no restating the steps). Keep 1 to 4 marks per beat, in the order you mention them.
 Places (at, to, tie), best first: {text: the exact words shown on screen} (exact bounds, scrolls to it; target 'screen' searches every app; also words inside paragraphs, text in images or canvases, and a single character, which matches case); add every: true to mark every place that text appears (each letter s, each mention of a word), one mark per place, and within: {x, y, w, h} (screenshot pixels, x, y the centre) to keep to one part of the screen (every s in one sentence); {id} from read_window, for controls without words; {x, y, w, h} pixels in your latest screenshot, for icons, shapes and areas without words: x, y is the thing's centre, and w, h its whole width and height; the box is then fitted to what's really drawn there, so a close guess is enough.
 Which mark: one control they should click: target (with wait 'click' in a walkthrough); one thing to notice: ring (follows its shape; r sets the corner radius); a small spot or icon: point; a region or panel: frame; key words: underline (outdated ones: strike); right or wrong: check, cross; order of steps: num; a name beside something: label (text) or label on any mark; how two things relate: connect (at → to); an odd-shaped group: trace (points); scroll here: scroll (dir); one thing above all else: spotlight (sparingly); something to hover: hover with wait 'hover'; big words: write (text, size).
 Walkthroughs ("how do I…"): one beat per step, each a target on that step's control with label and wait 'click'; the next step is found after they click, on the screen as it is then.
@@ -812,8 +839,7 @@ flow (nodes [{id, text, shape: box|round|diamond, tone}], links [{from, to, labe
 map (region: world, a continent, or country names with commas between; shade [{name, tone}] colours countries in; pins [{name, lat, lon}]; routes [{from, to}] between pins by name). Country outlines only, no streets: cities, states and very small countries have no outline, so mark them with pins. Without region it fits what is shaded and pinned.
 math (steps [{tex, note}]) writes worked maths one step at a time. tex: one line of LaTeX per step (\\frac{a}{b}, \\sqrt{x}, x^{2}, x_{1}, \\left( \\right), \\text{words}, Greek, \\times \\cdot \\pm \\le \\ne \\approx \\pi \\infty; no \\begin, & or \\\\ line breaks); note: a few plain words on what changed. geometry (vertices [{id, x, y}] in your own units with y up, lines [{from, to, label, dash}], angles [{at, from, to, label}] with at the corner, circles [{at, r, label}]) for triangles, circles and angles.
 molecule (smiles, label) for chemistry. model (parts [{shape: box|sphere|cylinder|cone|torus, at [x,y,z], size [x,y,z], rot [deg x,y,z], tone, label, motion}] within about -1 to 1, title) for objects and machines. motion {do: spin|orbit|slide|pulse, axis: x|y|z, around [x,y,z], to [x,y,z], secs} makes a part move to show how the thing works: slide goes from at to "to" and back (a piston), orbit circles the point "around" (a planet, a crank pin), spin turns it in place (a round part spinning on its own axis looks still, so spin a box or orbit one round it), pulse swells and shrinks (a heart).
-quiz (questions [{text, options: 2 to 4, answer: the right option word for word, explain}], up to ${LIMITS.questions}) for "test me": they answer by clicking and see right or wrong at once, and their score comes to you with their next message, so say a line and stop; don't ask the questions in words too.
-Things saved with remember_commitment or update_commitment already show on their reminders list by themselves: never draw a list or note of them; list and note are for things that aren't being saved.
+quiz (questions [{text, options: 2 to 4, answer: the right option word for word, explain}], up to ${LIMITS.questions}) for "test me": they answer by clicking and see right or wrong at once, and their score comes to you with their next message, so say a line and stop: never ask the questions in words too, or ask them for their answers or score.
 Actions: type (text into the field at; needs actions allowed), copy (text to the clipboard), open (url), handoff (task), button (text + action {do: ask|open|copy, value}: a likely next step they can click), emote (name: hype, wave, upset, remind, motivate), sfx (name). tone: accent, teal, amber, coral, lilac, sky, lime, red, white.
 A drawing stays until the user clears it or the window changes; your next drawing replaces it. At most ${LIMITS.cardsShown} cards show at once (one more closes the oldest), so make a point with the fewest cards. Every drawn piece gets an id (p1, p2 …) in the result. To change what's drawn ("make that red", "move it left", "never mind"): edit [{do: recolor|move|erase|clear, part, tone, dx, dy}] with no beats. Up to 12 beats, 40 marks each.${POINTER_OK ? '' : " On this desktop (Wayland) clicks and hovers in other apps can't be seen: never use wait; beats play one after another, so say each step's line in an order that reads well without pausing."}`,
       parameters: DrawArgs, executionMode: 'sequential', timeoutMs: 30 * 60_000,
@@ -834,13 +860,13 @@ A drawing stays until the user clears it or the window changes; your next drawin
     {
       name: 'read_file', description: 'Read a text file. Paths may start with ~. Files with passwords or keys (.ssh, .env, auth.json, keychains) are off limits.',
       parameters: z.object({ path: z.string() }),
-      execute: async ({ path: p }) => clip(await fs.readFile(allowed(checkRead(p, HOME)), 'utf8'), 60_000),
+      execute: async ({ path: p }) => clip(await fs.readFile(allowed(checkRead(at(p), HOME)), 'utf8'), 60_000),
     },
     {
       name: 'list_files', description: 'List the files and folders in a directory.',
       parameters: z.object({ dir: z.string() }),
       execute: async ({ dir }) => {
-        const ents = await fs.readdir(allowed(checkRead(dir, HOME)), { withFileTypes: true });
+        const ents = await fs.readdir(allowed(checkRead(at(dir), HOME)), { withFileTypes: true });
         return ents.slice(0, 300).map((e) => (e.isDirectory() ? e.name + '/' : e.name)).join('\n') + (ents.length > 300 ? `\n…and ${ents.length - 300} more` : '');
       },
     },
@@ -848,7 +874,7 @@ A drawing stays until the user clears it or the window changes; your next drawin
       name: 'search_files', description: `Search file contents under a specific folder for a text pattern (regex). Not your whole home folder: that trips macOS privacy prompts. To find files by name anywhere, use run_command with ${process.platform === 'darwin' ? 'mdfind' : LINUX ? 'find or locate' : 'dir /s'}.`,
       parameters: z.object({ pattern: z.string(), dir: z.string() }),
       execute: async ({ pattern, dir }) => {
-        const d = allowed(checkRead(dir, HOME, { recursive: true }));
+        const d = allowed(checkRead(at(dir), HOME, { recursive: true }));
         // -e and -- keep a pattern like "--pre=cmd" from being read as an option (rg --pre runs programs).
         let r = await run('rg', ['-n', '--max-count', '5', '--max-columns', '200', '-e', pattern, '--', d]);
         if (r.err?.code === 'ENOENT') r = await run('grep', ['-rnI', '-m', '5', '-E', '-e', pattern, '--', d]);
@@ -860,8 +886,9 @@ A drawing stays until the user clears it or the window changes; your next drawin
       parameters: z.object({ path: z.string(), content: z.string() }), executionMode: 'sequential',
       execute: async ({ path: p, content }, ctx) => {
         if (!allowActions()) throw new Error(actionsOff);
+        p = at(p);
         const exists = await fs.stat(expand(p)).then(() => true, () => false);
-        const v = checkWrite(p, HOME, { exists });
+        const v = checkWrite(p, HOME, { exists, own });
         const f = allowed(v);
         if (v.level === ASK && !(await confirm(v.reason, ctx))) throw new Error(`${userName} said no, so I didn't write ${p}.`);
         await fs.mkdir(path.dirname(f), { recursive: true });
@@ -870,46 +897,28 @@ A drawing stays until the user clears it or the window changes; your next drawin
       },
     },
     {
-      name: 'run_command', description: "Run a shell command in the user's home folder and return its output. Use it for what the other tools can't do (counting, sorting, wc, mdfind, git, moving or copying); to open a file, folder, app or link use the open tool, which needs no yes. Prefer write_file for creating or editing files (several files: one write_file call each, in the same turn); never edit with sed -i or tee, and never make files in a shell loop (for/while), which always needs a yes. A > redirect into a new file is fine; overwriting an existing file, and commands that change things, make the user confirm first, which is slow.",
+      name: 'run_command', description: `Run a shell command in ${where} and return its output. Use it for what the other tools can't do (counting, sorting, wc, mdfind, git, moving or copying); to open a file, folder, app or link use the open tool, which needs no yes. Prefer write_file for creating or editing files (several files: one write_file call each, in the same turn); never edit with sed -i or tee, and never make files in a shell loop (for/while), which always needs a yes. A > redirect into a new file is fine; overwriting an existing file, and commands that change things, make the user confirm first, which is slow.`,
       parameters: z.object({ command: z.string() }), executionMode: 'sequential', timeoutMs: 190_000, // up to 2 min to answer, then the 60 s run
       execute: async ({ command }, ctx) => {
         if (!allowActions()) throw new Error(actionsOff);
-        const v = classifyCommand(command, HOME, { exists: existsSync });
+        const v = classifyCommand(command, HOME, { exists: existsSync, cwd: workdir, own });
         if (v.level === BLOCK) throw new Error(`Blocked for safety: ${v.reason} Don't try to get around this; tell ${userName} what you wanted to do instead.`);
         if (v.level === ASK && !(await confirm(`Run \`${command.length > 70 ? command.slice(0, 67) + '…' : command}\`?${v.reason ? ' ' + v.reason : ''}`, ctx))) {
           throw new Error(`${userName} said no, so the command didn't run.`);
         }
-        const shell = process.platform === 'win32' ? ['cmd', ['/c', command]] : [process.env.SHELL || (LINUX ? '/bin/bash' : '/bin/zsh'), ['-lc', command]];
-        const r = await run(shell[0], shell[1], { cwd: HOME, env: { ...process.env, ...GIT_SAFE } });
+        const [sh, shArgs, shOpts] = shellFor(command);
+        const r = await run(sh, shArgs, { ...shOpts, cwd: workdir, env: { ...process.env, ...GIT_SAFE } });
         const out = clip((r.stdout + (r.stderr ? `\n[stderr]\n${r.stderr}` : '')).trim() || '(no output)', 12_000);
         if (r.err && r.err.code !== 0) throw new Error(`Exit ${r.err.code ?? r.err.signal}\n${out}`);
         return out;
       },
     },
-    {
-      name: 'fetch_url', description: 'Fetch a web page and return its readable text.',
-      parameters: z.object({ url: z.string() }), // no .url(): OpenAI strict schemas reject format "uri"; checkUrl validates
-      execute: async ({ url }) => {
-        // Redirects are followed by hand so each hop is checked too (a public page can't bounce to localhost), and
-        // each host's addresses too (a public name can point at 127.0.0.1 or the local network).
-        let res, at = url;
-        for (let hop = 0; ; hop++) {
-          allowed(checkUrl(at));
-          const host = new URL(at).hostname.replace(/^\[|\]$/g, '');
-          const addrs = await dns.lookup(host, { all: true }).catch(() => []);
-          if (addrs.some((x) => isPrivateAddress(x.address))) throw new Error(`${host} leads to your own computer or network, so I won't fetch it.`);
-          res = await fetch(at, { headers: { 'user-agent': 'Roamies-Sidekick' }, redirect: 'manual', signal: AbortSignal.timeout(20_000) });
-          const next = res.status >= 300 && res.status < 400 && res.headers.get('location');
-          if (!next) break;
-          if (hop >= 5) throw new Error('Too many redirects.');
-          at = new URL(next, at).href;
-        }
-        url = at;
-        const html = await res.text();
-        const text = html.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
-        return clip(`${res.status} ${url}\n${text}`, 15_000);
-      },
-    },
+    // GG Coder's own web tools: search with a side search or keyless engines, pages as Markdown with offset to read on.
+    createWebSearchTool(undefined, async (req) => {
+      const side = sideSearchFor(await Promise.resolve().then(sideSearch).catch(() => null));
+      return side ? side(req) : null;
+    }),
+    createWebFetchTool(undefined, { guardUrl: guardFetch }),
     {
       name: 'open', description: 'Open a website, a file or folder, or an app by name (e.g. "Safari", "https://skool.com", "~/Documents"). Links open in the default browser; set app to open one in a particular browser or app (e.g. app "Safari" when the user says "in Safari").',
       parameters: z.object({ target: z.string(), app: z.string().optional() }),
@@ -939,28 +948,34 @@ A drawing stays until the user clears it or the window changes; your next drawin
     },
     {
       name: 'remember_commitment',
-      description: `Save something ${userName} has committed to doing, or anything they ask to be reminded about, so you can remind them at the right moment. Use it whenever they say they will do something or say "remind me". kind: 'reminder' for a plain "remind me to X at/in …" (it clears itself once the nudge is given), 'commitment' (default) for something they say they'll do or finish ("I'll finish the slides by Friday"), which stays open until they say it's done. due: a relative time like "in 90s", "in 5m", "in 1h30m" or "in 2 days" (best for short timers), or a local time YYYY-MM-DDTHH:mm:ss, YYYY-MM-DDTHH:mm, or YYYY-MM-DD if only the day is known; omit if there's no time at all. Resolve words like "Thursday", "at 2" or "tonight" from the timestamp on their message.`,
-      parameters: z.object({ text: z.string().min(2).max(200), due: z.string().optional(), kind: z.enum(['reminder', 'commitment']).optional() }),
-      execute: async ({ text, due, kind }) => {
+      description: `Save something ${userName} has committed to doing, or anything they ask to be reminded about, so you can remind them at the right moment. Use it whenever they say they will do something or say "remind me". kind: 'reminder' for a plain "remind me to X at/in …" (it clears itself once the nudge is given), 'commitment' (default) for something they say they'll do or finish ("I'll finish the slides by Friday"), which stays open until they say it's done. due: a relative time like "in 90s", "in 5m", "in 1h30m" or "in 2 days" (best for short timers), or a local time YYYY-MM-DDTHH:mm:ss, YYYY-MM-DDTHH:mm, or YYYY-MM-DD if only the day is known; omit if there's no time at all. Resolve words like "Thursday", "at 2" or "tonight" from the timestamp on their message. repeat: only when they ask for it again and again ("every morning", "every weekday at 9", "every 2 hours", "on Mondays and Thursdays"): one of daily, weekdays, weekends, weekly, monthly, yearly, "every N minutes|hours|days|weeks|months" (at least 5 minutes), or days like "mon,wed,fri". It needs due, set to the first time (e.g. tomorrow 09:00 for "every morning at 9"). A repeating 'reminder' moves to its next time each time it fires; a repeating 'commitment' (a habit they want held to, like the gym) moves on when they mark it done. One saved item covers the whole series: never save one per day.`,
+      parameters: z.object({ text: z.string().min(2).max(200), due: z.string().optional(), kind: z.enum(['reminder', 'commitment']).optional(), repeat: z.string().max(60).optional() }),
+      execute: async ({ text, due, kind, repeat }) => {
         const ms = parseDue(due);
         if (ms === undefined) throw new Error(`Couldn't read the time "${due}". Use YYYY-MM-DDTHH:mm or YYYY-MM-DD.`);
+        const r = repeat === undefined ? null : parseRepeat(repeat);
+        if (r === undefined) throw new Error(`Couldn't read the repeat "${repeat}". Use daily, weekdays, weekly, monthly, "every 2 hours" (5 minutes or more) or days like "mon,wed,fri".`);
+        if (r && !ms) throw new Error('A repeating reminder needs due: the first time it should go off.');
         // A plain reminder with no time has nothing to fire, so it's kept like a commitment.
-        const c = await addCommitment(text, ms, ms ? kind : 'commitment');
+        const c = await addCommitment(text, ms, ms ? kind : 'commitment', r?.spec);
         onCommitments(c);
-        return `Saved as ${c.id}${ms ? `, due ${fmtWhen(ms)}` : ''}. I'll remind them${ms ? ' when it is due' : ''}.`;
+        return `Saved as ${c.id}${c.due ? `, due ${fmtWhen(c.due)}` : ''}${c.repeat ? `, repeating ${repeatLabel(c.repeat)}` : ''}. I'll remind them${c.due ? ' when it is due' : ''}.`;
       },
     },
     {
       name: 'update_commitment',
-      description: 'Mark a saved commitment done or dropped, or change its due time (same format as remember_commitment; use "none" to clear it).',
-      parameters: z.object({ id: z.string(), status: z.enum(['open', 'done', 'dropped']).optional(), due: z.string().optional() }),
-      execute: async ({ id, status, due }) => {
+      description: 'Mark a saved commitment done or dropped, or change its due time (same format as remember_commitment; use "none" to clear it) or its repeat (same format; "none" stops it repeating). Done on a repeating one ticks off this time and moves it to the next; dropped ends the whole series, so only drop one when they want it gone for good.',
+      parameters: z.object({ id: z.string(), status: z.enum(['open', 'done', 'dropped']).optional(), due: z.string().optional(), repeat: z.string().max(60).optional() }),
+      execute: async ({ id, status, due, repeat }) => {
         const ms = due === undefined ? undefined : due === 'none' ? null : parseDue(due);
         if (ms === undefined && due !== undefined) throw new Error(`Couldn't read the time "${due}".`);
-        const c = await updateCommitment(id, { status, dueMs: ms });
+        const r = repeat === undefined ? undefined : parseRepeat(repeat);
+        if (r === undefined && repeat !== undefined) throw new Error(`Couldn't read the repeat "${repeat}".`);
+        const c = await updateCommitment(id, { status, dueMs: ms, repeat: repeat === undefined ? undefined : r?.spec ?? null });
         if (!c) throw new Error(`No commitment with id ${id}. Call list_commitments to see the ids.`);
         onCommitments(c);
-        return `${c.id} is now ${c.status}${c.due ? `, due ${fmtWhen(c.due)}` : ''}.`;
+        if (c.advanced) return `Ticked off this time. ${c.id} repeats ${repeatLabel(c.repeat)}; next due ${fmtWhen(c.due)}.`;
+        return `${c.id} is now ${c.status}${c.due ? `, due ${fmtWhen(c.due)}` : ''}${c.repeat ? `, repeating ${repeatLabel(c.repeat)}` : ''}.`;
       },
     },
     {

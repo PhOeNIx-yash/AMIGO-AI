@@ -35,6 +35,22 @@ export const seesPointer = (platform, session) => platform !== 'linux' || sessio
  *  user binds keys to `roamies --summon`, `--talk` and the rest in the desktop's keyboard settings. */
 export const hasHotkeys = (platform, session) => platform !== 'linux' || session === 'x11';
 
+/** The pairs offered for the type-to-ask shortcut (a quick tap of two modifier keys), the default first. The setup
+ *  guide's rule for the talk keys: on a PC no Win key (it opens Start) and no Alt+Shift (it switches keyboard layout). */
+export const writeChords = (platform) => (platform === 'darwin'
+  ? [['option', 'command'], ['control', 'command'], ['control', 'option'], ['control', 'shift'], ['option', 'shift']]
+  : [['control', 'shift'], ['control', 'option']]);
+
+/** Two modifier pairs are the same keys, whichever order they're written in. */
+export const samePair = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === 2 && b.length === 2 && a.every((m) => b.includes(m)) && b.every((m) => a.includes(m));
+
+/** The type-to-ask pair in use: the saved one when it's on offer and isn't the talk pair, else the first on offer that
+ *  isn't. So a config from before this shortcut, or a talk pair already set to its default, still gets one. */
+export function writeChord(platform, talk, saved) {
+  const offered = writeChords(platform);
+  return offered.find((c) => samePair(c, saved) && !samePair(c, talk)) ?? offered.find((c) => !samePair(c, talk)) ?? offered[0];
+}
+
 /** Voice in: Apple's speech on macOS, Parakeet on the PC on Windows and Linux. */
 export const hasVoice = (platform) => platform === 'darwin' || platform === 'win32' || platform === 'linux';
 

@@ -576,11 +576,11 @@
         if (!pointer.active || nowMs - pointer.last > 250) setPointer(x, y);
         pointer.active = true; pointer.last = nowMs;
       } else if (x !== pointer.x || y !== pointer.y) setPointer(x, y);
-      return !!down || list.some((o) => o.c.mover.dragging || o.c.hit?.(x, y)) || !!hitAt(x, y) || !!R.panelHit?.(x, y) || !!R.inkHit?.(x, y);
+      return !!down || list.some((o) => o.c.mover.dragging || o.c.hit?.(x, y)) || !!hitAt(x, y) || !!R.panelHit?.(x, y) || !!R.askBarHit?.(x, y) || !!R.homeHit?.(x, y) || !!R.inkHit?.(x, y);
     };
     // Linux hosts shape the window's click area from these instead of following the cursor (host.js): ptr's answer
     // for a point without moving the pointer, and the patch of screen the canvas covers now (null: nothing drawn).
-    R.hitTest = (x, y) => list.some((o) => o.c.hit?.(x, y)) || !!hitAt(x, y) || !!R.panelHit?.(x, y) || !!R.inkHit?.(x, y);
+    R.hitTest = (x, y) => list.some((o) => o.c.hit?.(x, y)) || !!hitAt(x, y) || !!R.panelHit?.(x, y) || !!R.askBarHit?.(x, y) || !!R.homeHit?.(x, y) || !!R.inkHit?.(x, y);
     R.hitBox = () => (cw && ch ? [vx, vy, cw, ch] : null);
     // On the window, not the canvas: the canvas is only as big as what's drawn, and hit areas can reach past it.
     // Clicks on other page elements (the research card) are theirs.

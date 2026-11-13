@@ -1,5 +1,6 @@
 // What Sidekick may do on its own, what needs a yes from the user first, and what it never does.
 // Pure functions so every rule is tested (test/safety.test.mjs). When unsure, ask; never guess "safe".
+import dns from 'node:dns/promises';
 import fs from 'node:fs';
 import nodePath from 'node:path';
 // Rules work on forward-slash paths everywhere, so a Windows path (C:\Users\ken\.ssh) meets the same checks.
@@ -106,8 +107,9 @@ export function checkRead(p, home, { recursive = false } = {}) {
   return { ...verdict(SAFE), path: abs };
 }
 
-/** write_file. Existing files need a yes; secrets, startup files and system folders never. */
-export function checkWrite(p, home, { exists = false } = {}) {
+/** write_file. Existing files need a yes; secrets, startup files and system folders never. `own`: a folder that is
+ *  the writer's own (an agent's folder), where overwriting needs no yes; only where the path really leads counts. */
+export function checkWrite(p, home, { exists = false, own = null } = {}) {
   home = slash(home);
   const abs = norm(p, home), r = rel(abs, home), all = bothOf(abs);
   if (all.some((a) => [...SECRET, ...NO_WRITE].some((re) => re.test(rel(a, home)) || re.test(a)))) {
@@ -116,6 +118,10 @@ export function checkWrite(p, home, { exists = false } = {}) {
   const realHome = realOf(home), inside = (a) => [home, realHome].some((h) => a.startsWith(h + '/')) || /^\/(private\/)?tmp\//.test(a);
   if (!all.every(inside)) {
     return { ...verdict(BLOCK, `I only write files inside your home folder, not ${p}.`), path: abs };
+  }
+  if (exists && own) {
+    const o = norm(own, home), ro = realOf(o), within = (a) => [o, ro].some((d) => a === d || a.startsWith(d + '/'));
+    if (all.every(within)) return { ...verdict(SAFE), path: abs };
   }
   if (exists) return { ...verdict(ASK, `Overwrite ${r || abs}?`), path: abs };
   return { ...verdict(SAFE), path: abs };
@@ -221,7 +227,7 @@ const READ_ONLY_SUB = {
   java: /^(-version|--version)$/, rustc: /^(-V|--version)$/, env: /^$/, printenv: /^$/,
 };
 
-function checkSimple(text, pipeIn, home, cwd = home) {
+function checkSimple(text, pipeIn, home, cwd = home, opts = {}) {
   const ws = words(text);
   const prog = program(ws), args = prog.args;
   // Path checks see relative arguments from the folder a cd moved to.
@@ -248,7 +254,7 @@ function checkSimple(text, pipeIn, home, cwd = home) {
   if (pipeIn && SHELLS.has(name)) return verdict(BLOCK, `piping into \`${name}\` runs code that hasn't been checked (like a downloaded script).`);
   if (SHELLS.has(name) && /(^|\s)-(c|e)\b/.test(joined) && !READ_ONLY_SUB[name]?.test(joined)) {
     const inner = joined.replace(/^.*?-(c|e)\s+/, '');
-    const v = classifyCommand(inner, home);
+    const v = classifyCommand(inner, home, { cwd, own: opts.own });
     return v.level === SAFE ? verdict(ASK) : v;
   }
   if (['eval', 'source', '.'].includes(name)) return verdict(ASK);
@@ -299,7 +305,7 @@ function checkSimple(text, pipeIn, home, cwd = home) {
   // Making folders is like write_file making a new file: fine where writing is, a yes elsewhere, never where it's blocked.
   if (name === 'mkdir') {
     for (const a of pathArgs.filter((x) => !x.startsWith('-'))) {
-      const w = checkWrite(a, home);
+      const w = checkWrite(a, home, { own: opts.own });
       if (w.level === BLOCK) return w.path.startsWith(slash(home) + '/') || /^\/(private\/)?tmp\//.test(w.path) ? verdict(BLOCK, w.reason) : verdict(ASK, w.reason);
     }
     return verdict(SAFE);
@@ -350,7 +356,8 @@ function unrollLoop(s) {
   return pre + vals.map((x) => body.replace(new RegExp(`\\$\\{?${v}\\}?(?!\\w)`, 'g'), x)).join(' && ') + post;
 }
 
-export function classifyCommand(cmd, home, { exists } = {}) {
+/** `cwd`: the folder the command starts in (default home); `own`: the runner's own folder (see checkWrite). */
+export function classifyCommand(cmd, home, { exists, cwd: start = null, own = null } = {}) {
   home = slash(home);
   const s0 = String(cmd ?? '').trim();
   const s = unrollLoop(s0) ?? s0;
@@ -361,13 +368,13 @@ export function classifyCommand(cmd, home, { exists } = {}) {
   if (!parts) return verdict(ASK, "I couldn't read that command clearly.");
   let level = SAFE, reason = '';
   // The folder each part runs in, so relative paths after a cd are checked where they really point. null: unknown.
-  let cwd = home;
+  let cwd = start ? norm(start, home) : home;
   for (const p of parts) {
-    let v = checkSimple(p.text, p.pipeIn, home, cwd ?? home);
+    let v = checkSimple(p.text, p.pipeIn, home, cwd ?? home, { own });
     if (cwd == null && v.level === SAFE) v = verdict(ASK, "I can't tell which folder that runs in.");
     for (const r of redirectTargets(p.text)) {
       const t = /^~/.test(r) || isAbs(slash(r)) ? r : path.join(cwd ?? home, slash(r));
-      const w = checkWrite(t, home, { exists: !exists || !!exists(norm(t, home)) });
+      const w = checkWrite(t, home, { exists: !exists || !!exists(norm(t, home)), own });
       if (w.level === BLOCK) return verdict(BLOCK, w.reason);
       if ((w.level === ASK || cwd == null || /[$`*?{]/.test(r)) && v.level === SAFE) v = verdict(ASK, w.reason);
     }
@@ -433,8 +440,8 @@ export function isPrivateAddress(ip) {
   return a === '::' || a === '::1' || /^f[cd]/.test(a) || /^fe[89ab]/.test(a) || /^ff/.test(a) || /^64:ff9b:/.test(a) || /^0*:/.test(a) && /^[0:]*(:1)?$/.test(a);
 }
 
-/** fetch_url: public web pages only, so a web page can't steer Sidekick into the user's router or local apps.
- *  The address a name resolves to is checked too, just before each request (tools.mjs). */
+/** web_fetch: public web pages only, so a web page can't steer Sidekick into the user's router or local apps.
+ *  checkFetch also checks the addresses a name resolves to, before each request and redirect hop. */
 export function checkUrl(url) {
   let u;
   try { u = new URL(String(url)); } catch { return verdict(BLOCK, "That isn't a valid link."); }
@@ -442,6 +449,17 @@ export function checkUrl(url) {
   if (u.username || u.password) return verdict(BLOCK, 'Links with passwords in them are blocked.');
   const host = u.hostname.replace(/^\[|\]$/g, '');
   if (PRIVATE_HOST.test(u.hostname) || ((/^[\d.]+$/.test(host) || host.includes(':')) && isPrivateAddress(host))) return verdict(BLOCK, `${u.hostname} is on your own computer or network, so I won't fetch it.`);
+  return verdict(SAFE);
+}
+
+/** checkUrl, plus a refusal when the host resolves to this computer or the local network (a public name can point at
+ *  127.0.0.1). A name that doesn't resolve is let through: the request itself then fails. lookup: dns.lookup's shape. */
+export async function checkFetch(url, { lookup = dns.lookup } = {}) {
+  const v = checkUrl(url);
+  if (v.level === BLOCK) return v;
+  const host = new URL(String(url)).hostname.replace(/^\[|\]$/g, '');
+  const addrs = await Promise.resolve().then(() => lookup(host, { all: true })).catch(() => []);
+  if ((Array.isArray(addrs) ? addrs : []).some((x) => isPrivateAddress(x?.address))) return verdict(BLOCK, `${host} leads to your own computer or network, so I won't fetch it.`);
   return verdict(SAFE);
 }
 
@@ -461,7 +479,7 @@ export const isYes = (text) => /^\s*(y|yes|yeah|yep|yup|ok|okay|sure|go|go ahead
 // ---------- drawing on screen ----------
 
 /** What a draw call may do beyond drawing. kind: 'open' (a page in the browser, like a link in a reply), 'photo' and
- *  'favicon' (fetched for a card, like fetch_url), 'type' (into a field, like act_in_app: only with actions allowed;
+ *  'favicon' (fetched for a card, like web_fetch), 'type' (into a field, like act_in_app: only with actions allowed;
  *  the macOS helper still refuses the HANDS_OFF apps), 'copy' (to the clipboard), 'button' (a next-step button:
  *  ask sends its words as a new request, open and copy follow the rules above). */
 export function checkDrawAction({ kind, url, text, action } = {}, { allowActions = false } = {}) {

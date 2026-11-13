@@ -49,12 +49,14 @@
       let userForm = form;
       // Look: 'classic' (the goo blob, and the arrow at cursor size), 'jarvis' (roamies/jarvis.js: a globe of
       // points with a lit heart, and a HUD reticle at cursor size) or a character from roamies/people.js
-      // ('anime', 'sarah', 'adrian'). Moves, sizes and everything else are shared.
+      // ('anime', 'sarah', 'adrian', 'rita'). Moves, sizes and everything else are shared.
       const drawn = (l) => (l === 'jarvis' ? Roamie.jarvis : Roamie.people?.[l]);
       const pickLook = (l) => (drawn(l) ? l : 'classic');
       let look = pickLook(typeof location !== 'undefined' ? new URLSearchParams(location.search).get('look') : null);
       const jst = { spin: 0, dt: 0.016 };
-      const hands = [-1, 1].map((s) => ({ s, x: m.x, y: m.y, vx: 0, vy: 0 }));
+      // Each hand springs to its pose in the body's own space (o: its offset from the body), so it moves with the body
+      // however fast that goes, and only eases between poses. x, y: where that puts it now.
+      const hands = [-1, 1].map((s) => ({ s, x: m.x, y: m.y, o: { x: 0, y: 0, vx: 0, vy: 0 } }));
       const parts = [];
       let act = null, pending = null, arms = 0, ox = 0, oy = 0, prevHop = 0;
       let actIdx = [...o.id].reduce((a, c) => a + c.charCodeAt(0), 0) % ACTS.length, nextAct = rand(1.2, 3);
@@ -224,7 +226,7 @@
         const hr = Math.max(2, Math.round(((R * 0.25) / P) * Math.min(1, arms * 1.25)));
         for (const h of hands) {
           const sx = bx + h.s * R * 0.62, sy = by + R * 0.18;
-          const gx = Math.round(Roamie.lerp(sx, h.x, arms) / P), gy = Math.round(Roamie.lerp(sy, h.y, arms) / P);
+          const gx = Math.round(Roamie.lerp(sx, bx + h.o.x, arms) / P), gy = Math.round(Roamie.lerp(sy, by + h.o.y, arms) / P);
           disc(gx, gy, hr + 1, hr + 1, 0);
           disc(gx, gy, hr, hr, Math.max(1, L - 1));
           for (let i = -hr + 1; i < hr; i++) put(gx + i, gy + hr - 1, Math.max(1, L - 2));
@@ -297,7 +299,7 @@
       const teleport = (x, y) => {
         m.x = x; m.y = y; m.vx = m.vy = 0; m.tx = x; m.ty = y; m.mode = 'rest'; m.rest = 1.5; m.flung = false; m.dragging = false;
         for (const q of tail) { q.x = x; q.y = y; q.vx = q.vy = 0; }
-        for (const h of hands) { h.x = x; h.y = y; h.vx = h.vy = 0; }
+        for (const h of hands) { h.x = x; h.y = y; Object.assign(h.o, { x: 0, y: 0, vx: 0, vy: 0 }); }
         for (const e of ears) { e.x = x; e.y = y - R; e.vx = e.vy = 0; }
         if (ant) for (const q of ant) { q.x = x; q.y = y - R; q.vx = q.vy = 0; }
         drips.length = 0; parts.length = 0; arms = 0; m.stretch = 0;
@@ -671,7 +673,8 @@
             ox = pose.ox ?? 0; oy = pose.oy ?? 0;
           }
           arms = Roamie.damp(arms, act ? 1 : pose?.arms ?? 0, act || pose?.arms ? 10 : 6, dt);
-          for (const h of hands) { const tg = h.s < 0 ? tl : tr; spring(h, m.x + ox + tg[0] * R, m.y + oy + tg[1] * R, 150, 13, dt); }
+          // The gesture offsets (ox, oy: a hop, a shake) move the body, and the hands with it.
+          for (const h of hands) { const tg = h.s < 0 ? tl : tr; spring(h.o, tg[0] * R, tg[1] * R, 150, 13, dt); h.x = m.x + ox + h.o.x; h.y = m.y + oy + h.o.y; }
           for (let i = parts.length - 1; i >= 0; i--) {
             const q = parts[i]; q.vy += q.g * dt; q.vx *= 0.985; q.x += q.vx * dt; q.y += q.vy * dt; q.life -= dt * q.rate;
             if (q.life <= 0) parts.splice(i, 1);

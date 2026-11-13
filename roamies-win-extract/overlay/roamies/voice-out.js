@@ -15,6 +15,7 @@
   const ctx = () => {
     if (!ac) {
       // Fish sends 44.1 kHz; a context at the same rate avoids resampling every chunk (older WebKit can't set it).
+      // Gemini's 24 kHz chunks say their own rate and are resampled as they play.
       try { ac = new AudioContext({ sampleRate: 44100, latencyHint: 'interactive' }); } catch { ac = new AudioContext({ latencyHint: 'interactive' }); }
       out = ac.createGain();
       meter = ac.createAnalyser(); meter.fftSize = 512; buf = new Float32Array(meter.fftSize);

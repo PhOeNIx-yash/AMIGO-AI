@@ -104,6 +104,44 @@
   };
   R.caretAt = caretAt;
 
+  // Where the task tag goes: under the body and centred on it (above it when the bubble is below), 8 px inside the
+  // visible screen. A bubble beside the body (a permission prompt at the small size: level with the head, growing
+  // down) reaches that spot, and the tag covered its Allow button. So while a bubble is open the tag keeps that spot
+  // only when it's clear of the bubble, else it takes the first clear one of: under the body moved away from the
+  // bubble, above the body, just under the bubble (none clear: the one that overlaps least). The spot it had for this
+  // bubble is kept while it stays clear, and an earlier one comes back only once it's clear by twice the gap, so the
+  // body's small drifts can't flip it back and forth.
+  // tag {w, h}; body {x, y, r}; S: the visible screen {l, t, r, b}; bubble {side, x, y, w, h} or null; had: the spot
+  // it took last time for this bubble. Returns the tag's box {x, y, w, h} and its spot.
+  const TAG_GAP = 8;
+  const tagPlace = ({ w, h }, { x, y, r }, S, bubble, had) => {
+    const fit = (tx, ty) => ({ x: clamp(tx, S.l + TAG_GAP, Math.max(S.l + TAG_GAP, S.r - w - TAG_GAP)), y: clamp(ty, S.t + TAG_GAP, Math.max(S.t + TAG_GAP, S.b - h - TAG_GAP)), w, h });
+    const under = y + r * 1.32, over = y - r * 1.5 - h;
+    const home = fit(x - w / 2, bubble?.side === 'below' ? over : under);
+    if (!bubble) return { ...home, spot: 0 };
+    const { x: bx, y: by, w: bw, h: bh } = bubble;
+    const toRight = bx + bw / 2 >= x; // the bubble's side of the body: the tag moves the other way
+    const spots = [
+      home,
+      fit(toRight ? Math.min(home.x, bx - TAG_GAP - w) : Math.max(home.x, bx + bw + TAG_GAP), under),
+      fit(x - w / 2, over),
+      fit(x - w / 2, by + bh + TAG_GAP),
+    ];
+    // How far a spot is from the bubble (negative while they overlap), and how much of it lies within the gap of it.
+    const gap = (g) => Math.max(g.x - (bx + bw), bx - (g.x + w), g.y - (by + bh), by - (g.y + h));
+    const near = (g) => Math.max(0, Math.min(g.x + w, bx + bw + TAG_GAP) - Math.max(g.x, bx - TAG_GAP)) * Math.max(0, Math.min(g.y + h, by + bh + TAG_GAP) - Math.max(g.y, by - TAG_GAP));
+    const clear = (i, margin) => gap(spots[i]) >= margin - 1e-6;
+    const kept = spots[had] !== undefined && clear(had, TAG_GAP);
+    let spot = kept ? spots.findIndex((_, i) => i < had && clear(i, TAG_GAP * 2)) : spots.findIndex((_, i) => clear(i, TAG_GAP));
+    if (spot < 0 && kept) spot = had;
+    if (spot < 0) {
+      spot = spots.reduce((best, g, i) => (near(g) < near(spots[best]) ? i : best), 0);
+      if (spots[had] !== undefined && near(spots[had]) <= near(spots[spot]) + 4) spot = had;
+    }
+    return { ...spots[spot], spot };
+  };
+  R.tagPlace = tagPlace;
+
   const spring = (s, target, k, c, dt) => { s.v += ((target - s.x) * k - s.v * c) * dt; s.x += s.v * dt; return s.x; };
   const sp = (x = 0) => ({ x, v: 0 });
   const deferred = () => { let res; const p = new Promise((r) => (res = r)); p.resolve = res; return p; };
@@ -739,10 +777,12 @@
       return (st.words = { verb, thing });
     };
     const tagBox = (st) => {
-      const { verb, thing } = tagWords(st), S = bounds(), below = !b || b.side !== 'below';
+      const { verb, thing } = tagWords(st);
       const w = Math.round(36 + (verb ? G.textW(verb, TAG_VERB) + 7 : 0) + G.textW(thing, TAG_THING) + 14);
-      const y = below ? m.y + k.R * 1.32 : m.y - k.R * 1.5 - TAG_H;
-      return { w, h: TAG_H, x: clamp(m.x - w / 2, S.l + 8, Math.max(S.l + 8, S.r - w - 8)), y: clamp(y, S.t + 8, Math.max(S.t + 8, S.b - TAG_H - 8)) };
+      // With a bubble open, placed from where the bubble holds still (its anchor), so the tag holds still with it.
+      const g = tagPlace({ w, h: TAG_H }, { x: b?.ax ?? m.x, y: b?.ay ?? m.y, r: k.R }, bounds(), b && { side: b.side, x: b.x.x, y: b.y.x, w: b.w.x, h: b.h.x }, b?.tagSpot);
+      if (b) b.tagSpot = g.spot;
+      return g;
     };
     const drawTag = (ctx, st) => {
       const g = tagBox(st), { verb, thing } = tagWords(st), fail = st.status === 'fail';
@@ -1225,9 +1265,11 @@
       quiet: () => !b && !dying.length && !tool,
       over: (ctx, env) => {
         if (!stage()) return;
+        // The tag goes under every bubble, so it can never cover the words or the Allow and Don't allow buttons of the
+        // open one, nor sit on one that's fading out (the tag takes its usual spot back as soon as a bubble closes).
+        if (tool) drawTag(ctx, tool);
         for (const bb of dying) { drawBubble(ctx, bb); drawText(ctx, env, bb); }
         if (b) { drawBubble(ctx, b); drawText(ctx, env, b); }
-        if (tool) drawTag(ctx, tool);
       },
     };
     return self;
