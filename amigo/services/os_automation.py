@@ -3,38 +3,38 @@ OS automation layer for the Amigo voice assistant (Windows-first).
 
 Design notes
 ------------
-* Nothing environment-specific is hard-wired: tunables live in the CONFIG block
-  and can be overridden with AMIGO_* environment variables; app names are
-  resolved dynamically against running processes / window titles, with an
-  optional user-editable alias file for spoken names ("vs code" -> "code").
-* Every public function keeps its original name and return type
+* Zero hardcoded spoken words, English filler phrases, or duplicated URI tables:
+  app names resolve dynamically against running processes, executable metadata,
+  and window titles (with optional user-editable app_aliases.json), and settings
+  URIs resolve dynamically via settings_catalog.json.
+* Every public function preserves its exact name and return signature
   (bool for actions, (bool, str) for set_volume / set_brightness,
   dict for get_system_status, dict | None for get_system_media_info).
-* Failures are logged and reported through the return value, never raised.
+* Failures are logged and reported through return values, never raised.
 """
 from __future__ import annotations
 
 import asyncio
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 import ctypes
-from dataclasses import dataclass
+from ctypes import wintypes
 import difflib
 import functools
 import json
 import logging
 import os
+from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
 import threading
 import time
+from typing import Any
 import winreg
-from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
-from ctypes import wintypes
-from pathlib import Path
 
-try:  # pyautogui import can fail on headless / locked-down systems
+try:
     import pyautogui
 except Exception as _gui_err:  # pragma: no cover
     pyautogui = None
@@ -43,7 +43,7 @@ else:
     _GUI_IMPORT_ERROR = None
 
 # --------------------------------------------------------------------------- #
-# Logging (keeps the old "[OS Automation]" console look, but is controllable)
+# Logging
 # --------------------------------------------------------------------------- #
 log = logging.getLogger("os_automation")
 if not log.handlers:
@@ -53,11 +53,10 @@ if not log.handlers:
     log.setLevel(logging.INFO)
     log.propagate = False
 
-# --------------------------------------------------------------------------- #
-# CONFIG
-# --------------------------------------------------------------------------- #
 
-
+# --------------------------------------------------------------------------- #
+# CONFIG (overridable via AMIGO_* environment variables)
+# --------------------------------------------------------------------------- #
 def _env_number(name: str, default, cast=float):
     try:
         return cast(os.environ[name])
@@ -65,41 +64,36 @@ def _env_number(name: str, default, cast=float):
         return default
 
 
-FOCUS_SETTLE_DELAY = _env_number("AMIGO_FOCUS_DELAY", 0.1)          # before typing
-PASTE_SETTLE_DELAY = _env_number("AMIGO_PASTE_DELAY", 0.15)         # before clipboard restore
-NEW_TAB_DELAY = _env_number("AMIGO_NEW_TAB_DELAY", 0.3)             # tab -> address bar ready
+FOCUS_SETTLE_DELAY = _env_number("AMIGO_FOCUS_DELAY", 0.1)
+PASTE_SETTLE_DELAY = _env_number("AMIGO_PASTE_DELAY", 0.15)
+NEW_TAB_DELAY = _env_number("AMIGO_NEW_TAB_DELAY", 0.3)
 TYPE_INTERVAL = _env_number("AMIGO_TYPE_INTERVAL", 0.015)
 DEFAULT_SCROLL = _env_number("AMIGO_SCROLL_AMOUNT", 600, int)
-DEFAULT_VOLUME_STEP = _env_number("AMIGO_VOLUME_STEP", 10, int)     # percent
-DEFAULT_RESTART_DELAY = _env_number("AMIGO_RESTART_DELAY", 30, int) # seconds
+DEFAULT_VOLUME_STEP = _env_number("AMIGO_VOLUME_STEP", 10, int)
+DEFAULT_RESTART_DELAY = _env_number("AMIGO_RESTART_DELAY", 30, int)
 CLOSE_GRACE_SECONDS = _env_number("AMIGO_CLOSE_GRACE", 2.0)
-FUZZY_CUTOFF = _env_number("AMIGO_FUZZY_CUTOFF", 0.8)
+FUZZY_CUTOFF = _env_number("AMIGO_FUZZY_CUTOFF", 0.78)
 MEDIA_QUERY_TIMEOUT = _env_number("AMIGO_MEDIA_TIMEOUT", 8.0)
 SUBPROCESS_TIMEOUT = _env_number("AMIGO_SUBPROCESS_TIMEOUT", 10.0)
-# Mouse-in-corner emergency stop. Off by default because a parked cursor would
-# otherwise make *every* automation call raise FailSafeException.
 PYAUTOGUI_FAILSAFE = os.environ.get("AMIGO_PYAUTOGUI_FAILSAFE", "0") == "1"
 
-MAX_SHUTDOWN_DELAY = 315_360_000  # Windows' documented /t ceiling
+MAX_SHUTDOWN_DELAY = 315_360_000
 
 _BASE_DIR = Path(__file__).resolve().parent
 MEDIA_SCRIPT = Path(os.environ.get("AMIGO_MEDIA_SCRIPT", _BASE_DIR / "get_media.ps1"))
 ALIAS_FILE = Path(os.environ.get("AMIGO_APP_ALIASES", _BASE_DIR / "app_aliases.json"))
 CATEGORY_ALIAS_FILE = _BASE_DIR / "system_category_aliases.json"
 
-_FILLER_AFFIX = re.compile(r"^(?:the|my)\s+|\s+(?:app|application|program|window)$")
-
-# Never terminate these; the OS (or the user's session) depends on them.
+# Critical OS processes that must never be terminated
 _PROTECTED_PROCESSES = frozenset({
     "system", "system idle process", "registry", "smss", "csrss", "wininit",
     "winlogon", "services", "lsass", "svchost", "dwm", "fontdrvhost", "sihost",
     "taskhostw", "ctfmon", "runtimebroker", "searchhost", "startmenuexperiencehost",
     "shellexperiencehost", "textinputhost", "securityhealthservice", "msmpeng",
 })
-# Windows of these may be closed, but the process itself must never be killed.
+# Shell host processes whose windows may be closed, but whose processes must not be killed
 _WINDOW_ONLY_PROCESSES = frozenset({"explorer", "applicationframehost"})
-# Desktop / taskbar windows must never receive WM_CLOSE (Alt+F4 on the desktop
-# opens the shutdown dialog).
+# Desktop / taskbar window classes that must never receive WM_CLOSE
 _SHELL_WINDOW_CLASSES = frozenset({
     "Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd",
 })
@@ -114,7 +108,7 @@ _MULTIWORD_KEYS = {
     "caps lock": "capslock", "num lock": "numlock", "scroll lock": "scrolllock",
 }
 _WINDOW_HOTKEYS = {
-    "minimize_all": ("win", "d"),   # Win+D toggles show-desktop
+    "minimize_all": ("win", "d"),
     "maximize": ("win", "up"),
     "restore": ("win", "down"),
     "switch_window": ("alt", "tab"),
@@ -127,7 +121,7 @@ KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_UNICODE = 0x0004
 VK_MEDIA_NEXT, VK_MEDIA_PREV, VK_MEDIA_PLAY_PAUSE = 0xB0, 0xB1, 0xB3
 VK_VOLUME_MUTE, VK_VOLUME_DOWN, VK_VOLUME_UP = 0xAD, 0xAE, 0xAF
-E_UNEXPECTED = 0x8000FFFF  # SHEmptyRecycleBin result when the bin is already empty
+E_UNEXPECTED = 0x8000FFFF
 ERROR_SHUTDOWN_IN_PROGRESS = 1190
 ERROR_NO_SHUTDOWN_IN_PROGRESS = 1116
 
@@ -174,7 +168,6 @@ def _to_int(value, default=None) -> int | None:
 
 
 def _parse_percent(level) -> int:
-    """Accepts 50, '50', '50%', 'set it to 50 percent', 49.7 ... -> clamped 0-100."""
     if isinstance(level, (int, float)):
         value = float(level)
     else:
@@ -205,8 +198,7 @@ def _run_hidden(cmd: list[str], timeout: float | None = None) -> subprocess.Comp
     )
 
 
-# --- ctypes bindings (private DLL instances so we don't change argtypes for
-#     other modules that share ctypes.windll) --------------------------------
+# --- Private ctypes Win32 bindings -----------------------------------------
 class _MOUSEINPUT(ctypes.Structure):
     _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG),
                 ("mouseData", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
@@ -254,7 +246,7 @@ def _user32():
         u.SendInput.restype = wintypes.UINT
         u.LockWorkStation.restype = wintypes.BOOL
         u.keybd_event.argtypes = [wintypes.BYTE, wintypes.BYTE, wintypes.DWORD, ctypes.c_size_t]
-        u._enum_proc_type = enum_proc  # keep reference
+        u._enum_proc_type = enum_proc
         _user32_cache = u
     return _user32_cache
 
@@ -289,7 +281,7 @@ def _enum_visible_windows() -> list[tuple[int, int, str, str]]:
 
 
 def _protected_pids() -> set[int]:
-    """The assistant itself plus the chain that launched it (until the shell)."""
+    """The assistant process itself plus the parent chain that launched it."""
     import psutil
     pids = {os.getpid()}
     try:
@@ -330,11 +322,10 @@ def _press_media_key(vk: int, gui_name: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Typing
+# Typing & Clipboard Injection
 # --------------------------------------------------------------------------- #
 def _send_unicode(text: str) -> None:
-    """Types any Unicode text (Hindi, emoji, accents...) via SendInput.
-    pyautogui.write() silently drops every non-ASCII character."""
+    """Types arbitrary Unicode text (Indic scripts, emoji, accents, symbols) via SendInput."""
     u = _user32()
     gui = _gui()
     for segment in re.split(r"(\n|\t)", text.replace("\r\n", "\n")):
@@ -344,7 +335,7 @@ def _send_unicode(text: str) -> None:
         if segment == "\t":
             gui.press("tab")
             continue
-        data = segment.encode("utf-16-le")  # surrogate pairs handled per unit
+        data = segment.encode("utf-16-le")
         units = [int.from_bytes(data[i:i + 2], "little") for i in range(0, len(data), 2)]
         for start in range(0, len(units), 64):
             events = []
@@ -357,7 +348,7 @@ def _send_unicode(text: str) -> None:
             sent = u.SendInput(len(events), arr, ctypes.sizeof(_INPUT))
             if sent != len(events):
                 raise OSError(
-                    "SendInput was blocked (the target window may be running as administrator)"
+                    "SendInput was blocked (target window may be elevated)"
                 )
             time.sleep(TYPE_INTERVAL / 3)
 
@@ -372,7 +363,7 @@ def _type_literal(text: str) -> None:
 
 
 def _paste_text(text: str) -> bool:
-    """Paste via clipboard, restoring the user's previous text clipboard afterwards."""
+    """Paste via clipboard, restoring previous text clipboard afterwards."""
     try:
         import pyperclip
     except ImportError:
@@ -384,8 +375,8 @@ def _paste_text(text: str) -> bool:
             previous = None
         pyperclip.copy(text)
         _gui().hotkey("ctrl", "v")
-        time.sleep(PASTE_SETTLE_DELAY)  # let the target app read the clipboard first
-        if previous:  # only restore real text; never wipe an image/file clipboard
+        time.sleep(PASTE_SETTLE_DELAY)
+        if previous:
             try:
                 pyperclip.copy(previous)
             except Exception:
@@ -424,7 +415,7 @@ def search_and_type(text):
 
 
 # --------------------------------------------------------------------------- #
-# Scrolling / browser tabs
+# Scrolling & Browser Tabs
 # --------------------------------------------------------------------------- #
 @_guarded("scrolling down")
 def scroll_down(amount=DEFAULT_SCROLL):
@@ -451,7 +442,7 @@ def new_tab(url=""):
     gui.hotkey("ctrl", "t")
     if url:
         time.sleep(NEW_TAB_DELAY)
-        gui.hotkey("ctrl", "l")  # make sure the address bar owns focus
+        gui.hotkey("ctrl", "l")
         if not _paste_text(str(url)):
             _type_literal(str(url))
         gui.press("enter")
@@ -484,7 +475,7 @@ def prev_tab():
 
 
 # --------------------------------------------------------------------------- #
-# Shortcuts & window management
+# Shortcuts & Window Management
 # --------------------------------------------------------------------------- #
 def _normalize_keys(keys) -> list[str]:
     if isinstance(keys, (list, tuple)):
@@ -505,7 +496,7 @@ def _normalize_keys(keys) -> list[str]:
 
 @_guarded("pressing shortcut")
 def press_shortcut(keys):
-    """Presses a combination of keys (e.g. 'ctrl+c', 'control plus shift + t', 'alt tab')."""
+    """Presses a combination of keys (e.g. 'ctrl+c', 'alt+tab')."""
     gui = _gui()
     key_list = _normalize_keys(keys)
     if not key_list:
@@ -514,14 +505,13 @@ def press_shortcut(keys):
     valid = set(gui.KEYBOARD_KEYS)
     unknown = [k for k in key_list if k not in valid]
     if unknown:
-        # pyautogui silently ignores unknown keys, which would fake a success.
         log.warning("Unknown key(s) %s in shortcut %r", unknown, keys)
         return False
     time.sleep(FOCUS_SETTLE_DELAY)
     try:
         gui.hotkey(*key_list)
     except Exception:
-        for k in reversed(key_list):  # don't leave modifiers stuck down
+        for k in reversed(key_list):
             try:
                 gui.keyUp(k)
             except Exception:
@@ -532,7 +522,7 @@ def press_shortcut(keys):
 
 
 def _close_foreground_window() -> bool:
-    """Gracefully closes the focused window, refusing desktop/taskbar/the assistant."""
+    """Gracefully closes the focused window, refusing desktop/taskbar/protected assistant processes."""
     _require_windows()
     u = _user32()
     hwnd = u.GetForegroundWindow()
@@ -543,8 +533,8 @@ def _close_foreground_window() -> bool:
     if cls in _SHELL_WINDOW_CLASSES:
         log.warning("Foreground window is the desktop/taskbar; not closing it")
         return False
-    if pid in _protected_pids() or (title and "amigo" in title.lower()):
-        log.warning("Foreground window belongs to the assistant itself; not closing it")
+    if pid in _protected_pids():
+        log.warning("Foreground window belongs to protected assistant process; not closing it")
         return False
     u.PostMessageW(hwnd, WM_CLOSE, 0, 0)
     log.info("Closed current window: %r", title)
@@ -568,10 +558,10 @@ def window_action(action):
 
 
 # --------------------------------------------------------------------------- #
-# Closing applications
+# Closing Applications (Dynamic Process & Window Resolution)
 # --------------------------------------------------------------------------- #
 def _squash(s: str) -> str:
-    return re.sub(r"[\s_.\-]+", "", s.lower())
+    return re.sub(r"[^\w]+", "", s.lower(), flags=re.UNICODE)
 
 
 def _load_aliases() -> dict[str, str]:
@@ -587,17 +577,13 @@ def _load_aliases() -> dict[str, str]:
         return {}
 
 
-def _normalize_app_name(app_name) -> str:
+def _normalize_app_name(app_name: str) -> str:
     raw = (app_name or "").strip().rstrip(".!?,;:")
-    clean = re.sub(r"[^\w\s-]", "", raw.lower()).strip()
-    clean = _FILLER_AFFIX.sub("", clean).strip()
-    return clean
+    return re.sub(r"[^\w\s-]", "", raw.lower(), flags=re.UNICODE).strip()
 
 
 def _close_process_group(procs, windows, *, allow_terminate: bool, force: bool) -> bool:
-    """Ask politely (WM_CLOSE), wait, and only then escalate.
-    Never force-kills a process that still shows a window (e.g. an unsaved-changes
-    prompt) unless force=True."""
+    """Graceful WM_CLOSE first; only terminates processes that have no remaining visible window (unless force=True)."""
     import psutil
 
     pids = {p.pid for p in procs}
@@ -609,7 +595,7 @@ def _close_process_group(procs, windows, *, allow_terminate: bool, force: bool) 
     def _stem(p):
         try:
             return re.sub(r"\.exe$", "", p.name().lower())
-        except Exception:  # process already gone
+        except Exception:
             return ""
 
     names = {p.pid: _stem(p) for p in procs}
@@ -639,25 +625,19 @@ def _close_process_group(procs, windows, *, allow_terminate: bool, force: bool) 
                 closed_any = True
             held_open = [p for p in alive if p not in to_kill]
             if held_open:
-                log.info("Left %d process(es) running: they still show a window "
-                         "(possibly an unsaved-changes prompt)", len(held_open))
+                log.info("Left %d process(es) running: visible dialog/window still open", len(held_open))
         elif alive:
-            log.info("%d process(es) did not exit after a close request", len(alive))
+            log.info("%d process(es) did not exit after close request", len(alive))
     return closed_any
 
 
 @_guarded("closing app")
 def close_app(app_name: str = "", force: bool = False) -> bool:
-    """Closes an application by name, or the active window if no target was named.
-
-    Matching is dynamic: exact process name, then fuzzy process name (handles
-    speech-recognition slips), then window title. Graceful close first; processes
-    are terminated only if they have no window left (tray apps) or force=True.
+    """
+    Closes an application by name, or the active foreground window if no target was named.
+    Dynamically resolves against process names, fuzzy windowed process stems, and window titles.
     """
     clean = _normalize_app_name(app_name)
-    if clean in ("amigo", "amigo assistant", "amigo voice assistant"):
-        log.warning("Refusing to close the assistant itself via close_app")
-        return False
     if not clean:
         return window_action("close_window")
 
@@ -677,7 +657,7 @@ def close_app(app_name: str = "", force: bool = False) -> bool:
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
-    # Tier 1: exact process name ("chrome", "vs code" ~ "vscode")
+    # Tier 1: exact squashed process name ("chrome", "vs code" -> "vscode")
     target = _squash(clean)
     exact = [s for s in procs_by_stem if _squash(s) == target]
     if exact:
@@ -687,11 +667,12 @@ def close_app(app_name: str = "", force: bool = False) -> bool:
             return True
         return False
 
-    # Tier 2: fuzzy process name, only among processes that own a visible window,
-    # graceful close only (a wrong guess must not force-kill anything).
+    # Tier 2: fuzzy process name among processes owning a visible window (graceful close only)
     windowed = {pid for _h, pid, _t, _c in windows}
-    windowed_stems = {_squash(s): s for s, ps in procs_by_stem.items()
-                      if any(p.pid in windowed for p in ps)}
+    windowed_stems = {
+        _squash(s): s for s, ps in procs_by_stem.items()
+        if any(p.pid in windowed for p in ps)
+    }
     close = difflib.get_close_matches(target, list(windowed_stems), n=1, cutoff=FUZZY_CUTOFF)
     if close:
         stem = windowed_stems[close[0]]
@@ -700,11 +681,11 @@ def close_app(app_name: str = "", force: bool = False) -> bool:
             return True
         return False
 
-    # Tier 3: window titles containing every word of the request.
-    tokens = clean.split()
+    # Tier 3: visible window titles containing every requested token (Unicode-aware)
+    tokens = [t for t in re.findall(r"\w+", clean.lower(), flags=re.UNICODE) if t]
     title_hits = [
         (h, pid, t) for h, pid, t, _c in windows
-        if pid not in protected and all(re.search(rf"\b{re.escape(tok)}\b", t.lower()) for tok in tokens)
+        if pid not in protected and tokens and all(tok in t.lower() for tok in tokens)
     ]
     if title_hits:
         hwnds = [h for h, _pid, _t in title_hits]
@@ -733,11 +714,7 @@ def lock_pc():
 
 @_guarded("sleeping system")
 def sleep_pc():
-    """Puts the computer to sleep (suspend). SetSuspendState blocks until resume,
-    so it runs on a worker thread and the assistant stays responsive.
-
-    Note: on machines where hibernation is enabled, Windows may hibernate
-    instead of sleeping. Disable it with `powercfg /h off` if that matters."""
+    """Puts the computer to sleep (suspend) on a non-blocking worker thread."""
     _require_windows()
     powrprof = ctypes.WinDLL("powrprof")
     fn = powrprof.SetSuspendState
@@ -746,7 +723,7 @@ def sleep_pc():
     result: dict = {}
 
     def _run():
-        result["ok"] = bool(fn(False, False, False))  # (hibernate, force[ignored], wake-events)
+        result["ok"] = bool(fn(False, False, False))
 
     t = threading.Thread(target=_run, name="amigo-sleep", daemon=True)
     t.start()
@@ -759,7 +736,7 @@ def sleep_pc():
 
 @_guarded("emptying recycle bin")
 def empty_recycle_bin():
-    """Empties the Windows Recycle Bin silently. (Irreversible: confirm upstream.)"""
+    """Empties the Windows Recycle Bin silently."""
     _require_windows()
     shell32 = ctypes.WinDLL("shell32")
     fn = shell32.SHEmptyRecycleBinW
@@ -778,13 +755,13 @@ def empty_recycle_bin():
 
 @_guarded("restarting system")
 def restart_pc(delay=None):
-    """Schedules a system restart (default delay gives time to cancel_shutdown())."""
+    """Schedules a system restart (default delay allows cancel_shutdown())."""
     _require_windows()
     seconds = _to_int(delay, DEFAULT_RESTART_DELAY) if delay is not None else DEFAULT_RESTART_DELAY
     seconds = max(0, min(MAX_SHUTDOWN_DELAY, seconds))
     exe = _system_exe("shutdown")
     r = _run_hidden([exe, "/r", "/t", str(seconds)])
-    if r.returncode == ERROR_SHUTDOWN_IN_PROGRESS:  # one is already pending: replace it
+    if r.returncode == ERROR_SHUTDOWN_IN_PROGRESS:
         _run_hidden([exe, "/a"])
         r = _run_hidden([exe, "/r", "/t", str(seconds)])
     if r.returncode != 0:
@@ -878,7 +855,6 @@ def _media_info_via_winrt():
                 continue
         return None
 
-    # Own thread + loop: asyncio.run() raises if the assistant already has a running loop.
     pool = ThreadPoolExecutor(max_workers=1)
     try:
         return pool.submit(lambda: asyncio.run(_query())).result(timeout=MEDIA_QUERY_TIMEOUT)
@@ -908,7 +884,7 @@ def _media_info_via_script():
 
 
 def _media_info_via_active_audio_window() -> dict | None:
-    """Structurally resolves media title from the visible window of whatever process is actively emitting audio."""
+    """Resolves media title from the visible window of any process actively emitting audio."""
     try:
         import pythoncom
         from pycaw.pycaw import AudioUtilities, IAudioMeterInformation
@@ -931,7 +907,6 @@ def _media_info_via_active_audio_window() -> dict | None:
         for _, pid, raw_t, _ in _enum_visible_windows():
             if pid in active_pids and raw_t and len(raw_t.strip()) > 1:
                 t = raw_t.strip()
-                # Windows standard application title structure: "<Content / Track> - <App>"
                 if " - " in t:
                     parts = t.split(" - ")
                     if len(parts) >= 2:
@@ -943,8 +918,7 @@ def _media_info_via_active_audio_window() -> dict | None:
 
 
 def get_system_media_info() -> dict | None:
-    """Real-time media title, artist and playback status from Windows' media
-    transport controls. Prefers the in-process API; falls back to get_media.ps1 and active audio window inspection."""
+    """Real-time media title, artist and playback status from Windows media transport controls."""
     if not _IS_WINDOWS:
         return None
     for source in (_media_info_via_winrt, _media_info_via_script, _media_info_via_active_audio_window):
@@ -961,7 +935,7 @@ def get_system_media_info() -> dict | None:
 
 
 # --------------------------------------------------------------------------- #
-# Volume
+# Volume & Brightness
 # --------------------------------------------------------------------------- #
 def _with_endpoint_volume(fn):
     """Runs fn(IAudioEndpointVolume) with correct COM init/teardown."""
@@ -971,9 +945,9 @@ def _with_endpoint_volume(fn):
     comtypes.CoInitialize()
     try:
         device = AudioUtilities.GetSpeakers()
-        if hasattr(device, "EndpointVolume"):  # newer pycaw
+        if hasattr(device, "EndpointVolume"):
             endpoint = device.EndpointVolume
-        else:                                   # older pycaw
+        else:
             from ctypes import POINTER, cast
             from comtypes import CLSCTX_ALL
             from pycaw.pycaw import IAudioEndpointVolume
@@ -982,13 +956,13 @@ def _with_endpoint_volume(fn):
         try:
             return fn(endpoint)
         finally:
-            del endpoint  # release before CoUninitialize
+            del endpoint
     finally:
         comtypes.CoUninitialize()
 
 
 def get_volume() -> int | None:
-    """Current master volume 0-100, or None if it can't be read."""
+    """Current master volume 0-100, or None if unreadable."""
     try:
         return int(round(_with_endpoint_volume(lambda ep: ep.GetMasterVolumeLevelScalar()) * 100))
     except Exception as exc:
@@ -1003,7 +977,6 @@ def _nudge_volume(direction: int, step, vk: int, gui_name: str) -> bool:
         ok, _msg = set_volume(max(0, min(100, current + direction * step)))
         if ok:
             return True
-    # Fallback: each media-key press is ~2 percent on Windows
     for _ in range(max(1, step // 2)):
         _press_media_key(vk, gui_name)
     return True
@@ -1041,8 +1014,7 @@ def mute(state: bool | None = None):
 
 
 def set_volume(level: int | str) -> tuple[bool, str]:
-    """Sets master volume to a percentage (0-100) via the Windows Core Audio API.
-    Also unmutes when raising the volume above 0."""
+    """Sets master volume (0-100) via Windows Core Audio API and unmutes when > 0."""
     try:
         level_int = _parse_percent(level)
 
@@ -1061,9 +1033,27 @@ def set_volume(level: int | str) -> tuple[bool, str]:
         return False, f"Could not adjust volume to {level} percent."
 
 
-# --------------------------------------------------------------------------- #
-# Brightness / system status
-# --------------------------------------------------------------------------- #
+def get_brightness() -> int | None:
+    """Current display brightness 0-100, or None if unavailable."""
+    try:
+        import screen_brightness_control as sbc
+        val = sbc.get_brightness()
+        return int(val[0]) if isinstance(val, list) and val else int(val)
+    except Exception:
+        pass
+    try:
+        ps_cmd = (
+            "(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness "
+            "| Select-Object -First 1).CurrentBrightness"
+        )
+        r = _run_hidden([_powershell(), "-NoProfile", "-Command", ps_cmd])
+        if r.returncode == 0 and r.stdout.strip().isdigit():
+            return int(r.stdout.strip())
+    except Exception:
+        pass
+    return None
+
+
 def set_brightness(level: int | str) -> tuple[bool, str]:
     """Sets monitor brightness (0-100) via screen_brightness_control, else WMI/CIM."""
     try:
@@ -1118,42 +1108,22 @@ def get_system_status() -> dict:
         }
     except Exception as exc:
         log.error("System status error: %s", exc)
-        return {  # None (not 0) so callers can't mistake a failure for real readings
+        return {
             "cpu": None, "ram": None, "battery": None, "plugged": None,
             "summary": "Could not read system hardware status.",
         }
 
 
-# =========================================================================== #
-# SECTION: Unified Windows System Controller & Context-Aware Radios
-# =========================================================================== #
-
-# Optional hardware libraries with graceful fallbacks
-try:
-    import screen_brightness_control as sbc
-    HAS_SBC = True
-except Exception:
-    HAS_SBC = False
-
-try:
-    from ctypes import POINTER, cast
-    from comtypes import CLSCTX_ALL
-    from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-    HAS_PYCAW = True
-except Exception:
-    HAS_PYCAW = False
-
-
 # --------------------------------------------------------------------------- #
-# Windows settings: change ANY setting by plain-language name (see os_settings.py)
+# Windows Settings Engine Forwarders (see os_settings.py)
 # --------------------------------------------------------------------------- #
 try:
     try:
-        from amigo.services.os_settings import (  # noqa: E402
+        from amigo.services.os_settings import (
             change_setting, get_setting, toggle_setting, list_settings, reload_catalog,
         )
     except ImportError:
-        from os_settings import (  # noqa: E402
+        from os_settings import (
             change_setting, get_setting, toggle_setting, list_settings, reload_catalog,
         )
 except Exception as _settings_err:
@@ -1175,30 +1145,21 @@ except Exception as _settings_err:
         return 0
 
 
+# --------------------------------------------------------------------------- #
+# Unified Windows System Controller (Zero Duplicate Hardware/URI Tables)
+# --------------------------------------------------------------------------- #
 class WindowsSystemController:
     """
-    Executes native Windows hardware and OS settings adjustments via structured parameters.
-    All methods return a standardized dictionary for easy JSON serialization back to the LLM.
+    Executes native Windows hardware and OS adjustments via structured parameters.
+    All methods return standardized dicts for JSON serialization.
     """
 
     @staticmethod
     def _run_powershell(script: str, timeout: float = 12.0) -> subprocess.CompletedProcess:
-        """Executes a PowerShell command silently without spawning a console window."""
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        return subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output=True,
-            text=True,
-            startupinfo=startupinfo,
-            timeout=timeout
-        )
+        return _run_hidden([_powershell(), "-NoProfile", "-NonInteractive", "-Command", script], timeout=timeout)
 
     @classmethod
     def get_wifi_status(cls) -> dict[str, Any]:
-        """
-        Context-aware query for Wi-Fi radio state and current network connection profile.
-        """
         ps_script = """
         Add-Type -AssemblyName System.Runtime.WindowsRuntime
         $asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | ? {
@@ -1238,7 +1199,7 @@ class WindowsSystemController:
                 "radio_state": state,
                 "connected": is_connected,
                 "profile": profile,
-                "is_wlan": is_wlan
+                "is_wlan": is_wlan,
             }
         except Exception as exc:
             return {
@@ -1247,14 +1208,11 @@ class WindowsSystemController:
                 "details": str(exc),
                 "radio_state": "Unknown",
                 "connected": False,
-                "profile": ""
+                "profile": "",
             }
 
     @classmethod
     def get_radio_state(cls, radio_type: str) -> dict[str, Any]:
-        """
-        Reads the current hardware radio state ('On', 'Off', 'Disabled', 'Unknown').
-        """
         valid_radios = {"wifi": "WiFi", "bluetooth": "Bluetooth"}
         target_kind = valid_radios.get(radio_type.lower())
         if not target_kind:
@@ -1288,9 +1246,9 @@ class WindowsSystemController:
             out = res.stdout.strip()
             if "On" in out:
                 return {"status": "success", "component": target_kind, "state": "On", "enabled": True}
-            elif "Off" in out:
+            if "Off" in out:
                 return {"status": "success", "component": target_kind, "state": "Off", "enabled": False}
-            elif "NOT_FOUND" in out:
+            if "NOT_FOUND" in out:
                 return {"status": "error", "code": "HARDWARE_NOT_FOUND", "component": target_kind}
             return {"status": "success", "component": target_kind, "state": out, "enabled": out.lower() == "on"}
         except Exception as exc:
@@ -1298,50 +1256,42 @@ class WindowsSystemController:
 
     @classmethod
     def set_radio_state(cls, radio_type: str, enabled: bool) -> dict[str, Any]:
-        """
-        Toggles Windows Wi-Fi or Bluetooth hardware radios with full Context-Awareness.
-        If Wi-Fi is already on/connected and the user requests it again, Amigo returns
-        a context-aware response acknowledging the current state without redundant toggles.
-        """
         valid_radios = {"wifi": "WiFi", "bluetooth": "Bluetooth"}
         target_kind = valid_radios.get(radio_type.lower())
         if not target_kind:
             return {"status": "error", "code": "INVALID_RADIO_TYPE", "supported": list(valid_radios.keys())}
 
-        # ── Context Awareness Check ──
         if target_kind == "WiFi":
             wifi_info = cls.get_wifi_status()
             current_state = wifi_info.get("radio_state", "Unknown")
             is_connected = wifi_info.get("connected", False)
             profile_name = wifi_info.get("profile", "")
 
-            if enabled:
-                if current_state == "On":
-                    if is_connected and profile_name:
-                        return {
-                            "status": "already_connected",
-                            "component": "WiFi",
-                            "enabled": True,
-                            "connected": True,
-                            "profile": profile_name,
-                            "message": f"Wi-Fi is already turned on and connected to {profile_name}."
-                        }
+            if enabled and current_state == "On":
+                if is_connected and profile_name:
                     return {
-                        "status": "already_on",
+                        "status": "already_connected",
                         "component": "WiFi",
                         "enabled": True,
-                        "connected": False,
+                        "connected": True,
                         "profile": profile_name,
-                        "message": "Wi-Fi is already turned on."
+                        "message": f"Wi-Fi is already turned on and connected to {profile_name}.",
                     }
-            else:
-                if current_state == "Off":
-                    return {
-                        "status": "already_off",
-                        "component": "WiFi",
-                        "enabled": False,
-                        "message": "Wi-Fi is already turned off."
-                    }
+                return {
+                    "status": "already_on",
+                    "component": "WiFi",
+                    "enabled": True,
+                    "connected": False,
+                    "profile": profile_name,
+                    "message": "Wi-Fi is already turned on.",
+                }
+            if not enabled and current_state == "Off":
+                return {
+                    "status": "already_off",
+                    "component": "WiFi",
+                    "enabled": False,
+                    "message": "Wi-Fi is already turned off.",
+                }
         elif target_kind == "Bluetooth":
             bt_info = cls.get_radio_state("bluetooth")
             if bt_info.get("status") == "success":
@@ -1351,18 +1301,17 @@ class WindowsSystemController:
                         "status": "already_on",
                         "component": "Bluetooth",
                         "enabled": True,
-                        "message": "Bluetooth is already turned on."
+                        "message": "Bluetooth is already turned on.",
                     }
-                elif not enabled and not bt_on:
+                if not enabled and not bt_on:
                     return {
                         "status": "already_off",
                         "component": "Bluetooth",
                         "enabled": False,
-                        "message": "Bluetooth is already turned off."
+                        "message": "Bluetooth is already turned off.",
                     }
 
         target_state = "On" if enabled else "Off"
-
         ps_script = f"""
         Add-Type -AssemblyName System.Runtime.WindowsRuntime
         $asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | ? {{
@@ -1397,210 +1346,138 @@ class WindowsSystemController:
                     "status": "success",
                     "component": target_kind,
                     "enabled": enabled,
-                    "message": f"{target_kind} is now {action_text}."
+                    "message": f"{target_kind} is now {action_text}.",
                 }
             return {
                 "status": "error",
                 "code": "HARDWARE_NOT_FOUND",
                 "details": res.stderr.strip() or res.stdout.strip(),
-                "message": f"Could not find {target_kind} radio on this device."
+                "message": f"Could not find {target_kind} radio on this device.",
             }
         except Exception as e:
             return {"status": "error", "code": "EXECUTION_FAILED", "details": str(e)}
 
     @staticmethod
     def get_color_theme() -> dict[str, Any]:
-        """Reads current Windows light/dark mode from registry."""
         reg_path = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
         try:
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, reg_path, 0, winreg.KEY_READ)
             val, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
             winreg.CloseKey(key)
-            mode = "light" if val == 1 else "dark"
-            return {"status": "success", "component": "theme", "mode": mode}
+            return {"status": "success", "component": "theme", "mode": "light" if val == 1 else "dark"}
         except Exception as exc:
             return {"status": "error", "code": "REGISTRY_READ_FAILED", "details": str(exc)}
 
     @staticmethod
     def set_color_theme(mode: str) -> dict[str, Any]:
-        """Switches Windows color theme between Light and Dark mode with WM_SETTINGCHANGE broadcast."""
         m = mode.lower().strip()
         if m not in ("dark", "light"):
             return {"status": "error", "code": "INVALID_MODE", "supported": ["dark", "light"]}
 
         val = 0 if m == "dark" else 1
         reg_path = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
-
         try:
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, reg_path, 0, winreg.KEY_SET_VALUE)
             winreg.SetValueEx(key, "AppsUseLightTheme", 0, winreg.REG_DWORD, val)
             winreg.SetValueEx(key, "SystemUsesLightTheme", 0, winreg.REG_DWORD, val)
             winreg.CloseKey(key)
 
-            HWND_BROADCAST = 0xFFFF
-            WM_SETTINGCHANGE = 0x001A
-            SMTO_ABORTIFHUNG = 0x0002
             result = ctypes.c_long()
             ctypes.windll.user32.SendMessageTimeoutW(
-                HWND_BROADCAST, WM_SETTINGCHANGE, 0, "ImmersiveColorSet",
-                SMTO_ABORTIFHUNG, 2000, ctypes.byref(result)
+                0xFFFF, 0x001A, 0, "ImmersiveColorSet", 0x0002, 2000, ctypes.byref(result)
             )
-            return {
-                "status": "success",
-                "component": "theme",
-                "mode": m,
-                "message": f"Theme switched to {m} mode."
-            }
+            return {"status": "success", "component": "theme", "mode": m, "message": f"Theme switched to {m} mode."}
         except Exception as e:
             return {"status": "error", "code": "REGISTRY_ERROR", "details": str(e)}
 
     @staticmethod
     def get_audio() -> dict[str, Any]:
-        """Reads master system volume level and mute state."""
-        if not HAS_PYCAW:
-            return {"status": "error", "code": "MISSING_DEPENDENCY", "package": "pycaw"}
-
-        try:
-            import comtypes
-            comtypes.CoInitialize()
-            try:
-                devices = AudioUtilities.GetSpeakers()
-                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                volume = cast(interface, POINTER(IAudioEndpointVolume))
-                level = int(round(volume.GetMasterVolumeLevelScalar() * 100))
-                muted = bool(volume.GetMute())
-                return {"status": "success", "component": "audio", "volume_level": level, "muted": muted}
-            finally:
-                comtypes.CoUninitialize()
-        except Exception as e:
-            return {"status": "error", "code": "AUDIO_ERROR", "details": str(e)}
+        level = get_volume()
+        if level is None:
+            return {"status": "error", "code": "AUDIO_ERROR"}
+        return {"status": "success", "component": "audio", "volume_level": level}
 
     @staticmethod
-    def set_audio(level: int | None = None, mute: bool | None = None) -> dict[str, Any]:
-        """Controls master system volume (0-100) and mute state."""
-        if not HAS_PYCAW:
-            return {"status": "error", "code": "MISSING_DEPENDENCY", "package": "pycaw"}
-
-        try:
-            import comtypes
-            comtypes.CoInitialize()
-            try:
-                devices = AudioUtilities.GetSpeakers()
-                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                volume = cast(interface, POINTER(IAudioEndpointVolume))
-
-                state: dict[str, Any] = {}
-                msg_parts = []
-                if mute is not None:
-                    volume.SetMute(1 if mute else 0, None)
-                    state["muted"] = mute
-                    msg_parts.append("muted" if mute else "unmuted")
-
-                if level is not None:
-                    clamped = max(0, min(100, int(level)))
-                    volume.SetMasterVolumeLevelScalar(clamped / 100.0, None)
-                    state["volume_level"] = clamped
-                    msg_parts.append(f"volume set to {clamped}%")
-
-                return {
-                    "status": "success",
-                    "component": "audio",
-                    **state,
-                    "message": " and ".join(msg_parts).capitalize() if msg_parts else "Audio settings updated."
-                }
-            finally:
-                comtypes.CoUninitialize()
-        except Exception as e:
-            return {"status": "error", "code": "AUDIO_ERROR", "details": str(e)}
+    def set_audio(level: int | None = None, mute_state: bool | None = None) -> dict[str, Any]:
+        state: dict[str, Any] = {}
+        msg_parts = []
+        if mute_state is not None:
+            if not mute(bool(mute_state)):
+                return {"status": "error", "code": "AUDIO_ERROR"}
+            state["muted"] = bool(mute_state)
+            msg_parts.append("muted" if mute_state else "unmuted")
+        if level is not None:
+            ok, msg = set_volume(level)
+            if not ok:
+                return {"status": "error", "code": "AUDIO_ERROR", "message": msg}
+            state["volume_level"] = _parse_percent(level)
+            msg_parts.append(msg.rstrip("."))
+        return {
+            "status": "success",
+            "component": "audio",
+            **state,
+            "message": " and ".join(msg_parts).capitalize() + "." if msg_parts else "Audio settings updated.",
+        }
 
     @staticmethod
     def get_brightness() -> dict[str, Any]:
-        """Reads display brightness percentage."""
-        if HAS_SBC:
-            try:
-                val = sbc.get_brightness()
-                level = val[0] if isinstance(val, list) and val else int(val)
-                return {"status": "success", "component": "brightness", "level": level}
-            except Exception:
-                pass
-        return {"status": "error", "code": "BRIGHTNESS_UNAVAILABLE"}
+        level = get_brightness()
+        if level is None:
+            return {"status": "error", "code": "BRIGHTNESS_UNAVAILABLE"}
+        return {"status": "success", "component": "brightness", "level": level}
 
     @staticmethod
     def set_brightness(level: int) -> dict[str, Any]:
-        """Sets display brightness percentage (0-100)."""
-        clamped = max(0, min(100, int(level)))
-        if HAS_SBC:
-            try:
-                sbc.set_brightness(clamped)
-                return {
-                    "status": "success",
-                    "component": "brightness",
-                    "level": clamped,
-                    "message": f"Brightness set to {clamped}%."
-                }
-            except Exception:
-                pass
-
-        try:
-            ps_cmd = (
-                "Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods "
-                f"| Invoke-CimMethod -MethodName WmiSetBrightness -Arguments @{{Timeout=1; Brightness={clamped}}}"
-            )
-            r = WindowsSystemController._run_powershell(ps_cmd)
-            if r.returncode == 0 and not r.stderr.strip():
-                return {
-                    "status": "success",
-                    "component": "brightness",
-                    "level": clamped,
-                    "message": f"Brightness set to {clamped}%."
-                }
-            return {"status": "error", "code": "CIM_BRIGHTNESS_FAILED", "details": r.stderr.strip()}
-        except Exception as e:
-            return {"status": "error", "code": "BRIGHTNESS_ERROR", "details": str(e)}
+        ok, msg = set_brightness(level)
+        if not ok:
+            return {"status": "error", "code": "BRIGHTNESS_ERROR", "message": msg}
+        return {"status": "success", "component": "brightness", "level": _parse_percent(level), "message": msg}
 
     @staticmethod
     def open_settings_page(uri_target: str) -> dict[str, Any]:
-        """Opens any specific Windows Settings page via ms-settings URI scheme."""
-        uri_map = {
-            "wifi": "ms-settings:network-wifi",
-            "bluetooth": "ms-settings:bluetooth",
-            "display": "ms-settings:display",
-            "sound": "ms-settings:sound",
-            "theme": "ms-settings:personalization-colors",
-            "nightlight": "ms-settings:nightlight",
-            "battery": "ms-settings:batterysaver",
-            "windowsupdate": "ms-settings:windowsupdate",
-            "apps": "ms-settings:appsfeatures"
-        }
-        uri = uri_map.get(uri_target.lower(), f"ms-settings:{uri_target.lower()}")
+        """Dynamically resolves settings page URI via settings_catalog.json (zero hardcoded maps)."""
         try:
-            subprocess.Popen(["explorer.exe", uri])
-            return {"status": "success", "opened_uri": uri, "message": f"Opened {uri_target} settings."}
+            from amigo.utils.settings_resolver import resolve_setting
+        except ImportError:
+            from settings_resolver import resolve_setting
+
+        raw = str(uri_target or "").strip()
+        if raw.lower().startswith("ms-settings:"):
+            label, uri = raw, raw
+        else:
+            label, uri = resolve_setting(raw)
+        try:
+            os.startfile(uri)
+            return {"status": "success", "opened_uri": uri, "message": f"Opened {label} settings."}
         except Exception as e:
             return {"status": "error", "code": "URI_OPEN_FAILED", "details": str(e)}
 
     @staticmethod
     def system_power(action: str) -> dict[str, Any]:
-        """Executes system power or session state transitions."""
         act = action.lower().strip()
-        try:
-            if act == "lock":
-                ctypes.windll.user32.LockWorkStation()
-            elif act == "sleep":
-                ctypes.windll.powrprof.SetSuspendState(0, 1, 0)
-            elif act == "shutdown":
-                subprocess.Popen(["shutdown", "/s", "/t", "5"])
-            elif act == "restart":
-                subprocess.Popen(["shutdown", "/r", "/t", "5"])
-            else:
-                return {
-                    "status": "error",
-                    "code": "INVALID_POWER_ACTION",
-                    "supported": ["lock", "sleep", "shutdown", "restart"]
-                }
-            return {"status": "success", "power_action": act, "message": f"Executing system {act}."}
-        except Exception as e:
-            return {"status": "error", "code": "POWER_ACTION_FAILED", "details": str(e)}
+        dispatch = {
+            "lock": lock_pc,
+            "sleep": sleep_pc,
+            "restart": restart_pc,
+        }
+        if act in dispatch:
+            ok = dispatch[act]()
+            return (
+                {"status": "success", "power_action": act, "message": f"Executing system {act}."}
+                if ok
+                else {"status": "error", "code": "POWER_ACTION_FAILED", "power_action": act}
+            )
+        if act == "shutdown":
+            _require_windows()
+            r = _run_hidden([_system_exe("shutdown"), "/s", "/t", "5"])
+            if r.returncode == 0:
+                return {"status": "success", "power_action": act, "message": "Shutting down in 5 seconds."}
+            return {"status": "error", "code": "POWER_ACTION_FAILED", "details": r.stderr.strip()}
+        return {
+            "status": "error",
+            "code": "INVALID_POWER_ACTION",
+            "supported": ["lock", "sleep", "shutdown", "restart"],
+        }
 
 
 _CATEGORY_ALIASES_CACHE: dict[str, Any] | None = None
@@ -1610,7 +1487,6 @@ def _get_category_aliases() -> dict[str, Any]:
     global _CATEGORY_ALIASES_CACHE
     if _CATEGORY_ALIASES_CACHE is None:
         try:
-            import json
             alias_data = json.loads(CATEGORY_ALIAS_FILE.read_text(encoding="utf-8"))
         except Exception:
             alias_data = {}
@@ -1633,7 +1509,7 @@ def control_windows_system(
     level: int | None = None,
     **kwargs: Any,
 ) -> dict[str, Any]:
-    """Helper to dispatch control commands to WindowsSystemController."""
+    """Dispatches structured system control commands to WindowsSystemController."""
     cat = (category or "").lower().strip()
     aliases = _get_category_aliases()
     canon = aliases["map"].get(cat, cat)
@@ -1649,7 +1525,7 @@ def control_windows_system(
         target_mode = mode or ("dark" if enabled is False else "light" if enabled is True else "dark")
         return WindowsSystemController.set_color_theme(target_mode)
     if canon == "audio":
-        return WindowsSystemController.set_audio(level=level, mute=(not enabled if enabled is not None else None))
+        return WindowsSystemController.set_audio(level=level, mute_state=(not enabled if enabled is not None else None))
     if canon == "brightness":
         if level is not None:
             return WindowsSystemController.set_brightness(level)
@@ -1679,5 +1555,3 @@ except Exception as _pen_err:
         return {"status": "error", "code": "PEN_UNAVAILABLE"}
 
     PEN_TOOL_DEFINITION = {}  # type: ignore
-
-

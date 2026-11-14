@@ -1,7 +1,8 @@
 """
 RAG Background Indexer for Amigo Voice Assistant.
 Crawls user directories, deduplicates symlinked/OneDrive paths via canonical resolution,
-indexes new/modified files into the single-file Memvid memory capsule, and periodically re-indexes on a background thread.
+indexes new/modified files into the single-file Memvid memory capsule, cleans up deleted files,
+and periodically re-indexes on a background thread.
 """
 
 import hashlib
@@ -70,7 +71,6 @@ class RAGIndexer:
             try:
                 with open(FILE_HASHES_PATH, "r", encoding="utf-8") as f:
                     raw_hashes = json.load(f)
-                # Normalize loaded keys to canonical realpaths
                 self._file_hashes = {
                     os.path.realpath(os.path.abspath(k)): v for k, v in raw_hashes.items()
                 }
@@ -220,11 +220,9 @@ class RAGIndexer:
             deleted = [fp for fp in list(self._file_hashes.keys()) if not os.path.exists(fp)]
             for df in deleted:
                 self._file_hashes.pop(df, None)
-                if self._rag and hasattr(self._rag, "_col") and hasattr(self._rag, "DOCUMENTS"):
+                if self._rag and hasattr(self._rag, "remove_document"):
                     try:
-                        col = self._rag._col(self._rag.DOCUMENTS)
-                        if col:
-                            col.delete(where={"filepath": os.path.realpath(os.path.abspath(df))})
+                        self._rag.remove_document(df, commit_changes=True)
                     except Exception:
                         pass
 
@@ -283,9 +281,9 @@ class RAGIndexer:
                 time.sleep(0.05)
 
             self._save_hashes()
-            if indexed > 0 and self._rag and hasattr(self._rag, "_schedule_bm25_rebuild"):
+            if indexed > 0 and self._rag and hasattr(self._rag, "clear_search_cache"):
                 try:
-                    self._rag._schedule_bm25_rebuild()
+                    self._rag.clear_search_cache()
                 except Exception:
                     pass
 
@@ -323,9 +321,9 @@ class RAGIndexer:
         if ok:
             self._file_hashes[canonical] = self._file_hash(canonical)
             self._save_hashes()
-            if hasattr(self._rag, "_schedule_bm25_rebuild"):
+            if hasattr(self._rag, "clear_search_cache"):
                 try:
-                    self._rag._schedule_bm25_rebuild()
+                    self._rag.clear_search_cache()
                 except Exception:
                     pass
         return ok

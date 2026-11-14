@@ -1,14 +1,20 @@
 {
-  "last_weather_check": 1794585835.542785,
-  "last_calendar_check": 1794585835.542785,
-  "last_system_check": 1794586317.4008038,
-  "last_notification_time": 1794486188.7522712,
+  "last_weather_check": 1794644487.7211483,
+  "last_calendar_check": 1794645570.615093,
+  "last_system_check": 1794646112.0646086,
+  "last_notification_time": 1794640823.1302803,
   "last_priority_alert_time": 0,
   "suggestions_this_hour": 0,
-  "last_hour_reset": 1794583188.8725314,
-  "active_window_start": 1794586017.2035825,
-  "current_window_title": "amigo-main - Antigravity IDE - server.py",
-  "recent_suggestions": [],
+  "last_hour_reset": 1794644427.606929,
+  "active_window_start": 1794645991.2193334,
+  "current_window_title": "Amigo - Windows 11 Voice Assistant and 2 more pages - Personal - Microsoft\u200b Edge",
+  "recent_suggestions": [
+    {
+      "id": "wellness_break",
+      "text": "Hey Yash, you\u2019ve been crushing it, how\u2019s the code coming along?",
+      "time": 1794640821.2582817
+    }
+  ],
   "learned_patterns": {},
   "user_routines": {},
   "dismissed_suggestions": [],

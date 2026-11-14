@@ -1,6 +1,6 @@
 """
 LLM-Based Agent for Amigo Voice Assistant.
-Clean, streamlined inference engine for Qwen 3 4B Instruct:
+Clean, streamlined inference engine for Qwen 3.5 4B Instruct:
 - Direct GGUF inference via llama-cpp-python on RTX 3050 GPU (with CPU fallback)
 - Fast KV-cache reuse with unified system prompt prefix
 - Multi-turn conversation context (single & multi-step) and RAG profile integration
@@ -374,34 +374,36 @@ def _build_ai_messages(
 # ── Model Configuration & Lifecycle ────────────────────────────
 
 MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "models"))
-MODEL_NAME = "Qwen 3 4B Instruct"
-MODEL_FILENAME = "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+MODEL_NAME = "Qwen 3.5 4B Instruct"
+MODEL_FILENAME = "Qwen3.5-4B-Q4_K_M.gguf"
 MODEL_PATH = os.path.join(MODEL_DIR, MODEL_FILENAME)
 MODEL_TARGETS = [
-    ("unsloth/Qwen3-4B-Instruct-2507-GGUF", "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"),
-    ("lmstudio-community/Qwen3-4B-Instruct-2507-GGUF", "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"),
+    ("unsloth/Qwen3.5-4B-GGUF", "Qwen3.5-4B-Q4_K_M.gguf"),
+    ("lmstudio-community/Qwen3.5-4B-GGUF", "Qwen3.5-4B-Q4_K_M.gguf"),
+    ("openresearchtools/Qwen3.5-4B-Instruct-GGUF", "Q4_K_M.gguf"),
 ]
 
 STOP_TOKENS = ["<eos>", "<turn|>", "<|turn|>", "<|endoftext|>", "<|im_end|>", "<|im_start|>", "<|eot_id|>"]
 
 AVAILABLE_MODELS = {
-    "qwen3-4b-instruct": {
-        "key": "qwen3-4b-instruct",
-        "name": "Qwen 3 4B Instruct",
-        "repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
-        "filename": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
-        "path": os.path.join(MODEL_DIR, "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"),
+    "qwen3.5-4b-instruct": {
+        "key": "qwen3.5-4b-instruct",
+        "name": "Qwen 3.5 4B Instruct",
+        "repo": "unsloth/Qwen3.5-4B-GGUF",
+        "filename": "Qwen3.5-4B-Q4_K_M.gguf",
+        "path": os.path.join(MODEL_DIR, "Qwen3.5-4B-Q4_K_M.gguf"),
         "targets": [
-            ("unsloth/Qwen3-4B-Instruct-2507-GGUF", "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"),
-            ("lmstudio-community/Qwen3-4B-Instruct-2507-GGUF", "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"),
+            ("unsloth/Qwen3.5-4B-GGUF", "Qwen3.5-4B-Q4_K_M.gguf"),
+            ("lmstudio-community/Qwen3.5-4B-GGUF", "Qwen3.5-4B-Q4_K_M.gguf"),
+            ("openresearchtools/Qwen3.5-4B-Instruct-GGUF", "Q4_K_M.gguf"),
         ],
-        "downloaded": os.path.exists(os.path.join(MODEL_DIR, "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"))
-        and os.path.getsize(os.path.join(MODEL_DIR, "Qwen3-4B-Instruct-2507-Q4_K_M.gguf")) > 500_000_000,
-        "size_gb": 2.50,
+        "downloaded": os.path.exists(os.path.join(MODEL_DIR, "Qwen3.5-4B-Q4_K_M.gguf"))
+        and os.path.getsize(os.path.join(MODEL_DIR, "Qwen3.5-4B-Q4_K_M.gguf")) > 500_000_000,
+        "size_gb": 2.55,
     },
 }
 
-_active_model_key = "qwen3-4b-instruct"
+_active_model_key = "qwen3.5-4b-instruct"
 _local_llm_instance = None
 _model_load_failed = False
 _model_load_error = None
@@ -540,7 +542,7 @@ def ensure_model_downloaded() -> str:
     if os.path.exists(path) and os.path.getsize(path) > 500_000_000:
         return path
     m_info = AVAILABLE_MODELS.get(_active_model_key, {})
-    repo = m_info.get("repo", "unsloth/Qwen3-4B-Instruct-2507-GGUF")
+    repo = m_info.get("repo", "unsloth/Qwen3.5-4B-GGUF")
     filename = m_info.get("filename", MODEL_FILENAME)
     logger.info("Downloading %s (%s) to %s...", m_info.get("name", "Model"), filename, path)
     os.makedirs(MODEL_DIR, exist_ok=True)
@@ -696,7 +698,7 @@ def get_available_models() -> dict:
     return AVAILABLE_MODELS
 
 
-def set_active_model(model_key: str = "qwen3-4b-instruct") -> bool:
+def set_active_model(model_key: str = "qwen3.5-4b-instruct") -> bool:
     global _active_model_key, _local_llm_instance, _LLM_CONFIG
     if model_key not in AVAILABLE_MODELS:
         return False
@@ -821,7 +823,7 @@ def query_local_llm(
             "temperature": sampling["temperature"] if temperature is None else temperature,
             "top_p": sampling["top_p"],
             "min_p": sampling.get("min_p", 0.05) if min_p is None else min_p,
-            "repeat_penalty": 1.05 if repeat_penalty is None else repeat_penalty,
+            "repeat_penalty": 1.15 if repeat_penalty is None else repeat_penalty,
             "stop": STOP_TOKENS if stop is None else stop,
         }
 
@@ -871,7 +873,7 @@ def query_local_llm_stream(
                     max_tokens=max_tokens,
                     temperature=temp,
                     top_p=sampling["top_p"],
-                    repeat_penalty=1.05,
+                    repeat_penalty=1.15,
                     stop=STOP_TOKENS,
                     stream=True,
                 )
@@ -889,7 +891,7 @@ def query_local_llm_stream(
                         max_tokens=128,
                         temperature=temp,
                         top_p=sampling["top_p"],
-                        repeat_penalty=1.05,
+                        repeat_penalty=1.15,
                         stop=STOP_TOKENS,
                         stream=True,
                     )

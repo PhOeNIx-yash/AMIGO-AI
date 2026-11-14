@@ -1,6 +1,6 @@
 """
 Pure Memvid (Rust Tantivy) RAG & Working Memory Engine for Amigo Voice Assistant.
-Zero ChromaDB, zero vector/embedding bloat, zero hardcoded stopword lists.
+Zero ChromaDB, zero vector/embedding bloat, zero hardcoded stopword/phrase lists.
 """
 
 import atexit
@@ -36,7 +36,7 @@ class RAGEngineError(Exception):
         self.original_error = original_error
 
 
-# ── Pre-compiled Regex Patterns ────────────────────────────────
+# ── Pre-compiled Structural Regex Patterns ─────────────────────
 _RE_PDF_NEWLINES = re.compile(r"(?<=[a-zA-Z0-9])\r?\n(?=[a-zA-Z0-9])")
 _RE_PDF_ADJACENT = re.compile(r"([A-Z0-9]{2,})([A-Z][a-z]+)")
 _RE_CHUNK_WHITESPACE = re.compile(r"\s+")
@@ -57,6 +57,7 @@ def _is_excluded_project_path(path: str | None) -> bool:
         return False
     p_real = os.path.realpath(os.path.abspath(str(path))).lower()
     return p_real == _PROJECT_ROOT_REAL or p_real.startswith(_PROJECT_ROOT_REAL + os.sep)
+
 
 RAG_DATA_DIR = os.path.join(_PROJECT_ROOT, "rag_data")
 PROFILE_FILE = os.path.join(_PROJECT_ROOT, "amigo_profile.json")
@@ -87,21 +88,9 @@ _COLLECTION_TO_TAG = {
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt", ".xlsx", ".csv", ".pptx", ".md"}
 
-SKIP_RAG_TOOLS = {
-    "play_youtube", "pause", "resume", "stop", "volume", "mute", "unmute",
-    "open", "close", "launch", "scroll", "click", "type",
-    "set_timer", "set_reminder", "cancel_timer", "cancel_reminder",
-    "get_weather", "get_time", "get_date",
-    "system_volume", "system_brightness", "system_power",
-}
-
-LOW_VALUE_TOOLS = {
-    "volume", "mute", "unmute", "volume_up", "volume_down",
-    "system_volume", "system_brightness", "system_power",
-    "scroll", "click", "type", "press_key", "click_screen",
-    "pause_media", "play_media", "next_track", "prev_track",
-    "stop", "stop_speaking",
-}
+# Kept as empty/minimal backward-compatible exports for external callers
+SKIP_RAG_TOOLS: set[str] = set()
+LOW_VALUE_TOOLS: set[str] = set()
 
 MAX_VOICE_CONTEXT_CHARS = 3500
 MAX_FILE_SIZE = 50 * 1024 * 1024
@@ -150,6 +139,11 @@ _STATS_CACHE_TTL = 30.0
 _stats_lock = threading.Lock()
 
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="AmigoMemvid")
+
+
+def _clear_frame_cache() -> None:
+    with _frame_cache_lock:
+        _FRAME_CACHE.clear()
 
 
 def _get_cached_frame(mv: Any, uri: str) -> dict:
@@ -304,7 +298,7 @@ def _record_frame_tokens(text: str) -> None:
 
 
 def _reset_memvid() -> None:
-    """Closes and resets the Memvid instance so a corrupted/poisoned Tantivy writer can cleanly recover."""
+    """Closes and resets the Memvid instance so a locked Tantivy writer can cleanly recover."""
     global _mv_instance, _initialized
     with _mv_lock:
         if _mv_instance is not None:
@@ -315,6 +309,7 @@ def _reset_memvid() -> None:
                 pass
             _mv_instance = None
             _initialized = False
+    _clear_frame_cache()
 
 
 def _bootstrap_idf_from_memvid(mv: memvid_sdk.Memvid) -> None:
@@ -337,12 +332,8 @@ def _bootstrap_idf_from_memvid(mv: memvid_sdk.Memvid) -> None:
         for uri, preview in frame_items:
             text_sample = preview
             if uri:
-                try:
-                    with _mv_lock:
-                        frame_data = mv.frame(uri)
-                    text_sample = frame_data.get("text") or text_sample
-                except Exception:
-                    pass
+                frame_data = _get_cached_frame(mv, uri)
+                text_sample = frame_data.get("text") or text_sample
             if text_sample:
                 _record_frame_tokens(text_sample)
     except Exception as e:
@@ -458,7 +449,7 @@ def _token_specificity(token: str, context_text: str = "") -> float:
 
 
 def _format_tantivy_query(query: str) -> str:
-    """Build a safe Tantivy lexical query string without dropping short domain keywords."""
+    """Build a safe Tantivy lexical query string without dropping domain keywords."""
     q = query.strip()
     if not q:
         return ""
@@ -683,8 +674,6 @@ def _extract_salient_terms(text: str, max_terms: int = 5) -> list[str]:
         return []
 
     max_w = max(item[0] for item in scored)
-    # Dynamic information cutoff: tokens that carry at least 70% of peak query specificity
-    # and have a minimum specificity above generic function baseline (0.30)
     threshold = max(0.30, max_w * 0.70)
     top_candidates = [item for item in scored if item[0] >= threshold]
 
@@ -694,7 +683,7 @@ def _extract_salient_terms(text: str, max_terms: int = 5) -> list[str]:
 
 
 def resolve_contextual_query(query: str, conversation_history: list[dict] | None = None) -> str:
-    """Augments short follow-up queries with salient entities from the previous turn."""
+    """Augments underspecified follow-up queries with salient entities from recent turns or active state."""
     if not query or not query.strip():
         return ""
     clean_q = query.strip()
@@ -703,20 +692,26 @@ def resolve_contextual_query(query: str, conversation_history: list[dict] | None
         return clean_q
 
     salient_now = _extract_salient_terms(clean_q, max_terms=4)
-    # If the current query already has salient entities/terms, it is self-contained
     if len(salient_now) >= 1:
         return clean_q
 
     context_terms: list[str] = []
     history = conversation_history if conversation_history is not None else get_recent_conversations(count=2)
     if history:
-        prev_user = str(history[-1].get("user") or "")
-        context_terms = _extract_salient_terms(prev_user, max_terms=3)
+        prev_turn = history[-1]
+        prev_source = f"{prev_turn.get('user') or ''} {prev_turn.get('assistant') or ''}".strip()
+        context_terms = _extract_salient_terms(prev_source, max_terms=3)
 
     if not context_terms:
         subj = (_ACTIVE_STATE.get("active_subject") or {}).get("name") or ""
         if subj:
             context_terms = _extract_salient_terms(subj, max_terms=3)
+
+    if not context_terms:
+        active_fname = (_ACTIVE_STATE.get("active_file") or {}).get("name") or ""
+        if active_fname:
+            stem = os.path.splitext(active_fname)[0].replace("_", " ").replace("-", " ")
+            context_terms = _extract_salient_terms(stem, max_terms=3)
 
     if not context_terms:
         return clean_q
@@ -849,7 +844,6 @@ def search(
         else:
             lex_overlap, salient_cov, phrase_bonus = lex_orig, sal_orig, phrase_orig
 
-        # Reject noise hits that only matched low-information filler words
         if lex_overlap < 0.12 and salient_cov < 0.20:
             continue
 
@@ -882,7 +876,6 @@ def search(
             + 0.08 * phrase_bonus
         )
 
-        # Penalize hits where the query's highest-IDF terms are missing from the frame
         if salient_cov < 0.35:
             combined *= 0.65
 
@@ -928,7 +921,7 @@ def search(
 
 
 def should_skip_rag_for_tool(tool: str) -> bool:
-    return tool in SKIP_RAG_TOOLS
+    return bool(tool and tool in SKIP_RAG_TOOLS)
 
 
 def search_documents(query: str, top_k: int = 5) -> list[dict]:
@@ -1077,12 +1070,7 @@ def build_rag_context(
                     fname = meta.get("filename", "document")
                     parts.append(f"[From document '{fname}']:\r\n{chunk_text}")
                 elif src == CONVERSATIONS:
-                    low_chunk = chunk_text.lower()
-                    if not any(
-                        f in low_chunk
-                        for f in ("couldn't find", "could not find", "don't have access", "cannot access")
-                    ):
-                        parts.append(f"[Past conversation]:\r\n{chunk_text}")
+                    parts.append(f"[Past conversation]:\r\n{chunk_text}")
                 elif src == EMAILS:
                     parts.append(f"[Email]:\r\n{chunk_text}")
                 elif src == CALENDAR:
@@ -1150,8 +1138,6 @@ def build_document_evidence(
 
     max_salient_cov = max((float(r.get("salient_coverage", 0.0) or 0.0) for r in grounded), default=0.0)
     if max_salient_cov >= 0.50:
-        # If top matching passages contain the query's core salient entities,
-        # eliminate noise chunks that completely miss those entities
         grounded = [r for r in grounded if float(r.get("salient_coverage", 0.0) or 0.0) >= 0.30]
 
     if not grounded:
@@ -1295,15 +1281,10 @@ def _ensure_buffer() -> collections.deque:
     return _conversation_buffer
 
 
-def _calculate_importance(user_msg: str, assistant_msg: str, tool: str, base_importance: float) -> float:
-    tool_weights = {
-        "chat": 0.55, "web_search": 0.75, "document_qa": 0.85,
-        "memory_recall": 0.9, "find_file": 0.65, "set_reminder": 0.8,
-    }
-    imp = max(base_importance * 0.5, tool_weights.get(tool, 0.55))
-    if len(user_msg) + len(assistant_msg) > 250:
-        imp = min(1.0, imp + 0.15)
-    return round(imp, 2)
+def _calculate_importance(user_msg: str, assistant_msg: str, base_importance: float) -> float:
+    total_len = len(user_msg) + len(assistant_msg)
+    length_signal = min(0.95, 0.45 + (total_len / 600.0) * 0.50)
+    return round(max(min(1.0, base_importance * 0.65), length_signal), 2)
 
 
 def add_conversation(
@@ -1330,7 +1311,7 @@ def add_conversation(
     user_msg = _RE_CHUNK_WHITESPACE.sub(" ", user_msg).strip()[:1000]
     assistant_msg = _RE_CHUNK_WHITESPACE.sub(" ", assistant_msg or "").strip()[:1500]
     timestamp = datetime.datetime.now().isoformat()
-    importance = _calculate_importance(user_msg, assistant_msg, tool, importance)
+    importance = _calculate_importance(user_msg, assistant_msg, importance)
 
     salient = _extract_salient_terms(user_msg, max_terms=3)
     if salient:
@@ -1388,6 +1369,7 @@ def add_conversation(
                 commit()
 
             _record_frame_tokens(text)
+            _invalidate_stats_cache()
             extract_user_profile_updates(user_msg, remember=remember)
         except Exception as e:
             logger.debug("[Memvid] Background conv persist note: %s", e)
@@ -1422,7 +1404,7 @@ def get_all_conversations(limit: int = 200) -> list[dict]:
                     uri = item.get("uri")
                     if uri:
                         try:
-                            frame_data = mv.frame(uri)
+                            frame_data = _get_cached_frame(mv, uri)
                             meta = frame_data.get("extra_metadata") or {}
                             items.append({
                                 "user": meta.get("user_msg", ""),
@@ -1469,6 +1451,8 @@ def clear_conversations() -> None:
     for slot in _ACTIVE_STATE:
         _ACTIVE_STATE[slot] = None if slot == "current_media" else {k: "" for k in _ACTIVE_STATE[slot]}
     clear_search_cache()
+    _clear_frame_cache()
+    _invalidate_stats_cache()
 
     profile = load_profile()
     profile["recent_conversations"] = []
@@ -1495,7 +1479,7 @@ def clear_conversations() -> None:
 
 
 def add_user_fact(fact: str, category: str = "user_profile", importance: float = 1.0) -> str | None:
-    if not fact or len(fact.strip()) < 5:
+    if not fact or len(fact.strip()) < 3:
         return None
     clean_fact = fact.strip()
 
@@ -1541,6 +1525,7 @@ def get_all_user_facts(min_importance: float = 0.0) -> list[str]:
 def clear_user_facts() -> None:
     _invalidate_user_facts_cache()
     _invalidate_stats_cache()
+    _clear_frame_cache()
     try:
         profile = load_profile()
         if "user_profile" in profile:
@@ -1557,7 +1542,7 @@ def clear_user_facts() -> None:
                 if fid is None:
                     continue
                 try:
-                    f = _get_cached_frame(mv, item.get("uri"))
+                    f = mv.frame(item.get("uri"))
                     if "user_fact" in (f.get("tags") or []):
                         mv.remove(fid)
                 except Exception:
@@ -1572,6 +1557,8 @@ def clear_all_memory() -> None:
     global _mv_instance, _total_tracked_frames, _corpus_bootstrapped
     clear_conversations()
     clear_user_facts()
+    _clear_frame_cache()
+    _invalidate_stats_cache()
     with _idf_lock:
         _token_doc_freq.clear()
         _total_tracked_frames = 0
@@ -1870,6 +1857,52 @@ def semantic_chunk(
     return [c for c in all_chunks if len(c) > 25]
 
 
+def remove_document(filepath: str, commit_changes: bool = True) -> int:
+    """Remove all existing Memvid document frames matching a canonical filepath so re-indexing never duplicates chunks."""
+    if not filepath:
+        return 0
+    canonical_path = os.path.realpath(os.path.abspath(filepath))
+    target_norm = canonical_path.lower()
+    removed = 0
+    try:
+        mv = init_memvid()
+        with _mv_lock:
+            st = mv.stats() if hasattr(mv, "stats") else {}
+            total = int(st.get("active_frame_count") or st.get("frame_count") or 0)
+            if total <= 0:
+                return 0
+            for item in (mv.timeline(limit=total) or []):
+                fid = item.get("frame_id")
+                uri = item.get("uri")
+                if fid is None or not uri:
+                    continue
+                try:
+                    frame_data = _get_cached_frame(mv, uri)
+                    if "document" not in (frame_data.get("tags") or []):
+                        continue
+                    meta = frame_data.get("extra_metadata") or {}
+                    raw_fp = meta.get("filepath")
+                    if raw_fp:
+                        try:
+                            fp_val = json.loads(raw_fp)
+                        except Exception:
+                            fp_val = raw_fp
+                        if os.path.realpath(os.path.abspath(str(fp_val))).lower() == target_norm:
+                            mv.remove(fid)
+                            removed += 1
+                except Exception:
+                    continue
+            if removed > 0 and commit_changes:
+                commit()
+        if removed > 0:
+            _clear_frame_cache()
+            _invalidate_stats_cache()
+            clear_search_cache()
+    except Exception as e:
+        logger.debug("[Memvid] remove_document note for %s: %s", filepath, e)
+    return removed
+
+
 def add_document_chunk(
     filepath: str,
     filename: str,
@@ -1904,6 +1937,7 @@ def add_document_chunk(
                     if commit:
                         mv.commit()
                     _record_frame_tokens(clean_text)
+                    _invalidate_stats_cache()
                     return str(frame_id)
                 except Exception as e:
                     err_msg = str(e).lower()
@@ -1943,6 +1977,7 @@ def index_document(filepath: str) -> bool:
         return False
 
     try:
+        remove_document(canonical_path, commit_changes=False)
         for i, chunk in enumerate(chunks):
             add_document_chunk(
                 filepath=canonical_path,
@@ -1954,6 +1989,7 @@ def index_document(filepath: str) -> bool:
             )
         commit()
         clear_search_cache()
+        _invalidate_stats_cache()
         return True
     except Exception as e:
         logger.error("[Memvid] Error indexing document %s: %s", filepath, e)
@@ -1981,6 +2017,7 @@ def index_email(subject: str, sender: str, body_preview: str, date: str, is_read
             )
             commit()
         _record_frame_tokens(doc_text)
+        _invalidate_stats_cache()
         clear_search_cache()
     except Exception as e:
         logger.error("[Memvid] Error indexing email: %s", e)
@@ -2010,6 +2047,7 @@ def index_calendar_event(subject: str, start: str, end: str, location: str = "",
             )
             commit()
         _record_frame_tokens(doc_text)
+        _invalidate_stats_cache()
         clear_search_cache()
     except Exception as e:
         logger.error("[Memvid] Error indexing calendar event: %s", e)
@@ -2019,47 +2057,32 @@ def index_calendar_event(subject: str, start: str, end: str, location: str = "",
 #  9. Profile Prompts & Lifecycle Helpers
 # ═══════════════════════════════════════════════════════════════
 
-def _clean_stt_entity(raw: str) -> str:
-    clause = re.split(r"[.!?,;:]|\b(?:and|but|because|so|right|now|today|please)\b", raw.strip(), maxsplit=1, flags=re.I)[0]
-    tokens = [t for t in _RE_WORDS.findall(clause.strip()) if len(t) >= 2]
-    return " ".join(tokens[:3]).title() if tokens else ""
-
-
-def extract_user_profile_updates(user_query: str, remember: str = "") -> None:
-    text = (user_query or "").strip()
-    if not text:
-        return
-
+def extract_user_profile_updates(user_query: str, remember: str = "", profile_updates: dict | None = None) -> None:
+    """Persist structured profile updates or explicit LLM-extracted facts without hardcoded English regexes."""
     profile = load_profile()
     identity = profile.setdefault("identity", {"name": "", "role": ""})
     preferences = profile.setdefault("preferences", {})
     updated = False
 
-    if m := re.search(r"\b(?:my name is|call me)\s+([A-Za-z][A-Za-z\s]{1,30})", text, re.I):
-        name = _clean_stt_entity(m.group(1))
-        if name and 2 <= len(name) <= 25 and not any(ch.isdigit() for ch in name):
+    if isinstance(profile_updates, dict):
+        if name := str(profile_updates.get("name") or "").strip():
             identity["name"] = name
             add_user_fact(f"User's name is {name}", category="identity", importance=0.95)
             updated = True
-
-    if m := re.search(r"\b(?:my (?:favorite|favourite) artist is|i love listening to)\s+([A-Za-z0-9][A-Za-z0-9\s]{1,35})", text, re.I):
-        artist = _clean_stt_entity(m.group(1))
-        if artist:
-            favs = preferences.setdefault("favorite_artists", [])
-            if artist not in favs:
-                favs.append(artist)
-                preferences["favorite_artists"] = favs[-10:]
-                add_user_fact(f"Favorite artist: {artist}", category="preference", importance=0.75)
+        if role := str(profile_updates.get("role") or "").strip():
+            identity["role"] = role
+            add_user_fact(f"User's role is {role}", category="identity", importance=0.90)
+            updated = True
+        if city := str(profile_updates.get("city") or profile_updates.get("favorite_city") or "").strip():
+            preferences["favorite_city"] = city
+            add_user_fact(f"User lives in {city}", category="preference", importance=0.80)
+            updated = True
+        for k, v in (profile_updates.get("preferences") or {}).items():
+            if k and v is not None:
+                preferences[str(k)] = v
                 updated = True
 
-    if m := re.search(r"\b(?:i live in|my city is)\s+([A-Za-z][A-Za-z\s]{1,30})", text, re.I):
-        city = _clean_stt_entity(m.group(1))
-        if city:
-            preferences["favorite_city"] = city
-            add_user_fact(f"User lives in {city}", category="preference", importance=0.8)
-            updated = True
-
-    if remember and len(remember.strip()) > 5:
+    if remember and len(remember.strip()) >= 3:
         add_user_fact(remember.strip(), category="custom", importance=0.85)
         updated = True
 
@@ -2108,6 +2131,9 @@ def get_active_context_prompt() -> str:
             parts.append(f"Playing: '{title}' on {media.get('platform', 'YouTube')}")
     if app := state.get("active_app", {}).get("name"):
         parts.append(f"Active App: {app}")
+    if active_f := state.get("active_file"):
+        if fname := active_f.get("name"):
+            parts.append(f"Active File: {fname}")
     return f"[PC Environment State: {' | '.join(parts)}]" if parts else ""
 
 
@@ -2186,7 +2212,7 @@ def save_memory(memory: dict) -> None:
             profile["identity"] = up["identity"]
         if "preferences" in up:
             profile["preferences"] = up["preferences"]
-        
+
         existing_facts = set(f.lower() for f in get_all_user_facts())
         new_facts_to_add: list[tuple[str, str, float]] = []
         for fact in up.get("custom_facts", []):

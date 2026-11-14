@@ -214,8 +214,8 @@ def get_active_model_info() -> dict:
         models = get_llm_available_models() or {}
         info = next(iter(models.values()), {})
 
-    name = info.get("name", "Qwen 3 4B Instruct")
-    key = info.get("key", "qwen3-4b-instruct")
+    name = info.get("name", "Qwen 3.5 4B Instruct")
+    key = info.get("key", "qwen3.5-4b-instruct")
     vision_ok = is_vision_ready()
     ctx_len = int(os.getenv("AMIGO_LLM_N_CTX", "8192"))
     return {
@@ -236,7 +236,7 @@ def get_active_model_info() -> dict:
 
 def get_available_models() -> list[dict]:
     try:
-        active_key = get_active_model_info().get("key", "qwen3-4b-instruct")
+        active_key = get_active_model_info().get("key", "qwen3.5-4b-instruct")
         return [
             {
                 "key": k,
@@ -248,7 +248,7 @@ def get_available_models() -> list[dict]:
         ]
     except Exception:
         return [
-            {"key": "qwen3-4b-instruct", "name": "Qwen 3 4B Instruct", "status": "active", "type": "local"},
+            {"key": "qwen3.5-4b-instruct", "name": "Qwen 3.5 4B Instruct", "status": "active", "type": "local"},
         ]
 
 
@@ -480,7 +480,7 @@ def index():
     return jsonify({
         "status": "online",
         "service": "Amigo AI Engine & Windows 11 Voice Assistant Backend",
-        "model": info.get("name", "Qwen 3 4B Instruct"),
+        "model": info.get("name", "Qwen 3.5 4B Instruct"),
     })
 
 
@@ -587,7 +587,7 @@ def api_assistant_process():
         return jsonify({
             "status": "online",
             "message": "Amigo AI Engine online",
-            "model": info.get("name", "Qwen 3 4B Instruct"),
+            "model": info.get("name", "Qwen 3.5 4B Instruct"),
             "version": "Windows 11 Voice Assistant",
         })
 
@@ -942,8 +942,8 @@ def handle_settings():
         "user_profile": u_prof,
         "user_name": get_current_user_name(),
         "voice": curr_voice,
-        "model": info.get("key", "qwen3-4b-instruct"),
-        "model_name": info.get("name", "Qwen 3 4B Instruct"),
+        "model": info.get("key", "qwen3.5-4b-instruct"),
+        "model_name": info.get("name", "Qwen 3.5 4B Instruct"),
         "thinking_enabled": is_thinking_enabled(),
         "available_models": get_available_models(),
         "available_voices": get_voice_catalog(),
