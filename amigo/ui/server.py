@@ -1372,11 +1372,25 @@ _OVERLAY_DIR = os.path.abspath(
 )
 _OVERLAY_BRIDGE_SCRIPT = (
     "<script>(() => {"
+    "const bridgeSend = (actionMsg) => {"
+    "fetch('/api/overlay/action', {"
+    "method: 'POST',"
+    "headers: { 'Content-Type': 'application/json' },"
+    "body: JSON.stringify(actionMsg)"
+    "}).catch(() => {});"
+    "};"
+    "if (window.Roamie) {"
+    "if (!window.Roamie.ink) window.Roamie.ink = {};"
+    "window.Roamie.ink.send = bridgeSend;"
+    "if (window.Roamie.agentHome) window.Roamie.agentHome.send = bridgeSend;"
+    "}"
     "const es = new EventSource('/api/overlay/stream');"
     "es.onmessage = (ev) => {"
     "try {"
     "const msg = JSON.parse(ev.data);"
-    "if (window.__roamieHost) { window.__roamieHost(msg); }"
+    "if ((msg?.kind === 'list' || msg?.type === 'reminders') && window.Roamie?.ink?.reminders) {"
+    "window.Roamie.ink.reminders(msg);"
+    "} else if (window.__roamieHost) { window.__roamieHost(msg); }"
     "else if (msg?.e?.type === 'draw' && window.Roamie?.ink) { window.Roamie.ink.play(msg.e); }"
     "else if (msg?.e?.type === 'clear' && window.Roamie?.ink) { window.Roamie.ink.clear(msg.e); }"
     "else if (msg?.type === 'ink' && window.Roamie?.ink) { window.Roamie.ink.play(msg); }"
@@ -1466,6 +1480,126 @@ def api_overlay_draw():
         normalized=bool(data.get("normalized", True)),
     )
     return jsonify(res)
+
+
+# Debounce map for overlay actions to prevent rapid duplicate clicks
+_recent_overlay_actions: dict[str, float] = {}
+
+
+@app.route("/api/overlay/action", methods=["POST"])
+def api_overlay_action():
+    data = request.get_json(silent=True) or {}
+    act_type = str(data.get("type") or "").strip()
+    part = str(data.get("part") or "").strip()
+    logger.info("[Overlay Action] Event: %s, part: %s, payload: %s", act_type, part, data)
+
+    # CRITICAL: Strictly ignore all passive/lifecycle events from Roamies (ink_closed, draw_started, draw_done, ink_cleared, etc.)
+    # Handling ink_closed or other passive events as user actions causes an infinite toggle/spawn cascade.
+    if act_type not in ("ink_action", "list_toggle", "open_link"):
+        return jsonify({"status": "ignored", "event": act_type})
+
+    # Debounce rapid clicks on the same action (minimum 0.6 seconds)
+    now = time.time()
+    action_key = f"{act_type}:{part}" if part else f"{act_type}:{data.get('id', '')}"
+    last_act = _recent_overlay_actions.get(action_key, 0.0)
+    if now - last_act < 0.6:
+        logger.info("[Overlay Action] Debounced rapid duplicate event: %s", action_key)
+        return jsonify({"status": "debounced", "action": action_key})
+    _recent_overlay_actions[action_key] = now
+
+    # 1. Interactive Setting Toggles (Bluetooth, Wi-Fi, Night Light, etc.)
+    if act_type == "ink_action" and part.startswith("act-toggle-"):
+        setting_key = part.replace("act-toggle-", "").strip().lower()
+        try:
+            from amigo.services.os_settings import toggle_setting, get_setting
+            from amigo.utils.tool_registry import emit_interactive_setting
+            ok, msg = toggle_setting(setting_key)
+            _, status_desc = get_setting(setting_key)
+            is_now_on = any(w in str(status_desc).lower() for w in ("on", "enabled", "connected", "active"))
+            emit_interactive_setting(setting_key, status_desc or msg, is_now_on)
+            return jsonify({"status": "success", "message": msg, "enabled": is_now_on})
+        except Exception as exc:
+            logger.error("[Overlay Action Setting Error]: %s", exc)
+            return jsonify({"status": "error", "message": str(exc)}), 500
+
+    # 2. Volume Stepper Buttons
+    elif act_type == "ink_action" and part == "act-vol-up":
+        try:
+            from amigo.services import os_automation
+            from amigo.utils.tool_registry import emit_interactive_volume
+            os_automation.volume_up()
+            status = os_automation.get_system_status()
+            vol = status.get("volume", 50)
+            emit_interactive_volume(vol)
+            return jsonify({"status": "success", "volume": vol})
+        except Exception as exc:
+            return jsonify({"status": "error", "message": str(exc)}), 500
+
+    elif act_type == "ink_action" and part == "act-vol-down":
+        try:
+            from amigo.services import os_automation
+            from amigo.utils.tool_registry import emit_interactive_volume
+            os_automation.volume_down()
+            status = os_automation.get_system_status()
+            vol = status.get("volume", 50)
+            emit_interactive_volume(vol)
+            return jsonify({"status": "success", "volume": vol})
+        except Exception as exc:
+            return jsonify({"status": "error", "message": str(exc)}), 500
+
+    elif act_type == "ink_action" and part == "act-vol-mute":
+        try:
+            from amigo.services import os_automation
+            from amigo.utils.tool_registry import emit_interactive_volume
+            os_automation.mute()
+            emit_interactive_volume(0)
+            return jsonify({"status": "success", "volume": 0})
+        except Exception as exc:
+            return jsonify({"status": "error", "message": str(exc)}), 500
+
+    # 3. Brightness Stepper Buttons
+    elif act_type == "ink_action" and part == "act-bright-up":
+        try:
+            from amigo.services import os_automation
+            from amigo.utils.tool_registry import emit_interactive_brightness
+            os_automation.set_brightness(80)
+            emit_interactive_brightness(80)
+            return jsonify({"status": "success"})
+        except Exception as exc:
+            return jsonify({"status": "error", "message": str(exc)}), 500
+
+    elif act_type == "ink_action" and part == "act-bright-down":
+        try:
+            from amigo.services import os_automation
+            from amigo.utils.tool_registry import emit_interactive_brightness
+            os_automation.set_brightness(50)
+            emit_interactive_brightness(50)
+            return jsonify({"status": "success"})
+        except Exception as exc:
+            return jsonify({"status": "error", "message": str(exc)}), 500
+
+    # 4. Interactive Reminder List Checkboxes (list_toggle)
+    elif act_type == "list_toggle":
+        rem_id = str(data.get("id") or "")
+        try:
+            from amigo.core.reminder_timer import toggle_reminder_done
+            toggled = toggle_reminder_done(rem_id)
+            return jsonify({"status": "success", "toggled": toggled, "id": rem_id})
+        except Exception as exc:
+            return jsonify({"status": "error", "message": str(exc)}), 500
+
+    # 5. Open Link in Browser
+    elif act_type == "open_link":
+        url = data.get("url")
+        if url:
+            try:
+                import webbrowser
+                webbrowser.open(str(url))
+                return jsonify({"status": "success", "url": url})
+            except Exception as exc:
+                return jsonify({"status": "error", "message": str(exc)}), 500
+
+    return jsonify({"status": "ok"})
 
 
 def launch_server(port: int = 5000, open_browser: bool = True) -> None:

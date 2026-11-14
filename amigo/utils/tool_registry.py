@@ -5,7 +5,7 @@ Features:
 - 100% static system prompt prefix for instant KV cache reuse in llama.cpp.
 - Inter-step output & state chaining ($prev / {{prev}} + automatic active_file/content propagation).
 - Multi-step confirmation queue resumption.
-- Context-aware follow-up resolution across web_search, document_qa, weather, files, and chat.
+- Roamies floating desktop overlay UI emitters (replacing static action cards).
 """
 
 import collections
@@ -142,6 +142,424 @@ def _offline_reply(query: str, what: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
+#  Roamies Floating Canvas UI Emitters
+# ═══════════════════════════════════════════════════════════════
+
+def emit_roamies_card(
+    title: str,
+    heading: str | None = None,
+    text: str | None = None,
+    items: list[str] | None = None,
+    tone: str | None = None,
+    duration: float = 16.0,
+    sources: list[dict[str, str]] | None = None,
+) -> None:
+    """Emit a floating glass card directly to the Roamies desktop transparent overlay."""
+    try:
+        from amigo.services.screen_pen import _VALID_TONES, push_overlay_event
+        push_overlay_event({"type": "ink_clear", "all": True})
+        card_tone = tone if (tone and tone in _VALID_TONES) else "teal"
+        clean_items = [str(it)[:120] for it in (items or []) if str(it).strip()][:8]
+        mark: dict[str, Any] = {
+            "kind": "card",
+            "part": "amigo-info-card",
+            "title": str(title or "Amigo")[:40],
+            "heading": str(heading or title or "")[:36],
+            "text": str(text or "")[:400],
+            "items": clean_items,
+            "tone": card_tone,
+        }
+        if sources:
+            mark["sources"] = sources
+        push_overlay_event({
+            "type": "ink",
+            "id": "amigo-card",
+            "seg": 0,
+            "last": True,
+            "fade": float(duration or 16.0),
+            "beats": [{
+                "voiced": True,
+                "caption": str(heading or title or ""),
+                "marks": [mark],
+            }],
+        })
+    except Exception as exc:
+        logger.debug("[Roamies Card] Could not push overlay event: %s", exc)
+
+
+def emit_interactive_stock(quote: Any, duration: float = 22.0) -> None:
+    """Emit a stock quote card and 2D trend graph directly onto Roamies overlay."""
+    try:
+        from amigo.services.screen_pen import push_overlay_event
+        sym = getattr(quote, "symbol", "") or "STOCK"
+        name = getattr(quote, "name", "") or sym
+        price = float(getattr(quote, "price", 0.0) or 0.0)
+        curr = getattr(quote, "currency", "$") or "$"
+        change = float(getattr(quote, "change", 0.0) or 0.0)
+        change_pct = float(getattr(quote, "change_pct", 0.0) or 0.0)
+        day_low = float(getattr(quote, "day_low", price) or price)
+        day_high = float(getattr(quote, "day_high", price) or price)
+        prev_close = float(getattr(quote, "previous_close", price) or price)
+        stock_tone = "lime" if change >= 0 else "coral"
+        price_str = f"{price:,.2f}"
+        pct_sign = "+" if change >= 0 else ""
+        pct_str = f" ({pct_sign}{change_pct:.2f}%)"
+
+        stock_items = [f"Change: {pct_sign}{change:,.2f}{pct_str}"]
+        if day_low and day_high:
+            stock_items.append(f"Day Range: {day_low:,.2f} - {day_high:,.2f}")
+        vol = getattr(quote, "volume", None)
+        if vol:
+            stock_items.append(f"Volume: {int(vol):,}")
+
+        # Clear any lingering old overlay cards first so they don't stack
+        push_overlay_event({"type": "ink_clear", "all": True})
+
+        card_mark: dict[str, Any] = {
+            "kind": "card",
+            "part": "amigo-stock-card",
+            "title": f"{name} ({sym})"[:40],
+            "heading": f"{curr} {price_str}{pct_str}"[:36],
+            "text": f"Real-time market quote on {getattr(quote, 'exchange', 'Market') or 'Market'}.",
+            "items": stock_items,
+            "tone": stock_tone,
+        }
+
+        # Build graph points from historical prices or intraday curve
+        history = getattr(quote, "history", None)
+        if isinstance(history, list) and len(history) >= 2:
+            raw_pts = [float(p) for p in history if p is not None]
+            step = max(1, len(raw_pts) // 30)
+            sampled = raw_pts[::step]
+            if sampled and sampled[-1] != raw_pts[-1]:
+                sampled.append(raw_pts[-1])
+            pts = [[float(i), round(p, 2)] for i, p in enumerate(sampled)]
+            min_p = min(sampled)
+            max_p = max(sampled)
+        else:
+            pts = [[0.0, prev_close], [1.0, day_low], [2.0, day_high], [3.0, price]]
+            min_p = min(prev_close, day_low, day_high, price)
+            max_p = max(prev_close, day_low, day_high, price)
+
+        margin = max((max_p - min_p) * 0.08, 0.5)
+        graph_mark: dict[str, Any] = {
+            "kind": "graph",
+            "part": "amigo-stock-graph",
+            "title": f"{sym} · Trend",
+            "x_range": [0.0, float(len(pts) - 1)],
+            "y_range": [round(min_p - margin, 2), round(max_p + margin, 2)],
+            "plots": [{
+                "points": pts,
+                "tone": stock_tone,
+                "label": f"{sym} Trend",
+            }],
+            "dots": [{
+                "x": float(len(pts) - 1),
+                "y": round(price, 2),
+                "label": f"${price_str}",
+            }],
+        }
+
+        push_overlay_event({
+            "type": "ink",
+            "id": "amigo-stock",
+            "seg": 0,
+            "last": True,
+            "fade": float(duration),
+            "beats": [
+                {
+                    "voiced": True,
+                    "caption": f"{sym} is trading at {curr} {price_str}",
+                    "marks": [card_mark],
+                },
+                {
+                    "voiced": False,
+                    "caption": f"{sym} intraday price trend",
+                    "marks": [graph_mark],
+                },
+            ],
+        })
+    except Exception as exc:
+        logger.debug("[Interactive Stock] Error emitting: %s", exc)
+
+
+def emit_interactive_setting(setting_name: str, status_desc: str, is_on: bool, duration: float = 18.0) -> None:
+    """Emit an interactive setting card with an immediate one-click toggle button."""
+    try:
+        from amigo.services.screen_pen import push_overlay_event
+        s_title = setting_name.title()
+        clean_key = setting_name.lower().replace(" ", "").replace("_", "")
+        tone = "lime" if is_on else "coral"
+        action_verb = "Turn Off" if is_on else "Turn On"
+
+        # Clear old cards first to prevent multiple duplicated cards stacking
+        push_overlay_event({"type": "ink_clear", "all": True})
+
+        card_mark: dict[str, Any] = {
+            "kind": "card",
+            "part": "amigo-setting-card",
+            "title": f"Setting · {s_title}"[:40],
+            "heading": f"{s_title}: {'Enabled' if is_on else 'Disabled'}"[:36],
+            "text": str(status_desc or "")[:300],
+            "items": [
+                f"Current Status: {'Active / On' if is_on else 'Disabled / Off'}",
+                "Click button below to toggle directly on screen.",
+            ],
+            "tone": tone,
+        }
+
+        btn_mark: dict[str, Any] = {
+            "kind": "button",
+            "part": f"act-toggle-{clean_key}",
+            "text": f"{action_verb} {s_title}",
+            "tone": "accent" if is_on else "lime",
+        }
+
+        push_overlay_event({
+            "type": "ink",
+            "id": "amigo-setting",
+            "seg": 0,
+            "last": True,
+            "fade": float(duration),
+            "beats": [
+                {
+                    "voiced": True,
+                    "caption": f"{s_title} is {'on' if is_on else 'off'}",
+                    "marks": [card_mark],
+                },
+                {
+                    "voiced": False,
+                    "caption": f"Toggle {s_title}",
+                    "marks": [btn_mark],
+                },
+            ],
+        })
+    except Exception as exc:
+        logger.debug("[Interactive Setting] Error emitting: %s", exc)
+
+
+def emit_interactive_volume(level: int | float, duration: float = 16.0) -> None:
+    """Emit an interactive volume progress bar with [-] and [+] step buttons."""
+    try:
+        from amigo.services.screen_pen import push_overlay_event
+        vol_val = max(0, min(100, int(level)))
+
+        push_overlay_event({"type": "ink_clear", "all": True})
+
+        bars_mark: dict[str, Any] = {
+            "kind": "bars",
+            "part": "amigo-vol-bars",
+            "title": "Audio Volume",
+            "bars": [{"label": "Volume Level", "value": vol_val, "tone": "sky"}],
+            "unit": "%",
+        }
+        btn_down: dict[str, Any] = {
+            "kind": "button",
+            "part": "act-vol-down",
+            "text": "[-] Down 10%",
+            "tone": "sky",
+        }
+        btn_up: dict[str, Any] = {
+            "kind": "button",
+            "part": "act-vol-up",
+            "text": "[+] Up 10%",
+            "tone": "teal",
+        }
+
+        push_overlay_event({
+            "type": "ink",
+            "id": "amigo-volume",
+            "seg": 0,
+            "last": True,
+            "fade": float(duration),
+            "beats": [
+                {
+                    "voiced": True,
+                    "caption": f"Volume at {vol_val}%",
+                    "marks": [bars_mark],
+                },
+                {
+                    "voiced": False,
+                    "caption": "Adjust volume",
+                    "marks": [btn_down, btn_up],
+                },
+            ],
+        })
+    except Exception as exc:
+        logger.debug("[Interactive Volume] Error emitting: %s", exc)
+
+
+def emit_interactive_brightness(level: int | float, duration: float = 16.0) -> None:
+    """Emit an interactive brightness progress bar with step buttons."""
+    try:
+        from amigo.services.screen_pen import push_overlay_event
+        bright_val = max(0, min(100, int(level)))
+
+        push_overlay_event({"type": "ink_clear", "all": True})
+
+        bars_mark: dict[str, Any] = {
+            "kind": "bars",
+            "part": "amigo-bright-bars",
+            "title": "Display Brightness",
+            "bars": [{"label": "Brightness", "value": bright_val, "tone": "amber"}],
+            "unit": "%",
+        }
+        btn_down: dict[str, Any] = {
+            "kind": "button",
+            "part": "act-bright-down",
+            "text": "[-] Dimmer",
+            "tone": "amber",
+        }
+        btn_up: dict[str, Any] = {
+            "kind": "button",
+            "part": "act-bright-up",
+            "text": "[+] Brighter",
+            "tone": "lime",
+        }
+
+        push_overlay_event({
+            "type": "ink",
+            "id": "amigo-bright",
+            "seg": 0,
+            "last": True,
+            "fade": float(duration),
+            "beats": [
+                {
+                    "voiced": True,
+                    "caption": f"Brightness at {bright_val}%",
+                    "marks": [bars_mark],
+                },
+                {
+                    "voiced": False,
+                    "caption": "Adjust brightness",
+                    "marks": [btn_down, btn_up],
+                },
+            ],
+        })
+    except Exception as exc:
+        logger.debug("[Interactive Brightness] Error emitting: %s", exc)
+
+
+def emit_interactive_weather(city_name: str, temp: Any, condition: str, humidity: Any, wind: Any, duration: float = 20.0) -> None:
+    """Emit a weather card together with an atmospheric condition bar gauge."""
+    try:
+        from amigo.services.screen_pen import push_overlay_event
+        try:
+            t_val = int(float(temp or 20))
+        except (ValueError, TypeError):
+            t_val = 20
+        try:
+            h_val = int(float(humidity or 50)) if humidity and str(humidity) not in ("0", "--") else 50
+        except (ValueError, TypeError):
+            h_val = 50
+        try:
+            w_val = int(float(wind or 10)) if wind and str(wind) not in ("0", "--") else 10
+        except (ValueError, TypeError):
+            w_val = 10
+
+        push_overlay_event({"type": "ink_clear", "all": True})
+
+        card_mark: dict[str, Any] = {
+            "kind": "card",
+            "part": "amigo-weather-card",
+            "title": f"Weather · {city_name}"[:40],
+            "heading": f"{temp}°C · {condition}"[:36],
+            "text": f"Live meteorological report for {city_name}.",
+            "items": [
+                f"Temperature: {temp}°C",
+                f"Sky Condition: {condition}",
+                f"Relative Humidity: {h_val}%",
+                f"Wind Velocity: {w_val} km/h",
+            ],
+            "tone": "sky",
+        }
+
+        bars_mark: dict[str, Any] = {
+            "kind": "bars",
+            "part": "amigo-weather-bars",
+            "title": f"Atmosphere · {city_name}",
+            "bars": [
+                {"label": "Temp (°C)", "value": t_val, "tone": "sky"},
+                {"label": "Humidity (%)", "value": h_val, "tone": "teal"},
+                {"label": "Wind (km/h)", "value": w_val, "tone": "coral"},
+            ],
+        }
+
+        push_overlay_event({
+            "type": "ink",
+            "id": "amigo-weather",
+            "seg": 0,
+            "last": True,
+            "fade": float(duration),
+            "beats": [
+                {
+                    "voiced": True,
+                    "caption": f"{temp}°C and {condition} in {city_name}",
+                    "marks": [card_mark],
+                },
+                {
+                    "voiced": False,
+                    "caption": f"Conditions in {city_name}",
+                    "marks": [bars_mark],
+                },
+            ],
+        })
+    except Exception as exc:
+        logger.debug("[Interactive Weather] Error emitting: %s", exc)
+
+
+def emit_interactive_reminders(reminders: list[dict], duration: float = 25.0) -> None:
+    """Emit interactive checklist of reminders using Roamies native task list."""
+    try:
+        from amigo.services.screen_pen import push_overlay_event
+        items = [f"{r.get('message', 'Reminder')} ({r.get('target_time') or r.get('time', '')})" for r in (reminders or [])[:6]]
+
+        push_overlay_event({"type": "ink_clear", "all": True})
+
+        card_mark: dict[str, Any] = {
+            "kind": "card",
+            "part": "amigo-rem-card",
+            "title": "My Active Reminders",
+            "heading": f"{len(reminders)} Reminder{'s' if len(reminders) != 1 else ''}" if reminders else "No Active Reminders",
+            "text": f"You have {len(reminders)} scheduled task(s)." if reminders else "Your reminder list is clear.",
+            "items": items if items else ["All caught up!"],
+            "tone": "amber",
+        }
+
+        push_overlay_event({
+            "type": "ink",
+            "id": "amigo-rem-summary",
+            "seg": 0,
+            "last": True,
+            "fade": float(duration),
+            "beats": [{
+                "voiced": True,
+                "caption": f"You have {len(reminders)} reminders scheduled",
+                "marks": [card_mark],
+            }],
+        })
+
+        if reminders:
+            today_items = [
+                {
+                    "id": str(r.get("id") or idx),
+                    "text": str(r.get("message") or "Reminder"),
+                    "when": str(r.get("target_time") or ""),
+                    "done": bool(r.get("done", False)),
+                }
+                for idx, r in enumerate(reminders[:8])
+            ]
+            push_overlay_event({
+                "type": "reminders",
+                "today": today_items,
+                "later": [],
+                "seconds": int(duration),
+            })
+    except Exception as exc:
+        logger.debug("[Interactive Reminders] Error emitting: %s", exc)
+
+
+# ═══════════════════════════════════════════════════════════════
 #  Tool Handlers (Context & Multi-Step Aware)
 # ═══════════════════════════════════════════════════════════════
 
@@ -228,6 +646,7 @@ def _tool_stock_quote(params, query, spoken):
             "timestamps": quote.timestamps,
             "as_of": quote.as_of.strftime("%b %d, %I:%M %p") if quote.as_of else "",
         }
+        emit_interactive_stock(quote)
         return format_quote(quote), quote.url, meta
 
     if not quote and not is_internet_connected():
@@ -240,7 +659,6 @@ def _tool_open_website(params, query, spoken):
     raw_url = str(params.get("url") or "").strip()
     title = str(params.get("title") or "").strip()
 
-    # Dynamic Link Injection: If recent search found a specific URL, inject it for follow-ups
     state = rag_engine.get_active_state(clean_expired=True) or {}
     last_link_data = state.get("last_link") or state.get("last_search") or {}
     prior_url = str(last_link_data.get("url") or "").strip()
@@ -460,6 +878,8 @@ def _tool_get_weather(params, query, spoken):
         else:
             result = f"Weather in {city_name}: {temp}°C, {condition}."
         update_active_state("active_subject", {"name": city_name, "category": "weather"})
+        wind = w_data.get("wind_kmh") or w_data.get("wind_speed")
+        emit_interactive_weather(city_name, temp, condition, humidity, wind)
         return result, None
 
     try:
@@ -467,6 +887,7 @@ def _tool_get_weather(params, query, spoken):
     except Exception:
         result = ""
     if result:
+        emit_interactive_weather(city or "Local", "--", "Report", 50, 10)
         return result, None
     if not is_internet_connected():
         return _offline_reply(query, "live weather cannot be fetched"), None, {"status": "offline"}
@@ -558,6 +979,15 @@ def _tool_find_file(params, query, spoken):
     if file_results:
         update_active_state("active_file", {"path": file_results[0]["path"], "name": file_results[0]["name"]})
         update_active_state("found_files", [f["path"] for f in file_results[:5]])
+        file_items = [f"{f['name']} ({f.get('extension', 'file')})" for f in file_results[:6]]
+        emit_roamies_card(
+            title=f"Files · {len(file_results)} found",
+            heading=f"Found {len(file_results)} File{'s' if len(file_results) != 1 else ''}",
+            text=f"Matching search results for '{q}'.",
+            items=file_items,
+            tone="teal",
+            duration=18.0,
+        )
         lines = [f"I found {len(file_results)} matching file{'s' if len(file_results) != 1 else ''}:"]
         for i, f in enumerate(file_results[:5], 1):
             clean_t = os.path.splitext(f["name"])[0].replace("_", " ").replace("-", " ").title()
@@ -584,8 +1014,21 @@ def _tool_read_screen(params, query, spoken):
         screen_text = res.get("screen_text", "")
         if screen_text:
             set_last_screen_text(screen_text)
+        win_title = res.get("window_title", "Active Window")
+        reply_snippet = res.get("reply", "I inspected your screen.")
+        screen_items = [f"Window: {win_title}"]
+        if screen_text:
+            screen_items.append(f"Snippet: {screen_text[:120]}...")
+        emit_roamies_card(
+            title=f"Screen Vision · {win_title}",
+            heading="Screen Inspected",
+            text=reply_snippet[:240],
+            items=screen_items,
+            tone="lilac",
+            duration=18.0,
+        )
         return res.get("reply", "I inspected your screen."), None, {
-            "window_title": res.get("window_title", "Active Window"),
+            "window_title": win_title,
             "screenshot": res.get("screenshot_path", "amigo_screenshot.png"),
             "text_snippet": screen_text[:300],
             "screen_text": screen_text,
@@ -672,25 +1115,43 @@ def _tool_memory_recall(params, query, spoken):
 
 
 def _tool_ask_document(params, query, spoken, conversation_history=None):
-    """Unified RAG Q&A handler with full follow-up context and cross-corpus retrieval."""
+    """Unified RAG Q&A handler with full follow-up context, cross-corpus fallback, and Roamies overlay card."""
     params = params if isinstance(params, dict) else {}
     conv_history = _get_conv_history(conversation_history)
-    filepath = str(params.get("filepath") or "").strip()
+    filepath = str(params.get("filepath") or params.get("filename") or params.get("file") or "").strip()
     t_idx = params.get("target_index")
     question = str(params.get("question") or params.get("query") or query or "").strip() or query
 
-    target_path = resolve_document_path(filepath, target_index=t_idx) if (filepath or t_idx is not None) else None
-    if not target_path:
-        act_f = (rag_engine.get_active_state(clean_expired=False) or {}).get("active_file")
-        if isinstance(act_f, dict) and act_f.get("path") and os.path.exists(act_f["path"]):
-            target_path = act_f["path"]
+    target_path = None
+    if t_idx is not None:
+        target_path = resolve_document_path("", target_index=t_idx)
+    elif filepath:
+        target_path = resolve_document_path(filepath)
+    else:
+        resolved_q = rag_engine.resolve_contextual_query(question, conv_history)
+        if resolved_q != question:
+            act_f = (rag_engine.get_active_state(clean_expired=False) or {}).get("active_file")
+            if isinstance(act_f, dict) and act_f.get("path") and os.path.exists(act_f["path"]):
+                target_path = act_f["path"]
 
+    search_q = f"{filepath} {question}".strip() if (filepath and not target_path) else question
+
+    # 1. Primary: Grounded document evidence with passage citations
     evidence, sources = rag_engine.build_document_evidence(
-        question,
+        search_q,
         top_k=5,
         conversation_history=conv_history,
         filepath=target_path if target_path and os.path.exists(target_path) else None,
     )
+
+    # 2. Fallback: If scoped to a single active_file and nothing matched, search across all indexed documents
+    if (not evidence or not sources) and target_path:
+        evidence, sources = rag_engine.build_document_evidence(
+            search_q,
+            top_k=5,
+            conversation_history=conv_history,
+            filepath=None,
+        )
 
     if not evidence or not sources:
         return (
@@ -710,14 +1171,25 @@ def _tool_ask_document(params, query, spoken, conversation_history=None):
         f"[{source['id']}] {source['file']} — {source['location']}"
         for source in sources
     )
-    response = f"{response.rstrip()}\n\nSources: {source_list}".strip()
-    return response, None, {"status": "success", "doc_context_used": True, "sources": sources}
+    primary_file = sources[0].get("file", "Document")
+    card_sources = [{"file": str(s.get("file", "")), "location": str(s.get("location", ""))} for s in sources[:4]]
+    emit_roamies_card(
+        title=f"Document · {primary_file}",
+        heading=question[:36],
+        text=response[:380],
+        items=[f"{s['file']} ({s['location']})" for s in sources[:4]],
+        tone="teal",
+        duration=22.0,
+        sources=card_sources,
+    )
+    full_response = f"{response.rstrip()}\n\nSources: {source_list}".strip()
+    return full_response, None, {"status": "success", "doc_context_used": True, "sources": sources}
 
 
 def _tool_summarize_document(params, query, spoken):
     params = params if isinstance(params, dict) else {}
     conv_history = _get_conv_history()
-    filepath = str(params.get("filepath") or params.get("path") or "").strip()
+    filepath = str(params.get("filepath") or params.get("path") or params.get("filename") or "").strip()
     t_idx = params.get("target_index")
     target_path = resolve_document_path(filepath, target_index=t_idx) if (filepath or t_idx is not None) else None
     if not target_path:
@@ -728,13 +1200,21 @@ def _tool_summarize_document(params, query, spoken):
     if target_path and os.path.exists(target_path):
         text = rag_engine.extract_text(target_path)
         if text:
-            update_active_state("active_file", {"path": target_path, "name": os.path.basename(target_path)})
+            fname = os.path.basename(target_path)
+            update_active_state("active_file", {"path": target_path, "name": fname})
             summary = get_ai_response(
                 f"Summarize this document clearly with structured bullet points and key takeaways:\n\n{text[:6000]}",
                 conversation_history=conv_history,
                 use_memory=False,
                 is_voice=False,
                 max_tokens=650,
+            )
+            emit_roamies_card(
+                title=f"Summary · {fname}",
+                heading=fname[:36],
+                text=summary[:380],
+                tone="teal",
+                duration=22.0,
             )
             return summary, None, {"status": "completed", "file": target_path}
 
@@ -1279,7 +1759,8 @@ def resolve_document_path(query_or_target: str, target_index: int | None = None)
                     update_active_state("active_file", {"path": fpath, "name": os.path.basename(fpath)})
                     return fpath
 
-    return active_path if active_ok else None
+    # Do NOT fall back to an unrelated active_file when an explicit target did not match
+    return None
 
 
 def _tool_file_action(params, query, spoken, default_action="open"):
@@ -1345,6 +1826,7 @@ def _tool_set_volume(params, query, spoken):
 
     if action == "mute":
         os_automation.mute()
+        emit_interactive_volume(0)
         return "Audio muted.", None
     if action == "unmute":
         unmute_fn = getattr(os_automation, "unmute", None)
@@ -1352,12 +1834,15 @@ def _tool_set_volume(params, query, spoken):
             unmute_fn()
         else:
             os_automation.mute()
+        emit_interactive_volume(os_automation.get_volume() or 50)
         return "Audio unmuted.", None
     if action == "volume_up":
         os_automation.volume_up()
+        emit_interactive_volume(os_automation.get_volume() or 65)
         return "Volume increased.", None
     if action == "volume_down":
         os_automation.volume_down()
+        emit_interactive_volume(os_automation.get_volume() or 45)
         return "Volume decreased.", None
     if action == "set_volume" or (not action and level is not None):
         try:
@@ -1369,6 +1854,7 @@ def _tool_set_volume(params, query, spoken):
             return "What volume level would you like, from 0 to 100?", None
     elif level in (None, ""):
         return "What volume level would you like, from 0 to 100?", None
+    emit_interactive_volume(level)
     return _level_result(os_automation.set_volume(level), f"Volume set to {level} percent."), None
 
 
@@ -1381,6 +1867,7 @@ def _tool_set_brightness(params, query, spoken):
         level = val
     except (ValueError, TypeError):
         return "What brightness level would you like, from 0 to 100?", None
+    emit_interactive_brightness(level)
     return _level_result(os_automation.set_brightness(level), f"Brightness set to {level} percent."), None
 
 
@@ -1512,6 +1999,9 @@ def _tool_change_setting(params, query, spoken):
         ok, msg = change_setting(s, value=val, confirmed=confirmed)
         if not ok and not confirmed:
             return msg, None, {"requires_confirmation": True, "action_type": "change_setting", "setting": s, "value": val}
+        val_norm = str(val or "").strip().lower()
+        is_on = ok if val_norm in ("on", "true", "1") else False
+        emit_interactive_setting(s, msg, is_on)
         return msg, None
     except Exception as exc:
         logger.error("[Change Setting Error]: %s", exc)
@@ -1525,7 +2015,8 @@ def _tool_get_setting(params, query, spoken):
         return "Which setting would you like to check?", None
     try:
         from amigo.services.os_settings import get_setting
-        _, msg = get_setting(s)
+        ok, msg = get_setting(s)
+        emit_interactive_setting(s, msg, bool(ok))
         return msg, None
     except Exception as exc:
         logger.error("[Get Setting Error]: %s", exc)
@@ -1552,43 +2043,51 @@ def _tool_system_status(params, query, spoken):
 
 
 def _tool_set_timer(params, query, spoken):
-    return handle_set_timer(params, query), None
+    msg = handle_set_timer(params, query)
+    parsed_secs = (
+        parse_relative_seconds(str(params.get("query") or ""))
+        or parse_relative_seconds(query or "")
+        or parse_relative_seconds(str(params.get("duration") or params.get("seconds") or ""))
+        or 0
+    )
+    label = str(params.get("label") or "Timer").strip()
+    mins, secs = int(parsed_secs // 60), int(parsed_secs % 60)
+    timer_items = [f"Duration: {mins}m {secs}s", f"Label: {label}"] if parsed_secs else [msg]
+    emit_roamies_card(
+        title=f"Timer · {label}",
+        heading=f"{mins}m {secs}s Countdown" if parsed_secs else "Timer Started",
+        text=msg,
+        items=timer_items,
+        tone="teal",
+        duration=18.0,
+    )
+    return msg, None
 
 
 def _tool_set_reminder(params, query, spoken):
     msg = handle_set_reminder(params, query)
     reminders = get_active_data().get("reminders", [])
-    cards = [{
-        "id": f"reminder-{int(time.time())}",
-        "title": "Scheduled Reminders",
-        "type": "reminder",
-        "badge": "reminder",
-        "description": msg,
-        "selected": True,
-        "actionType": "custom",
-        "payload": {"tool": "reminder", "reminders": reminders, "message": msg},
-    }] if reminders else []
-    return msg, None, {"cards": cards, "reminders": reminders}
+    emit_interactive_reminders(reminders)
+    return msg, None, {"cards": [], "reminders": reminders}
 
 
 def _tool_list_reminders(params, query, spoken):
     msg = handle_list_reminders()
     reminders = get_active_data().get("reminders", [])
-    cards = [{
-        "id": f"reminders-list-{int(time.time())}",
-        "title": "My Active Reminders",
-        "type": "reminder",
-        "badge": "reminder",
-        "description": f"{len(reminders)} active reminder(s)",
-        "selected": True,
-        "actionType": "custom",
-        "payload": {"tool": "reminder", "reminders": reminders},
-    }] if reminders else []
-    return msg, None, {"cards": cards, "reminders": reminders}
+    emit_interactive_reminders(reminders)
+    return msg, None, {"cards": [], "reminders": reminders}
 
 
 def _tool_cancel_reminder(params, query, spoken):
-    return handle_cancel_reminder(params), None
+    res_msg = handle_cancel_reminder(params)
+    emit_roamies_card(
+        title="Reminder Update",
+        heading="Reminder Cancelled",
+        text=res_msg,
+        tone="coral",
+        duration=14.0,
+    )
+    return res_msg, None
 
 
 def _tool_exit(params, query, spoken):
@@ -1952,8 +2451,41 @@ def _tool(
 
 TOOL_DEFINITIONS = [
     _tool(
+        "document_qa",
+        "Search, read, extract facts, or answer questions from the user's indexed local documents, PDFs, DOCX, spreadsheets, notes, invoices, resumes, or reports. ALWAYS use instead of chat whenever the user asks about their personal files or documents.",
+        {
+            "query": _p("string", "Specific question or search terms to look up inside indexed documents"),
+            "filepath": _p("string", "Optional document filename or topic hint if user names a specific file"),
+            "target_index": _p("integer", "Optional ordinal index from Recent Results List: 0=first, 1=second, -1=last"),
+        },
+        ["query"],
+        tool_aliases={"ask_document": {}},
+    ),
+    _tool(
+        "summarize_document",
+        "Summarize the full contents of a specific local document or active file.",
+        {
+            "filepath": _p("string", "Optional concrete filename or path"),
+            "target_index": _p("integer", "Optional ordinal index: 0=first, 1=second, -1=last"),
+        },
+    ),
+    _tool(
+        "find_file",
+        "Search and list matching local file paths on disk by filename or keyword (use when user wants to locate or list files, not answer questions about their contents).",
+        {"query": _p("string", "Search keyword or filename")},
+        ["query"],
+    ),
+    _tool(
+        "open_file",
+        "Open an existing local file in its default desktop viewer (supports concrete path/name or target_index from recent results).",
+        {
+            "path": _p("string", "Concrete filename or path"),
+            "target_index": _p("integer", "Ordinal index: 0=first, 1=second, -1=last"),
+        },
+    ),
+    _tool(
         "chat",
-        "General knowledge, explanations, reasoning, creative conversation, greetings, assistant questions, and clarifying questions when required details are missing.",
+        "General knowledge, explanations, reasoning, creative conversation, greetings, assistant questions, and clarifying questions when required details are missing. NEVER use when the user asks about their local documents/files (use document_qa).",
         {"response": _p("string", "Direct spoken reply")},
     ),
     _tool(
@@ -2082,7 +2614,7 @@ TOOL_DEFINITIONS = [
     ),
     _tool(
         "screen_pen_annotate",
-        "Draw visual explanations, diagrams, flowcharts, 2D graphs, bar charts, tables, timelines, LaTeX math derivations, molecules, world maps, quizzes, 3D models, or live on-screen UI highlights/annotations.",
+        "Draw visual explanations, comparisons, flowcharts, 2D graphs, bar charts, tables, timelines, LaTeX math derivations, molecules, world maps, quizzes, 3D models, or live on-screen UI highlights/annotations.",
         {
             "action": _p(
                 "string",
@@ -2135,16 +2667,17 @@ TOOL_DEFINITIONS = [
         "set_timer",
         "Start a countdown timer for a specified duration.",
         {
-            "duration": _p("string", "Duration (e.g. 10m, 2h)"),
+            "duration": _p("string", "Duration in units (e.g. 10m, 45s, 1h 30m)"),
             "seconds": _p("integer", "Total seconds"),
+            "label": _p("string", "Optional timer label"),
         },
     ),
     _tool(
         "set_reminder",
-        "Schedule a reminder for a future time or interval.",
+        "Schedule a reminder for a future time. Convert relative times to units (e.g. '20m', '2h') or exact dates using Current Time.",
         {
             "message": _p("string", "Reminder message"),
-            "time": _p("string", "Target clock time or relative interval"),
+            "time": _p("string", "Relative offset (e.g. 20m, 1h) or ISO/clock time (e.g. 2026-11-15T09:00:00, 17:30)"),
         },
         ["message", "time"],
     ),
@@ -2155,39 +2688,11 @@ TOOL_DEFINITIONS = [
     ),
     _tool(
         "cancel_reminder",
-        "Cancel one or all scheduled reminders.",
-        {"query": _p("string", "Reminder topic or 'all'")},
-    ),
-    _tool(
-        "find_file",
-        "Search and list local files by keyword or filename.",
-        {"query": _p("string", "Search keyword or filename")},
-        ["query"],
-    ),
-    _tool(
-        "open_file",
-        "Open an existing local file in its default application (supports concrete path/name or target_index from recent results).",
+        "Cancel a specific scheduled reminder/timer by topic, or all of them if explicitly requested.",
         {
-            "path": _p("string", "Concrete filename or path"),
-            "target_index": _p("integer", "Ordinal index: 0=first, 1=second, -1=last"),
+            "query": _p("string", "Specific reminder or timer topic to cancel"),
+            "all": _p("boolean", "True ONLY when user explicitly asks to cancel all reminders/timers"),
         },
-    ),
-    _tool(
-        "summarize_document",
-        "Summarize the full contents of a local document or active file.",
-        {
-            "filepath": _p("string", "Optional concrete filename or path"),
-            "target_index": _p("integer", "Optional ordinal index: 0=first, 1=second, -1=last"),
-        },
-    ),
-    _tool(
-        "document_qa",
-        "Read, explain, or answer specific questions about local documents, PDFs, invoices, or files.",
-        {
-            "query": _p("string", "Question or inquiry about the document"),
-            "target_index": _p("integer", "Optional ordinal index: 0=first, 1=second, -1=last"),
-        },
-        ["query"],
     ),
     _tool(
         "memory_recall",
@@ -2356,7 +2861,7 @@ def _tools_block() -> str:
 _MASTER_SYSTEM_PROMPT = """You are Amigo, an intelligent voice and desktop AI assistant on the user's Windows PC.
 
 CORE OPERATING PRINCIPLES:
-1. Intent Understanding: Understand the user's underlying goal in any phrasing or language and map it to the exact tool(s) from TOOLS AVAILABLE below.
+1. Intent Understanding: Understand user intent and select the single best tool (or sequence of tools) from TOOLS AVAILABLE below based on the user's underlying goal in any phrasing or language.
 2. Single-Step & Multi-Step Execution:
    - If the user asks for one action, output an `actions` array with 1 tool object.
    - If the user asks for multiple sequential or compound actions (e.g., "open X and do Y", "find file X and summarize it", "check weather in Y and set a reminder", "search for X and email it to Z"), decompose the request into an ordered list of tool objects in `actions`.
@@ -2366,10 +2871,11 @@ CORE OPERATING PRINCIPLES:
    - Never fabricate app names, URLs, setting names, file paths, or numeric levels that were not stated or implied by context.
    - If a required target or value is genuinely missing or ambiguous, use `chat` to ask one brief, natural clarifying question.
 4. Tool Selection Guidance:
+   - Document Q&A (CRITICAL): ALWAYS use `document_qa` whenever the user asks any question about their indexed documents, files, PDFs, invoices, resumes, reports, or personal records (even if they don't say the word "document"—e.g. "what is my invoice total?", "what does the contract say about termination?", "check my resume for skills"). NEVER answer document questions with `chat`. Use `summarize_document` only when asked for a full-document summary, and `find_file` / `open_file` only to locate or launch a file.
    - Use `act_in_app` for in-window UI interactions (clicking controls, filling fields, scrolling pages, pressing keys).
-   - Use `screen_pen_annotate` for visual diagrams, flowcharts, comparison bar charts, maps, math derivations, 3D models, or marking existing screen elements (`label`).
+   - Use `screen_pen_annotate` for visual explanations, comparisons, flowcharts, bar charts, comparison tables, maps, math derivations, 3D models, or marking existing screen elements (`label`).
+     * Whenever the user asks to compare, contrast, or show differences/pros and cons between two or more things, use `screen_pen_annotate` with `action="table"` or `action="bars"`.
    - Use `screen_pen_guide` for step-by-step interactive on-screen UI walkthroughs.
-   - Use `document_qa` or `summarize_document` when asking about or summarizing local files/documents, and `find_file` / `open_file` to locate or launch files.
    - Use `web_search` for live online information, `get_weather` for weather, `stock_quote` for ticker prices, and `chat` for general knowledge, reasoning, and conversation.
 5. Output Format:
    - Output ONLY valid JSON matching this exact schema:
@@ -2379,6 +2885,12 @@ TOOLS AVAILABLE:
 <<TOOLS>>
 
 EXAMPLES:
+User: what does my contract say about termination notice?
+Assistant: {"actions": [{"tool": "document_qa", "params": {"query": "termination notice", "filepath": "contract"}}]}
+
+User: what is the total amount due on the electricity invoice?
+Assistant: {"actions": [{"tool": "document_qa", "params": {"query": "total amount due electricity invoice", "filepath": "invoice"}}]}
+
 User: open notepad and write a short haiku about rain
 Assistant: {"actions": [{"tool": "open_app", "params": {"name": "notepad"}}, {"tool": "generate_content", "params": {"type": "essay", "topic": "short haiku about rain"}}, {"tool": "insert_content", "params": {"destination": "notepad"}}]}
 
@@ -2387,6 +2899,9 @@ Assistant: {"actions": [{"tool": "find_file", "params": {"query": "budget"}}, {"
 
 User: search online for latest space telescope discoveries and draft an email to Alex about it
 Assistant: {"actions": [{"tool": "web_search", "params": {"query": "latest space telescope discoveries"}}, {"tool": "draft_email", "params": {"to": "Alex", "subject": "Latest Space Telescope Discoveries", "prompt": "$prev"}}]}
+
+User: compare python and rust
+Assistant: {"actions": [{"tool": "screen_pen_annotate", "params": {"action": "table", "topic": "Python vs Rust comparison"}}]}
 
 User: show a comparison chart of Python, Rust, and Go popularity
 Assistant: {"actions": [{"tool": "screen_pen_annotate", "params": {"action": "bars", "topic": "Python, Rust, and Go popularity"}}]}
@@ -3213,137 +3728,5 @@ def execute_actions(
 
 
 def build_action_cards(tool: str, params: dict, result_metadata: dict, url: str | None, response_text: str, prompt: str) -> list[dict]:
-    cards = []
-    params = params if isinstance(params, dict) else {}
-    result_metadata = result_metadata if isinstance(result_metadata, dict) else {}
-
-    if tool in ("find_file", "find_document"):
-        for index, file_item in enumerate(result_metadata.get("file_results", [])):
-            cards.append({
-                "id": f"act-file-{index}",
-                "type": "file",
-                "title": file_item.get("name", "Document"),
-                "subtitle": file_item.get("folder", "") or file_item.get("path", ""),
-                "selected": False,
-                "badge": file_item.get("extension", "file"),
-                "payload": {"tool": "open_file", "path": file_item.get("path", ""), "file": file_item},
-            })
-
-    elif tool == "get_weather":
-        city = str(params.get("city") or "").strip()
-        w_data = _cached_weather_data(city)
-        resolved_city = w_data.get("city") or (city.title() if city else "Local Area")
-        cards.append({
-            "id": "act-weather",
-            "type": "weather",
-            "title": f"Weather in {resolved_city}",
-            "subtitle": response_text,
-            "selected": True,
-            "badge": "Weather",
-            "payload": {"tool": "get_weather", "city": resolved_city, **w_data},
-        })
-
-    elif tool in ("stock_quote", "market_quote", "stock_price", "get_stock_quote") and result_metadata.get("price") is not None:
-        sym = result_metadata.get("symbol", "")
-        name = result_metadata.get("name", sym)
-        price = result_metadata.get("price", "")
-        curr = result_metadata.get("currency", "$")
-        change_pct = result_metadata.get("change_pct")
-        pct_str = f" ({'+' if change_pct >= 0 else ''}{change_pct:.2f}%)" if change_pct is not None else ""
-        price_str = f"{price:,.2f}" if isinstance(price, (int, float)) else str(price)
-        cards.append({
-            "id": f"act-stock-{sym}",
-            "type": "stock",
-            "title": f"{name} ({sym})",
-            "subtitle": response_text,
-            "selected": True,
-            "badge": f"{curr} {price_str}{pct_str}",
-            "payload": {"tool": "stock_quote", **result_metadata},
-        })
-
-    elif tool in ("set_timer", "timer", "stopwatch"):
-        is_stopwatch = tool == "stopwatch"
-        parsed_secs = (
-            parse_relative_seconds(str(params.get("query") or ""))
-            or parse_relative_seconds(prompt)
-            or parse_relative_seconds(str(params.get("duration") or params.get("seconds") or ""))
-            or 0
-        )
-        if parsed_secs or is_stopwatch:
-            label = params.get("label") or ("Stopwatch" if is_stopwatch else "Timer")
-            mins, secs = int(parsed_secs // 60), int(parsed_secs % 60)
-            cards.append({
-                "id": "act-timer",
-                "type": "stopwatch" if is_stopwatch else "timer",
-                "title": "Stopwatch" if is_stopwatch else f"Timer: {label}",
-                "subtitle": "Live Active Stopwatch" if is_stopwatch else f"{mins}m {secs}s countdown",
-                "selected": True,
-                "badge": "Stopwatch" if is_stopwatch else "Timer",
-                "payload": {
-                    "tool": "stopwatch" if is_stopwatch else "set_timer",
-                    "duration_seconds": parsed_secs,
-                    "seconds": parsed_secs,
-                    "label": label,
-                    "mode": "stopwatch" if is_stopwatch else "timer",
-                },
-            })
-
-    elif tool in ("screen_vision", "read_screen", "ask_about_screen"):
-        win_title = result_metadata.get("window_title", "Desktop")
-        cards.append({
-            "id": "act-screen-vision",
-            "type": "screen_vision",
-            "title": f"Screen Vision: {win_title}",
-            "subtitle": response_text[:140] + ("..." if len(response_text) > 140 else ""),
-            "selected": True,
-            "badge": "Vision",
-            "payload": {
-                "tool": "screen_vision",
-                "window_title": win_title,
-                "screenshot": result_metadata.get("screenshot", "amigo_screenshot.png"),
-                "snippet": result_metadata.get("text_snippet", ""),
-            },
-        })
-
-    elif tool == "clarification" or result_metadata.get("requires_clarification"):
-        candidates = result_metadata.get("candidates") or params.get("candidate_tools") or ["chat", "web_search"]
-        query_text = result_metadata.get("query") or params.get("query") or prompt
-        for idx, cand in enumerate(candidates):
-            title = cand.replace("_", " ").title()
-            cards.append({
-                "id": f"act-clarify-{idx}",
-                "type": "general",
-                "title": title,
-                "subtitle": f"Execute {title} for '{query_text}'",
-                "selected": idx == 0,
-                "badge": title,
-                "actionType": "button",
-                "payload": {"tool": cand, "query": query_text, "original_prompt": prompt},
-            })
-
-    elif tool == "open_website" and (url or params.get("url")):
-        target_url = url or params.get("url")
-        display_title = params.get("title") or result_metadata.get("title") or "Open Web Destination"
-        cards.append({
-            "id": f"act-url-{abs(hash(target_url)) % 100000}",
-            "type": "general",
-            "title": display_title,
-            "subtitle": target_url,
-            "selected": True,
-            "badge": "Web Link",
-            "payload": {"tool": "open_website", "url": target_url, "title": display_title},
-        })
-
-    elif tool in ("change_setting", "get_setting", "open_settings"):
-        setting_name = str(params.get("setting") or "Windows Setting").strip().title()
-        cards.append({
-            "id": f"act-setting-{abs(hash(setting_name)) % 100000}",
-            "type": "setting",
-            "title": f"Setting: {setting_name}",
-            "subtitle": response_text[:120],
-            "selected": True,
-            "badge": "Settings",
-            "payload": {"tool": tool, **params},
-        })
-
-    return cards
+    """Action cards are replaced by Roamies floating canvas cards."""
+    return []

@@ -479,3 +479,32 @@ def handle_cancel_reminder(params: dict | None = None) -> str:
 def get_active_data() -> dict:
     with _reminders_lock:
         return {"timers": list(_active_timers.values()), "reminders": list(_scheduled_reminders)}
+
+
+def toggle_reminder_done(reminder_id: str) -> bool:
+    """Toggles the completed state of a reminder when checked in the Roamies overlay."""
+    with _reminders_lock:
+        stored = load_reminders()
+        found = False
+        target_done = False
+        for rem in stored:
+            if str(rem.get("id")) == str(reminder_id):
+                rem["done"] = not rem.get("done", False)
+                target_done = rem["done"]
+                found = True
+                break
+        if not found:
+            for rem in _scheduled_reminders:
+                if str(rem.get("id")) == str(reminder_id):
+                    rem["done"] = not rem.get("done", False)
+                    target_done = rem["done"]
+                    found = True
+                    break
+        if found:
+            save_reminders(stored if stored else _scheduled_reminders)
+            for rem in _scheduled_reminders:
+                if str(rem.get("id")) == str(reminder_id):
+                    rem["done"] = target_done
+                    break
+            return True
+        return False

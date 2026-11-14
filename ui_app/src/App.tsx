@@ -10,13 +10,11 @@ import {
   PluginMode,
   HistoryEntry,
   BackendConfig,
-  ActionCardItem,
   AttachmentItem,
   ViewMode,
 } from "./types";
 import { CanvasVisualizer } from "./components/CanvasVisualizer";
 import { TitleBar } from "./components/TitleBar";
-import { ActionCard } from "./components/ActionCard";
 import { ContactPicker } from "./components/ContactPicker";
 import { VoiceControls } from "./components/VoiceControls";
 import { HistoryPanel } from "./components/HistoryPanel";
@@ -661,28 +659,24 @@ export default function App() {
                 setActivePrompt(cleanUser);
                 activePromptRef.current = cleanUser;
                 setDisplayText(cleanReply);
-                if (data.actionCards && data.actionCards.length > 0) {
-                  setAssistantData({
-                    speechReply: cleanReply,
-                    displayTitle: cleanUser,
-                    intent: data.tool || "chat",
-                    requiresDisambiguation: false,
-                    actionCards: data.actionCards,
-                    executionSummary: {
-                      status: "completed",
-                      headline: "Executed with Amigo",
-                      details: cleanReply,
-                    },
-                  });
-                  setState("action_card");
-                } else {
-                  setState((current) => {
-                    if (current === "action_card" || current === "contact_picker" || current === "generated_content") {
-                      return current; // Don't aggressively override interactive UI states
-                    }
-                    return "completed";
-                  });
-                }
+                setAssistantData({
+                  speechReply: cleanReply,
+                  displayTitle: cleanUser,
+                  intent: data.tool || "chat",
+                  requiresDisambiguation: false,
+                  actionCards: [],
+                  executionSummary: {
+                    status: "completed",
+                    headline: "Executed with Amigo",
+                    details: cleanReply,
+                  },
+                });
+                setState((current) => {
+                  if (current === "contact_picker" || current === "generated_content") {
+                    return current;
+                  }
+                  return "completed";
+                });
 
                 // Optimistically update History Drawer immediately
                 const optimisticEntry: HistoryEntry = {
@@ -941,12 +935,6 @@ export default function App() {
         ...prev.filter((p) => p.prompt.toLowerCase() !== effectivePrompt.toLowerCase()),
       ]);
 
-      const hasActionCards = Boolean(
-        data.actionCards &&
-        data.actionCards.length > 0 &&
-        data.actionCards.some((c: any) => c.type !== "file" && c.type !== "document" && c.type !== "memory")
-      );
-
       // Check for generated content panel
       if (data.showGeneratedPanel && data.generatedContent) {
         setGeneratedContent({
@@ -960,8 +948,6 @@ export default function App() {
         if (data.disambiguationQuestion) {
           setDisplayText(data.disambiguationQuestion);
         }
-      } else if (hasActionCards) {
-        setState("action_card");
       } else {
         setState("completed");
       }
@@ -1041,12 +1027,6 @@ export default function App() {
     setSelectedContact(entry.selectedContact);
     const fullText = responseData.speechReply || responseData.executionSummary?.details || responseData.displayTitle || entry.prompt;
     setDisplayText(fullText);
-    const hasActionCards = Boolean(
-      responseData.actionCards &&
-      responseData.actionCards.length > 0 &&
-      responseData.actionCards.some((c: any) => c.type !== "file")
-    );
-
     // Check for generated content in history
     if (responseData.showGeneratedPanel && responseData.generatedContent) {
       setGeneratedContent({
@@ -1056,7 +1036,7 @@ export default function App() {
       });
       setState("generated_content");
     } else {
-      setState(hasActionCards ? "action_card" : responseData.requiresDisambiguation ? "contact_picker" : "completed");
+      setState(responseData.requiresDisambiguation ? "contact_picker" : "completed");
     }
 
     setShowHistory(false);
@@ -1137,64 +1117,6 @@ export default function App() {
       await clearAssistantHistory();
     } catch (e) { }
   }, []);
-
-  // Toggle items on the action card
-  const handleToggleActionItem = (id: string) => {
-    if (!assistantData) return;
-    setAssistantData({
-      ...assistantData,
-      actionCards: assistantData.actionCards.map((c) =>
-        c.id === id ? { ...c, selected: !c.selected } : c
-      ),
-    });
-  };
-
-  // Execute a single button action on an action card
-  const handleExecuteSingleAction = async (item: ActionCardItem) => {
-    sfx.playClick();
-    await executeBackendAction(item, backendConfig);
-    setDisplayText(`Executed: ${item.title}`);
-    setState("completed");
-  };
-
-  // User confirms the action cards
-  const handleConfirmActions = async () => {
-    setDisplayText("Working on this...");
-    setState("working");
-
-    // Dispatch webhook to backend for selected actions
-    if (assistantData?.actionCards) {
-      const selectedActions = assistantData.actionCards.filter((a) => a.selected);
-      for (const act of selectedActions) {
-        executeBackendAction(act, backendConfig).catch(() => { });
-      }
-    }
-
-    // If contact disambiguation is required
-    if (assistantData?.requiresDisambiguation && (assistantData.contactMatches?.length || 0) > 0) {
-      setTimeout(() => {
-        const question =
-          assistantData.disambiguationQuestion ||
-          "There are several matches. Which would you like me to use?";
-        setDisplayText(question);
-        setState("contact_picker");
-        if (backendConfig.autoSpeech !== false && soundEnabled) {
-          speakText(question);
-        }
-      }, 1400);
-    } else {
-      // Direct completion: restore the actual result text
-      setTimeout(() => {
-        sfx.playSuccess();
-        const finalMsg =
-          assistantData?.speechReply ||
-          assistantData?.executionSummary?.details ||
-          "Task completed successfully.";
-        setDisplayText(finalMsg);
-        setState("completed");
-      }, 1200);
-    }
-  };
 
   // User selects a specific contact from the disambiguation list
   const handleSelectContact = (contact: ContactItem) => {
@@ -1375,7 +1297,7 @@ export default function App() {
                   >
                     {/* State-driven Thinking Orb & Central Display layer */}
                     {(() => {
-                      const isCompact = state === "action_card" || state === "contact_picker";
+                      const isCompact = state === "contact_picker";
                       return (
                         <div className="relative flex-1 w-full min-h-0 flex flex-col items-center justify-center overflow-hidden">
                           {/* Central Display Area with Orb above & Spoken / Greeting text cleanly below */}
@@ -1417,20 +1339,7 @@ export default function App() {
                                 </div>
                               )}
 
-                              {/* Dedicated Action Card Spoken Context */}
-                              {state === "action_card" && displayText && displayText !== greetingText && (
-                                <motion.div
-                                  initial={{ opacity: 0, y: -6 }}
-                                  animate={{ opacity: 1, y: 0 }}
-                                  exit={{ opacity: 0, y: -6 }}
-                                  transition={{ duration: 0.2 }}
-                                  className="text-center px-4 max-w-xl mx-auto mb-3 pointer-events-auto"
-                                >
-                                  <p className="text-base sm:text-lg md:text-xl font-medium tracking-tight leading-snug drop-shadow-[0_2px_12px_rgba(0,0,0,0.8)] text-slate-100">
-                                    {displayText}
-                                  </p>
-                                </motion.div>
-                              )}
+
 
                               {/* Main Central Spoken / Heading Text (for idle, listening, processing, working, completed) */}
                               {!isCompact && (
@@ -1554,20 +1463,7 @@ export default function App() {
                                     </motion.div>
                                   )}
 
-                                  {/* 1. Action Card Confirmation (if user action requires checkboxes) */}
-                                  {state === "action_card" && assistantData && !errorState && (
-                                    <ActionCard
-                                      key="action-card"
-                                      items={assistantData.actionCards}
-                                      onToggleItem={handleToggleActionItem}
-                                      onExecuteSingleItem={handleExecuteSingleAction}
-                                      onConfirm={handleConfirmActions}
-                                      onRetry={() => handleReRunHistoryCommand(activePrompt)}
-                                      onCancel={handleReset}
-                                      isDark={isDark}
-                                      colorTheme={colorTheme}
-                                    />
-                                  )}
+
 
                                   {/* 2. Contact / Match Disambiguation Picker */}
                                   {state === "contact_picker" && assistantData && (
@@ -1605,8 +1501,7 @@ export default function App() {
                           {/* Docked Dynamic Action Capsule below 3D Visualizer Orb */}
                           <div className="absolute bottom-3 sm:bottom-4 inset-x-0 z-20 flex justify-center pointer-events-none">
                             <AnimatePresence mode="wait">
-                              {state !== "action_card" &&
-                                state !== "contact_picker" &&
+                              {state !== "contact_picker" &&
                                 hudActive &&
                                 !hudDismissed && (
                                   <IntentBridgeHUD

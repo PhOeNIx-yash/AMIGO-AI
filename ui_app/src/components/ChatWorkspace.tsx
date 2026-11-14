@@ -28,7 +28,6 @@ import {
   ColorTheme,
   AttachmentItem,
   BackendConfig,
-  ActionCardItem,
 } from "../types";
 import { COLOR_THEMES } from "../data/presets";
 import { speakText, sfx } from "../utils/audio";
@@ -37,7 +36,6 @@ import {
   DataVisualizationCard,
   ParsedTableData,
 } from "./DataVisualizationCard";
-import { ReminderCardPalette, isReminderItem } from "./ActionCard";
 
 interface ChatWorkspaceProps {
   history: HistoryEntry[];
@@ -839,27 +837,6 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
               entry.response.displayTitle ||
               "";
 
-            const reminderCard: ActionCardItem | null =
-              entry.response.actionCards?.find(isReminderItem) ||
-              ((entry.response.intent === "set_reminder" || entry.response.intent === "list_reminders")
-                ? {
-                    id: `chat-rem-${entry.id}`,
-                    title: "Reminders & Tasks",
-                    type: "reminder",
-                    badge: "reminder",
-                    description: replyText,
-                    selected: true,
-                    actionType: "custom",
-                    payload: {
-                      tool: "reminder",
-                      message: replyText,
-                      reminders: entry.response.metadata?.reminders || [
-                        { id: `rem-${entry.id}`, message: replyText || entry.prompt },
-                      ],
-                    },
-                  }
-                : null);
-
             return (
               <motion.div
                 key={entry.id}
@@ -935,17 +912,6 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                           colorTheme={colorTheme}
                         />
                       </div>
-
-                      {/* Interactive TaskList for Reminders & Tasks */}
-                      {reminderCard && (
-                        <div className="pt-2 max-w-lg w-full">
-                          <ReminderCardPalette
-                            item={reminderCard}
-                            isDark={isDark}
-                            theme={theme}
-                          />
-                        </div>
-                      )}
 
                       {/* Message Action Toolbar */}
                       <div className="flex items-center justify-between pt-1 text-xs opacity-60 hover:opacity-100 transition-opacity">

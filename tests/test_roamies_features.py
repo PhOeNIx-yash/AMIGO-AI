@@ -204,3 +204,214 @@ def test_multilingual_and_zero_hardcoding():
         res = screen_pen.screen_pen_annotate(action="circle", label="NonexistentMenu")
         assert res["status"] == "error"
         assert res["code"] == "TARGET_NOT_FOUND"
+
+
+def test_roamies_cards_emission_and_action_cards_suppression():
+    from amigo.utils.tool_registry import (
+        build_action_cards,
+        emit_roamies_card,
+        _tool_get_weather,
+        _tool_stock_quote,
+        _tool_set_timer,
+        _tool_set_reminder,
+    )
+
+    # 1. Action cards must be completely empty (suppressed in favor of Roamies overlay cards)
+    cards = build_action_cards("get_weather", {"city": "Tokyo"}, {}, None, "Sunny", "weather")
+    assert cards == []
+    cards_stock = build_action_cards("stock_quote", {"symbol": "AAPL"}, {"price": 150.0}, None, "Apple quote", "stock")
+    assert cards_stock == []
+
+    # 2. Roamies card emission helper creates valid ink event mark with kind='card'
+    with patch("amigo.services.screen_pen.push_overlay_event") as mock_push:
+        emit_roamies_card(
+            title="Weather · Paris",
+            heading="22°C · Sunny",
+            text="Mild breeze in Paris.",
+            items=["Temp: 22°C", "Wind: 10 km/h"],
+            tone="sky",
+            duration=15.0,
+        )
+        assert mock_push.called
+        event = mock_push.call_args[0][0]
+        assert event["type"] == "ink"
+        assert event["beats"][0]["marks"][0]["kind"] == "card"
+        assert event["beats"][0]["marks"][0]["title"] == "Weather · Paris"
+        assert event["beats"][0]["marks"][0]["heading"] == "22°C · Sunny"
+        assert event["beats"][0]["marks"][0]["tone"] == "sky"
+        assert len(event["beats"][0]["marks"][0]["items"]) == 2
+
+    # 3. Weather tool emits interactive weather
+    fake_weather = {
+        "success": True,
+        "city": "London",
+        "temp_c": 18,
+        "condition": "Cloudy",
+        "humidity": 65,
+        "wind_kmh": 14,
+    }
+    with patch("amigo.utils.tool_registry._cached_weather_data", return_value=fake_weather), \
+         patch("amigo.utils.tool_registry.emit_interactive_weather") as mock_weather:
+        res, _ = _tool_get_weather({"city": "London"}, "weather in London", "")
+        assert "London" in res
+        mock_weather.assert_called_once()
+        assert mock_weather.call_args[0][0] == "London"
+
+    # 4. Stock tool emits interactive stock with graph
+    class DummyQuote:
+        symbol = "MSFT"
+        name = "Microsoft Corp"
+        price = 420.50
+        currency = "$"
+        change = 5.25
+        change_pct = 1.26
+        previous_close = 415.25
+        exchange = "NASDAQ"
+        url = "https://finance.yahoo.com/quote/MSFT"
+        day_high = 422.0
+        day_low = 416.0
+        volume = 20000000
+        fifty_two_week_high = 450.0
+        fifty_two_week_low = 310.0
+        history = [415.0, 417.0, 420.5]
+        timestamps = [1000, 2000, 3000]
+        as_of = None
+
+    with patch("amigo.utils.tool_registry.get_stock_quote", return_value=DummyQuote()), \
+         patch("amigo.utils.tool_registry.emit_interactive_stock") as mock_stock:
+        res, url, meta = _tool_stock_quote({"symbol": "MSFT"}, "MSFT price", "")
+        assert "420.50" in res or "Microsoft" in res
+        mock_stock.assert_called_once()
+        assert mock_stock.call_args[0][0].symbol == "MSFT"
+
+    # 5. Timer and Reminder tools emit Roamies interactive widgets
+    with patch("amigo.utils.tool_registry.handle_set_timer", return_value="Timer set for 5 minutes."), \
+         patch("amigo.utils.tool_registry.parse_relative_seconds", return_value=300), \
+         patch("amigo.utils.tool_registry.emit_roamies_card") as mock_card:
+        res, _ = _tool_set_timer({"duration": "5 minutes", "label": "Tea"}, "set timer for 5 minutes", "")
+        assert "5 minutes" in res
+        mock_card.assert_called_once()
+        assert "Timer" in mock_card.call_args[1]["title"]
+        assert mock_card.call_args[1]["tone"] == "teal"
+
+    with patch("amigo.utils.tool_registry.handle_set_reminder", return_value="Reminder set"), \
+         patch("amigo.utils.tool_registry.emit_interactive_reminders") as mock_rems:
+        res, _, _ = _tool_set_reminder({"message": "Buy tea"}, "remind me to buy tea", "")
+        assert "Reminder" in res
+        mock_rems.assert_called_once()
+
+
+def test_interactive_roamies_graph_bars_buttons():
+    from amigo.utils.tool_registry import (
+        emit_interactive_stock,
+        emit_interactive_setting,
+        emit_interactive_volume,
+        emit_interactive_weather,
+    )
+    from amigo.core.reminder_timer import toggle_reminder_done, save_reminders, load_reminders
+
+    # 1. Stock graph emission produces graph mark with points and axes
+    class SampleQuote:
+        symbol = "NVDA"
+        name = "Nvidia Corp"
+        price = 135.50
+        currency = "$"
+        change = 4.20
+        change_pct = 3.20
+        day_low = 131.0
+        day_high = 136.0
+        previous_close = 131.30
+        exchange = "NASDAQ"
+        volume = 50000000
+        history = [131.3, 132.5, 134.0, 135.5]
+        timestamps = [1, 2, 3, 4]
+
+    with patch("amigo.services.screen_pen.push_overlay_event") as mock_push:
+        emit_interactive_stock(SampleQuote())
+        assert mock_push.called
+        event = mock_push.call_args[0][0]
+        assert len(event["beats"]) == 2
+        card_mark = event["beats"][0]["marks"][0]
+        graph_mark = event["beats"][1]["marks"][0]
+        assert card_mark["kind"] == "card"
+        assert graph_mark["kind"] == "graph"
+        assert len(graph_mark["plots"][0]["points"]) == 4
+        assert graph_mark["dots"][0]["y"] == 135.50
+
+    # 2. Interactive setting produces card + toggle button
+    with patch("amigo.services.screen_pen.push_overlay_event") as mock_push:
+        emit_interactive_setting("Bluetooth", "Bluetooth is currently active.", is_on=True)
+        assert mock_push.called
+        event = mock_push.call_args[0][0]
+        btn_mark = event["beats"][1]["marks"][0]
+        assert btn_mark["kind"] == "button"
+        assert btn_mark["part"] == "act-toggle-bluetooth"
+        assert "Turn Off" in btn_mark["text"]
+
+    # 3. Interactive volume produces animated progress bar + stepper buttons
+    with patch("amigo.services.screen_pen.push_overlay_event") as mock_push:
+        emit_interactive_volume(60)
+        assert mock_push.called
+        event = mock_push.call_args[0][0]
+        bars_mark = event["beats"][0]["marks"][0]
+        btns = event["beats"][1]["marks"]
+        assert bars_mark["kind"] == "bars"
+        assert bars_mark["bars"][0]["value"] == 60
+        assert any(b["part"] == "act-vol-down" for b in btns)
+        assert any(b["part"] == "act-vol-up" for b in btns)
+
+    # 4. Interactive weather produces card + atmospheric bars
+    with patch("amigo.services.screen_pen.push_overlay_event") as mock_push:
+        emit_interactive_weather("Berlin", 22, "Clear", 45, 12)
+        assert mock_push.called
+        event = mock_push.call_args[0][0]
+        card = event["beats"][0]["marks"][0]
+        bars = event["beats"][1]["marks"][0]
+        assert card["kind"] == "card"
+        assert bars["kind"] == "bars"
+        assert len(bars["bars"]) == 3
+
+    # 5. Interactive reminder toggle
+    save_reminders([{"id": "test-rem-1", "message": "Call mom", "done": False}])
+    assert toggle_reminder_done("test-rem-1") is True
+    rems = load_reminders()
+    assert rems[0]["done"] is True
+
+
+def test_api_overlay_action_endpoint():
+    from amigo.ui.server import app, _recent_overlay_actions
+    _recent_overlay_actions.clear()
+
+    client = app.test_client()
+
+    # Passive events from Roamies MUST be ignored and never trigger toggles
+    with patch("amigo.services.os_settings.toggle_setting") as mock_toggle:
+        resp = client.post("/api/overlay/action", json={"type": "ink_closed", "part": "act-toggle-wi-fi"})
+        assert resp.status_code == 200
+        assert resp.get_json()["status"] == "ignored"
+        mock_toggle.assert_not_called()
+
+        resp2 = client.post("/api/overlay/action", json={"type": "draw_done", "part": ""})
+        assert resp2.status_code == 200
+        assert resp2.get_json()["status"] == "ignored"
+        mock_toggle.assert_not_called()
+
+    _recent_overlay_actions.clear()
+    with patch("amigo.services.os_automation.volume_up") as mock_vup, \
+         patch("amigo.services.os_automation.get_system_status", return_value={"volume": 70}), \
+         patch("amigo.services.screen_pen.push_overlay_event"):
+        resp = client.post("/api/overlay/action", json={"type": "ink_action", "part": "act-vol-up"})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["status"] == "success"
+        mock_vup.assert_called_once()
+
+    _recent_overlay_actions.clear()
+    with patch("amigo.services.os_settings.toggle_setting", return_value=(True, "Bluetooth toggled")), \
+         patch("amigo.services.os_settings.get_setting", return_value=(True, "Bluetooth is on")), \
+         patch("amigo.services.screen_pen.push_overlay_event"):
+        resp = client.post("/api/overlay/action", json={"type": "ink_action", "part": "act-toggle-bluetooth"})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["status"] == "success"
+        assert data["enabled"] is True

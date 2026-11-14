@@ -89,6 +89,13 @@ def _wrap_roamie_host_event(inner_event: Dict[str, Any]) -> Dict[str, Any]:
         draw_payload = {k: v for k, v in inner_event.items() if k != "type"}
         draw_payload["type"] = "draw"
         return {"kind": "agent", "e": draw_payload}
+    if etype == "reminders":
+        return {
+            "kind": "list",
+            "today": inner_event.get("today", []),
+            "later": inner_event.get("later", []),
+            "seconds": inner_event.get("seconds", 25),
+        }
     return {"kind": "agent", "e": inner_event}
 
 
