@@ -1,18 +1,28 @@
 {
-  "last_weather_check": 1794665928.5963478,
-  "last_calendar_check": 1794667051.666866,
-  "last_system_check": 1794667352.176356,
-  "last_notification_time": 1794640823.1302803,
+  "last_weather_check": 1794825640.3790987,
+  "last_calendar_check": 1794825460.37551,
+  "last_system_check": 1794825941.5118215,
+  "last_notification_time": 1794824680.3567276,
   "last_priority_alert_time": 0,
   "suggestions_this_hour": 0,
-  "last_hour_reset": 1794665928.5963478,
+  "last_hour_reset": 1794825580.3778355,
   "active_window_start": 1794667231.8762486,
   "current_window_title": "amigo-main - Antigravity IDE - server.py",
   "recent_suggestions": [
     {
       "id": "wellness_break",
-      "text": "Hey Yash, you\u2019ve been crushing it, how\u2019s the code coming along?",
-      "time": 1794640821.2582817
+      "text": "Hey Yash, you've been deeply focused, should we take a quick stretch break?",
+      "time": 1794817521.022617
+    },
+    {
+      "id": "wellness_break",
+      "text": "Hey Yash, you've been focused for almost five hours, want a quick stretch?",
+      "time": 1794821938.6567986
+    },
+    {
+      "id": "wellness_break",
+      "text": "Hey Yash, you've been grinding for hours, maybe take a quick stretch?",
+      "time": 1794824679.5075827
     }
   ],
   "learned_patterns": {},

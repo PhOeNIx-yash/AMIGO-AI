@@ -20,7 +20,8 @@ import {
   ArrowDown,
   Trash2,
 } from "lucide-react";
-import { HaloSearchInput } from "@/components/ui/halo-search";
+import { StreamingResponse } from "@/components/ui/streaming-response";
+import { PromptBox, type PromptEffort } from "@/components/ui/prompt-box";
 import { ErrorState } from "@/components/ui/error-state";
 import { AiStatus, AiStatusState } from "@/components/ui/ai-status";
 import {
@@ -609,15 +610,23 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   }, [history, isLoading, statusInfo, pendingPrompt]);
 
   // Handle command submit
-  const handleSubmit = (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    const prompt = inputText.trim();
-    if (!prompt && !attachment) return;
+  const handleSubmit = (promptText?: string | React.FormEvent, effort?: PromptEffort) => {
+    if (promptText && typeof promptText !== "string" && "preventDefault" in promptText) {
+      promptText.preventDefault();
+      promptText = undefined;
+    }
+    const rawPrompt = (typeof promptText === "string" ? promptText : inputText).trim();
+    if (!rawPrompt && !attachment) return;
 
-    const currentTaskPrompt = prompt || (attachment ? `Analyze ${attachment.filename}` : "");
+    let finalPrompt = rawPrompt;
+    if (effort?.id === "deep") {
+      finalPrompt = `[Deep Analysis] ${rawPrompt}`;
+    }
+
+    const currentTaskPrompt = finalPrompt || (attachment ? `Analyze ${attachment.filename}` : "");
     setPendingPrompt(currentTaskPrompt);
-    sfx.playSubmit();
-    onProcessCommand(prompt, attachment || undefined);
+    sfx.playSubmit?.();
+    onProcessCommand(finalPrompt, attachment || undefined);
     setInputText("");
     setAttachment(null);
   };
@@ -905,16 +914,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                     </div>
 
                     <div className="flex-1 min-w-0 space-y-2">
-                      <div className="text-[15px] leading-relaxed">
-                        <FormattedMessage
-                          content={replyText}
-                          isDark={isDark}
-                          colorTheme={colorTheme}
-                        />
-                      </div>
-
-                      {/* Message Action Toolbar */}
-                      <div className="flex items-center justify-between pt-1 text-xs opacity-60 hover:opacity-100 transition-opacity">
+                      {/* Message Header Bar */}
+                      <div className="flex items-center justify-between pb-1 text-xs opacity-60">
                         <div className="flex items-center space-x-2">
                           <AiStatus
                             state={isError ? "error" : "done"}
@@ -934,18 +935,6 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                         <div className="flex items-center space-x-1.5">
                           <button
                             type="button"
-                            onClick={() => handleCopyMessage(entry.id, replyText)}
-                            className="p-1.5 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
-                            title="Copy response"
-                          >
-                            {copiedId === entry.id ? (
-                              <Check className="w-3.5 h-3.5 text-emerald-400" />
-                            ) : (
-                              <Copy className="w-3.5 h-3.5" />
-                            )}
-                          </button>
-                          <button
-                            type="button"
                             onClick={() => handleToggleSpeak(entry.id, replyText)}
                             className="p-1.5 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
                             title={speakingId === entry.id ? "Stop voice" : "Read aloud"}
@@ -956,19 +945,57 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                               <Volume2 className="w-3.5 h-3.5" />
                             )}
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => {
+                        </div>
+                      </div>
+
+                      {/* Streaming Markdown Response & Data Visualizations */}
+                      {(() => {
+                        const { segments } = extractTablesFromMarkdown(replyText);
+                        const hasTable = segments.some((s) => s.type === "table");
+                        const isLatest = entry.id === messages[messages.length - 1]?.id;
+
+                        if (hasTable) {
+                          return (
+                            <div className="space-y-4">
+                              {segments.map((seg, sIdx) =>
+                                seg.type === "table" ? (
+                                  <DataVisualizationCard
+                                    key={`table-${sIdx}`}
+                                    tableData={seg.table}
+                                    colorTheme={colorTheme}
+                                    isDark={isDark}
+                                  />
+                                ) : (
+                                  <StreamingResponse
+                                    key={`text-${sIdx}`}
+                                    text={seg.text}
+                                    status={isLatest && isLoading ? "streaming" : "done"}
+                                    ink={theme.accent || "#00F0FF"}
+                                    onRetry={() => {
+                                      sfx.playClick?.();
+                                      onProcessCommand(entry.prompt);
+                                    }}
+                                    onCopy={() => sfx.playClick?.()}
+                                  />
+                                )
+                              )}
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <StreamingResponse
+                            text={replyText}
+                            status={isLatest && isLoading ? "streaming" : "done"}
+                            ink={theme.accent || "#00F0FF"}
+                            onRetry={() => {
                               sfx.playClick?.();
                               onProcessCommand(entry.prompt);
                             }}
-                            className="p-1.5 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
-                            title="Re-run query"
-                          >
-                            <RotateCcw className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
+                            onCopy={() => sfx.playClick?.()}
+                          />
+                        );
+                      })()}
                     </div>
                   </div>
                 ) : null}
@@ -1115,41 +1142,51 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
             )}
           </AnimatePresence>
 
-          {/* Cult UI Halo Search Input */}
-          <form onSubmit={handleSubmit} className="w-full flex justify-center">
-            <HaloSearchInput
-              id="chat-halo-search-input"
+          {/* Rare UI PromptBox with Hold-to-Charge Reasoning Efforts */}
+          <div className="w-full flex justify-center">
+            <PromptBox
               value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              onClear={() => setInputText("")}
+              onValueChange={setInputText}
+              onSubmit={(prompt, effort) => handleSubmit(prompt, effort)}
+              status={isLoading ? "streaming" : "idle"}
               placeholder={
                 attachment
                   ? `Ask Amigo about ${attachment.filename}...`
-                  : "Ask Amigo anything, request tables, or generate graphs..."
+                  : [
+                      "Ask Amigo anything...",
+                      "Compare tech specs and create interactive tables...",
+                      "Analyze documents, spreadsheets, or images...",
+                      "Draft emails, brainstorm ideas, or research answers...",
+                      "Hold Send or Enter to reason deeply...",
+                    ]
               }
-              isLoading={isLoading}
-              loadingText="Searching & generating response..."
-              isListening={isListening}
-              listeningText={liveTranscript || "Listening..."}
+              efforts={[
+                { id: "quick", label: "Quick" },
+                { id: "think", label: "Reason", color: "#38bdf8" },
+                { id: "deep", label: "Deep Research", color: "#818cf8" },
+              ]}
+              hint="Hold to reason deeply"
               disabled={isLoading}
-              className="w-full"
-              leftSlot={
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors border ${
-                    isDark
-                      ? "border-white/10 text-slate-300 hover:text-white hover:bg-white/10"
-                      : "border-black/10 text-slate-600 hover:text-black hover:bg-black/5"
-                  }`}
-                  title="Attach file, image, or document"
-                >
-                  <Paperclip className="w-3.5 h-3.5" />
-                </button>
-              }
-              rightSlot={
+              className={`w-full max-w-4xl shadow-xl backdrop-blur-xl border transition-all ${
+                isDark
+                  ? "bg-[#18181b]/95 border-white/10 text-white shadow-black/40"
+                  : "bg-white/95 border-black/10 text-slate-900 shadow-slate-200/50"
+              }`}
+              actions={
                 <div className="flex items-center space-x-1.5">
-                  {/* Voice dictation mic button */}
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors border ${
+                      isDark
+                        ? "border-white/10 text-slate-300 hover:text-white hover:bg-white/10"
+                        : "border-black/10 text-slate-600 hover:text-black hover:bg-black/5"
+                    }`}
+                    title="Attach file, image, or document"
+                  >
+                    <Paperclip className="w-4 h-4" />
+                  </button>
+
                   <button
                     type="button"
                     onClick={handleToggleMic}
@@ -1163,37 +1200,21 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                     title={isListening ? "Stop listening" : "Voice dictation"}
                   >
                     {isListening ? (
-                      <Square className="w-3 h-3 fill-white" />
+                      <Square className="w-3.5 h-3.5 fill-white" />
                     ) : (
-                      <Mic className="w-3.5 h-3.5" />
+                      <Mic className="w-4 h-4" />
                     )}
                   </button>
 
-                  {/* Send button */}
-                  <button
-                    type="submit"
-                    disabled={(!inputText.trim() && !attachment) || isLoading}
-                    className={`w-8 h-8 rounded-full flex items-center justify-center transition-all duration-200 ${
-                      inputText.trim() || attachment
-                        ? "text-white shadow-md hover:scale-105 active:scale-95 cursor-pointer"
-                        : "opacity-40 cursor-not-allowed text-slate-400"
-                    }`}
-                    style={
-                      inputText.trim() || attachment
-                        ? {
-                            background: theme.gradient,
-                            boxShadow: `0 2px 10px ${theme.glow}`,
-                          }
-                        : {}
-                    }
-                    title="Send message"
-                  >
-                    <Send className="w-3.5 h-3.5" />
-                  </button>
+                  {isListening && liveTranscript && (
+                    <span className="text-xs text-rose-400 font-medium truncate max-w-[200px] animate-pulse px-2.5 py-0.5 rounded-full bg-rose-500/10 border border-rose-500/20">
+                      {liveTranscript}
+                    </span>
+                  )}
                 </div>
               }
             />
-          </form>
+          </div>
         </div>
       </div>
     </div>

@@ -1103,6 +1103,8 @@ def get_system_status() -> dict:
             "ram": round(mem.percent, 1),
             "battery": bat_percent,
             "plugged": plugged,
+            "volume": get_volume(),
+            "brightness": get_brightness(),
             "summary": (f"CPU is at {cpu:.0f} percent, RAM usage is {mem.percent:.0f} percent, "
                         f"and Battery is {bat_text}."),
         }

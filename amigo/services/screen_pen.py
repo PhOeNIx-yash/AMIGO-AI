@@ -203,26 +203,22 @@ def _resolve_target_rect(label: str, app: str | None = None) -> list[float] | No
     if not target_text:
         return None
 
-    # Multilingual Unicode-aware tokenization: no hardcoded language-specific stop words
-    tokens = [t for t in re.findall(r"\w+", target_text, flags=re.UNICODE) if len(t) >= 2]
     t_low = target_text.lower()
+    tokens = [t for t in t_low.split() if len(t) >= 2]
     if app:
         targets = [f"app:{app}"]
     else:
         try:
             from amigo.services.hands import get_target_app
             prev = get_target_app()
-            if prev:
-                targets = [f"app:{prev}", "front", "screen"]
-            else:
-                targets = ["front", "screen"]
+            targets = [f"app:{prev}", "front", "screen"] if prev else ["front", "screen"]
         except Exception:
             targets = ["front", "screen"]
 
     try:
         from amigo.services import hands
 
-        # 1. Inspect structured UIA controls first (fast, precise, role-aware)
+        # 1. Inspect structured UI controls first
         try:
             from amigo.services.hands import get_target_app as _gta
             _prev = _gta()
@@ -242,43 +238,32 @@ def _resolve_target_rect(label: str, app: str | None = None) -> list[float] | No
                 if not isinstance(b, list) or len(b) != 4 or b[2] <= 0 or b[3] <= 0:
                     continue
                 lbl = str(c.get("label") or c.get("name") or c.get("value") or "").strip().lower()
-                role = str(c.get("role") or c.get("type") or "").strip().lower()
                 if not lbl:
                     continue
 
                 score = 0.0
                 if lbl == t_low:
-                    score += 100.0
-                elif re.search(rf"\b{re.escape(t_low)}\b", lbl):
-                    score += 80.0
+                    score = 100.0
                 elif t_low in lbl:
-                    score += 50.0
+                    score = 70.0
                 elif tokens:
-                    matched_count = sum(1 for tok in tokens if re.search(rf"\b{re.escape(tok.lower())}\b", lbl))
-                    if matched_count > 0:
-                        score += 35.0 * (matched_count / len(tokens))
+                    c_matched = sum(1 for tok in tokens if tok in lbl)
+                    if c_matched > 0:
+                        score = 40.0 * (c_matched / len(tokens))
 
                 if score <= 0.0:
                     continue
 
-                # OS Accessibility role adjustments (platform constants, language-independent)
-                if role in ("button", "menuitem", "tabitem", "hyperlink", "link", "checkbox", "radiobutton", "edit"):
-                    score += 40.0
-                elif role in ("text", "static"):
-                    score += 10.0
-                elif role in ("pane", "window", "group", "container"):
-                    score -= 30.0
-
-                # Penalize oversized containers so centering won't land in empty space
+                # Scale score inversely with area to naturally favor focused controls over whole-screen containers
                 bw, bh = float(b[2]), float(b[3])
-                if bw > 300.0 and bh < 60.0:
-                    score -= 35.0
+                scale_penalty = 1.0 / (1.0 + (bw * bh) / 150000.0)
+                final_score = score * scale_penalty
 
-                if score > best_score:
-                    best_score = score
+                if final_score > best_score:
+                    best_score = final_score
                     best_c = c
 
-            if best_c and best_score >= 35.0:
+            if best_c and best_score >= 10.0:
                 b = best_c["bounds"]
                 bw = min(float(b[2]), max(80.0, float(len(target_text) * 14.0))) if float(b[2]) > 220.0 else float(b[2])
                 return [float(b[0]), float(b[1]), bw, float(b[3])]
@@ -286,7 +271,7 @@ def _resolve_target_rect(label: str, app: str | None = None) -> list[float] | No
         # 2. Fall back to OCR / text search across active display
         queries = [target_text]
         if len(tokens) > 1:
-            for tok in sorted(tokens, key=len, reverse=True):
+            for tok in tokens:
                 if tok not in queries:
                     queries.append(tok)
 
@@ -1164,18 +1149,17 @@ def screen_pen_annotate(
 ) -> Dict[str, Any]:
     """Emit a Roamies JavaScript `ink.js` / `ink3d.js` beat event for screen annotations or visual diagrams."""
     act = str(action or "").strip().lower()
-    if act in {"point_out", "point"}:
-        act = "ring"
-    if act == "box":
-        act = "rect"
-
     if act == "clear":
         event: Dict[str, Any] = {"type": "ink_clear", "all": True}
         subscribers = push_overlay_event(event)
         return {"status": "success", "drawn": "clear", "engine": "roamies-ink-js", "subscribers": subscribers, "event": event}
 
-    if act not in (_DIAGRAM_KINDS | _SCREEN_MARK_KINDS):
-        act = "diagram" if (topic or data or beats) else "ring"
+    # Route UI label requests to screen annotations, and topic/data requests to visual diagrams
+    if label and not (data or beats):
+        if act not in _SCREEN_MARK_KINDS:
+            act = "circle"
+    elif act not in (_DIAGRAM_KINDS | _SCREEN_MARK_KINDS):
+        act = "diagram" if (topic or data or beats) else "circle"
 
     if act in _DIAGRAM_KINDS:
         diag_topic = str(topic or label or "Visual Explanation").strip()
@@ -1210,7 +1194,11 @@ def screen_pen_annotate(
         }
 
     # Screen UI mark resolution: locate by label when explicit coordinates aren't supplied
-    has_explicit_coords = x is not None and y is not None
+    has_explicit_coords = (
+        x is not None
+        and y is not None
+        and not (float(x) == 0.0 and float(y) == 0.0)
+    )
     resolved_rect = _resolve_target_rect(label) if (label and not has_explicit_coords) else None
     if label and not has_explicit_coords and not resolved_rect:
         return {
@@ -1259,7 +1247,7 @@ def screen_pen_annotate(
         else:
             w = max(32.0, abs(_to_screen_points(x2, y or 500, normalized)[0] - px)) if x2 is not None else default_span_x * 1.5
             mark = {"kind": "underline", "at": {"rect": [px - w / 2.0, py - 10.0, w, 20.0]}, "tone": tone}
-    elif act in {"highlight", "spotlight", "ring"}:
+    elif act in {"highlight", "spotlight", "ring", "point", "target", "hover"}:
         rect = resolved_rect or [px - default_span_x / 2.0, py - default_span_y / 2.0, default_span_x, default_span_y]
         mark = {"kind": act, "at": {"rect": rect}, "tone": tone}
     else:

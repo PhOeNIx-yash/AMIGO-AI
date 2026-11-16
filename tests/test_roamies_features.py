@@ -516,3 +516,65 @@ def test_roamies_1_4_0_new_features():
     assert spam_resp.status_code == 200
     assert spam_resp.get_json()["status"] == "in_progress"
     _in_progress_actions.clear()
+
+
+def test_screen_pen_pointing_and_marking_without_diagram_fallback():
+    """Verify arrow and circle pointing resolve UI rects and never trigger educational diagram flowcharts."""
+    from amigo.services.screen_pen import screen_pen_annotate
+    from amigo.utils.tool_registry import _tool_screen_pen_annotate
+
+    fake_save_rect = [200.0, 150.0, 80.0, 32.0]
+    fake_search_rect = [400.0, 50.0, 200.0, 28.0]
+
+    def mock_resolver(label, app=None):
+        if "save" in str(label).lower():
+            return fake_save_rect
+        if "search" in str(label).lower():
+            return fake_search_rect
+        return None
+
+    with patch("amigo.services.screen_pen._resolve_target_rect", side_effect=mock_resolver):
+        # 1. Pointing arrow
+        res_arrow = screen_pen_annotate(action="arrow", label="Save button")
+        assert res_arrow["status"] == "success"
+        assert res_arrow["drawn"] == "arrow"
+        assert res_arrow["resolved_rect"] == fake_save_rect
+        mark_arrow = res_arrow["event"]["beats"][0]["marks"][0]
+        assert mark_arrow["kind"] == "arrow"
+        assert mark_arrow["flow"] is True
+        # Tip of arrow should hit the center of target: x=240, y=166
+        tip = mark_arrow["points"][1]
+        assert tip == [240.0, 166.0]
+
+        # 2. Circling element
+        res_circle = screen_pen_annotate(action="circle", label="Search bar")
+        assert res_circle["status"] == "success"
+        assert res_circle["drawn"] == "circle"
+        assert res_circle["resolved_rect"] == fake_search_rect
+        mark_circle = res_circle["event"]["beats"][0]["marks"][0]
+        assert mark_circle["kind"] == "circle"
+        assert mark_circle["at"]["rect"] == fake_search_rect
+
+        # 3. Model emitting placeholder coordinates (0, 0) should still resolve rect
+        res_placeholder = screen_pen_annotate(action="arrow", label="Save button", x=0, y=0)
+        assert res_placeholder["status"] == "success"
+        assert res_placeholder["resolved_rect"] == fake_save_rect
+
+        # 4. Action defaulted to 'diagram' or unknown with UI label should NOT invoke diagram generator
+        res_safe = screen_pen_annotate(action="diagram", topic="Save button", label="Save button")
+        assert res_safe["status"] == "success"
+        assert res_safe["drawn"] == "circle"
+        assert "beats" in res_safe["event"]
+        assert res_safe["resolved_rect"] == fake_save_rect
+
+        # 5. Dispatcher message verification
+        msg_arrow, _, disp_arrow = _tool_screen_pen_annotate(
+            {"action": "arrow", "label": "Save button"}, "Draw an arrow to the Save button", False
+        )
+        assert disp_arrow["status"] == "success"
+        assert "Marked 'Save button' on screen." in msg_arrow
+
+        # 6. Target genuinely not found reports error cleanly rather than fallback diagram
+        res_missing = screen_pen_annotate(action="circle", label="NonexistentElementXYZ")
+        assert res_missing["status"] == "error"
+        assert res_missing["code"] == "TARGET_NOT_FOUND"

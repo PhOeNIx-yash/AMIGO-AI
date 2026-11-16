@@ -1573,8 +1573,9 @@ def api_overlay_action():
                 from amigo.utils.tool_registry import emit_interactive_volume
                 from amigo.services.screen_pen import emit_overlay_sfx
                 os_automation.volume_up()
-                status = os_automation.get_system_status()
-                vol = status.get("volume", 50)
+                vol = os_automation.get_volume()
+                if vol is None:
+                    vol = 50
                 emit_overlay_sfx("pip")
                 emit_interactive_volume(vol)
                 return jsonify({"status": "success", "volume": vol})
@@ -1587,8 +1588,9 @@ def api_overlay_action():
                 from amigo.utils.tool_registry import emit_interactive_volume
                 from amigo.services.screen_pen import emit_overlay_sfx
                 os_automation.volume_down()
-                status = os_automation.get_system_status()
-                vol = status.get("volume", 50)
+                vol = os_automation.get_volume()
+                if vol is None:
+                    vol = 50
                 emit_overlay_sfx("pip")
                 emit_interactive_volume(vol)
                 return jsonify({"status": "success", "volume": vol})
@@ -1613,10 +1615,12 @@ def api_overlay_action():
                 from amigo.services import os_automation
                 from amigo.utils.tool_registry import emit_interactive_brightness
                 from amigo.services.screen_pen import emit_overlay_sfx
-                os_automation.set_brightness(80)
+                current_b = int(os_automation.get_system_status().get("brightness") or 50)
+                new_b = min(100, current_b + 10)
+                os_automation.set_brightness(new_b)
                 emit_overlay_sfx("pip")
-                emit_interactive_brightness(80)
-                return jsonify({"status": "success"})
+                emit_interactive_brightness(new_b)
+                return jsonify({"status": "success", "brightness": new_b})
             except Exception as exc:
                 return jsonify({"status": "error", "message": str(exc)}), 500
 
@@ -1625,10 +1629,12 @@ def api_overlay_action():
                 from amigo.services import os_automation
                 from amigo.utils.tool_registry import emit_interactive_brightness
                 from amigo.services.screen_pen import emit_overlay_sfx
-                os_automation.set_brightness(50)
+                current_b = int(os_automation.get_system_status().get("brightness") or 50)
+                new_b = max(0, current_b - 10)
+                os_automation.set_brightness(new_b)
                 emit_overlay_sfx("pip")
-                emit_interactive_brightness(50)
-                return jsonify({"status": "success"})
+                emit_interactive_brightness(new_b)
+                return jsonify({"status": "success", "brightness": new_b})
             except Exception as exc:
                 return jsonify({"status": "error", "message": str(exc)}), 500
 

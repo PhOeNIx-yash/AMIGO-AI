@@ -36,8 +36,8 @@ Amigo is a hybrid local-first voice assistant and autonomous desktop agent for W
 │       Core LLM & Routing      │   │          Context & Memory Layer         │
 │   amigo/core/llm_agent.py     │◄──┤  amigo/core/rag_engine.py (SQLite/BM25) │
 │  (LFM3-Omni/Llama GGUF Engine)│   │  amigo/core/rag_indexer.py (File Scan)  │
-└───────────────┬───────────────┘   │  amigo/core/memvid_engine.py            │
-                │                   │  amigo/core/proactive_intelligence.py   │
+└───────────────┬───────────────┘   │  amigo/core/proactive_intelligence.py   │
+                │                   │  amigo/core/reminder_timer.py           │
                 │ (Tool Dispatches) └─────────────────────────────────────────┘
                 ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -74,7 +74,6 @@ amigo-main/
 │   ├── config/                    # Configuration files
 │   ├── core/                      # Intelligence, LLM, RAG, and timers
 │   │   ├── llm_agent.py           # LLM loader, prompting, function router, memory
-│   │   ├── memvid_engine.py       # Visual & video memory indexing
 │   │   ├── proactive_intelligence.py # Autonomous background checks & reminders
 │   │   ├── proactive_state.json   # State tracking for proactive suggestions
 │   │   ├── rag_engine.py          # Vector search, document retrieval, SQLite DB

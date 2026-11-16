@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState, useId, useCallback, useMemo } from "react";
 import { motion, type HTMLMotionProps } from "framer-motion";
-import { cn } from "../../lib/utils";
+import { cn } from "@/lib/utils";
 
 export type SparkleShape = "circle" | "star" | "cross" | "mixed";
 export type SparkleDirection = "none" | "top" | "bottom" | "left" | "right";

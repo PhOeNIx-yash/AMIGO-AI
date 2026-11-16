@@ -385,7 +385,7 @@ def emit_interactive_volume(level: int | float, duration: float = 16.0) -> None:
 
         push_overlay_event({
             "type": "ink",
-            "id": "amigo-volume",
+            "id": f"vol-{int(time.time() * 1000)}",
             "seg": 0,
             "last": True,
             "fade": float(duration),
@@ -436,7 +436,7 @@ def emit_interactive_brightness(level: int | float, duration: float = 16.0) -> N
 
         push_overlay_event({
             "type": "ink",
-            "id": "amigo-bright",
+            "id": f"bright-{int(time.time() * 1000)}",
             "seg": 0,
             "last": True,
             "fade": float(duration),
@@ -2006,9 +2006,9 @@ def _tool_screen_pen_annotate(params, query, spoken):
     normalized = bool(params.get("normalized", True))
 
     if not action:
-        action = "diagram" if (topic or data or beats) else "circle"
-    if not topic and (label or query):
-        topic = str(label or query)
+        action = "circle" if label else ("diagram" if (topic or data or beats) else "circle")
+    if not topic and not label and query:
+        topic = str(query)
 
     try:
         from amigo.services.screen_pen import screen_pen_annotate, screen_pen_guide
@@ -3021,8 +3021,10 @@ CORE OPERATING PRINCIPLES:
 4. Tool Selection Guidance:
    - Document Q&A (CRITICAL): ALWAYS use `document_qa` whenever the user asks any question about their indexed documents, files, PDFs, invoices, resumes, reports, or personal records (even if they don't say the word "document"—e.g. "what is my invoice total?", "what does the contract say about termination?", "check my resume for skills"). NEVER answer document questions with `chat`. Use `summarize_document` only when asked for a full-document summary, and `find_file` / `open_file` only to locate or launch a file.
    - Use `act_in_app` for in-window UI interactions (clicking controls, filling fields, scrolling pages, pressing keys).
-   - Use `screen_pen_annotate` for visual explanations, comparisons, flowcharts, bar charts, comparison tables, maps, math derivations, 3D models, or marking existing screen elements (`label`).
-     * Whenever the user asks to compare, contrast, or show differences/pros and cons between two or more things, use `screen_pen_annotate` with `action="table"` or `action="bars"`.
+   - Use `screen_pen_annotate` for:
+     * Visual explanations and educational diagrams: `action="flow"` (process flowcharts), `action="mindmap"` (branching concept mind maps), `action="table"` (comparison tables), `action="bars"` (bar charts), `action="map"` (world map), `action="graph"` (2D function graphs), `action="math"` (LaTeX formulas), `action="model"` (3D shapes). Always provide `topic="<topic name>"`.
+       Whenever the user asks to compare, contrast, or show differences/pros and cons between two or more things, use `screen_pen_annotate` with `action="table"` or `action="bars"`.
+     * On-screen UI pointing & marking: `action="arrow"` (draw an arrow pointing to a UI button/control), `action="circle"` or `action="ring"` (circle a UI element), `action="box"` or `action="rect"` (box a UI element), `action="highlight"` or `action="spotlight"` or `action="underline"` (highlight UI text/control). Always provide `label="<element text to find on screen>"`.
    - Use `screen_pen_guide` for step-by-step interactive on-screen UI walkthroughs.
    - Use `web_search` for live online information, `get_weather` for weather, `stock_quote` for ticker prices, and `chat` for general knowledge, reasoning, and conversation.
 5. Output Format:
@@ -3056,6 +3058,15 @@ Assistant: {"actions": [{"tool": "screen_pen_annotate", "params": {"action": "ba
 
 User: show a world map highlighting Japan, Germany, and Brazil
 Assistant: {"actions": [{"tool": "screen_pen_annotate", "params": {"action": "map", "topic": "Japan, Germany, Brazil"}}]}
+
+User: draw an arrow to the Save button
+Assistant: {"actions": [{"tool": "screen_pen_annotate", "params": {"action": "arrow", "label": "Save button"}}]}
+
+User: circle the search bar
+Assistant: {"actions": [{"tool": "screen_pen_annotate", "params": {"action": "circle", "label": "Search bar"}}]}
+
+User: highlight the submit button
+Assistant: {"actions": [{"tool": "screen_pen_annotate", "params": {"action": "highlight", "label": "Submit"}}]}
 
 User: scroll down on this page
 Assistant: {"actions": [{"tool": "act_in_app", "params": {"action": "scroll", "target": "down"}}]}
