@@ -434,7 +434,7 @@
     cross: (m) => { const [x, y] = glyphSpot(m); return glyph(m, [handLine([x - 8, y - 8], [x + 8, y + 8], { jitter: 1 }), handLine([x + 8, y - 8], [x - 8, y + 8], { jitter: 1 })], tone(m.tone || 'coral')); },
     async connect(m) {
       const A = rectOf(m), B = locRect(m.to.rect), ca = [B[0] + B[2] / 2, B[1] + B[3] / 2], cb = [A[0] + A[2] / 2, A[1] + A[3] / 2];
-      await arrow(m.part, edgeToward(A, ca), edgeToward(B, cb, 8), { tone: m.tone });
+      await arrow(m.part, edgeToward(A, ca), edgeToward(B, cb, 8), { tone: m.tone, flow: !!m.flow });
       await name(m.part, B, m.label);
     },
     async trace(m) {
@@ -486,7 +486,7 @@
     },
     line: (m) => free(m, handPath(pathPts(m))),
     curve: (m) => free(m, handPath(catmull(pathPts(m), false), 1)),
-    async arrow(m) { const p = pathPts(m); await arrow(m.part, p[0], p[p.length - 1], { bend: 0.03, tone: m.tone, via: p.length > 2 ? p : null }); },
+    async arrow(m) { const p = pathPts(m); await arrow(m.part, p[0], p[p.length - 1], { bend: 0.03, tone: m.tone, via: p.length > 2 ? p : null, flow: !!m.flow }); },
     circle: (m) => { const [x, y, w, h] = rectOf(m), r = Math.max(w, h) / 2; return free(m, loop(x + w / 2 - r, y + h / 2 - r, 2 * r, 2 * r, { pad: 4, r })); },
     rect: (m) => { const [x, y, w, h] = rectOf(m); return free(m, loop(x, y, w, h, { pad: 4, r: 6, over: rnd(0.03, 0.08) })); },
   };
@@ -524,7 +524,13 @@
     }
     const end = curve[curve.length - 1], prev = curve[Math.max(0, curve.length - 8)], ang = Math.atan2(end[1] - prev[1], end[0] - prev[0]), hl = rnd(11, 15), sp = rnd(2.5, 2.8);
     const head = handLine([end[0] + Math.cos(ang + sp) * hl, end[1] + Math.sin(ang + sp) * hl], end, { jitter: 0.5 }).concat(handLine(end, [end[0] + Math.cos(ang - sp) * hl, end[1] + Math.sin(ang - sp) * hl], { jitter: 0.5 }));
-    const s = strokeMark(part, curve, tone(o.tone), { screen: o.screen ?? true, hp: 0, box: () => boxOf([...curve, ...head]), more(bb, l) { if (this.hp) pen(bb, l, this, head, this.hp, this.color, { key: 'h' }); } });
+    // flow: bright squares run along it once it's drawn, like a flow diagram's moving links (still, with reduced motion).
+    const L = o.flow ? len(curve) : 0;
+    const s = strokeMark(part, curve, tone(o.tone), { screen: o.screen ?? true, hp: 0, box: () => boxOf([...curve, ...head]), live: o.flow ? () => !reduced() && s.hp >= 1 : undefined,
+      more(bb, l, t) {
+        if (this.hp) pen(bb, l, this, head, this.hp, this.color, { key: 'h' });
+        if (o.flow && this.hp >= 1) { const gap = L / Math.max(1, Math.round(L / 46)), d0 = reduced() ? gap / 2 : (t * 60) % gap; l.fillStyle = HOT; for (let d = d0; d < L; d += gap) { const [px, py] = at(curve, d / L); l.fillRect(Math.round(px) - 2, Math.round(py) - 2, 4, 4); } }
+      } });
     await drawStroke(s); await trace(head, 0.22, (e) => (s.hp = e)); await rest(end[0], end[1]);
     return s;
   }
@@ -615,8 +621,12 @@
   async function card(m, w, h, inner, o = {}) {
     const full = h;
     h = Math.min(full, maxCardH());
-    const [x, y] = roomFor(w, h, m.part), bar = o.bar === false ? 0 : 26;
-    const c = add({ z: 2, part: m.part, card: true, kind: m.kind, cw: 0, ch: 0, p: 0, done: 0, w, h, ox: x, oy: y, sy: 0, scrollMax: Math.max(0, full - h), color: tone(m.tone), live: o.live, box: () => [x - 4, y - 4, w + 8, h + 14],
+    // The size the assistant chose (draw's card_size): small or large opens zoomed (never past the screen), placed for
+    // that size; full opens, then goes full screen. The corner and the full-screen button work as always afterwards.
+    const S0 = scr(), fit = Math.max(1, Math.min((S0[2] - S0[0] - 32) / (w + 8), (S0[3] - S0[1] - 100) / (h + 14)));
+    const k = Math.min(m.card_size === 'small' ? 0.8 : m.card_size === 'large' ? 1.5 : 1, fit);
+    const [x, y] = roomFor(Math.round(w * k), Math.round(h * k), m.part), bar = o.bar === false ? 0 : 26;
+    const c = add({ z: 2, part: m.part, card: true, kind: m.kind, cw: 0, ch: 0, p: 0, done: 0, w, h, ox: x, oy: y, k, sy: 0, scrollMax: Math.max(0, full - h), color: tone(m.tone), live: o.live, box: () => [x - 4, y - 4, w + 8, h + 14],
       draw(b, l, t) {
         if (this.cw < 4) return;
         chrome(b, x, y, this.cw, this.ch, { edge: o.edge ? colorOf(this, this.color) : ACC });
@@ -625,10 +635,13 @@
           b.fillStyle = 'rgba(120,255,226,0.06)'; b.fillRect(x + 2, y + 2, w - 4, bar - 2);
           b.fillStyle = DEEP; b.fillRect(x + 2, y + bar, w - 4, 1);
           [0, 1].forEach((k) => { b.fillStyle = k ? DEEP : ACC; b.fillRect(x + 12 + k * 12, y + 11, 5, 5); });
-          if (o.title) typed(b, ellipsize(String(o.title).toLowerCase(), w - 176, `500 10px ${MONO}`), x + w / 2, y + 17, `500 10px ${MONO}`, DIM, (t - this.done) / 0.4, { anchor: 'middle' });
+          if (o.title) typed(b, ellipsize(String(o.title).toLowerCase(), w - 206, `500 10px ${MONO}`), x + w / 2, y + 17, `500 10px ${MONO}`, DIM, (t - this.done) / 0.4, { anchor: 'middle' });
           // pin: a pixel pushpin with the full-screen and close buttons, drawn like them; pinned, it sits on a lit tile
           // (the filled-button look), so the state shows by shape as well as colour. The card stays until its ×.
           pinIcon(b, x + w - 70, y + 13, this);
+          // save as image: a pixel arrow down into a tray, left of the pin
+          { const sx = x + w - 95, sy = y + 13; b.fillStyle = this.hoverSave ? HOT : this.saved && now() - this.saved < 1.2 ? ACC : DIM;
+            b.fillRect(sx - 1, sy - 6, 2, 7); b.fillRect(sx - 3, sy - 1, 6, 2); b.fillRect(sx - 2, sy + 1, 4, 1); b.fillRect(sx - 5, sy + 3, 10, 2); b.fillRect(sx - 5, sy + 1, 2, 2); b.fillRect(sx + 3, sy + 1, 2, 2); }
           // full screen: four pixel corners (pointing in once it's full)
           { const fx = x + w - 44, fy = y + 13, s = 4, f = this.full ? -1 : 1;
             b.fillStyle = this.hoverFull ? HOT : DIM;
@@ -652,7 +665,7 @@
         if (this.p >= 1 && !this.full) { b.fillStyle = this.hoverGrip ? HOT : rgba(ACC, 0.45); for (let k = 0; k < 3; k++) for (let j = 0; j <= k; j++) b.fillRect(x + w - 6 - j * 4, y + h - 14 + k * 4, 2, 2); }
       },
       hits() {
-        const out = bar ? [{ rect: [x + w - 28, y + 2, 26, 22], kind: 'close', part: m.part }, { rect: [x + w - 54, y + 2, 22, 22], kind: 'full', part: m.part }, { rect: [x + w - 82, y + 2, 24, 22], kind: 'pin', part: m.part }, { rect: [x, y, w - 84, bar], kind: 'drag', part: m.part }] : [{ rect: [x, y, w, Math.min(h, 24)], kind: 'drag', part: m.part }];
+        const out = bar ? [{ rect: [x + w - 28, y + 2, 26, 22], kind: 'close', part: m.part }, { rect: [x + w - 54, y + 2, 22, 22], kind: 'full', part: m.part }, { rect: [x + w - 82, y + 2, 24, 22], kind: 'pin', part: m.part }, { rect: [x + w - 106, y + 2, 22, 22], kind: 'save', part: m.part, title: o.title || m.kind }, { rect: [x, y, w - 108, bar], kind: 'drag', part: m.part }] : [{ rect: [x, y, w, Math.min(h, 24)], kind: 'drag', part: m.part }];
         if (!this.full) out.unshift({ rect: [x + w - 18, y + h - 18, 18, 18], kind: 'resize', part: m.part });
         // Links scrolled out of view can't be clicked.
         const more = (this.more?.() ?? []).filter((q) => q.rect[1] >= y + bar && q.rect[1] + q.rect[3] <= y + h);
@@ -660,8 +673,9 @@
       },
     });
     await fly(x, y); sfx('expand');
-    await tween(0.45, (u) => { const e = ease(u); c.cw = w * e; c.ch = h * e; penApi()?.set?.(x + c.cw, y + c.ch); });
+    await tween(0.45, (u) => { const e = ease(u); c.cw = w * e; c.ch = h * e; penApi()?.set?.(x + c.cw * k, y + c.ch * k); });
     c.p = 1; c.done = now(); touch(1.5); syncClearAll();
+    if (m.card_size === 'full' && !c.full) await toggleFull(c);
     if (m.tie?.rect) { const T = locRect(m.tie.rect), C = [x, y, w, h], tc = [T[0] + T[2] / 2, T[1] + T[3] / 2]; await arrow(m.part, edgeToward(T, [x + w / 2, y + h / 2], 6), edgeToward(C, tc, 6), { bend: -0.2, screen: false }); }
     return c;
   }
@@ -713,6 +727,88 @@
       const rows = w === 210 ? narrow : wrapRows(m.text, w - 28, `500 13px ${MONO}`), h = 40 + rows.length * 19;
       await card(m, w, h, function (b, l, t, x, y, age) { b.fillStyle = colorOf(this, this.color); b.fillRect(x + 8, y + 8, w - 16, 3); wrapped(b, rows, x + 14, y + 32, 19, `500 13px ${MONO}`, TEXT, age / (0.3 + m.text.length * 0.025)); }, { bar: false, edge: true });
       sfx('page');
+    },
+    // A mind map: the topic on the left, its branches beside it, each branch's points behind a +. A click on a branch
+    // opens or closes its points (the map slides to make room); a click on the topic opens or closes them all. The
+    // card is sized for everything open, so nothing moves out from under the pointer.
+    async mindmap(m) {
+      const ROOTF = `800 16px ${DOTO}`, RW = 150, BW = 160, LW = 180, GAP = 36, PX = 16;
+      const rootRows = wrapRows(m.title || 'topic', RW - 20, ROOTF), rootH = rootRows.length * 20 + 18;
+      const B = (m.branches ?? []).slice(0, 8).map((q) => {
+        const rows = wrapRows(q.text, BW - 40, BODY), leaves = (q.items ?? []).slice(0, 6).map((it) => { const r = wrapRows(it, LW - 20, SMALL); return { rows: r, h: r.length * 14 + 12 }; });
+        return { rows, h: rows.length * 17 + 14, leaves, tone: q.tone, op: 0, y: null, ly: leaves.map(() => null) };
+      });
+      const leafH = (q) => q.leaves.reduce((s, L) => s + L.h + 6, -6);
+      const slot = (q, open) => Math.max(q.h, open && q.leaves.length ? leafH(q) : 0) + 12;
+      const anyLeaves = B.some((q) => q.leaves.length);
+      const w = PX * 2 + RW + GAP + BW + (anyLeaves ? GAP + LW : 0), CH = Math.max(rootH + 20, B.reduce((s, q) => s + slot(q, true), 0) + 16), h = 26 + CH;
+      const open = new Set(), RX = PX, BX = PX + RW + GAP, LX = BX + BW + GAP;
+      let hits = [], last = 0, moving = false;
+      // Where everything should be for what's open now (y of each box's centre, from the content's top).
+      const targets = () => {
+        const total = B.reduce((s, q, i) => s + slot(q, open.has(i)), 0);
+        let yy = (CH - total) / 2;
+        return B.map((q, i) => {
+          const sh = slot(q, open.has(i)), cy = yy + sh / 2;
+          let ly = cy - leafH(q) / 2;
+          const leaves = q.leaves.map((L) => { const c = open.has(i) ? ly + L.h / 2 : cy; ly += L.h + 6; return c; });
+          yy += sh;
+          return { cy, leaves };
+        });
+      };
+      const curve = (b, x0, y0, x1, y1) => { const mx = (x0 + x1) / 2; b.beginPath(); b.moveTo(x0, y0); b.bezierCurveTo(mx, y0, mx, y1, x1, y1); b.stroke(); };
+      const c = await card(m, w, h, function (b, l, t, x, y, age) {
+        const dt = clamp(t - (last || t), 0, 0.1); last = t;
+        const T = targets(), k = 1 - Math.exp(-dt * 12);
+        moving = false;
+        B.forEach((q, i) => {
+          q.y = q.y == null ? T[i].cy : q.y + (T[i].cy - q.y) * k;
+          q.op += ((open.has(i) ? 1 : 0) - q.op) * k;
+          q.ly = q.ly.map((v, j) => (v == null ? T[i].leaves[j] : v + (T[i].leaves[j] - v) * k));
+          if (Math.abs(q.y - T[i].cy) > 0.3 || Math.abs(q.op - (open.has(i) ? 1 : 0)) > 0.01) moving = true;
+        });
+        hits = [];
+        const ry = y + CH / 2, grow = clamp(age / 0.5, 0, 1);
+        // the topic
+        const rpath = steppedPath(x + RX, ry - rootH / 2, RW, rootH, P);
+        b.fillStyle = rgba(ACC, 0.08); b.fill(rpath); b.strokeStyle = this.hoverId === 'root' ? HOT : ACC; b.lineWidth = 2; b.stroke(rpath);
+        rootRows.forEach((r, k2) => typed(b, r, x + RX + RW / 2, ry - rootH / 2 + 22 + k2 * 20, ROOTF, TEXT, age / 0.4, { anchor: 'middle' }));
+        hits.push({ rect: [x + RX, ry - rootH / 2, RW, rootH], kind: 'pick', id: 'root' });
+        B.forEach((q, i) => {
+          const a = clamp((age - 0.25 - i * 0.12) / 0.35, 0, 1);
+          if (a <= 0) return;
+          const by = y + q.y, col = tone(q.tone) ?? this.color, hot = this.hoverId === `b${i}`;
+          b.globalAlpha *= a; b.strokeStyle = rgba(col, 0.7); b.lineWidth = 2;
+          curve(b, x + RX + RW, ry, x + BX, by);
+          const bp = steppedPath(x + BX, by - q.h / 2, BW, q.h, P);
+          b.fillStyle = rgba(col, hot ? 0.14 : 0.06); b.fill(bp); b.strokeStyle = hot ? HOT : col; b.stroke(bp);
+          q.rows.forEach((r, k2) => typed(b, r, x + BX + 12, by - q.h / 2 + 19 + k2 * 17, BODY, TEXT, a));
+          if (q.leaves.length) {
+            // + or − in the box's right edge
+            const px = x + BX + BW - 12, py = by; b.fillStyle = hot ? HOT : col;
+            b.fillRect(px - 4, py - 1, 9, 2); if (!open.has(i)) b.fillRect(px - 1, py - 4, 2, 9);
+            hits.push({ rect: [x + BX, by - q.h / 2, BW, q.h], kind: 'pick', id: `b${i}` });
+          }
+          if (q.op > 0.02) {
+            b.globalAlpha *= q.op;
+            q.leaves.forEach((L, j) => {
+              const ly = y + q.ly[j];
+              b.strokeStyle = rgba(col, 0.5); b.lineWidth = 1.5; curve(b, x + BX + BW, by, x + LX, ly);
+              b.fillStyle = rgba(col, 0.9); b.fillRect(x + LX, ly - 2, 4, 4);
+              L.rows.forEach((r, k2) => { b.font = SMALL; b.fillStyle = TEXT; b.textAlign = 'left'; b.fillText(r, x + LX + 10, ly - L.h / 2 + 15 + k2 * 14); });
+            });
+            b.globalAlpha /= q.op;
+          }
+          b.globalAlpha /= a;
+        });
+        if (moving || grow < 1) touch(0.15);
+      }, { title: 'mind map', live: () => moving });
+      c.more = () => hits.map((q) => ({ ...q, part: m.part }));
+      c.pick = (id) => {
+        if (id === 'root') { const all = open.size < B.filter((q) => q.leaves.length).length; open.clear(); if (all) B.forEach((q, i) => q.leaves.length && open.add(i)); }
+        else { const i = Number(id.slice(1)); if (open.has(i)) open.delete(i); else open.add(i); }
+        sfx('pip'); moving = true; touch(1);
+      };
     },
     async list(m) {
       const TITLE = `800 20px ${DOTO}`;
@@ -1206,7 +1302,7 @@
       pts = handPath(pts, 0.5);
       const end = pts[pts.length - 1], prev = pts[Math.max(0, pts.length - 6)], ang = Math.atan2(end[1] - prev[1], end[0] - prev[0]);
       const head = handLine([end[0] + Math.cos(ang + 2.6) * 9, end[1] + Math.sin(ang + 2.6) * 9], end, { jitter: 0.3 }).concat(handLine(end, [end[0] + Math.cos(ang - 2.6) * 9, end[1] + Math.sin(ang - 2.6) * 9], { jitter: 0.3 }));
-      return { pts, head, run, words: q.words, flow: !!q.l.flow, from: q.l.from, to: q.l.to, len: len(pts) };
+      return { pts, head, run, words: q.words, flow: !!q.l.flow || !!m.animate, from: q.l.from, to: q.l.to, len: len(pts) };
     });
     const nodes = [...box.values()].filter((q) => !q.lane), ink = links.flatMap((q) => q.pts), put = [];
     // A link's words go beside its line near its start (either side when it runs down, above or below when it runs
@@ -1241,22 +1337,6 @@
     nd.rows.forEach((r, k) => typed(b, r, x + w / 2, y + 19 + k * 15, NODEF, TEXT, (age - 0.05) / 0.25, { anchor: 'middle' }));
   }
   async function drawFlow(m) {
-    // Fallback topological layer builder if `m.lay` was not precomputed by the backend
-    if (!m.lay) {
-      const ids = (m.nodes ?? []).map((n) => n.id);
-      const rank = new Map(ids.map((id) => [id, 0]));
-      for (let step = 0; step < ids.length; step++) {
-        for (const lk of m.links ?? []) {
-          if (rank.has(lk.from) && rank.has(lk.to) && lk.from !== lk.to) {
-            rank.set(lk.to, Math.max(rank.get(lk.to), rank.get(lk.from) + 1));
-          }
-        }
-      }
-      const maxR = Math.max(0, ...rank.values());
-      const layers = Array.from({ length: maxR + 1 }, () => []);
-      for (const id of ids) layers[rank.get(id)].push(id);
-      m.lay = { layers: layers.filter((l) => l.length), via: {}, back: [] };
-    }
     const S = scr(), maxW = Math.min(S[2] - S[0] - 48, 860), maxH = maxCardH() - 26, first = m.dir === 'right';
     // The way it was asked for; turned the other way, or with narrower nodes, when that fits the screen and this doesn't.
     const tries = [[first, 124], [!first, 124], [first, 92], [!first, 92]].map(([r, ww]) => layoutFlow(m, r, ww));
@@ -2076,6 +2156,32 @@
   let drag = null, hovered = null, sizing = null;
   // Zoom limits for a card: never smaller than 60 %, never bigger than the screen.
   const maxK = (m) => { const S = scr(); return Math.max(1, Math.min((S[2] - S[0] - 16) / (m.w + 8), (S[3] - S[1] - 16) / (m.h + 14))); };
+  // Save as image: the card drawn again on its own, at twice the size, glow and all, as a PNG. It's copied to the
+  // clipboard where the webview allows it, and always sent to the sidecar, which saves it to Downloads.
+  function cardImage(m, scale = 2) {
+    const [bx, by, bw, bh] = typeof m.box === 'function' ? m.box() : m.box, pad = 12;
+    const make = () => { const c = document.createElement('canvas'); c.width = Math.ceil((bw + pad * 2) * scale); c.height = Math.ceil((bh + pad * 2) * scale); return c; };
+    const base = make(), lit = make(), B = base.getContext('2d'), L = lit.getContext('2d');
+    for (const c of [B, L]) c.setTransform(scale, 0, 0, scale, (pad - bx) * scale, (pad - by) * scale);
+    const keep = { alpha: m.alpha, hover: m.hover, hoverSave: m.hoverSave, hoverClose: m.hoverClose, hoverFull: m.hoverFull, hoverGrip: m.hoverGrip, hoverPin: m.hoverPin };
+    Object.assign(m, { alpha: 1, hover: false, hoverSave: false, hoverClose: false, hoverFull: false, hoverGrip: false, hoverPin: false });
+    try { m.draw(B, L, now()); } finally { Object.assign(m, keep); }
+    B.setTransform(1, 0, 0, 1, 0, 0);
+    if (hasFilter) { B.globalAlpha = 0.75; B.filter = `blur(${4 * scale}px)`; B.drawImage(lit, 0, 0); B.filter = 'none'; B.globalAlpha = 1; }
+    B.drawImage(lit, 0, 0);
+    return base;
+  }
+  async function saveCard(m, title) {
+    sfx('pip');
+    let copied = false;
+    try {
+      const png = cardImage(m), blob = await new Promise((r) => png.toBlob(r, 'image/png'));
+      try { if (navigator.clipboard?.write && window.ClipboardItem) { await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]); copied = true; } } catch { /* the webview didn't allow it */ }
+      const data = png.toDataURL('image/png').slice('data:image/png;base64,'.length);
+      R.ink.send?.({ type: 'card_image', title: String(title ?? 'card').slice(0, 60), data, copied });
+      m.saved = now(); touch(1.3);
+    } catch (e) { console.error('ink save', e); }
+  }
   // Full screen: the card zooms to fill the screen, centred; again, and it goes back where and how big it was.
   async function toggleFull(m) {
     const from = { k: m.k ?? 1, dx: m.dx, dy: m.dy };
@@ -2099,11 +2205,11 @@
   };
   const setHover = (h) => {
     const m = h?.m ?? null;
-    if (hovered && hovered !== m) { hovered.hover = false; hovered.hoverClose = false; hovered.hoverFull = false; hovered.hoverPin = false; hovered.hoverGrip = false; hovered.hoverId = null; hovered.setHover?.(false); }
-    if (m) { m.hover = h.kind === 'button' || h.kind === 'link' || h.kind === 'clearall'; m.hoverClose = h.kind === 'close'; m.hoverFull = h.kind === 'full'; m.hoverPin = h.kind === 'pin'; m.hoverGrip = h.kind === 'resize'; m.hoverId = h.kind === 'tick' || h.kind === 'pick' ? h.id : null; m.setHover?.(h.kind === 'button'); }
+    if (hovered && hovered !== m) { hovered.hover = false; hovered.hoverClose = false; hovered.hoverFull = false; hovered.hoverSave = false; hovered.hoverPin = false; hovered.hoverGrip = false; hovered.hoverId = null; hovered.setHover?.(false); }
+    if (m) { m.hover = h.kind === 'button' || h.kind === 'link' || h.kind === 'clearall'; m.hoverClose = h.kind === 'close'; m.hoverFull = h.kind === 'full'; m.hoverSave = h.kind === 'save'; m.hoverPin = h.kind === 'pin'; m.hoverGrip = h.kind === 'resize'; m.hoverId = h.kind === 'tick' || h.kind === 'pick' ? h.id : null; m.setHover?.(h.kind === 'button'); }
     if (hovered !== m || m) touch(0.2);
     hovered = m;
-    document.documentElement.style.cursor = h && (h.kind === 'button' || h.kind === 'close' || h.kind === 'full' || h.kind === 'pin' || h.kind === 'link' || h.kind === 'clearall' || h.kind === 'tick' || h.kind === 'pick') ? 'pointer' : h?.kind === 'drag' ? 'grab' : h?.kind === 'resize' ? 'nwse-resize' : 'default';
+    document.documentElement.style.cursor = h && (h.kind === 'button' || h.kind === 'close' || h.kind === 'full' || h.kind === 'save' || h.kind === 'pin' || h.kind === 'link' || h.kind === 'clearall' || h.kind === 'tick' || h.kind === 'pick') ? 'pointer' : h?.kind === 'drag' ? 'grab' : h?.kind === 'resize' ? 'nwse-resize' : 'default';
   };
   const ours = (e) => !!hitAt(e.clientX, e.clientY) || !!drag || !!sizing;
   addEventListener('pointerdown', (e) => {
@@ -2118,6 +2224,7 @@
     else if (h.kind === 'pick') { h.m.pick?.(h.id); touch(1); }
     else if (h.kind === 'clearall') clearEverything();
     else if (h.kind === 'full') toggleFull(h.m);
+    else if (h.kind === 'save') saveCard(h.m, h.title);
     else if (h.kind === 'resize') { sizing = { m: h.m }; sfx('grab'); touch(); }
     // A full-screen card stays up when its body is clicked (there's nothing under it to be after).
     else if (h.kind === 'card' && h.m.full) return;

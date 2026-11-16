@@ -22,7 +22,7 @@ _VALID_TONES = {"teal", "amber", "coral", "lilac", "sky", "lime", "red", "white"
 _VALID_3D_SHAPES = {"sphere", "torus", "cone", "cylinder", "box"}
 _DIAGRAM_KINDS = {
     "diagram", "flow", "graph", "bars", "table", "timeline",
-    "math", "geometry", "molecule", "map", "quiz", "model", "card", "note", "list",
+    "math", "geometry", "molecule", "map", "quiz", "model", "card", "note", "list", "mindmap",
 }
 _SCREEN_MARK_KINDS = {
     "circle", "ring", "arrow", "box", "rect", "underline",
@@ -96,6 +96,28 @@ def _wrap_roamie_host_event(inner_event: Dict[str, Any]) -> Dict[str, Any]:
             "later": inner_event.get("later", []),
             "seconds": inner_event.get("seconds", 25),
         }
+    if etype == "emote":
+        return {"kind": "agent", "e": {"type": "emote", "action": str(inner_event.get("action") or "wave")}}
+    if etype == "sfx":
+        return {"kind": "sfx", "name": str(inner_event.get("name") or "pop")}
+    if etype == "tool_start":
+        return {
+            "kind": "agent",
+            "e": {
+                "type": "tool",
+                "id": str(inner_event.get("id") or "t1"),
+                "anim": inner_event.get("anim") or {},
+            },
+        }
+    if etype == "tool_end":
+        return {
+            "kind": "agent",
+            "e": {
+                "type": "tool_end",
+                "id": str(inner_event.get("id") or "t1"),
+                "isError": bool(inner_event.get("is_error", False)),
+            },
+        }
     return {"kind": "agent", "e": inner_event}
 
 
@@ -103,7 +125,7 @@ def push_overlay_event(event: Dict[str, Any]) -> int:
     """Broadcast a Roamies overlay event to all connected JS overlays."""
     global _LAST_EVENT
     envelope = _wrap_roamie_host_event(event)
-    is_transient = event.get("type") in ("ink_clear", "sfx")
+    is_transient = event.get("type") in ("ink_clear", "sfx", "emote", "tool_start", "tool_end")
     with _SUBSCRIBERS_LOCK:
         _LAST_EVENT = None if event.get("type") == "ink_clear" else (_LAST_EVENT if is_transient else (time.time(), envelope))
         targets = list(_SUBSCRIBERS)
@@ -118,9 +140,39 @@ def push_overlay_event(event: Dict[str, Any]) -> int:
     return delivered
 
 
+def emit_avatar_act(action: str) -> int:
+    """Trigger companion avatar animation (wave, hype, remind, motivate, upset)."""
+    return push_overlay_event({"type": "emote", "action": str(action or "wave").strip()})
+
+
+def emit_overlay_sfx(name: str = "pop") -> int:
+    """Trigger a Roamies WebAudio `sfx.js` sound effect (pop, tick, pip, whoosh, scan, blip, focus, hype, page)."""
+    return push_overlay_event({"type": "sfx", "name": str(name or "pop").strip()})
+
+
+def emit_tool_anim(tool_name: str, label: str = "", variant: str = "") -> str:
+    """Show a live animated tool badge beside the avatar while a tool runs."""
+    tid = f"tool_{int(time.time() * 1000)}"
+    push_overlay_event({
+        "type": "tool_start",
+        "id": tid,
+        "anim": {"tool": tool_name, "label": label or tool_name, "variant": variant},
+    })
+    return tid
+
+
+def end_tool_anim(tool_id: str, is_error: bool = False) -> None:
+    """Complete a live tool badge with checkmark or error pip."""
+    push_overlay_event({
+        "type": "tool_end",
+        "id": tool_id,
+        "is_error": is_error,
+    })
+
+
 def play_overlay_sfx(name: str = "ink") -> int:
     """Trigger a Roamies WebAudio `sfx.js` sound effect on connected overlays."""
-    return push_overlay_event({"type": "sfx", "name": str(name or "ink").strip()})
+    return emit_overlay_sfx(name)
 
 
 def _get_viewport_bounds() -> tuple[float, float]:
@@ -131,10 +183,18 @@ def _get_viewport_bounds() -> tuple[float, float]:
 
 
 def _to_screen_points(x: int | float, y: int | float, normalized: bool) -> tuple[float, float]:
+    fx, fy = float(x), float(y)
     if not normalized:
-        return float(x), float(y)
-    sw, sh = _get_viewport_bounds()
-    return round((float(x) / 1000.0) * sw, 1), round((float(y) / 1000.0) * sh, 1)
+        return fx, fy
+    try:
+        from amigo.services.hands import normalize_grid_coords
+        nx, ny = normalize_grid_coords(fx, fy)
+        return float(nx), float(ny)
+    except Exception:
+        sw, sh = _get_viewport_bounds()
+        if 0.0 <= fx <= 1.0 and 0.0 <= fy <= 1.0:
+            return round(fx * sw, 1), round(fy * sh, 1)
+        return round((fx / 1000.0) * sw, 1), round((fy / 1000.0) * sh, 1)
 
 
 def _resolve_target_rect(label: str, app: str | None = None) -> list[float] | None:
@@ -652,6 +712,22 @@ def _sanitize_mark(mk: dict[str, Any]) -> dict[str, Any]:
             else:
                 out["view"] = [-170.0, -55.0, 175.0, 75.0]
 
+    if out.get("kind") == "mindmap":
+        out["title"] = str(out.get("title") or "Mind Map")[:60]
+        raw_branches = out.get("branches") or []
+        branches = []
+        for b in raw_branches[:8]:
+            if isinstance(b, dict):
+                clean_items = [str(it)[:50] for it in (b.get("items") or [])[:6]]
+                branches.append({
+                    "text": str(b.get("text") or "")[:40],
+                    "items": clean_items,
+                    "tone": _resolve_tone(b.get("tone")),
+                })
+            elif isinstance(b, str):
+                branches.append({"text": str(b)[:40], "items": [], "tone": "teal"})
+        out["branches"] = branches
+
     if out.get("kind") == "molecule" and "mol" not in out:
         smiles = str(out.get("smiles") or "").strip()
         if smiles:
@@ -697,16 +773,19 @@ def _generate_visual_diagram_beats(
     from amigo.core.llm_agent import query_local_llm, sanitize_for_tts
 
     parsed: dict[str, Any] = dict(structured_data) if isinstance(structured_data, dict) else {}
+    if "branches" in parsed and "mindmap" not in parsed:
+        parsed["mindmap"] = dict(parsed)
 
     if not parsed:
         kind_hint = f"Use visual_type='{preferred_kind}'." if preferred_kind else (
-            "Choose the single best visual_type from: 'flow', 'model', 'graph', 'bars', 'table', "
+            "Choose the single best visual_type from: 'mindmap', 'flow', 'model', 'graph', 'bars', 'table', "
             "'timeline', 'math', 'geometry', 'molecule', 'map', 'quiz', 'card'."
         )
         prompt = (
             f"Create a visual explanation of '{topic}' as compact valid JSON (no markdown).\n"
             f"{kind_hint}\n"
             f"Include 'summary' (1-2 spoken sentences), 'visual_type', and ONLY the matching payload key:\n"
+            f"- mindmap: \"mindmap\": {{\"title\":\"...\",\"branches\":[{{\"text\":\"Branch A\",\"items\":[\"point 1\",\"point 2\"],\"tone\":\"teal\"}}]}}\n"
             f"- flow: \"flow\": {{\"dir\":\"down|right\",\"nodes\":[{{\"id\":\"n1\",\"text\":\"...\",\"shape\":\"round|box|diamond\",\"tone\":\"teal|sky|coral|amber\"}}],\"links\":[{{\"from\":\"n1\",\"to\":\"n2\",\"label\":\"optional\",\"flow\":true}}]}}\n"
             f"- model: \"parts\": [{{\"shape\":\"sphere|torus|cone|cylinder|box\",\"label\":\"...\",\"at\":[x,y,z],\"size\":[sx,sy,sz],\"rot\":[rx,ry,rz],\"tone\":\"coral|amber|sky|teal|lilac\",\"motion\":{{\"do\":\"spin|orbit|slide|pulse\",\"axis\":\"y\"}}}}]\n"
             f"- table: \"table\": {{\"title\":\"...\",\"columns\":[...],\"rows\":[[...]]}}\n"
@@ -724,11 +803,12 @@ def _generate_visual_diagram_beats(
         parsed = _extract_json_object(raw)
 
     # Retry with simplified prompt if first attempt produced empty/unusable data
-    _HAS_PAYLOAD = {"flow", "bars", "graph", "table", "timeline", "math_steps", "parts",
+    _HAS_PAYLOAD = {"flow", "mindmap", "branches", "bars", "graph", "table", "timeline", "math_steps", "parts",
                     "questions", "geometry", "smiles", "map", "molecule", "nodes"}
     if not parsed or not any(k in parsed for k in _HAS_PAYLOAD):
         pk = preferred_kind or "flow"
         simple_fallbacks = {
+            "mindmap": {"visual_type": "mindmap", "mindmap": {"title": topic[:30], "branches": [{"text": "Core Concepts", "items": ["Key Overview", "Fundamentals"], "tone": "teal"}, {"text": "Applications", "items": ["Practical Use", "Impact"], "tone": "sky"}]}},
             "flow": {"visual_type": "flow", "flow": {"dir": "down", "nodes": [{"id": "s", "text": "Start", "shape": "round", "tone": "teal"}, {"id": "m", "text": topic[:40], "shape": "box", "tone": "sky"}, {"id": "e", "text": "End", "shape": "round", "tone": "coral"}], "links": [{"from": "s", "to": "m", "flow": True}, {"from": "m", "to": "e", "flow": True}]}},
             "bars": {"visual_type": "bars", "bars": [{"label": "Option A", "value": 70}, {"label": "Option B", "value": 55}, {"label": "Option C", "value": 85}], "unit": "%"},
             "table": {"visual_type": "table", "table": {"title": topic[:24], "columns": ["Item", "Detail"], "rows": [[topic[:20], "See description"]]}},
@@ -939,6 +1019,17 @@ def _generate_visual_diagram_beats(
                 "rows": rows,
             }))
 
+    # Mind Map (`mindmap`)
+    mindmap_data = parsed.get("mindmap") if isinstance(parsed.get("mindmap"), dict) else (parsed if vtype == "mindmap" else None)
+    if mindmap_data and (mindmap_data.get("branches") or vtype == "mindmap"):
+        branches = mindmap_data.get("branches") or []
+        primary_marks.append(_sanitize_mark({
+            "kind": "mindmap",
+            "part": _next_part(),
+            "title": str(mindmap_data.get("title") or topic.title())[:40],
+            "branches": branches,
+        }))
+
     beats: list[dict[str, Any]] = []
     for idx, mk in enumerate(primary_marks[:3]):
         beats.append({
@@ -1142,14 +1233,14 @@ def screen_pen_annotate(
             tx, ty = rx + rw / 2.0, ry + rh / 2.0
             offset_x = -default_span_x if tx > sw * 0.75 else default_span_x
             offset_y = default_span_y if ty < sh * 0.25 else -default_span_y
-            mark: Dict[str, Any] = {"kind": "arrow", "points": [[tx + offset_x, ty + offset_y], [tx, ty]], "tone": tone}
+            mark: Dict[str, Any] = {"kind": "arrow", "points": [[tx + offset_x, ty + offset_y], [tx, ty]], "tone": tone, "flow": True}
         else:
             px2, py2 = _to_screen_points(
                 x2 if x2 is not None else (x or 500) + 80,
                 y2 if y2 is not None else (y or 500) - 60,
                 normalized,
             )
-            mark = {"kind": "arrow", "points": [[px2, py2], [px, py]], "tone": tone}
+            mark = {"kind": "arrow", "points": [[px2, py2], [px, py]], "tone": tone, "flow": True}
     elif act == "rect":
         if resolved_rect:
             mark = {"kind": "rect", "at": {"rect": resolved_rect}, "tone": tone}

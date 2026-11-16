@@ -34,6 +34,7 @@ from amigo.core.reminder_timer import (
     handle_list_reminders,
     handle_set_reminder,
     handle_set_timer,
+    handle_snooze_reminder,
     parse_relative_seconds,
 )
 from amigo.services.app_opener import execute_file_action, find_files, is_known_app, is_known_folder, open_folder, open_windows_app
@@ -180,7 +181,7 @@ def emit_roamies_card(
             "beats": [{
                 "voiced": True,
                 "caption": str(heading or title or ""),
-                "marks": [mark],
+                "marks": [mark, {"kind": "sfx", "name": "whoosh"}],
             }],
         })
     except Exception as exc:
@@ -260,25 +261,40 @@ def emit_interactive_stock(quote: Any, duration: float = 22.0) -> None:
             }],
         }
 
+        beats: list[dict[str, Any]] = [
+            {
+                "voiced": True,
+                "caption": f"{sym} is trading at {curr} {price_str}",
+                "marks": [card_mark, {"kind": "sfx", "name": "whoosh"}],
+            },
+            {
+                "voiced": False,
+                "caption": f"{sym} intraday price trend",
+                "marks": [graph_mark, {"kind": "sfx", "name": "scan"}],
+            },
+        ]
+        if change >= 0:
+            beats.append({
+                "voiced": False,
+                "caption": f"{sym} positive surge",
+                "marks": [{"kind": "emote", "name": "hype"}],
+            })
+
         push_overlay_event({
             "type": "ink",
             "id": "amigo-stock",
             "seg": 0,
             "last": True,
             "fade": float(duration),
-            "beats": [
-                {
-                    "voiced": True,
-                    "caption": f"{sym} is trading at {curr} {price_str}",
-                    "marks": [card_mark],
-                },
-                {
-                    "voiced": False,
-                    "caption": f"{sym} intraday price trend",
-                    "marks": [graph_mark],
-                },
-            ],
+            "beats": beats,
         })
+
+        # Avatar emotional response
+        try:
+            from amigo.services.screen_pen import emit_avatar_act
+            emit_avatar_act("hype" if change >= 0 else "motivate")
+        except Exception:
+            pass
     except Exception as exc:
         logger.debug("[Interactive Stock] Error emitting: %s", exc)
 
@@ -286,14 +302,14 @@ def emit_interactive_stock(quote: Any, duration: float = 22.0) -> None:
 def emit_interactive_setting(setting_name: str, status_desc: str, is_on: bool, duration: float = 18.0) -> None:
     """Emit an interactive setting card with an immediate one-click toggle button."""
     try:
-        from amigo.services.screen_pen import push_overlay_event
+        from amigo.services.screen_pen import push_overlay_event, emit_avatar_act
         s_title = setting_name.title()
         clean_key = setting_name.lower().replace(" ", "").replace("_", "")
         tone = "lime" if is_on else "coral"
         action_verb = "Turn Off" if is_on else "Turn On"
 
         # Clear old cards first to prevent multiple duplicated cards stacking
-        push_overlay_event({"type": "ink_clear", "all": True})
+        push_overlay_event({"type": "ink_clear", "all": True, "stop": True})
 
         card_mark: dict[str, Any] = {
             "kind": "card",
@@ -325,15 +341,16 @@ def emit_interactive_setting(setting_name: str, status_desc: str, is_on: bool, d
                 {
                     "voiced": True,
                     "caption": f"{s_title} is {'on' if is_on else 'off'}",
-                    "marks": [card_mark],
+                    "marks": [card_mark, {"kind": "sfx", "name": "whoosh"}],
                 },
                 {
                     "voiced": False,
                     "caption": f"Toggle {s_title}",
-                    "marks": [btn_mark],
+                    "marks": [btn_mark, {"kind": "sfx", "name": "pop"}],
                 },
             ],
         })
+        emit_avatar_act("hype" if is_on else "wave")
     except Exception as exc:
         logger.debug("[Interactive Setting] Error emitting: %s", exc)
 
@@ -376,12 +393,12 @@ def emit_interactive_volume(level: int | float, duration: float = 16.0) -> None:
                 {
                     "voiced": True,
                     "caption": f"Volume at {vol_val}%",
-                    "marks": [bars_mark],
+                    "marks": [bars_mark, {"kind": "sfx", "name": "scan"}],
                 },
                 {
                     "voiced": False,
                     "caption": "Adjust volume",
-                    "marks": [btn_down, btn_up],
+                    "marks": [btn_down, btn_up, {"kind": "sfx", "name": "pip"}],
                 },
             ],
         })
@@ -427,12 +444,12 @@ def emit_interactive_brightness(level: int | float, duration: float = 16.0) -> N
                 {
                     "voiced": True,
                     "caption": f"Brightness at {bright_val}%",
-                    "marks": [bars_mark],
+                    "marks": [bars_mark, {"kind": "sfx", "name": "scan"}],
                 },
                 {
                     "voiced": False,
                     "caption": "Adjust brightness",
-                    "marks": [btn_down, btn_up],
+                    "marks": [btn_down, btn_up, {"kind": "sfx", "name": "pip"}],
                 },
             ],
         })
@@ -495,12 +512,12 @@ def emit_interactive_weather(city_name: str, temp: Any, condition: str, humidity
                 {
                     "voiced": True,
                     "caption": f"{temp}°C and {condition} in {city_name}",
-                    "marks": [card_mark],
+                    "marks": [card_mark, {"kind": "sfx", "name": "whoosh"}],
                 },
                 {
                     "voiced": False,
                     "caption": f"Conditions in {city_name}",
-                    "marks": [bars_mark],
+                    "marks": [bars_mark, {"kind": "sfx", "name": "scan"}],
                 },
             ],
         })
@@ -511,7 +528,7 @@ def emit_interactive_weather(city_name: str, temp: Any, condition: str, humidity
 def emit_interactive_reminders(reminders: list[dict], duration: float = 25.0) -> None:
     """Emit interactive checklist of reminders using Roamies native task list."""
     try:
-        from amigo.services.screen_pen import push_overlay_event
+        from amigo.services.screen_pen import push_overlay_event, emit_avatar_act
         items = [f"{r.get('message', 'Reminder')} ({r.get('target_time') or r.get('time', '')})" for r in (reminders or [])[:6]]
 
         push_overlay_event({"type": "ink_clear", "all": True})
@@ -535,9 +552,10 @@ def emit_interactive_reminders(reminders: list[dict], duration: float = 25.0) ->
             "beats": [{
                 "voiced": True,
                 "caption": f"You have {len(reminders)} reminders scheduled",
-                "marks": [card_mark],
+                "marks": [card_mark, {"kind": "sfx", "name": "pop"}, {"kind": "emote", "name": "remind"}],
             }],
         })
+        emit_avatar_act("remind")
 
         if reminders:
             today_items = [
@@ -575,13 +593,32 @@ def _tool_web_search(params, query, spoken):
     update_active_state("last_search", {"query": target})
     update_active_state("active_subject", {"name": target, "category": "web_search"})
 
+    # Roamies tool badge microinteraction
+    tool_id = None
+    try:
+        from amigo.services.screen_pen import emit_tool_anim, end_tool_anim
+        tool_id = emit_tool_anim("web", label=f"Searching: {target[:24]}", variant="search")
+    except Exception:
+        pass
+
     try:
         search_response = search_web(target, max_results=6, fetch_content=False, fast_mode=True)
     except Exception:
+        if tool_id:
+            try:
+                end_tool_anim(tool_id, is_error=True)
+            except Exception:
+                pass
         return _offline_reply(query, "web search is unavailable"), None, {"status": "offline"}
     search_url = f"https://www.google.com/search?q={urllib.parse.quote(target)}"
     if show_in_browser:
         searchGoogle(target)
+
+    if tool_id:
+        try:
+            end_tool_anim(tool_id, is_error=not bool(search_response.results))
+        except Exception:
+            pass
 
     if search_response.results:
         web_context = format_for_llm(search_response, max_chars=3500)
@@ -1136,6 +1173,15 @@ def _tool_ask_document(params, query, spoken, conversation_history=None):
 
     search_q = f"{filepath} {question}".strip() if (filepath and not target_path) else question
 
+    # Live document tool badge
+    tool_id = None
+    try:
+        from amigo.services.screen_pen import emit_tool_anim, end_tool_anim
+        fname_label = os.path.basename(target_path) if target_path else "Documents"
+        tool_id = emit_tool_anim("file", label=f"Reading: {fname_label[:20]}", variant="read")
+    except Exception:
+        pass
+
     # 1. Primary: Grounded document evidence with passage citations
     evidence, sources = rag_engine.build_document_evidence(
         search_q,
@@ -1152,6 +1198,12 @@ def _tool_ask_document(params, query, spoken, conversation_history=None):
             conversation_history=conv_history,
             filepath=None,
         )
+
+    if tool_id:
+        try:
+            end_tool_anim(tool_id, is_error=not bool(evidence and sources))
+        except Exception:
+            pass
 
     if not evidence or not sources:
         return (
@@ -1260,6 +1312,15 @@ def _tool_chat(params, query, spoken, conversation_history=None):
     if not query or not query.strip():
         if direct_reply and not is_repetition:
             return direct_reply, None
+
+    # Optional avatar mood gesture passed from LLM intent
+    mood = str(params.get("mood") or "").strip().lower()
+    if mood:
+        try:
+            from amigo.services.screen_pen import emit_avatar_act
+            emit_avatar_act(mood)
+        except Exception:
+            pass
 
     ai_reply = get_ai_response(query, doc_context=doc_context, conversation_history=conv_history)
     return ai_reply, None, ({"doc_context_used": True} if doc_context else {})
@@ -1995,13 +2056,12 @@ def _tool_change_setting(params, query, spoken):
     confirmed = bool(params.get("confirmed", False))
 
     try:
-        from amigo.services.os_settings import change_setting
+        from amigo.services.os_settings import change_setting, get_setting_state
         ok, msg = change_setting(s, value=val, confirmed=confirmed)
         if not ok and not confirmed:
             return msg, None, {"requires_confirmation": True, "action_type": "change_setting", "setting": s, "value": val}
-        val_norm = str(val or "").strip().lower()
-        is_on = ok if val_norm in ("on", "true", "1") else False
-        emit_interactive_setting(s, msg, is_on)
+        _, is_on, _ = get_setting_state(s)
+        emit_interactive_setting(s, msg, bool(is_on))
         return msg, None
     except Exception as exc:
         logger.error("[Change Setting Error]: %s", exc)
@@ -2014,9 +2074,9 @@ def _tool_get_setting(params, query, spoken):
     if not s:
         return "Which setting would you like to check?", None
     try:
-        from amigo.services.os_settings import get_setting
-        ok, msg = get_setting(s)
-        emit_interactive_setting(s, msg, bool(ok))
+        from amigo.services.os_settings import get_setting_state
+        ok, is_on, msg = get_setting_state(s)
+        emit_interactive_setting(s, msg, bool(is_on))
         return msg, None
     except Exception as exc:
         logger.error("[Get Setting Error]: %s", exc)
@@ -2061,6 +2121,12 @@ def _tool_set_timer(params, query, spoken):
         tone="teal",
         duration=18.0,
     )
+    try:
+        from amigo.services.screen_pen import emit_avatar_act, emit_overlay_sfx
+        emit_overlay_sfx("pop")
+        emit_avatar_act("remind")
+    except Exception:
+        pass
     return msg, None
 
 
@@ -2088,6 +2154,62 @@ def _tool_cancel_reminder(params, query, spoken):
         duration=14.0,
     )
     return res_msg, None
+
+
+def _tool_snooze_reminder(params, query, spoken):
+    dur_secs = 600.0
+    if isinstance(params, dict):
+        if "duration_seconds" in params:
+            try:
+                dur_secs = float(params["duration_seconds"])
+            except (ValueError, TypeError):
+                pass
+        elif "duration" in params:
+            parsed = parse_relative_seconds(str(params["duration"]))
+            if parsed:
+                dur_secs = parsed
+    msg = handle_snooze_reminder(params, duration_seconds=dur_secs)
+    reminders = get_active_data().get("reminders", [])
+    emit_interactive_reminders(reminders)
+    emit_roamies_card(
+        title="Reminder Snoozed",
+        heading="Snoozed",
+        text=msg,
+        tone="sky",
+        duration=14.0,
+    )
+    return msg, None, {"cards": [], "reminders": reminders}
+
+
+def _tool_start_focus_mode(params, query, spoken):
+    params = params if isinstance(params, dict) else {}
+    minutes = int(params.get("duration_minutes") or 30)
+    goal = str(params.get("goal") or params.get("task") or "Deep Work").strip()
+    from amigo.core.proactive_intelligence import start_focus_session
+    msg = start_focus_session(duration_minutes=minutes, goal=goal)
+    emit_roamies_card(
+        title="Focus Mode",
+        heading=f"Focus: {goal}"[:36],
+        text=f"Focus session active for {minutes} minutes. Amigo will keep distractions away and give gentle nudges.",
+        items=[f"Goal: {goal}", f"Duration: {minutes} minutes", "Notifications quieted"],
+        tone="teal",
+        duration=20.0,
+    )
+    return msg, None, {"cards": []}
+
+
+def _tool_morning_briefing(params, query, spoken):
+    from amigo.core.proactive_intelligence import generate_morning_briefing
+    summary, items = generate_morning_briefing()
+    emit_roamies_card(
+        title="Morning Briefing",
+        heading="Today's Overview",
+        text=summary,
+        items=items,
+        tone="amber",
+        duration=25.0,
+    )
+    return summary, None, {"cards": []}
 
 
 def _tool_exit(params, query, spoken):
@@ -2385,6 +2507,10 @@ UI_TOOL_HANDLERS = {
     "set_reminder":           _tool_set_reminder,
     "list_reminders":         _tool_list_reminders,
     "cancel_reminder":        _tool_cancel_reminder,
+    "snooze_reminder":        _tool_snooze_reminder,
+    "start_focus_mode":       _tool_start_focus_mode,
+    "focus_mode":             _tool_start_focus_mode,
+    "morning_briefing":       _tool_morning_briefing,
     "open_folder":            _tool_open_folder,
     "find_file":              _tool_find_file,
     "find_document":          _tool_find_file,
@@ -2693,6 +2819,28 @@ TOOL_DEFINITIONS = [
             "query": _p("string", "Specific reminder or timer topic to cancel"),
             "all": _p("boolean", "True ONLY when user explicitly asks to cancel all reminders/timers"),
         },
+    ),
+    _tool(
+        "snooze_reminder",
+        "Snooze a triggered or pending reminder for a given duration (e.g. 'snooze 10 minutes', 'snooze for 5 minutes').",
+        {
+            "duration": _p("string", "Duration to snooze for (e.g. '10 minutes', '5m', '30m')"),
+            "duration_seconds": _p("number", "Duration in seconds to snooze"),
+            "reminder_id": _p("string", "Optional ID of the reminder to snooze"),
+        },
+    ),
+    _tool(
+        "start_focus_mode",
+        "Start a dedicated focus session (e.g. 'focus for 30 minutes', 'start focus session') with distraction prevention and gentle nudges.",
+        {
+            "duration_minutes": _p("integer", "Focus session duration in minutes (default 30)"),
+            "goal": _p("string", "Focus goal or task name"),
+        },
+    ),
+    _tool(
+        "morning_briefing",
+        "Start the day with an overview of weather, today's schedule/reminders, and PC system health.",
+        {},
     ),
     _tool(
         "memory_recall",

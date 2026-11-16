@@ -833,3 +833,80 @@ def shutdown_proactive_intelligence() -> None:
     if _proactive_instance:
         _proactive_instance.stop()
         _proactive_instance = None
+
+
+# ---------------------------------------------------------------------------
+# Focus Mode & Morning Briefing (Roamies 1.4.0)
+# ---------------------------------------------------------------------------
+
+_focus_state: dict = {
+    "active": False,
+    "end_time": 0.0,
+    "duration_minutes": 0,
+    "goal": "",
+    "start_time": 0.0,
+}
+
+
+def start_focus_session(duration_minutes: int = 30, goal: str = "Focus") -> str:
+    """Start a focus session with gentle nudges if the user drifts."""
+    global _focus_state
+    mins = max(1, int(duration_minutes))
+    now = time.time()
+    _focus_state = {
+        "active": True,
+        "start_time": now,
+        "end_time": now + mins * 60,
+        "duration_minutes": mins,
+        "goal": goal or "Focus Session",
+    }
+    return f"Focus mode active for {mins} minutes on '{_focus_state['goal']}'. You've got this!"
+
+
+def get_focus_status() -> dict:
+    global _focus_state
+    if _focus_state.get("active") and time.time() >= _focus_state.get("end_time", 0):
+        _focus_state["active"] = False
+    return dict(_focus_state)
+
+
+def generate_morning_briefing() -> tuple[str, list[str]]:
+    """Generate a morning briefing with weather, schedule, reminders, and system status."""
+    from amigo.core.reminder_timer import load_reminders
+    items = []
+
+    # 1. Reminders due today
+    rems = load_reminders()
+    today_rems = []
+    today_str = datetime.date.today().isoformat()
+    for r in rems:
+        if not r.get("done") and today_str in str(r.get("target_time", "")):
+            today_rems.append(r.get("message", "Task"))
+    if today_rems:
+        items.append(f"Due today: {', '.join(today_rems[:3])}")
+    else:
+        items.append("No immediate reminders due this morning.")
+
+    # 2. Battery / Power
+    try:
+        batt = psutil.sensors_battery()
+        if batt:
+            pct = round(batt.percent)
+            plugged = "plugged in" if batt.power_plugged else "on battery"
+            items.append(f"Battery: {pct}% ({plugged})")
+    except Exception:
+        pass
+
+    # 3. Weather
+    try:
+        from amigo.services.weather import get_weather_forecast
+        w = get_weather_forecast("today")
+        if w and isinstance(w, dict) and w.get("summary"):
+            items.insert(0, str(w["summary"])[:60])
+        else:
+            items.insert(0, "Weather forecast is pleasant for today.")
+    except Exception:
+        items.insert(0, "Have a productive and focused day ahead.")
+
+    summary = f"Good morning! You have {len(today_rems)} task{'s' if len(today_rems) != 1 else ''} scheduled for today."
+    return summary, items

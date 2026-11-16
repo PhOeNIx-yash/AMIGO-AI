@@ -329,20 +329,27 @@ def test_interactive_roamies_graph_bars_buttons():
     with patch("amigo.services.screen_pen.push_overlay_event") as mock_push:
         emit_interactive_stock(SampleQuote())
         assert mock_push.called
-        event = mock_push.call_args[0][0]
-        assert len(event["beats"]) == 2
+        ink_events = [args[0][0] for args in mock_push.call_args_list if args[0][0].get("type") == "ink"]
+        assert ink_events
+        event = ink_events[0]
+        assert len(event["beats"]) >= 2
         card_mark = event["beats"][0]["marks"][0]
         graph_mark = event["beats"][1]["marks"][0]
         assert card_mark["kind"] == "card"
         assert graph_mark["kind"] == "graph"
         assert len(graph_mark["plots"][0]["points"]) == 4
         assert graph_mark["dots"][0]["y"] == 135.50
+        # Check avatar hype act and SFX are emitted
+        emote_events = [args[0][0] for args in mock_push.call_args_list if args[0][0].get("type") == "emote"]
+        assert any(e.get("action") == "hype" for e in emote_events)
 
-    # 2. Interactive setting produces card + toggle button
+    # 2. Interactive setting produces card + toggle button + sfx
     with patch("amigo.services.screen_pen.push_overlay_event") as mock_push:
         emit_interactive_setting("Bluetooth", "Bluetooth is currently active.", is_on=True)
         assert mock_push.called
-        event = mock_push.call_args[0][0]
+        ink_events = [args[0][0] for args in mock_push.call_args_list if args[0][0].get("type") == "ink"]
+        assert ink_events
+        event = ink_events[0]
         btn_mark = event["beats"][1]["marks"][0]
         assert btn_mark["kind"] == "button"
         assert btn_mark["part"] == "act-toggle-bluetooth"
@@ -408,10 +415,104 @@ def test_api_overlay_action_endpoint():
 
     _recent_overlay_actions.clear()
     with patch("amigo.services.os_settings.toggle_setting", return_value=(True, "Bluetooth toggled")), \
-         patch("amigo.services.os_settings.get_setting", return_value=(True, "Bluetooth is on")), \
+         patch("amigo.services.os_settings.get_setting_state", return_value=(True, True, "Bluetooth is on")), \
          patch("amigo.services.screen_pen.push_overlay_event"):
         resp = client.post("/api/overlay/action", json={"type": "ink_action", "part": "act-toggle-bluetooth"})
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["status"] == "success"
         assert data["enabled"] is True
+
+
+def test_roamies_1_4_0_new_features():
+    from amigo.services import screen_pen, hands
+    from amigo.core.reminder_timer import handle_snooze_reminder, save_reminders, load_reminders
+    from amigo.core.proactive_intelligence import start_focus_session, get_focus_status, generate_morning_briefing
+    from amigo.ui.server import app, _recent_overlay_actions, _in_progress_actions
+    import base64
+
+    # 1. Test mind map card generation
+    mm_res = screen_pen.screen_pen_annotate(
+        action="mindmap",
+        topic="Machine Learning",
+        data={
+            "title": "Machine Learning",
+            "branches": [
+                {"text": "Supervised", "items": ["Classification", "Regression"], "tone": "teal"},
+                {"text": "Unsupervised", "items": ["Clustering", "PCA"], "tone": "sky"},
+            ],
+        },
+    )
+    assert mm_res["status"] == "success"
+    mark = mm_res["event"]["beats"][0]["marks"][0]
+    assert mark["kind"] == "mindmap"
+    assert mark["title"] == "Machine Learning"
+    assert len(mark["branches"]) == 2
+    assert mark["branches"][0]["items"] == ["Classification", "Regression"]
+
+    # 2. Test moving arrows (flow: True)
+    arrow_res = screen_pen.screen_pen_annotate(action="arrow", x=200, y=300, x2=500, y2=600)
+    assert arrow_res["status"] == "success"
+    arr_mark = arrow_res["event"]["beats"][0]["marks"][0]
+    assert arr_mark["kind"] == "arrow"
+    assert arr_mark.get("flow") is True
+
+    # 3. Test Qwen3-VL / Qwen3.5 0-to-1000 coordinate grid normalization
+    # Normal 0-1 scale:
+    p1 = hands.normalize_grid_coords(0.5, 0.5, bounds=[0, 0, 1920, 1080])
+    assert p1 == (960, 540)
+    # Qwen-VL 0-to-1000 grid:
+    p2 = hands.normalize_grid_coords(500, 500, bounds=[0, 0, 1920, 1080])
+    assert p2 == (960, 540)
+    p3 = hands.normalize_grid_coords(250, 750, bounds=[100, 100, 1000, 800])
+    assert p3 == (350, 700)
+    # Raw pixels:
+    p4 = hands.normalize_grid_coords(1440, 900)
+    assert p4 == (1440, 900)
+
+    # 4. Test Snooze by voice
+    save_reminders([{"id": "snooze-test-1", "message": "Stretch legs", "target_time": "2026-11-16T10:00:00"}])
+    msg = handle_snooze_reminder(duration_seconds=600.0)
+    assert "Snoozed 'Stretch legs' for 10 minutes" in msg
+    rems = load_reminders()
+    assert any("Stretch legs" in r.get("message", "") for r in rems)
+
+    # 5. Test Focus Mode
+    f_msg = start_focus_session(duration_minutes=25, goal="Algorithm Design")
+    assert "Focus mode active for 25 minutes" in f_msg
+    st = get_focus_status()
+    assert st["active"] is True
+    assert st["goal"] == "Algorithm Design"
+
+    # 6. Test Morning Briefing
+    summary, items = generate_morning_briefing()
+    assert "Good morning!" in summary
+    assert len(items) >= 2
+
+    # 7. Test Save Card As Image & Button Spamming In-Progress Lock
+    client = app.test_client()
+    _recent_overlay_actions.clear()
+    _in_progress_actions.clear()
+
+    # 1x1 transparent PNG base64
+    tiny_png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+    with patch("pathlib.Path.write_bytes") as mock_write:
+        save_resp = client.post("/api/overlay/action", json={
+            "type": "card_image",
+            "title": "Test MindMap",
+            "data": tiny_png,
+            "copied": True,
+        })
+        assert save_resp.status_code == 200
+        assert save_resp.get_json()["status"] == "saved"
+        mock_write.assert_called_once()
+
+    # Rapid button spam lock test
+    _in_progress_actions.add("ink_action:act-toggle-wi-fi")
+    spam_resp = client.post("/api/overlay/action", json={
+        "type": "ink_action",
+        "part": "act-toggle-wi-fi",
+    })
+    assert spam_resp.status_code == 200
+    assert spam_resp.get_json()["status"] == "in_progress"
+    _in_progress_actions.clear()

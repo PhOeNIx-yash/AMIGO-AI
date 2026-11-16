@@ -1329,21 +1329,32 @@ def toggle_setting(setting: str) -> tuple[bool, str]:
 
 def get_setting(setting: str) -> tuple[bool, str]:
     """Reads a setting's current value. Returns (ok, message to speak)."""
+    ok, _, desc = get_setting_state(setting)
+    return ok, desc
+
+
+def get_setting_state(setting: str) -> tuple[bool, bool, str]:
+    """
+    Directly queries setting status from the driver.
+    Returns (ok: bool, is_enabled: bool, display_description: str).
+    """
     try:
         req = _parse(setting)
         ranked, ambiguity = _best(req)
         if not ranked or ranked[0].score < MATCH_CUTOFF:
-            return False, "I don't know that setting."
+            return False, False, "I don't know that setting."
         if ambiguity:
-            return False, ambiguity
+            return False, False, ambiguity
         st = ranked[0].setting
+        val = st.read()
         desc = st.describe()
-        if desc is None:
-            return False, f"I can't read {st.name} on this system."
-        return True, f"{st.name} is {desc}."
+        if desc is None and val is None:
+            return False, False, f"I can't read {st.name} on this system."
+        is_on = bool(val == "on" or val is True)
+        return True, is_on, f"{st.name} is {desc}."
     except Exception as exc:
-        log.error("get_setting(%r) failed: %s", setting, exc)
-        return False, f"I couldn't read {setting}."
+        log.error("get_setting_state(%r) failed: %s", setting, exc)
+        return False, False, f"I couldn't read {setting}."
 
 
 def list_settings(query: str | None = None) -> list[dict]:

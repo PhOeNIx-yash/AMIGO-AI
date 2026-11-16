@@ -1155,7 +1155,7 @@
         if (k.presence !== 'shown' && (nat.on || nat.ask)) { R.buddy?.hide(); nat.on = false; nat.ask = 0; m.native = false; }
         if (env.mouse?.active || presence.cursor == null) presence.cursor = [env.mouse?.x ?? W / 2, env.mouse?.y ?? H / 2];
         const mx = env.mouse?.x, my = env.mouse?.y;
-        presence.ptr = mx != null && mx >= 0 && my >= 0 && mx <= W && my <= H ? [mx, my] : null;
+        presence.ptr = !R.game && mx != null && mx >= 0 && my >= 0 && mx <= W && my <= H ? [mx, my] : null;
         if (popping) { if (presence.ptr) follow(env, dt); else { m.drive = null; fol.on = false; } }
         const onStage = stage();
         if (presence.auto) {
@@ -1181,6 +1181,12 @@
             setStation(m.x, m.y); station.quietUntil = now + 2.5; station.moving = false;
           }
           station.held = held;
+          // A fullscreen game pinned the cursor (host.js): leave the spot beside it or under it, clear of where it's pinned.
+          const pinned = R.game && presence.cursor;
+          if (pinned && !held && !pen.held && !station.moving && (station.byCursor || Math.hypot(m.x - pinned[0], m.y - pinned[1]) < AVOID())) {
+            const [x, y] = pickSpot(presence.cursor?.[0], presence.cursor?.[1], m.x, m.y);
+            setStation(x, y); m.goTo(x, y); station.moving = true; station.flee = 0;
+          }
           // Popped up beside the cursor: it goes where the cursor goes (until it's dragged somewhere).
           if (pen.held) { fol.on = false; m.drive = held ? null : penDrive; station.flee = 0; }
           else if (!held && station.byCursor && presence.ptr) { follow(env, dt); station.flee = 0; }

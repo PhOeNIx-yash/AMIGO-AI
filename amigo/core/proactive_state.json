@@ -1,12 +1,12 @@
 {
-  "last_weather_check": 1794652475.1060328,
-  "last_calendar_check": 1794652294.9332476,
-  "last_system_check": 1794652536.3736508,
+  "last_weather_check": 1794665928.5963478,
+  "last_calendar_check": 1794667051.666866,
+  "last_system_check": 1794667352.176356,
   "last_notification_time": 1794640823.1302803,
   "last_priority_alert_time": 0,
   "suggestions_this_hour": 0,
-  "last_hour_reset": 1794652294.9332476,
-  "active_window_start": 1794652415.0709004,
+  "last_hour_reset": 1794665928.5963478,
+  "active_window_start": 1794667231.8762486,
   "current_window_title": "amigo-main - Antigravity IDE - server.py",
   "recent_suggestions": [
     {

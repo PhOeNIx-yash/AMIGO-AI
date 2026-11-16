@@ -208,12 +208,15 @@ def save_reminders(reminders: List[dict]) -> None:
             time.sleep(0.05)
 
 
+_last_triggered_reminder: Optional[dict] = None
+
+
 # ---------------------------------------------------------------------------
 # Scheduler Loop & Lifecycle
 # ---------------------------------------------------------------------------
 
 def _run_scheduler_loop() -> None:
-    global _scheduled_reminders
+    global _scheduled_reminders, _last_triggered_reminder
     while _scheduler_running:
         try:
             now = datetime.datetime.now()
@@ -233,6 +236,7 @@ def _run_scheduler_loop() -> None:
                     save_reminders(_scheduled_reminders)
 
             for r in triggered:
+                _last_triggered_reminder = dict(r)
                 msg = r.get("message", "Reminder!")
                 alert = f"Reminder: {msg}"
                 print(f"\n[REMINDER ALERT] {alert}", flush=True)
@@ -367,6 +371,66 @@ def handle_set_reminder(params: dict, query: str = "") -> str:
         save_reminders(_scheduled_reminders)
 
     return f"I will remind you to {msg} {_format_target_when(target_dt)}."
+
+
+def handle_snooze_reminder(params: dict | None = None, duration_seconds: float = 600.0) -> str:
+    """Snooze a triggered or active reminder for a given duration (default 10 minutes)."""
+    global _last_triggered_reminder, _scheduled_reminders
+    params = params if isinstance(params, dict) else {}
+
+    # Extract requested duration from parameters
+    dur_secs = 0.0
+    if "duration_seconds" in params:
+        try:
+            dur_secs = float(params["duration_seconds"])
+        except (ValueError, TypeError):
+            dur_secs = 0.0
+    if dur_secs <= 0.0 and "duration" in params:
+        parsed = parse_relative_seconds(str(params["duration"]))
+        if parsed:
+            dur_secs = parsed
+    if dur_secs <= 0.0:
+        dur_secs = max(10.0, float(duration_seconds))
+
+    reminder_id = str(params.get("reminder_id") or "").strip()
+
+    with _reminders_lock:
+        target: Optional[dict] = None
+        if reminder_id:
+            for r in _scheduled_reminders:
+                if str(r.get("id")) == reminder_id:
+                    target = r
+                    break
+        if not target and _last_triggered_reminder:
+            target = dict(_last_triggered_reminder)
+        elif not target and _scheduled_reminders:
+            target = dict(_scheduled_reminders[0])
+        elif not target:
+            stored = load_reminders()
+            if stored:
+                target = dict(stored[-1])
+
+        target_msg = target.get("message", "Reminder") if target else "Reminder"
+        target_dt = datetime.datetime.now() + datetime.timedelta(seconds=dur_secs)
+        new_id = target.get("id") if target else str(uuid.uuid4())[:8]
+
+        item = {
+            "id": new_id,
+            "message": target_msg,
+            "target_time": target_dt.isoformat(),
+            "created_at": datetime.datetime.now().isoformat(),
+        }
+
+        # Deduplicate and append
+        _scheduled_reminders = [r for r in _scheduled_reminders if str(r.get("id")) != str(new_id)]
+        _scheduled_reminders.append(item)
+        save_reminders(_scheduled_reminders)
+        _last_triggered_reminder = None
+
+    dur_str = _format_duration(dur_secs)
+    res = f"Snoozed '{target_msg}' for {dur_str}."
+    show_desktop_notification("Reminder Snoozed", res)
+    return res
 
 
 def handle_list_reminders() -> str:

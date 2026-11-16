@@ -36,8 +36,11 @@
     Roamie.ink?.ptr(x, y);
     Roamie.askBar?.ptr(x, y);
     const h = Roamie.ptr(x, y, t);
-    setHot(h && !handsBusy);
+    setHot(h && !handsBusy && !Roamie.game);
   };
+  // macOS: a fullscreen game is in front (fullscreen.rs). It holds the cursor, so every click is its own and the
+  // Sidekick stops following the cursor (agent.js).
+  window.__roamieGame = (on) => { if (!window.Roamie) return; Roamie.game = !!on; if (on) setHot(false); };
 
   // Linux: click-through by region. On Wayland the cursor can't be followed over other apps, so instead of flipping
   // the whole window as the cursor comes and goes, the page says which rectangles take clicks (the Roamie, its

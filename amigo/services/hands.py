@@ -240,6 +240,37 @@ def to_screen(mapping: dict[str, Any], x: float, y: float) -> tuple[int, int]:
     return round(ox + float(x) * mapping["sx"]), round(oy + float(y) * mapping["sy"])
 
 
+def normalize_grid_coords(
+    x: float | int,
+    y: float | int,
+    bounds: list[float] | tuple[float, float, float, float] | None = None,
+) -> tuple[int, int]:
+    """Map coordinate (x, y) to absolute screen pixels.
+
+    Seamlessly supports:
+    - Standard normalized floats in [0.0, 1.0] (maps to bounds)
+    - Local Qwen3-VL and Qwen3.5 0-to-1000 coordinate grid (maps to bounds)
+    - Absolute pixel coordinates (> 1000 or raw)
+    """
+    fx, fy = float(x), float(y)
+    if bounds and len(bounds) >= 4:
+        ox, oy, bw, bh = [float(v) for v in bounds[:4]]
+    else:
+        sw, sh = get_screen_bounds()
+        ox, oy, bw, bh = 0.0, 0.0, float(sw), float(sh)
+
+    # 1. 0.0 to 1.0 scale
+    if 0.0 <= fx <= 1.0 and 0.0 <= fy <= 1.0:
+        return round(ox + fx * bw), round(oy + fy * bh)
+
+    # 2. Qwen3-VL / Qwen3.5 0-to-1000 grid
+    if 0.0 <= fx <= 1000.0 and 0.0 <= fy <= 1000.0:
+        return round(ox + (fx / 1000.0) * bw), round(oy + (fy / 1000.0) * bh)
+
+    # 3. Already absolute pixel coordinates
+    return round(fx), round(fy)
+
+
 def snap_rect(rect: list[float], controls: list[dict[str, Any] | list[float]]) -> list[float] | None:
     """Snap a coarse screen `[x, y, w, h]` rect to the best-overlapping UIA control rect."""
     x, y, w, h = [float(v) for v in rect[:4]]
