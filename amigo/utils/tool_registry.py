@@ -2492,6 +2492,10 @@ def _tool_manage_voices(params, query, spoken):
     active_name = active_info.get("name", active_key)
 
     if action != "list" or voice_param or gender_param:
+        catalog_genders = {v.get("gender", "").lower() for v in catalog.values() if v.get("gender")}
+        if not gender_param and voice_param in catalog_genders:
+            gender_param = voice_param
+            voice_param = ""
         chosen_key = None
         if gender_param:
             for k, v in catalog.items():

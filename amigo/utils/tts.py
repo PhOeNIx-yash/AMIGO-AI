@@ -1,10 +1,11 @@
 """
 Unified Speech Engine Module for Amigo Voice Assistant.
-Handles both Neural Text-to-Speech (TTS via Microsoft Edge Neural Voices - Azure Studio 24kHz)
-and Offline Neural Speech-to-Text (STT via Vosk Neural Recognizer).
+Handles high-fidelity Neural Text-to-Speech (TTS via Kokoro v1.0 ONNX offline Studio voices with Microsoft Edge Neural cloud fallback)
+and Offline Speech-to-Text (STT via Vosk Neural Recognizer).
 """
 
 import asyncio
+import base64
 import io
 import json
 import logging
@@ -14,7 +15,6 @@ import re
 import socket
 import threading
 import time
-import urllib.request
 import numpy as np
 
 # Force IPv4 in socket.getaddrinfo to prevent Windows 11 IPv6 connection reset error [WinError 10054]
@@ -138,18 +138,73 @@ _PROFILE_PATH = os.path.join(_PROJECT_ROOT, "amigo_profile.json")
 if not os.path.exists(_PROFILE_PATH):
     _PROFILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "amigo_profile.json")
 
-ACTIVE_VOICE = "none"
-
 _tts_lock = threading.Lock()
 _active_stream = None
 _active_stream_lock = threading.Lock()
-_current_stop_event = threading.Event()
 _profile_mtime_tts = 0.0
+
+_kokoro_instance = None
+_kokoro_init_lock = threading.Lock()
+
+
+def _get_kokoro():
+    """Lazy-loads and warms up Kokoro v1.0 ONNX inference engine with optimized multi-threading."""
+    global _kokoro_instance
+    if _kokoro_instance is None and _USE_KOKORO_ONNX:
+        with _kokoro_init_lock:
+            if _kokoro_instance is None and _KOKORO_MODEL_PATH and _KOKORO_VOICES_PATH:
+                try:
+                    so = _ort.SessionOptions()
+                    so.intra_op_num_threads = min(6, os.cpu_count() or 4)
+                    so.inter_op_num_threads = 2
+                    so.graph_optimization_level = _ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                    session = _ort.InferenceSession(_KOKORO_MODEL_PATH, sess_options=so, providers=["CPUExecutionProvider"])
+                    _kokoro_instance = kokoro_onnx.Kokoro.from_session(session, _KOKORO_VOICES_PATH)
+                    logger.info("[Kokoro] Kokoro v1.0 ONNX Engine loaded and ready.")
+                except Exception as e:
+                    logger.warning(f"[Kokoro] Init note: {e}")
+    return _kokoro_instance
+
+
+def get_voice_catalog() -> dict:
+    """Returns dictionary of all curated voices with metadata, augmented dynamically from Kokoro voices."""
+    catalog = dict(CURATED_VOICES)
+    if _USE_KOKORO_ONNX:
+        try:
+            k = _get_kokoro()
+            if k:
+                for v in k.get_voices():
+                    if v not in catalog:
+                        gender = "Female" if v.startswith(("af_", "bf_", "ef_", "ff_", "if_", "jf_", "zf_")) else "Male"
+                        accent = "GB" if v.startswith("b") else "US"
+                        catalog[v] = {
+                            "engine": "kokoro",
+                            "id": v,
+                            "name": v.replace("_", " ").title(),
+                            "gender": gender,
+                            "accent": accent,
+                            "desc": f"Kokoro v1.0 Studio voice ({v})",
+                        }
+        except Exception:
+            pass
+    return catalog
+
+
+def _get_default_voice() -> str:
+    if _USE_KOKORO_ONNX:
+        return "af_heart"
+    elif _USE_EDGE_TTS:
+        return "aria"
+    return "none"
+
+
+ACTIVE_VOICE = _get_default_voice()
 
 
 def sync_voice_from_profile() -> str:
     """Synchronizes active voice selection from amigo_profile.json, caching disk reads by mtime."""
     global ACTIVE_VOICE, _profile_mtime_tts
+    default_voice = _get_default_voice()
     try:
         if os.path.exists(_PROFILE_PATH):
             mtime = os.path.getmtime(_PROFILE_PATH)
@@ -164,11 +219,17 @@ def sync_voice_from_profile() -> str:
                 )
                 if v and isinstance(v, str):
                     v_key = v.strip().lower()
-                    if v_key in CURATED_VOICES:
+                    catalog = get_voice_catalog()
+                    if v_key in catalog:
                         ACTIVE_VOICE = v_key
                         return v_key
+                    elif default_voice != "none":
+                        ACTIVE_VOICE = default_voice
+                        return default_voice
     except Exception as e:
         logger.debug(f"[TTS] Voice profile sync note: {e}")
+    if (ACTIVE_VOICE == "none" or not ACTIVE_VOICE) and default_voice != "none":
+        ACTIVE_VOICE = default_voice
     return ACTIVE_VOICE
 
 
@@ -180,12 +241,14 @@ def set_voice(voice_name: str) -> str:
     """Sets the active voice, updates engine settings, and immediately persists to user profile atomically."""
     global ACTIVE_VOICE, _profile_mtime_tts
     key = voice_name.lower().strip()
-    if key in CURATED_VOICES:
+    catalog = get_voice_catalog()
+    default_voice = _get_default_voice()
+    if key in catalog:
         ACTIVE_VOICE = key
-        display_name = CURATED_VOICES[key]["name"]
+        display_name = catalog[key].get("name", voice_name)
     else:
-        ACTIVE_VOICE = key
-        display_name = voice_name
+        ACTIVE_VOICE = default_voice
+        display_name = catalog.get(default_voice, {}).get("name", default_voice)
 
     # Persist to profile atomically so voice selection is remembered across restarts
     try:
@@ -218,30 +281,6 @@ def set_voice(voice_name: str) -> str:
     return display_name
 
 
-def get_voice_catalog() -> dict:
-    """Returns dictionary of all curated voices with metadata, augmented dynamically from Kokoro voices."""
-    catalog = dict(CURATED_VOICES)
-    if _USE_KOKORO_ONNX:
-        try:
-            k = _get_kokoro()
-            if k:
-                for v in k.get_voices():
-                    if v not in catalog:
-                        gender = "Female" if v.startswith(("af_", "bf_", "ef_", "ff_", "if_", "jf_", "zf_")) else "Male"
-                        accent = "GB" if v.startswith("b") else "US"
-                        catalog[v] = {
-                            "engine": "kokoro",
-                            "id": v,
-                            "name": v.replace("_", " ").title(),
-                            "gender": gender,
-                            "accent": accent,
-                            "desc": f"Kokoro v1.0 Studio voice ({v})",
-                        }
-        except Exception:
-            pass
-    return catalog
-
-
 def get_active_voice() -> str:
     """Returns the current active voice identifier."""
     return ACTIVE_VOICE
@@ -269,29 +308,6 @@ def get_tts_engine_name() -> str:
     return "TTS Disabled"
 
 
-_kokoro_instance = None
-_kokoro_init_lock = threading.Lock()
-
-
-def _get_kokoro():
-    """Lazy-loads and warms up Kokoro v1.0 ONNX inference engine with optimized multi-threading."""
-    global _kokoro_instance
-    if _kokoro_instance is None and _USE_KOKORO_ONNX:
-        with _kokoro_init_lock:
-            if _kokoro_instance is None and _KOKORO_MODEL_PATH and _KOKORO_VOICES_PATH:
-                try:
-                    so = _ort.SessionOptions()
-                    so.intra_op_num_threads = min(6, os.cpu_count() or 4)
-                    so.inter_op_num_threads = 2
-                    so.graph_optimization_level = _ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-                    session = _ort.InferenceSession(_KOKORO_MODEL_PATH, sess_options=so, providers=["CPUExecutionProvider"])
-                    _kokoro_instance = kokoro_onnx.Kokoro.from_session(session, _KOKORO_VOICES_PATH)
-                    logger.info("[Kokoro] Kokoro v1.0 ONNX Engine loaded and ready.")
-                except Exception as e:
-                    logger.warning(f"[Kokoro] Init note: {e}")
-    return _kokoro_instance
-
-
 def _fetch_kokoro_audio(text: str, voice_id: str = "af_heart", stop_evt: threading.Event | None = None, speed: float = 1.05) -> tuple[np.ndarray | None, int]:
     """Generates ultra-fast 24kHz studio audio via Kokoro v1.0 ONNX with zero cloud latency."""
     kokoro = _get_kokoro()
@@ -302,7 +318,8 @@ def _fetch_kokoro_audio(text: str, voice_id: str = "af_heart", stop_evt: threadi
             return None, 24000
         # Determine language prefix from voice (e.g. bf_emma -> en-gb, af_heart -> en-us)
         lang = "en-gb" if voice_id.startswith("b") else "en-us"
-        samples, sr = kokoro.create(text, voice=voice_id, speed=speed, lang=lang)
+        with _tts_lock:
+            samples, sr = kokoro.create(text, voice=voice_id, speed=speed, lang=lang)
         if samples is None or len(samples) == 0:
             return None, 24000
         audio = np.ascontiguousarray(samples, dtype=np.float32)
@@ -388,6 +405,7 @@ _speech_queue = queue.Queue()
 _playback_queue = queue.Queue(maxsize=32)
 _speech_generation = 0
 _speech_generation_lock = threading.Lock()
+_generation_stop_events: dict[int, threading.Event] = {}
 _state_lock = threading.Lock()
 _is_speaking_state = False
 
@@ -395,6 +413,18 @@ _is_speaking_state = False
 def _speech_is_current(generation: int) -> bool:
     with _speech_generation_lock:
         return generation == _speech_generation
+
+
+def _get_or_create_stop_event(generation: int) -> threading.Event:
+    with _speech_generation_lock:
+        if generation not in _generation_stop_events:
+            _generation_stop_events[generation] = threading.Event()
+        return _generation_stop_events[generation]
+
+
+def _cleanup_stop_event(generation: int) -> None:
+    with _speech_generation_lock:
+        _generation_stop_events.pop(generation, None)
 
 
 def _update_state(new_state: str):
@@ -829,7 +859,8 @@ def _process_audio_clarity(samples, sr=44100, is_final_chunk: bool = False) -> t
 def _split_into_safe_tts_chunks(text: str, max_chunk_len: int = 250) -> list[str]:
     """
     Splits text along natural sentence boundaries (. ! ? \n) to maintain complete
-    prosodic flow, avoiding choppy clause-level cutting mid-sentence.
+    prosodic flow, while splitting the first sentence at clause boundaries if long
+    for ultra-fast time-to-first-sound.
     """
     if not text or not text.strip():
         return []
@@ -839,11 +870,30 @@ def _split_into_safe_tts_chunks(text: str, max_chunk_len: int = 250) -> list[str
         return [text.strip()]
 
     chunks = []
-    for s in raw_sentences:
+    for s_idx, s in enumerate(raw_sentences):
+        # Fast Time-to-First-Audio: split first sentence at clause punctuation if > 90 chars
+        if s_idx == 0 and len(s) > 90:
+            clauses = [c.strip() for c in re.split(r'(?<=[,;:—])\s+', s) if c.strip()]
+            if len(clauses) > 1:
+                cur = []
+                cur_len = 0
+                for p in clauses:
+                    if cur_len + len(p) + 1 > 90 and cur:
+                        chunks.append(" ".join(cur))
+                        cur = [p]
+                        cur_len = len(p)
+                    else:
+                        cur.append(p)
+                        cur_len += len(p) + 1
+                if cur:
+                    chunks.append(" ".join(cur))
+                continue
+
         if len(s) <= max_chunk_len:
             chunks.append(s)
             continue
-        # Only split excessively long sentences along commas/semicolons
+
+        # Split long sentences along clause boundaries
         subparts = [c.strip() for c in re.split(r'(?<=[,;:—])\s+', s) if c.strip()]
         cur = []
         cur_len = 0
@@ -906,24 +956,36 @@ def _playback_worker():
         _update_state("speaking")
 
         try:
-            if stream is None or stream_sr != sr:
-                if stream is not None:
-                    try:
-                        stream.stop()
-                        stream.close()
-                    except Exception:
-                        pass
-                stream = _sd.OutputStream(samplerate=sr, channels=1, dtype="float32", blocksize=1024)
-                stream.start()
-                stream_sr = sr
-                with _active_stream_lock:
-                    _active_stream = stream
+            if _sd is not None:
+                if stream is None or stream_sr != sr:
+                    if stream is not None:
+                        try:
+                            stream.stop()
+                            stream.close()
+                        except Exception:
+                            pass
+                        stream = None
+                    stream = _sd.OutputStream(samplerate=sr, channels=1, dtype="float32", blocksize=1024)
+                    stream.start()
+                    stream_sr = sr
+                    with _active_stream_lock:
+                        _active_stream = stream
 
-            if _speech_is_current(gen) and len(samples) > 0:
-                stream.write(samples)
+                if _speech_is_current(gen) and len(samples) > 0 and stream is not None:
+                    stream.write(samples)
 
         except Exception as e:
             logger.debug(f"[Audio Playback Worker Note] {e}")
+            if stream is not None:
+                try:
+                    stream.stop()
+                    stream.close()
+                except Exception:
+                    pass
+            stream = None
+            stream_sr = None
+            with _active_stream_lock:
+                _active_stream = None
 
         # Check if playback is finished and all queues are empty
         if is_last_in_utterance and _speech_queue.empty() and _playback_queue.empty():
@@ -944,11 +1006,10 @@ threading.Thread(target=_playback_worker, daemon=True, name="TTS-Playback").star
 def _speech_worker():
     """
     Dedicated synthesis worker:
-    - Streams Pocket TTS audio in real-time (24kHz chunks) directly to playback worker.
-    - Yields chunks as they are generated by the Kyutai neural engine (~150ms time-to-first-sound).
+    - Streams neural TTS audio (24kHz chunks) directly to playback worker.
+    - Yields chunks as they are generated by Kokoro v1.0 ONNX or Edge TTS with low time-to-first-sound.
     - Halts immediately without CPU waste on user interruption.
     """
-    global _current_stop_event
     while True:
         item = _speech_queue.get()
         voice_override = None
@@ -965,6 +1026,7 @@ def _speech_worker():
             _speech_queue.task_done()
             continue
 
+        stop_evt = _get_or_create_stop_event(generation)
         try:
             tts_started = time.perf_counter()
             _update_state("speaking")
@@ -976,9 +1038,11 @@ def _speech_worker():
                 continue
 
             target_voice = voice_override.lower().strip() if voice_override else sync_voice_from_profile()
-            v_info = CURATED_VOICES.get(target_voice, CURATED_VOICES.get("af_heart" if _USE_KOKORO_ONNX else "aria"))
-            engine_type = v_info.get("engine", "kokoro" if _USE_KOKORO_ONNX else "edge_tts") if v_info else "edge_tts"
-            voice_id = v_info.get("id", "af_heart" if engine_type == "kokoro" else "en-US-AriaNeural") if v_info else "af_heart"
+            catalog = get_voice_catalog()
+            default_voice = _get_default_voice()
+            v_info = catalog.get(target_voice) or catalog.get(default_voice) or {}
+            engine_type = v_info.get("engine", "kokoro" if _USE_KOKORO_ONNX else "edge_tts")
+            voice_id = v_info.get("id", "af_heart" if engine_type == "kokoro" else "en-US-AriaNeural")
 
             clean_text = _compact_tts_text(text)
             if not clean_text:
@@ -989,8 +1053,6 @@ def _speech_worker():
                 chunks = [clean_text]
 
             total_chunks = len(chunks)
-            stop_evt = _current_stop_event
-            first_chunk_emitted = False
 
             for idx, chunk in enumerate(chunks):
                 if not chunk or not _speech_is_current(generation) or stop_evt.is_set():
@@ -999,30 +1061,31 @@ def _speech_worker():
                 spoken_chunk = chunk if chunk.endswith((".", "!", "?", ",", ";", ":")) else chunk + "."
 
                 try:
-                    with _tts_lock:
-                        if not _speech_is_current(generation) or stop_evt.is_set():
-                            break
-                        if engine_type == "kokoro" and _USE_KOKORO_ONNX:
-                            samples, sr = _fetch_kokoro_audio(spoken_chunk, voice_id, stop_evt)
-                        else:
-                            samples, sr = _fetch_edge_tts_audio(spoken_chunk, voice_id, stop_evt)
+                    samples = None
+                    sr = 24000
+                    if engine_type == "kokoro" and _USE_KOKORO_ONNX:
+                        samples, sr = _fetch_kokoro_audio(spoken_chunk, voice_id, stop_evt)
+                        if (samples is None or len(samples) == 0) and _USE_EDGE_TTS and not stop_evt.is_set():
+                            logger.info("[TTS] Falling back to Edge TTS for chunk.")
+                            samples, sr = _fetch_edge_tts_audio(spoken_chunk, "en-US-AriaNeural", stop_evt)
+                    elif engine_type == "edge_tts" and _USE_EDGE_TTS:
+                        samples, sr = _fetch_edge_tts_audio(spoken_chunk, voice_id, stop_evt)
+                        if (samples is None or len(samples) == 0) and _USE_KOKORO_ONNX and not stop_evt.is_set():
+                            logger.info("[TTS] Falling back to Kokoro ONNX for chunk.")
+                            samples, sr = _fetch_kokoro_audio(spoken_chunk, "af_heart", stop_evt)
+                    elif _USE_KOKORO_ONNX:
+                        samples, sr = _fetch_kokoro_audio(spoken_chunk, "af_heart", stop_evt)
+                    elif _USE_EDGE_TTS:
+                        samples, sr = _fetch_edge_tts_audio(spoken_chunk, "en-US-AriaNeural", stop_evt)
 
                     if samples is not None and len(samples) > 0 and _speech_is_current(generation) and not stop_evt.is_set():
                         is_last = (idx == total_chunks - 1)
+                        samples, sr = _process_audio_clarity(samples, sr, is_final_chunk=is_last)
                         _playback_queue.put((samples, sr, generation, is_last))
-                        first_chunk_emitted = True
 
                 except Exception as chunk_err:
                     logger.error(f"[TTS Chunk Error] {chunk_err} on chunk: {chunk[:60]}")
                     continue
-
-            # Signal utterance completion if still current
-            if _speech_is_current(generation) and not stop_evt.is_set() and first_chunk_emitted:
-                try:
-                    tail_silence = np.zeros(int(0.06 * 24000), dtype=np.float32)
-                    _playback_queue.put((tail_silence, 24000, generation, True), timeout=0.2)
-                except Exception:
-                    pass
 
             logger.debug(
                 "[Timing] request_id=%s stage=tts duration_ms=%.1f",
@@ -1033,6 +1096,7 @@ def _speech_worker():
         except Exception as e:
             logger.error(f"[TTS] Speech synthesis error: {e}")
         finally:
+            _cleanup_stop_event(generation)
             _speech_queue.task_done()
 
 
@@ -1061,6 +1125,9 @@ def speak(text: str, block: bool = False, request_id: str | None = None, broadca
 
     with _speech_generation_lock:
         generation = _speech_generation
+        if generation not in _generation_stop_events:
+            _generation_stop_events[generation] = threading.Event()
+
     item = (text, generation, request_id, broadcast_chat, voice)
     if block:
         _speech_queue.put(item)
@@ -1072,13 +1139,12 @@ def speak(text: str, block: bool = False, request_id: str | None = None, broadca
 
 def stop_speaking() -> None:
     """Stop current audio immediately, signal model to halt generation, flush queues, and abort stream."""
-    global _speech_generation, _current_stop_event, _active_stream
-    _current_stop_event.set()
+    global _speech_generation, _active_stream
     with _speech_generation_lock:
+        for evt in list(_generation_stop_events.values()):
+            evt.set()
         _speech_generation += 1
-
-    # Reset stop event for next utterance
-    _current_stop_event = threading.Event()
+        _generation_stop_events[_speech_generation] = threading.Event()
 
     # Flush speech queue
     while True:
@@ -1106,10 +1172,11 @@ def stop_speaking() -> None:
                 pass
             _active_stream = None
 
-    try:
-        _sd.stop()
-    except Exception:
-        pass
+    if _sd is not None:
+        try:
+            _sd.stop()
+        except Exception:
+            pass
 
     _update_state("idle")
 
@@ -1157,13 +1224,14 @@ def _ensure_vosk_model_downloaded() -> str:
     url = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
     try:
         logger.info("[STT] Downloading lightweight Vosk offline model (~40MB)...")
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
-        with urllib.request.urlopen(req, timeout=30.0) as resp, open(zip_path, "wb") as out_f:
-            while True:
-                chunk = resp.read(65536)
-                if not chunk:
-                    break
-                out_f.write(chunk)
+        import requests
+        req_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        with requests.get(url, headers=req_headers, stream=True, timeout=30.0) as resp:
+            resp.raise_for_status()
+            with open(zip_path, "wb") as out_f:
+                for chunk in resp.iter_content(chunk_size=65536):
+                    if chunk:
+                        out_f.write(chunk)
         import zipfile
         with zipfile.ZipFile(zip_path, "r") as z:
             z.extractall(_VOSK_DIR)
@@ -1295,23 +1363,23 @@ def transcribe_audio_bytes(audio_bytes: bytes) -> str:
         return ""
 
     # 1. Try PyAV (handles WebM/Opus from browser MediaRecorder, OGG, WAV, MP3, AAC, FLAC)
-    try:
-        import av
-        with io.BytesIO(audio_bytes) as in_bio:
-            container = av.open(in_bio)
-            resampler = av.AudioResampler(format="flt", layout="mono", rate=16000)
-            chunks = []
-            for frame in container.decode(audio=0):
-                for rf in resampler.resample(frame):
+    if av is not None:
+        try:
+            with io.BytesIO(audio_bytes) as in_bio:
+                container = av.open(in_bio)
+                resampler = av.AudioResampler(format="flt", layout="mono", rate=16000)
+                chunks = []
+                for frame in container.decode(audio=0):
+                    for rf in resampler.resample(frame):
+                        chunks.append(rf.to_ndarray()[0])
+                # Flush resampler buffer so the tail is never dropped
+                for rf in resampler.resample(None):
                     chunks.append(rf.to_ndarray()[0])
-            # Flush resampler buffer so the tail is never dropped
-            for rf in resampler.resample(None):
-                chunks.append(rf.to_ndarray()[0])
-            if chunks:
-                audio_samples = np.concatenate(chunks)
-                return transcribe_samples(audio_samples, 16000)
-    except Exception as e_av:
-        logger.debug(f"[STT] PyAV decode note: {e_av}")
+                if chunks:
+                    audio_samples = np.concatenate(chunks)
+                    return transcribe_samples(audio_samples, 16000)
+        except Exception as e_av:
+            logger.debug(f"[STT] PyAV decode note: {e_av}")
 
     # 2. Try soundfile (WAV, FLAC, OGG)
     try:
@@ -1338,7 +1406,6 @@ def transcribe_b64(audio_b64: str) -> str:
     if not audio_b64:
         return ""
     try:
-        import base64
         if "," in audio_b64:
             audio_b64 = audio_b64.split(",", 1)[1]
         raw_bytes = base64.b64decode(audio_b64)
