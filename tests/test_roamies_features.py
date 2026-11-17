@@ -208,7 +208,6 @@ def test_multilingual_and_zero_hardcoding():
 
 def test_roamies_cards_emission_and_action_cards_suppression():
     from amigo.utils.tool_registry import (
-        build_action_cards,
         emit_roamies_card,
         _tool_get_weather,
         _tool_stock_quote,
@@ -216,13 +215,7 @@ def test_roamies_cards_emission_and_action_cards_suppression():
         _tool_set_reminder,
     )
 
-    # 1. Action cards must be completely empty (suppressed in favor of Roamies overlay cards)
-    cards = build_action_cards("get_weather", {"city": "Tokyo"}, {}, None, "Sunny", "weather")
-    assert cards == []
-    cards_stock = build_action_cards("stock_quote", {"symbol": "AAPL"}, {"price": 150.0}, None, "Apple quote", "stock")
-    assert cards_stock == []
-
-    # 2. Roamies card emission helper creates valid ink event mark with kind='card'
+    # 1. Roamies card emission helper creates valid ink event mark with kind='card'
     with patch("amigo.services.screen_pen.push_overlay_event") as mock_push:
         emit_roamies_card(
             title="Weather · Paris",
@@ -429,7 +422,6 @@ def test_roamies_1_4_0_new_features():
     from amigo.core.reminder_timer import handle_snooze_reminder, save_reminders, load_reminders
     from amigo.core.proactive_intelligence import start_focus_session, get_focus_status, generate_morning_briefing
     from amigo.ui.server import app, _recent_overlay_actions, _in_progress_actions
-    import base64
 
     # 1. Test mind map card generation
     mm_res = screen_pen.screen_pen_annotate(

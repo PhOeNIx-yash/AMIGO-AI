@@ -9,7 +9,6 @@ import ctypes
 import ctypes.wintypes
 import logging
 import os
-import subprocess
 import sys
 import threading
 import time
@@ -133,8 +132,6 @@ def _handle_wake_action():
     global _is_processing
     query = ""
     tool_name = "hotkey"
-    last_tool_params = {}
-    last_tool_metadata = {}
     res_url = None
 
     try:
@@ -224,21 +221,7 @@ def _handle_wake_action():
                 })
 
                 if tool in ("read_screen", "screen_vision"):
-                    shot = _get_screenshot()
-                    if shot is not None:
-                        prompt = query
-                        if window_title:
-                            prompt = f"The user is viewing '{window_title}'. Question: {query}"
-                        reply = llm_agent.query_local_vision(
-                            shot,
-                            prompt=prompt,
-                            system_prompt=(
-                                "You are Amigo, a helpful voice assistant with screen vision capabilities. "
-                                "Analyze the user's active computer screen and answer their question clearly and directly. "
-                                "Do not use markdown, bullet points, or code formatting. Speak in natural plain English."
-                            ),
-                            max_tokens=350,
-                        ) or screen_vision.answer_screen_question(query)
+                    reply = screen_vision.answer_screen_question(query)
                 else:
                     if tool == "web_search":
                         spoken = ""
@@ -252,8 +235,6 @@ def _handle_wake_action():
                     reply = res_spoken or spoken
                     if action_url:
                         res_url = action_url
-                    last_tool_metadata = tool_meta or {}
-                    last_tool_params = params
 
                 if reply:
                     tool_name = tool
@@ -281,20 +262,7 @@ def _handle_wake_action():
         except Exception as e:
             logger.warning(f"[Hotkey Wake] Memory save note: {e}")
 
-        # Generate action cards if interactive tool ran
         action_cards = []
-        try:
-            from amigo.utils.tool_registry import build_action_cards
-            action_cards = build_action_cards(
-                tool=tool_name,
-                params=last_tool_params if "last_tool_params" in locals() else {},
-                result_metadata=last_tool_metadata if "last_tool_metadata" in locals() else {},
-                url=res_url,
-                response_text=clean_reply,
-                prompt=query,
-            )
-        except Exception as e:
-            logger.debug(f"[Hotkey Action Cards] {e}")
 
         # Broadcast assistant reply to UI dashboard (triggers live message & fetchBackendHistory)
         _broadcast("chat_message", {

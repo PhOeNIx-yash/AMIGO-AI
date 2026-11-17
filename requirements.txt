@@ -27,8 +27,6 @@ huggingface-hub>=0.23.0        # Automatic model downloading from HuggingFace
 # ── Web Dashboard & REST API ──────────────────────────────────
 Flask>=3.0.0                   # Web dashboard, SSE event streaming, REST backend
 requests>=2.31.0               # Live weather fetching (wttr.in)
-beautifulsoup4>=4.12.0         # HTML parsing for web search
-lxml>=4.9.0                    # Fast HTML/XML parser for BeautifulSoup
 
 # ── Desktop & OS Automation ───────────────────────────────────
 pyautogui>=0.9.54              # Keyboard shortcuts, typing, screen capture
@@ -40,7 +38,6 @@ pycaw>=20240210                # Windows Core Audio endpoint volume management
 # ── Screen Vision & OCR ───────────────────────────────────────
 Pillow>=10.0.0                 # Image manipulation & screenshot buffers
 winocr>=0.0.15                 # Native Windows 10/11 OCR engine
-pytesseract>=0.3.10            # Tesseract OCR fallback
 
 # ── Clipboard, Timers & Content Integrations ──────────────────
 pyperclip>=1.8.2               # Clipboard intelligence

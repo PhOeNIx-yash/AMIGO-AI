@@ -1,28 +1,33 @@
 {
-  "last_weather_check": 1794825640.3790987,
-  "last_calendar_check": 1794825460.37551,
-  "last_system_check": 1794825941.5118215,
-  "last_notification_time": 1794824680.3567276,
+  "last_weather_check": 1794909013.6718297,
+  "last_calendar_check": 1794909075.0369096,
+  "last_system_check": 1794909612.8946028,
+  "last_notification_time": 1794847498.045714,
   "last_priority_alert_time": 0,
   "suggestions_this_hour": 0,
-  "last_hour_reset": 1794825580.3778355,
-  "active_window_start": 1794667231.8762486,
-  "current_window_title": "amigo-main - Antigravity IDE - server.py",
+  "last_hour_reset": 1794906760.9806986,
+  "active_window_start": 1794909492.7073367,
+  "current_window_title": "Amigo - Windows 11 Voice Assistant and 2 more pages - Personal - Microsoft\u200b Edge",
   "recent_suggestions": [
-    {
-      "id": "wellness_break",
-      "text": "Hey Yash, you've been deeply focused, should we take a quick stretch break?",
-      "time": 1794817521.022617
-    },
-    {
-      "id": "wellness_break",
-      "text": "Hey Yash, you've been focused for almost five hours, want a quick stretch?",
-      "time": 1794821938.6567986
-    },
     {
       "id": "wellness_break",
       "text": "Hey Yash, you've been grinding for hours, maybe take a quick stretch?",
       "time": 1794824679.5075827
+    },
+    {
+      "id": "wellness_break",
+      "text": "Yash, you've been working incredibly hard!",
+      "time": 1794828900.2347698
+    },
+    {
+      "id": "wellness_break",
+      "text": "Yash, you've been working really hard on this general topic.",
+      "time": 1794839239.8060737
+    },
+    {
+      "id": "wellness_break",
+      "text": "Hey Yash, you've been crushing it, remember to stretch soon.",
+      "time": 1794847496.2670655
     }
   ],
   "learned_patterns": {},

@@ -1,32 +1,25 @@
-"""
-web_search.py - Consensus-Verified Epistemic Retrieval Engine for Amigo.
+r"""
+web_search.py - Ultra-Fast, Zero-Hardcoding Global Epistemic Retrieval Engine for Amigo.
 
-Completely rebuilt architecture focused on source trustworthiness, cross-domain
-claim corroboration, and zero hardcoded domain/topic/country rules.
-
-Core Pillars:
-  1. Zero-Hardcoding OS Locale & Environment Introspection:
-     Derives ISO country, language, and timezone strictly from runtime OS APIs.
-  2. Multi-Oracle Independent Harvester:
-     Queries independent search indexes (Encyclopedia OpenSearch, DDGS API,
-     DDG Lite, Yahoo Web, Bing Web, Google News RSS, and optional API Oracles
-     like Tavily/Brave/SearXNG) in an asynchronous/threaded non-blocking pool.
-  3. Structural Authority Scorer:
-     Evaluates URLs using information-theoretic domain entropy, path depth,
-     subdomain nesting, and institutional TLD structure—zero domain lists.
-  4. Cross-Source Claim Corroboration Graph:
-     Extracts atomic factual tokens (numbers, dates, named entities, specs) across
-     distinct domains. Ranks sources by independent inter-domain agreement
-     (PageRank-style consensus) so hallucinated or spam pages are filtered out.
-  5. Verbatim Evidence & Schema Extractor:
-     Downloads top consensus-verified pages and extracts high-density factual
-     sentences and structured JSON-LD entities with explicit provenance tags.
+Architecture Highlights:
+  1. Zero Hardcoded Word/Phrase Rules:
+     - Uses Unicode-aware tokenization (`\w+`) and orthographic/entropy scoring
+       so queries in any language or script (Latin, Devanagari, CJK, Arabic, Cyrillic)
+       are weighted purely by structural information content.
+  2. In-Flight Request Coalescing (Singleflight) + TTL LRU Cache:
+     - Deduplicates concurrent identical searches and serves repeat queries in <1ms.
+  3. Hedged Multi-Oracle Fan-Out:
+     - Fires high-reliability JSON/XML/Lite search oracles concurrently (DDGS multi-backend,
+       DDG Lite, Google News RSS, Yahoo Web, Wikimedia REST/Search, plus optional
+       Tavily/Brave/SearXNG APIs) with adaptive hedging and per-provider circuit breakers.
+  4. Text-to-Tag Density Content Extractor:
+     - Extracts JSON-LD, OpenGraph/Meta descriptions, publication timestamps, and
+       high-density prose blocks from top consensus-verified pages without site-specific rules.
 """
 
 from __future__ import annotations
 
 import asyncio
-import base64
 import ctypes
 import email.utils
 import html
@@ -58,16 +51,33 @@ logger = logging.getLogger("amigo.web_search")
 for _lg in ("ddgs", "ddgs.ddgs", "duckduckgo_search", "httpx", "httpcore", "primp", "urllib3"):
     logging.getLogger(_lg).setLevel(logging.ERROR)
 
+__all__ = [
+    "SearchResult",
+    "SearchResponse",
+    "YTVideo",
+    "Quote",
+    "search_web",
+    "async_search_web",
+    "format_for_llm",
+    "scrape_web_info",
+    "searchGoogle",
+    "resolve_youtube_video",
+    "searchYoutube",
+    "get_stock_quote",
+    "format_quote",
+    "clean_search_query",
+    "detect_query_type",
+    "warmup",
+    "shutdown",
+]
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 1. Dynamic OS Environment Introspection (Zero Hardcoded Fallbacks)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _discover_os_locale() -> tuple[str, str, str]:
-    """
-    Interrogates the host OS for (language_code, country_code, region_tag)
-    without any hardcoded country or language defaults.
-    """
+    """Derives (language_code, country_code, region_tag) strictly from host OS APIs."""
     lang_code = ""
     country_code = ""
 
@@ -134,7 +144,7 @@ YT_REGION = os.getenv("AMIGO_YT_REGION", "").strip() or PC_COUNTRY_CODE
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 2. Data Structures (100% Backwards-Compatible + Epistemic Metadata)
+# 2. Data Structures (100% Backwards-Compatible)
 # ──────────────────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -148,7 +158,6 @@ class SearchResult:
     age_days: Optional[float] = None
     score: float = 0.0
     fetched_content: str = ""
-    # Epistemic & Consensus telemetry
     authority_score: float = 0.0
     consensus_score: float = 0.0
     corroborated_by: list[str] = field(default_factory=list)
@@ -215,11 +224,11 @@ class Quote:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 3. Resilient Transport Layer & Circuit Registry
+# 3. Resilient Connection-Pooled Transport & Adaptive Circuit Breaker
 # ──────────────────────────────────────────────────────────────────────────────
 
 class _Transport:
-    """Thread-safe connection-pooled HTTP client with automatic header negotiation."""
+    """HTTP/2 connection-pooled client with tight connect/read budgets."""
 
     def __init__(self) -> None:
         accept_lang = (
@@ -230,10 +239,11 @@ class _Transport:
         self._headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
             ),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
             "Accept-Language": accept_lang,
+            "Accept-Encoding": "gzip, deflate, br",
             "DNT": "1",
         }
         if _USING_HTTPX:
@@ -241,13 +251,13 @@ class _Transport:
                 http2=True,
                 headers=self._headers,
                 follow_redirects=True,
-                timeout=httpx.Timeout(3.0, connect=1.25),
-                limits=httpx.Limits(max_connections=64, max_keepalive_connections=32),
+                timeout=httpx.Timeout(2.5, connect=1.0),
+                limits=httpx.Limits(max_connections=96, max_keepalive_connections=48, keepalive_expiry=30.0),
             )
         else:
             from requests.adapters import HTTPAdapter
             self._session = requests.Session()
-            adapter = HTTPAdapter(max_retries=1, pool_connections=32, pool_maxsize=64)
+            adapter = HTTPAdapter(max_retries=1, pool_connections=48, pool_maxsize=96)
             self._session.mount("http://", adapter)
             self._session.mount("https://", adapter)
             self._session.headers.update(self._headers)
@@ -259,13 +269,13 @@ class _Transport:
         params: Optional[dict] = None,
         headers: Optional[dict] = None,
         cookies: Optional[dict] = None,
-        timeout: float = 2.6,
+        timeout: float = 2.2,
     ):
         if _USING_HTTPX:
             r = self._session.get(url, params=params, headers=headers, cookies=cookies, timeout=timeout)
             r.raise_for_status()
             return r
-        r = self._session.get(url, params=params, headers=headers, cookies=cookies, timeout=(1.2, timeout))
+        r = self._session.get(url, params=params, headers=headers, cookies=cookies, timeout=(1.0, timeout))
         r.raise_for_status()
         return r
 
@@ -277,19 +287,19 @@ class _Transport:
         data: Optional[dict] = None,
         headers: Optional[dict] = None,
         cookies: Optional[dict] = None,
-        timeout: float = 2.6,
+        timeout: float = 2.2,
     ):
         if _USING_HTTPX:
             r = self._session.post(url, json=json_body, data=data, headers=headers, cookies=cookies, timeout=timeout)
             r.raise_for_status()
             return r
-        r = self._session.post(url, json=json_body, data=data, headers=headers, cookies=cookies, timeout=(1.2, timeout))
+        r = self._session.post(url, json=json_body, data=data, headers=headers, cookies=cookies, timeout=(1.0, timeout))
         r.raise_for_status()
         return r
 
 
 class _ProviderTelemetry:
-    """Tracks exponential moving average latency and health for every search oracle."""
+    """Tracks exponential moving average latency and circuit-breaker state per oracle."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -300,6 +310,10 @@ class _ProviderTelemetry:
     def is_healthy(self, provider: str) -> bool:
         with self._lock:
             return time.monotonic() >= self._cooldown_until.get(provider, 0.0)
+
+    def latency_ms(self, provider: str) -> float:
+        with self._lock:
+            return self._ema_ms.get(provider, 650.0)
 
     def record_success(self, provider: str, elapsed_ms: float) -> None:
         with self._lock:
@@ -316,12 +330,12 @@ class _ProviderTelemetry:
             fails = self._failures[provider] + 1
             self._failures[provider] = fails
             if fails >= 2:
-                backoff = min(180.0, 6.0 * (2 ** (fails - 1)))
+                backoff = min(120.0, 5.0 * (2 ** (fails - 1)))
                 self._cooldown_until[provider] = time.monotonic() + backoff
 
 
 class _LRUTTLCache:
-    def __init__(self, capacity: int = 256) -> None:
+    def __init__(self, capacity: int = 512) -> None:
         self._capacity = capacity
         self._store: OrderedDict[Any, tuple[Any, float]] = OrderedDict()
         self._lock = threading.Lock()
@@ -350,46 +364,64 @@ class _LRUTTLCache:
             self._store.clear()
 
 
+class _SingleFlight:
+    """Coalesces concurrent identical queries so only one network fan-out runs."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._inflight: dict[Any, threading.Event] = {}
+        self._results: dict[Any, Any] = {}
+
+    def run(self, key: Any, fn: Callable[[], Any]) -> Any:
+        with self._lock:
+            if key in self._inflight:
+                ev = self._inflight[key]
+                leader = False
+            else:
+                ev = threading.Event()
+                self._inflight[key] = ev
+                leader = True
+
+        if not leader:
+            ev.wait(timeout=6.0)
+            return self._results.get(key)
+
+        try:
+            res = fn()
+            self._results[key] = res
+            return res
+        finally:
+            with self._lock:
+                self._inflight.pop(key, None)
+            ev.set()
+            # Clean up transient result slot shortly after waiters wake
+            threading.Timer(0.5, lambda: self._results.pop(key, None)).start()
+
+
 _NET = _Transport()
 _TELEMETRY = _ProviderTelemetry()
-_POOL = ThreadPoolExecutor(max_workers=20, thread_name_prefix="amigo-epistemic")
-_RESULT_CACHE = _LRUTTLCache(256)
-_MEDIA_CACHE = _LRUTTLCache(128)
-_QUOTE_CACHE = _LRUTTLCache(64)
+_POOL = ThreadPoolExecutor(max_workers=28, thread_name_prefix="amigo-epistemic")
+_RESULT_CACHE = _LRUTTLCache(512)
+_MEDIA_CACHE = _LRUTTLCache(256)
+_QUOTE_CACHE = _LRUTTLCache(128)
+_SINGLEFLIGHT = _SingleFlight()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 4. Linguistic & Information-Theoretic Primitives (Zero Hardcoded Lists)
+# 4. Unicode & Information-Theoretic Primitives (Zero Hardcoded Word Lists)
 # ──────────────────────────────────────────────────────────────────────────────
 
 _RE_HTML_TAG = re.compile(r"<[^>]+>")
 _RE_WHITESPACE = re.compile(r"\s+")
-_RE_TOKEN = re.compile(r"[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*")
+# Full Unicode word/token matcher (supports Latin, Devanagari, CJK, Arabic, Cyrillic, etc.)
+_RE_TOKEN = re.compile(r"[^\W_]+(?:[._-][^\W_]+)*", re.UNICODE)
 _RE_FACT_ATOM = re.compile(
-    r"\b(?:"
-    r"\d+(?:[.,]\d+)*(?:\s*%)?"              # Numbers, decimals, percentages
-    r"|[A-Z][a-zA-Z0-9_-]{2,}"               # Proper nouns / capitalized identifiers
-    r"|[a-zA-Z]+\d+[a-zA-Z0-9_-]*"           # Alphanumeric model/version codes
-    r")\b"
-)
-_RE_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(\[])")
-
-# Universal closed-class English grammatical glue (syntactic only)
-_CLOSED_CLASS_GLUE = frozenset({
-    "a", "an", "the", "and", "or", "but", "if", "nor", "for", "yet", "so",
-    "in", "on", "at", "to", "from", "by", "with", "about", "against", "between",
-    "into", "through", "during", "before", "after", "above", "below", "up", "down",
-    "of", "off", "over", "under", "is", "am", "are", "was", "were", "be", "been",
-    "being", "have", "has", "had", "do", "does", "did", "will", "would", "shall",
-    "should", "may", "might", "must", "can", "could", "what", "which", "who",
-    "whom", "whose", "when", "where", "why", "how", "this", "that", "these",
-    "those", "it", "its", "they", "them", "their", "we", "us", "our", "you", "your",
-})
-
-_RE_VOICE_PREFIX = re.compile(
-    r"^(?:(?:hey|hi|hello|ok|okay)\s+amigo\b[\s,.:;!-]*)"
-    r"|(?:^(?:please\s+)?(?:search(?:\s+the\s+web)?(?:\s+for)?|look\s+up|find(?:\s+out)?|tell\s+me(?:\s+about)?|google|check)\s+)",
-    re.IGNORECASE,
+    r"(?:"
+    r"\d+(?:[.,]\d+)*(?:\s*%)?"                  # Numbers, decimals, percentages
+    r"|[^\W\d_]{2,}(?:[-_][^\W\d_]+)*"           # Multi-character Unicode lexical tokens
+    r"|[^\W\d_]+\d+[^\W_]*"                      # Alphanumeric model/version codes
+    r")",
+    re.UNICODE,
 )
 
 
@@ -401,15 +433,13 @@ def _normalize_text(raw: str) -> str:
 
 
 def clean_search_query(raw_query: str) -> str:
-    """Strips conversational voice assistant framing while preserving all factual tokens."""
+    """Normalizes whitespace and outer punctuation without stripping any words."""
     q = (raw_query or "").strip()
     if not q:
         return ""
-    for _ in range(2):
-        q = _RE_VOICE_PREFIX.sub("", q).strip()
-    q = q.strip("\"'`?!.")
+    q = q.strip("\"'`?!.,;:")
     q = _RE_WHITESPACE.sub(" ", q)
-    return q if len(q) >= 2 else (raw_query or "").strip()
+    return q if len(q) >= 1 else (raw_query or "").strip()
 
 
 def detect_query_type(query: str) -> str:
@@ -429,7 +459,6 @@ def _registered_root_domain(host: str) -> str:
     parts = [p for p in host.split(".") if p]
     if len(parts) <= 2:
         return host
-    # Handle 2-level country-code SLDs (e.g., .co.uk, .ac.in, .gov.au)
     if len(parts[-1]) == 2 and len(parts[-2]) <= 3:
         return ".".join(parts[-3:])
     return ".".join(parts[-2:])
@@ -443,7 +472,7 @@ def _canonical_url_key(url: str) -> str:
         clean_params = [
             (k, v)
             for k, v in urllib.parse.parse_qsl(parsed.query)
-            if not k.lower().startswith(("utm_", "fbclid", "gclid", "msclkid", "ref", "mc_"))
+            if not k.lower().startswith(("utm_", "fbclid", "gclid", "msclkid", "ref", "mc_", "spm"))
         ]
         qs = urllib.parse.urlencode(sorted(clean_params))
         return f"{host}{path}" + (f"?{qs}" if qs else "")
@@ -473,40 +502,64 @@ def _parse_timestamp(raw_date: str) -> tuple[str, Optional[float]]:
         delta_days = max(0.0, (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0)
         return dt.strftime("%Y-%m-%d"), delta_days
 
-    m = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", cleaned)
+    m = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", cleaned)
     if m:
         return m.group(1), None
     return "", None
 
 
+def _is_cjk_or_indic_char(ch: str) -> bool:
+    cp = ord(ch)
+    return (
+        0x0900 <= cp <= 0x0D7F      # Indic scripts (Devanagari, Bengali, Tamil, Telugu, etc.)
+        or 0x4E00 <= cp <= 0x9FFF   # CJK Unified Ideographs
+        or 0x3040 <= cp <= 0x30FF   # Hiragana / Katakana
+        or 0xAC00 <= cp <= 0xD7AF   # Hangul
+        or 0x0600 <= cp <= 0x06FF   # Arabic
+    )
+
+
 def _token_information_weight(token: str) -> float:
     """
-    Calculates token specificity purely from orthographic entropy (digits, casing,
-    character length, hyphenation) with zero hardcoded keywords.
+    Calculates token specificity purely from orthographic entropy, script density,
+    digits, casing, and structural punctuation—zero hardcoded stopword lists.
     """
-    low = token.lower()
-    if low in _CLOSED_CLASS_GLUE:
-        return 0.02
-    length_bonus = 0.4 * math.log1p(len(low))
+    if not token:
+        return 0.0
+    char_len = len(token)
+    has_non_latin = any(_is_cjk_or_indic_char(c) for c in token)
+
+    # In logographic/abugida scripts, 2 characters carry the semantic weight of 5+ Latin chars
+    effective_len = char_len * 2.2 if has_non_latin else char_len
+    if effective_len <= 2 and not any(c.isdigit() for c in token):
+        return 0.15
+
+    length_bonus = 0.55 * math.log1p(effective_len)
     has_digit = any(c.isdigit() for c in token)
     has_alpha = any(c.isalpha() for c in token)
-    mixed_alnum = 1.6 if (has_digit and has_alpha) else (0.85 if has_digit else 0.0)
+    mixed_alnum = 1.65 if (has_digit and has_alpha) else (0.95 if has_digit else 0.0)
     casing_bonus = 0.45 if any(c.isupper() for c in token[1:]) else (0.25 if token[0].isupper() else 0.0)
     struct_bonus = 0.5 if ("-" in token or "." in token) else 0.0
-    return 1.0 + length_bonus + mixed_alnum + casing_bonus + struct_bonus
+    return 0.5 + length_bonus + mixed_alnum + casing_bonus + struct_bonus
 
 
 def _formulate_search_queries(raw_query: str) -> list[str]:
     """
-    Produces two orthogonal search formulations:
-      1. Clean semantic query
-      2. High-entropy keyword distillation for strict index matching
+    Produces two orthogonal query formulations using pure token information weight:
+      1. Full normalized query (preserves exact phrasing & context)
+      2. Top high-entropy tokens (distills long conversational queries for strict indexes)
     """
     base = clean_search_query(raw_query)
     tokens = _RE_TOKEN.findall(base)
     if len(tokens) <= 4:
         return [base]
-    distilled = [t for t in tokens if t.lower() not in _CLOSED_CLASS_GLUE and len(t) > 1]
+
+    weighted = [(tok, _token_information_weight(tok)) for tok in tokens]
+    # Keep tokens above median information weight
+    weights_sorted = sorted(w for _, w in weighted)
+    threshold = weights_sorted[len(weights_sorted) // 3]
+    distilled = [tok for tok, w in weighted if w >= threshold and len(tok) > 1]
+
     distilled_str = " ".join(distilled)
     if distilled_str and distilled_str.lower() != base.lower() and len(distilled) >= 2:
         return [base, distilled_str]
@@ -536,12 +589,7 @@ def _compute_structural_authority(url: str, title: str, snippet: str) -> float:
         return 0.25
 
     score = 0.62
-
-    # 1. Transport security
-    if parsed.scheme == "https":
-        score += 0.06
-    else:
-        score -= 0.15
+    score += 0.06 if parsed.scheme == "https" else -0.15
 
     host = _extract_host(url)
     if not host:
@@ -551,13 +599,12 @@ def _compute_structural_authority(url: str, title: str, snippet: str) -> float:
     tld = labels[-1] if labels else ""
     second_level = labels[-2] if len(labels) >= 2 else ""
 
-    # 2. Structural TLD governance (RFC / IANA restricted vs open registries)
+    # IANA restricted institutional registries vs open TLDs
     if tld in ("gov", "mil", "edu", "int") or second_level in ("gov", "ac", "edu", "mil"):
         score += 0.26
     elif tld == "org":
         score += 0.08
 
-    # 3. Domain label hygiene (SEO farms & spam domains use excessive hyphens & digits)
     main_label = labels[0] if len(labels) == 2 else (labels[-2] if len(labels) >= 2 else host)
     hyphen_count = main_label.count("-")
     digit_count = sum(1 for c in main_label if c.isdigit())
@@ -566,30 +613,27 @@ def _compute_structural_authority(url: str, title: str, snippet: str) -> float:
     if digit_count >= 3:
         score -= 0.10
 
-    # High character-randomness in domain label signals auto-generated spam hosts
     if len(main_label) > 12 and _shannon_entropy(main_label) > 3.75:
         score -= 0.10
 
-    # 4. Subdomain depth & URL query pollution
     if len(labels) > 3:
         score -= 0.05 * (len(labels) - 3)
     query_params = urllib.parse.parse_qsl(parsed.query)
     if len(query_params) > 3:
         score -= 0.04 * (len(query_params) - 3)
 
-    # 5. Content signal quality (penalize ALL-CAPS clickbait titles or empty snippets)
     if title:
         upper_ratio = sum(1 for c in title if c.isupper()) / max(1, len(title))
-        if upper_ratio > 0.45:
+        if upper_ratio > 0.50 and len(title) > 12:
             score -= 0.12
-    if len(snippet) < 40:
+    if len(snippet) < 35:
         score -= 0.08
 
     return max(0.15, min(1.0, score))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 6. Independent Multi-Oracle Search Harvesters
+# 6. Independent Multi-Oracle Search Harvesters (High-Reliability Endpoints)
 # ──────────────────────────────────────────────────────────────────────────────
 
 _DDGS_CLIENT_LOCAL = threading.local()
@@ -627,7 +671,7 @@ def _build_result(
     return SearchResult(
         title=t,
         url=u,
-        snippet=s[:540] if s else t,
+        snippet=s[:560] if s else t,
         source=source,
         domain=dom,
         published=pub_str,
@@ -687,7 +731,7 @@ def _oracle_ddg_lite(query: str, limit: int) -> list[SearchResult]:
     params = {"q": q}
     if SEARCH_REGION:
         params["kl"] = SEARCH_REGION
-    resp = _NET.get("https://html.duckduckgo.com/html/", params=params, timeout=2.2)
+    resp = _NET.get("https://html.duckduckgo.com/html/", params=params, timeout=2.0)
     text = resp.text
     out: list[SearchResult] = []
 
@@ -712,39 +756,42 @@ def _oracle_ddg_lite(query: str, limit: int) -> list[SearchResult]:
     return out
 
 
-def _oracle_brave_html(query: str, limit: int) -> list[SearchResult]:
-    """Direct independent scraper for Brave Search web index (independent from Bing/Google)."""
+def _oracle_google_news_rss(query: str, limit: int) -> list[SearchResult]:
+    """
+    Fast, unblocked XML feed from Google News RSS for real-time global events,
+    live scores, announcements, and breaking stories.
+    """
     q = clean_search_query(query)
-    params = {"q": q, "source": "web"}
-    if PC_COUNTRY_CODE:
-        params["country"] = PC_COUNTRY_CODE.lower()
-    resp = _NET.get("https://search.brave.com/search", params=params, timeout=2.3)
-    text = resp.text
+    lang = OS_LANG or "en"
+    country = PC_COUNTRY_CODE or "US"
+    params = {
+        "q": q,
+        "hl": f"{lang}-{country}" if country else lang,
+        "gl": country,
+        "ceid": f"{country}:{lang}",
+    }
+    resp = _NET.get("https://news.google.com/rss/search", params=params, timeout=2.0)
+    root = ET.fromstring(resp.text)
     out: list[SearchResult] = []
-
-    for m in re.finditer(
-        r'<a[^>]+href="(https?://[^"]+)"[^>]*class="[^"]*svelte-[^"]*"[^>]*>.*?'
-        r'<div[^>]+class="[^"]*title[^"]*"[^>]*>(.*?)</div>.*?'
-        r'<div[^>]+class="[^"]*snippet-description[^"]*"[^>]*>(.*?)</div>',
-        text,
-        re.S | re.I,
-    ):
-        url, title, snippet = m.groups()
-        host = _extract_host(url)
-        if "brave.com" in host:
-            continue
-        sr = _build_result(title, url, snippet, "brave_web")
+    for item in root.findall(".//item")[:limit]:
+        title = item.findtext("title") or ""
+        link = item.findtext("link") or ""
+        pub = item.findtext("pubDate") or ""
+        desc = item.findtext("description") or ""
+        source_el = item.find("source")
+        publisher = source_el.text.strip() if (source_el is not None and source_el.text) else ""
+        if publisher and f" - {publisher}" in title:
+            title = title.rsplit(f" - {publisher}", 1)[0]
+        sr = _build_result(title, link, desc or title, f"gnews:{publisher or 'rss'}", published=pub)
         if sr:
             out.append(sr)
-        if len(out) >= limit:
-            break
     return out
 
 
 def _oracle_yahoo_web(query: str, limit: int) -> list[SearchResult]:
     """Independent web index oracle via Yahoo Search with redirect unwrapping."""
     q = clean_search_query(query)
-    resp = _NET.get("https://search.yahoo.com/search", params={"p": q, "n": limit}, timeout=2.3)
+    resp = _NET.get("https://search.yahoo.com/search", params={"p": q, "n": limit}, timeout=2.1)
     text = resp.text
     out: list[SearchResult] = []
 
@@ -771,71 +818,73 @@ def _oracle_yahoo_web(query: str, limit: int) -> list[SearchResult]:
     return out
 
 
-def _oracle_bing_web(query: str, limit: int) -> list[SearchResult]:
+def _oracle_wikipedia_knowledge(query: str, limit: int) -> list[SearchResult]:
+    """
+    Queries the MediaWiki Search + REST Summary API for instant, authoritative
+    encyclopedic facts in the user's OS language (with English fallback).
+    """
     q = clean_search_query(query)
-    params = {"q": q, "setlang": OS_LANG or "en"}
-    if PC_COUNTRY_CODE:
-        params["cc"] = PC_COUNTRY_CODE
-    resp = _NET.get("https://www.bing.com/search", params=params, timeout=2.2)
-    text = resp.text
-    out: list[SearchResult] = []
+    langs = [OS_LANG] if (OS_LANG and len(OS_LANG) == 2 and OS_LANG != "en") else []
+    langs.append("en")
 
-    for m in re.finditer(
-        r'<li[^>]+class="[^"]*b_algo[^"]*"[^>]*>.*?'
-        r'<h2>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>\s*</h2>.*?'
-        r'(?:<p[^>]*>(.*?)</p>|<div[^>]+class="[^"]*b_caption[^"]*"[^>]*>(.*?)</div>)',
-        text,
-        re.S | re.I,
-    ):
-        raw_href, raw_title, p1, p2 = m.groups()
-        href = html.unescape(raw_href)
-        if "bing.com/ck/a" in href:
-            u_param = urllib.parse.parse_qs(urllib.parse.urlparse(href).query).get("u", [""])[0]
-            if u_param.startswith("a1"):
-                b64 = u_param[2:]
-                try:
-                    href = base64.urlsafe_b64decode(b64 + "=" * (-len(b64) % 4)).decode("utf-8", "ignore")
-                except Exception:
-                    continue
-        if "bing.com" in _extract_host(href):
+    out: list[SearchResult] = []
+    for lang in langs:
+        api_url = f"https://{lang}.wikipedia.org/w/api.php"
+        params = {
+            "action": "query",
+            "generator": "search",
+            "gsrsearch": q,
+            "gsrlimit": min(limit, 3),
+            "prop": "extracts|info",
+            "exintro": 1,
+            "explaintext": 1,
+            "exchars": 520,
+            "inprop": "url",
+            "format": "json",
+            "utf8": 1,
+        }
+        try:
+            resp = _NET.get(api_url, params=params, timeout=1.8)
+            pages = ((resp.json().get("query") or {}).get("pages") or {}).values()
+            for page in sorted(pages, key=lambda p: p.get("index", 99)):
+                title = page.get("title", "")
+                extract = page.get("extract", "")
+                fullurl = page.get("fullurl") or f"https://{lang}.wikipedia.org/wiki/{urllib.parse.quote(title.replace(' ', '_'))}"
+                sr = _build_result(title, fullurl, extract, f"wikipedia_{lang}", published=page.get("touched", ""))
+                if sr:
+                    sr.authority_score = max(sr.authority_score, 0.88)
+                    out.append(sr)
+            if out:
+                break
+        except Exception:
             continue
-        sr = _build_result(raw_title, href, p1 or p2 or "", "bing_web")
-        if sr:
-            out.append(sr)
-        if len(out) >= limit:
-            break
     return out
 
 
-def _oracle_wikipedia_knowledge(query: str, limit: int) -> list[SearchResult]:
+def _oracle_openalex_scholarly(query: str, limit: int) -> list[SearchResult]:
     """
-    Queries the MediaWiki REST API for peer-reviewed encyclopedic grounding.
-    Provides high-precision factual baseline to anchor cross-source verification.
+    Queries OpenAlex's open global scholarly index (250M+ papers) for scientific,
+    medical, technical, and academic queries with zero rate-limit friction.
     """
     q = clean_search_query(query)
-    lang = OS_LANG if (OS_LANG and len(OS_LANG) == 2) else "en"
-    api_url = f"https://{lang}.wikipedia.org/w/api.php"
-    params = {
-        "action": "query",
-        "list": "search",
-        "srsearch": q,
-        "srlimit": min(limit, 4),
-        "format": "json",
-        "utf8": 1,
-    }
-    resp = _NET.get(api_url, params=params, timeout=2.0)
-    items = (resp.json().get("query") or {}).get("search") or []
+    resp = _NET.get(
+        "https://api.openalex.org/works",
+        params={"search": q, "per-page": min(limit, 3), "select": "id,title,publication_year,doi,primary_location,abstract_inverted_index"},
+        timeout=1.9,
+    )
     out: list[SearchResult] = []
-    for item in items:
-        title = item.get("title", "")
-        snippet = item.get("snippet", "")
-        timestamp = item.get("timestamp", "")
-        if not title:
-            continue
-        page_url = f"https://{lang}.wikipedia.org/wiki/{urllib.parse.quote(title.replace(' ', '_'))}"
-        sr = _build_result(title, page_url, snippet, "encyclopedia", published=timestamp)
+    for work in resp.json().get("results") or []:
+        title = work.get("title") or ""
+        loc = (work.get("primary_location") or {}).get("landing_page_url") or work.get("doi") or work.get("id") or ""
+        inv = work.get("abstract_inverted_index") or {}
+        snippet = ""
+        if isinstance(inv, dict) and inv:
+            pos_words = sorted((pos, word) for word, positions in inv.items() for pos in positions[:3])
+            snippet = " ".join(w for _, w in pos_words[:65])
+        pub_year = str(work.get("publication_year") or "")
+        sr = _build_result(title, loc, snippet or title, "openalex", published=f"{pub_year}-01-01" if pub_year else "")
         if sr:
-            sr.authority_score = max(sr.authority_score, 0.88)
+            sr.authority_score = max(sr.authority_score, 0.86)
             out.append(sr)
     return out
 
@@ -856,7 +905,7 @@ def _oracle_ddgs_news(query: str, limit: int) -> list[SearchResult]:
             r.get("title", ""),
             r.get("url") or r.get("href") or "",
             r.get("body", ""),
-            "verified_news",
+            "ddgs_news",
             published=r.get("date", ""),
         )
         if sr:
@@ -875,7 +924,7 @@ def _oracle_tavily_api(query: str, limit: int) -> list[SearchResult]:
             "max_results": limit,
             "search_depth": "basic",
         },
-        timeout=2.4,
+        timeout=2.2,
     )
     out: list[SearchResult] = []
     for r in resp.json().get("results", []):
@@ -895,7 +944,7 @@ def _oracle_brave_api(query: str, limit: int) -> list[SearchResult]:
         "https://api.search.brave.com/res/v1/web/search",
         params=params,
         headers={"X-Subscription-Token": BRAVE_API_KEY, "Accept": "application/json"},
-        timeout=2.4,
+        timeout=2.2,
     )
     out: list[SearchResult] = []
     for r in (resp.json().get("web") or {}).get("results", []):
@@ -911,7 +960,7 @@ def _oracle_searxng_api(query: str, limit: int) -> list[SearchResult]:
     resp = _NET.get(
         f"{SEARXNG_URL}/search",
         params={"q": clean_search_query(query), "format": "json"},
-        timeout=2.4,
+        timeout=2.2,
     )
     out: list[SearchResult] = []
     for r in resp.json().get("results", [])[:limit]:
@@ -924,21 +973,21 @@ def _oracle_searxng_api(query: str, limit: int) -> list[SearchResult]:
 _ORACLE_REGISTRY: dict[str, tuple[Callable[[str, int], list[SearchResult]], float]] = {
     "tavily":       (_oracle_tavily_api,          1.35),
     "brave_api":    (_oracle_brave_api,           1.30),
-    "searxng":      (_oracle_searxng_api,         1.20),
-    "ddgs":         (_oracle_ddgs_api,            1.20),
-    "ddg_lite":     (_oracle_ddg_lite,            1.15),
-    "bing":         (_oracle_bing_web,            1.15),
-    "yahoo":        (_oracle_yahoo_web,           1.10),
-    "brave_web":    (_oracle_brave_html,          1.10),
+    "searxng":      (_oracle_searxng_api,         1.25),
+    "ddgs":         (_oracle_ddgs_api,            1.22),
+    "ddg_lite":     (_oracle_ddg_lite,            1.18),
+    "gnews_rss":    (_oracle_google_news_rss,     1.16),
+    "yahoo":        (_oracle_yahoo_web,           1.12),
     "encyclopedia": (_oracle_wikipedia_knowledge, 1.25),
-    "news":         (_oracle_ddgs_news,           0.95),
+    "scholarly":    (_oracle_openalex_scholarly,  1.10),
+    "news":         (_oracle_ddgs_news,           1.05),
 }
 
 
 def _select_active_oracles(requested: Optional[list[str]] = None) -> list[str]:
     if requested:
         return [r for r in requested if r in _ORACLE_REGISTRY]
-    candidates = ["ddgs", "ddg_lite", "bing", "yahoo", "brave_web", "encyclopedia", "news"]
+    candidates = ["ddgs", "ddg_lite", "gnews_rss", "yahoo", "encyclopedia", "news", "scholarly"]
     if TAVILY_API_KEY:
         candidates.insert(0, "tavily")
     if BRAVE_API_KEY:
@@ -946,7 +995,8 @@ def _select_active_oracles(requested: Optional[list[str]] = None) -> list[str]:
     if SEARXNG_URL:
         candidates.insert(0, "searxng")
     healthy = [c for c in candidates if _TELEMETRY.is_healthy(c)]
-    return healthy or candidates
+    # Sort by historical EMA latency so fastest oracles start immediately
+    return sorted(healthy or candidates, key=lambda c: _TELEMETRY.latency_ms(c))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -955,15 +1005,19 @@ def _select_active_oracles(requested: Optional[list[str]] = None) -> list[str]:
 
 def _extract_factual_atoms(text: str, query_tokens: set[str]) -> set[str]:
     """
-    Extracts atomic verifiable claims (numbers, dates, named entities, technical specs)
-    from a text passage that are NOT merely echoes of the user's query tokens.
+    Extracts atomic verifiable claims (numbers, dates, named entities, Unicode lexical
+    identifiers) that are NOT merely echoes of the user's query tokens.
     """
     atoms: set[str] = set()
     for match in _RE_FACT_ATOM.findall(text):
         norm = match.strip(".,;:()[]{}").lower()
-        if len(norm) < 2 or norm in _CLOSED_CLASS_GLUE or norm in query_tokens:
+        if norm in query_tokens:
             continue
-        atoms.add(norm)
+        if any(_is_cjk_or_indic_char(c) for c in norm):
+            if len(norm) >= 2:
+                atoms.add(norm)
+        elif len(norm) >= 3 or any(c.isdigit() for c in norm):
+            atoms.add(norm)
     return atoms
 
 
@@ -972,26 +1026,24 @@ def _verify_and_rank_consensus(
     query: str,
 ) -> list[SearchResult]:
     """
-    Builds a Cross-Domain Claim Consensus Graph:
-      1. Deduplicates URLs and merges multi-oracle sightings.
-      2. Measures query intent alignment with specificity-weighted coverage.
-      3. Extracts factual atoms per root domain and calculates how many *independent*
-          root domains corroborate the claims made by each candidate result.
-      4. Assigns explicit Trust Tiers: VERIFIED_CONSENSUS, CORROBORATED, or SINGLE_SOURCE.
+    Builds a Cross-Domain Claim Consensus Graph across all languages and scripts:
+      1. Deduplicates URLs and merges multi-oracle Reciprocal Rank Fusion (RRF) scores.
+      2. Measures query intent alignment using orthographic/entropy token weights.
+      3. Extracts factual atoms per root domain and measures inter-domain agreement.
+      4. Enforces domain diversity so no single host monopolizes results.
     """
     clean_q = clean_search_query(query)
     raw_q_tokens = _RE_TOKEN.findall(clean_q)
     q_weights = {
         t.lower(): _token_information_weight(t)
         for t in raw_q_tokens
-        if t.lower() not in _CLOSED_CLASS_GLUE and len(t) > 1
+        if _token_information_weight(t) > 0.2
     }
     if not q_weights:
-        q_weights = {t.lower(): 1.0 for t in raw_q_tokens if len(t) > 1}
+        q_weights = {t.lower(): 1.0 for t in raw_q_tokens if t}
     q_token_set = set(q_weights.keys())
     total_q_weight = sum(q_weights.values()) or 1.0
 
-    # Step 1: Canonical URL Aggregation across Oracles
     candidates: dict[str, SearchResult] = {}
     oracle_support: dict[str, set[str]] = defaultdict(set)
 
@@ -999,7 +1051,7 @@ def _verify_and_rank_consensus(
         oracle_weight = _ORACLE_REGISTRY.get(oracle_name, (None, 1.0))[1]
         for rank_idx, item in enumerate(results):
             ukey = _canonical_url_key(item.url)
-            rrf_contrib = oracle_weight / (50.0 + rank_idx + 1.0)
+            rrf_contrib = oracle_weight / (45.0 + rank_idx + 1.0)
             oracle_support[ukey].add(oracle_name)
 
             if ukey not in candidates:
@@ -1017,7 +1069,6 @@ def _verify_and_rank_consensus(
     if not candidates:
         return []
 
-    # Step 2: Build Root-Domain -> Factual Atom Incidence Matrix
     atom_to_root_domains: dict[str, set[str]] = defaultdict(set)
     candidate_atoms: dict[str, set[str]] = {}
     candidate_alignment: dict[str, float] = {}
@@ -1026,13 +1077,11 @@ def _verify_and_rank_consensus(
         blob = f"{item.title} {item.snippet}"
         doc_tokens = {t.lower() for t in _RE_TOKEN.findall(blob)}
 
-        # Specificity-weighted query coverage
         matched_weight = sum(w for tok, w in q_weights.items() if tok in doc_tokens)
         coverage_ratio = matched_weight / total_q_weight
         candidate_alignment[ukey] = coverage_ratio
 
-        # Only allow candidates that actually address the query to vote in the consensus graph
-        if coverage_ratio >= 0.35:
+        if coverage_ratio >= 0.30:
             root_dom = _registered_root_domain(item.domain)
             atoms = _extract_factual_atoms(blob, q_token_set)
             candidate_atoms[ukey] = atoms
@@ -1041,7 +1090,6 @@ def _verify_and_rank_consensus(
         else:
             candidate_atoms[ukey] = set()
 
-    # Step 3: Score Each Candidate by Independent Inter-Domain Corroboration
     for ukey, item in candidates.items():
         root_dom = _registered_root_domain(item.domain)
         atoms = candidate_atoms.get(ukey, set())
@@ -1052,13 +1100,12 @@ def _verify_and_rank_consensus(
             supporters = atom_to_root_domains.get(atom, set()) - {root_dom}
             if supporters:
                 corroborating_domains.update(supporters)
-                # Numeric facts and capitalized entities corroborated across domains carry high weight
-                atom_bonus = 1.35 if any(c.isdigit() for c in atom) else 1.0
+                atom_bonus = 1.40 if any(c.isdigit() for c in atom) else 1.0
                 shared_fact_weight += atom_bonus * math.log1p(len(supporters))
 
         num_corroborators = len(corroborating_domains)
         num_oracles = len(oracle_support[ukey])
-        consensus_norm = min(1.0, (shared_fact_weight / 6.0) + (0.18 * num_corroborators) + (0.12 * (num_oracles - 1)))
+        consensus_norm = min(1.0, (shared_fact_weight / 5.5) + (0.18 * num_corroborators) + (0.12 * (num_oracles - 1)))
 
         item.consensus_score = round(consensus_norm, 3)
         item.corroborated_by = sorted(corroborating_domains)[:5]
@@ -1073,11 +1120,10 @@ def _verify_and_rank_consensus(
         alignment = candidate_alignment.get(ukey, 0.0)
         recency_boost = 0.0
         if item.age_days is not None:
-            recency_boost = 0.08 * math.exp(-item.age_days / 60.0)
+            recency_boost = 0.09 * math.exp(-item.age_days / 45.0)
 
-        # Unified Epistemic Score: Query Alignment + Cross-Domain Consensus + Structural Authority + Multi-Oracle RRF
         item.score = (
-            (alignment ** 1.4) * 0.42
+            (alignment ** 1.35) * 0.42
             + item.consensus_score * 0.28
             + item.authority_score * 0.18
             + min(0.12, item.score * 2.5)
@@ -1086,7 +1132,6 @@ def _verify_and_rank_consensus(
 
     ranked = sorted(candidates.values(), key=lambda r: r.score, reverse=True)
 
-    # Step 4: Domain Diversity Enforcement (prevent any single host from monopolizing top results)
     final_list: list[SearchResult] = []
     domain_counts: Counter[str] = Counter()
     for r in ranked:
@@ -1100,7 +1145,7 @@ def _verify_and_rank_consensus(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 8. Deep Verbatim Evidence & JSON-LD Fact Extractor
+# 8. Deep Verbatim Evidence, Meta & JSON-LD Extractor
 # ──────────────────────────────────────────────────────────────────────────────
 
 _RE_NOISE_BLOCKS = re.compile(
@@ -1109,8 +1154,24 @@ _RE_NOISE_BLOCKS = re.compile(
 )
 
 
-def _extract_structured_jsonld(html_doc: str) -> list[str]:
+def _extract_meta_and_jsonld(html_doc: str) -> tuple[list[str], str]:
+    """Extracts structured JSON-LD facts, OpenGraph/Meta summaries, and publication date."""
     facts: list[str] = []
+    pub_date = ""
+
+    for m in re.finditer(r"<meta\s+([^>]+)>", html_doc[:45_000], re.I):
+        attrs = m.group(1)
+        name_m = re.search(r'(?:name|property)=["\']([^"\']+)["\']', attrs, re.I)
+        cont_m = re.search(r'content=["\']([^"\']+)["\']', attrs, re.I)
+        if not (name_m and cont_m):
+            continue
+        key = name_m.group(1).lower()
+        val = _normalize_text(cont_m.group(1))
+        if key in ("description", "og:description", "twitter:description") and len(val) > 45:
+            facts.append(val[:450])
+        elif not pub_date and key in ("article:published_time", "og:updated_time", "date", "pubdate", "dc.date"):
+            pub_date, _ = _parse_timestamp(val)
+
     for m in re.finditer(r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', html_doc, re.S | re.I):
         try:
             payload = json.loads(m.group(1).strip())
@@ -1120,6 +1181,8 @@ def _extract_structured_jsonld(html_doc: str) -> list[str]:
         while queue:
             node = queue.pop(0)
             if isinstance(node, dict):
+                if not pub_date and isinstance(node.get("datePublished"), str):
+                    pub_date, _ = _parse_timestamp(node["datePublished"])
                 headline = node.get("headline") or node.get("name")
                 desc = node.get("description") or node.get("articleBody")
                 if isinstance(headline, str) and isinstance(desc, str) and len(desc) > 40:
@@ -1137,34 +1200,45 @@ def _extract_structured_jsonld(html_doc: str) -> list[str]:
                         queue.append(v)
             elif isinstance(node, list):
                 queue.extend(node)
-    return facts[:4]
+
+    return facts[:5], pub_date
 
 
-def _extract_high_density_evidence(html_doc: str, query: str, max_chars: int = 1600) -> str:
+def _extract_high_density_evidence(html_doc: str, query: str, max_chars: int = 1600) -> tuple[str, str]:
     """
-    Extracts self-contained, information-dense sentences from the target webpage
-    that directly answer the query and contain verifiable facts.
+    Extracts self-contained, information-dense passages from the target webpage
+    that directly answer the query across any language or script.
     """
-    structured_facts = _extract_structured_jsonld(html_doc)
-
-    # Strip boilerplate & navigation containers
+    structured_facts, detected_pub = _extract_meta_and_jsonld(html_doc)
     cleaned_html = _RE_NOISE_BLOCKS.sub(" ", html_doc)
 
     paragraphs: list[str] = []
-    for pm in re.finditer(r"<(?:p|li|td|dd|blockquote|article)[^>]*>(.*?)</(?:p|li|td|dd|blockquote|article)>", cleaned_html, re.S | re.I):
-        txt = _normalize_text(pm.group(1))
-        if 45 <= len(txt) <= 1000:
+    for pm in re.finditer(
+        r"<(?:p|li|td|dd|blockquote|article|section|div)[^>]*>(.*?)</(?:p|li|td|dd|blockquote|article|section|div)>",
+        cleaned_html,
+        re.S | re.I,
+    ):
+        raw_inner = pm.group(1)
+        # Skip container blocks with heavy nested markup (menus/cards)
+        if raw_inner.count("<") > 6:
+            continue
+        txt = _normalize_text(raw_inner)
+        if 40 <= len(txt) <= 1000:
             paragraphs.append(txt)
 
     if not paragraphs:
         fallback_txt = _normalize_text(cleaned_html)
-        paragraphs = [fallback_txt[i : i + 500] for i in range(0, min(len(fallback_txt), 6000), 450) if len(fallback_txt[i : i + 500]) > 60]
+        paragraphs = [
+            fallback_txt[i : i + 500]
+            for i in range(0, min(len(fallback_txt), 6000), 450)
+            if len(fallback_txt[i : i + 500]) > 60
+        ]
 
     clean_q = clean_search_query(query)
     q_weights = {
         t.lower(): _token_information_weight(t)
         for t in _RE_TOKEN.findall(clean_q)
-        if t.lower() not in _CLOSED_CLASS_GLUE and len(t) > 1
+        if _token_information_weight(t) > 0.2
     }
 
     scored_passages: list[tuple[float, int, str]] = []
@@ -1180,52 +1254,57 @@ def _extract_high_density_evidence(html_doc: str, query: str, max_chars: int = 1
         if not p_tokens:
             continue
 
-        # Score by query specificity match + factual density (numbers, dates, proper nouns)
         q_hit_score = sum(w for tok, w in q_weights.items() if tok in p_tokens)
         fact_atoms = len(_RE_FACT_ATOM.findall(para))
-        density_bonus = min(2.5, fact_atoms * 0.22)
-        lead_bonus = 0.6 if idx < len(structured_facts) else (0.25 if idx < 5 else 0.0)
+        density_bonus = min(2.6, fact_atoms * 0.22)
+        lead_bonus = 0.65 if idx < len(structured_facts) else (0.25 if idx < 5 else 0.0)
 
-        total_sc = q_hit_score * 1.5 + density_bonus + lead_bonus
+        total_sc = q_hit_score * 1.55 + density_bonus + lead_bonus
         if q_hit_score > 0 or idx < len(structured_facts):
             scored_passages.append((total_sc, idx, para))
 
     if not scored_passages:
-        return ""
+        return "", detected_pub
 
     scored_passages.sort(key=lambda x: x[0], reverse=True)
     chosen: list[tuple[int, str]] = []
     char_budget = 0
-    for sc, idx, text in scored_passages[:5]:
+    for _, idx, text in scored_passages[:5]:
         chosen.append((idx, text))
         char_budget += len(text) + 4
         if char_budget >= max_chars:
             break
 
     chosen.sort(key=lambda x: x[0])
-    return " … ".join(txt for _, txt in chosen)[:max_chars]
+    return " … ".join(txt for _, txt in chosen)[:max_chars], detected_pub
 
 
 def _deep_verify_top_results(results: list[SearchResult], query: str, deadline_s: float) -> None:
-    targets = [r for r in results if not r.url.startswith("https://www.youtube.com/watch")][:4]
+    targets = [
+        r for r in results
+        if not r.url.startswith("https://www.youtube.com/watch")
+        and "news.google.com/rss/articles" not in r.url
+    ][:4]
     if not targets:
         return
 
-    def _fetch_one(res: SearchResult) -> str:
-        resp = _NET.get(res.url, timeout=min(2.0, max(0.8, deadline_s)))
+    def _fetch_one(res: SearchResult) -> tuple[str, str]:
+        resp = _NET.get(res.url, timeout=min(1.8, max(0.7, deadline_s)))
         ctype = (resp.headers.get("content-type") or "").lower()
         if any(b in ctype for b in ("pdf", "image", "audio", "video", "octet-stream")):
-            return ""
-        return _extract_high_density_evidence(resp.text[:400_000], query)
+            return "", ""
+        return _extract_high_density_evidence(resp.text[:350_000], query)
 
     futs = {_POOL.submit(_fetch_one, r): r for r in targets}
     done, pending = wait(list(futs.keys()), timeout=deadline_s)
     for f in done:
         target_res = futs[f]
         try:
-            excerpt = f.result()
+            excerpt, detected_pub = f.result()
             if excerpt:
                 target_res.fetched_content = excerpt
+            if detected_pub and not target_res.published:
+                target_res.published = detected_pub
         except Exception:
             pass
     for f in pending:
@@ -1233,36 +1312,22 @@ def _deep_verify_top_results(results: list[SearchResult], query: str, deadline_s
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 9. Public Search API (Drop-in Compatible with Amigo Voice Assistant)
+# 9. Public Search API (Drop-in Compatible with Amigo)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def search_web(
-    query: str,
-    max_results: int = 6,
-    engines: Optional[list[str]] = None,
-    fetch_content: Optional[bool] = None,
-    use_cache: bool = True,
-    fast_mode: bool = False,
-    freshness: Optional[str] = None,
+def _execute_search_pipeline(
+    raw_q: str,
+    max_results: int,
+    engines: Optional[list[str]],
+    fetch_content: Optional[bool],
+    fast_mode: bool,
 ) -> SearchResponse:
-    """
-    Executes a multi-oracle consensus search, cross-verifies claims across independent
-    domains, and extracts verbatim evidence passages from top corroborated sources.
-    """
     t_start = time.monotonic()
-    raw_q = (query or "").strip()
-    if not raw_q:
-        return SearchResponse(query="", results=[], query_type="empty")
-
-    cache_key = (raw_q.lower(), max_results, bool(fetch_content), bool(fast_mode), tuple(sorted(engines or ())))
-    if use_cache:
-        cached = _RESULT_CACHE.get(cache_key)
-        if cached is not None:
-            return replace(cached, cache_hit=True, search_time_ms=0)
-
     oracles = _select_active_oracles(engines)
-    race_budget = 2.1 if fast_mode else 3.2
-    grace_window = 0.45 if fast_mode else 0.65
+
+    # Aggressive sub-second/1.5s quorum racing for maximum speed
+    race_budget = 1.65 if fast_mode else 2.45
+    grace_window = 0.30 if fast_mode else 0.45
     per_oracle_limit = 6 if fast_mode else 8
 
     deadline = time.monotonic() + race_budget
@@ -1289,7 +1354,7 @@ def search_web(
                 _TELEMETRY.record_success(name, elapsed_ms)
                 if rows:
                     harvested[name] = rows
-                    # Trigger grace window once at least 3 independent oracles have reported
+                    # Once 3 independent oracles return results, open short grace window and exit fast
                     if grace_start is None and len(harvested) >= 3:
                         grace_start = time.monotonic()
             except Exception as exc:
@@ -1301,15 +1366,15 @@ def search_web(
 
     verified_results = _verify_and_rank_consensus(harvested, raw_q)[:max_results]
 
-    should_fetch = fetch_content if fetch_content is not None else (not fast_mode or len(verified_results) > 0)
+    should_fetch = fetch_content if fetch_content is not None else (not fast_mode and len(verified_results) > 0)
     if should_fetch and verified_results:
-        fetch_budget = 1.25 if fast_mode else 2.1
+        fetch_budget = 1.0 if fast_mode else 1.55
         _deep_verify_top_results(verified_results, raw_q, deadline_s=fetch_budget)
 
-    # Re-run consensus boost after deep page excerpts are attached
+    # Re-evaluate cross-domain corroboration after deep page evidence is attached
     if any(r.fetched_content for r in verified_results):
         clean_q = clean_search_query(raw_q)
-        q_tokens = {t.lower() for t in _RE_TOKEN.findall(clean_q) if t.lower() not in _CLOSED_CLASS_GLUE}
+        q_tokens = {t.lower() for t in _RE_TOKEN.findall(clean_q) if _token_information_weight(t) > 0.2}
         root_atoms: dict[str, set[str]] = defaultdict(set)
         for r in verified_results:
             dom = _registered_root_domain(r.domain)
@@ -1333,17 +1398,6 @@ def search_web(
         verified_results.sort(key=lambda r: r.score, reverse=True)
 
     total_ms = int((time.monotonic() - t_start) * 1000)
-    response = SearchResponse(
-        query=raw_q,
-        results=verified_results,
-        query_type="epistemic_consensus",
-        search_time_ms=total_ms,
-        engines_used=list(harvested.keys()),
-    )
-
-    if use_cache and verified_results:
-        _RESULT_CACHE.put(cache_key, response, ttl_s=300.0)
-
     logger.info(
         "[EpistemicSearch] %r -> %d verified results in %dms (oracles=%s)",
         raw_q[:60],
@@ -1351,14 +1405,51 @@ def search_web(
         total_ms,
         ",".join(harvested.keys()) or "none",
     )
+    return SearchResponse(
+        query=raw_q,
+        results=verified_results,
+        query_type="epistemic_consensus",
+        search_time_ms=total_ms,
+        engines_used=list(harvested.keys()),
+    )
+
+
+def search_web(
+    query: str,
+    max_results: int = 6,
+    engines: Optional[list[str]] = None,
+    fetch_content: Optional[bool] = None,
+    use_cache: bool = True,
+    fast_mode: bool = False,
+    freshness: Optional[str] = None,
+) -> SearchResponse:
+    """
+    Executes a coalesced, multi-oracle consensus search across global sources
+    and extracts verbatim evidence passages from top corroborated pages.
+    """
+    raw_q = (query or "").strip()
+    if not raw_q:
+        return SearchResponse(query="", results=[], query_type="empty")
+
+    cache_key = (raw_q.lower(), max_results, fetch_content, bool(fast_mode), tuple(sorted(engines or ())))
+    if use_cache:
+        cached = _RESULT_CACHE.get(cache_key)
+        if cached is not None:
+            return replace(cached, cache_hit=True, search_time_ms=0)
+
+    response = _SINGLEFLIGHT.run(
+        cache_key,
+        lambda: _execute_search_pipeline(raw_q, max_results, engines, fetch_content, fast_mode),
+    )
+
+    if use_cache and response and response.results:
+        _RESULT_CACHE.put(cache_key, response, ttl_s=300.0)
+
     return response
 
 
-def format_for_llm(response: SearchResponse, max_chars: int = 5000) -> str:
-    """
-    Formats search results with explicit epistemic trust badges and cross-domain
-    corroboration metadata so the LLM prioritizes verified consensus facts.
-    """
+def format_for_llm(response: SearchResponse, max_chars: int = 5200) -> str:
+    """Formats search results with explicit epistemic trust badges and provenance."""
     if not response.results:
         return "No verified web sources found for this query."
 
@@ -1413,7 +1504,7 @@ async def async_search_web(query: str, **kwargs) -> SearchResponse:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 10. YouTube Resolution Subsystem (Preserved Public Interface)
+# 10. YouTube Resolution Subsystem (Zero Hardcoded Query Words)
 # ──────────────────────────────────────────────────────────────────────────────
 
 _YT_INNERTUBE_VER = os.getenv("AMIGO_YT_CLIENT_VERSION", "2.20250901.01.00")
@@ -1463,7 +1554,7 @@ def _query_yt_innertube(query: str, sp_params: Optional[str] = None) -> list[YTV
         _YT_ENDPOINT,
         json_body=payload,
         cookies=_YT_CONSENT_COOKIES,
-        timeout=2.5,
+        timeout=2.2,
         headers={
             "X-YouTube-Client-Name": "1",
             "X-YouTube-Client-Version": _YT_INNERTUBE_VER,
@@ -1504,17 +1595,13 @@ def resolve_youtube_video(
     latest: Optional[bool] = None,
     timeout: float = 5.0,
 ) -> dict[str, Any]:
-    raw_q = (query or "").strip()
-    clean_q = re.sub(r"\s+(?:on|in)\s+youtube(?:\s+music)?$", "", clean_search_query(raw_q), flags=re.I).strip() or raw_q
-
-    if live is None:
-        live = kind == "live" or bool(re.search(r"\b(?:live\s*stream|livestream|live\s+now)\b", clean_q, re.I))
-    if latest is None:
-        latest = bool(re.search(r"\b(?:latest|newest|most\s+recent)\b", clean_q, re.I))
+    clean_q = clean_search_query(query)
+    is_live = bool(live) if live is not None else (kind == "live")
+    is_latest = bool(latest)
 
     fallback = {
         "url": "https://www.youtube.com/results?search_query=" + urllib.parse.quote_plus(clean_q),
-        "title": clean_q.title(),
+        "title": clean_q,
         "channel": "YouTube",
         "video_id": "",
         "query": clean_q,
@@ -1524,22 +1611,22 @@ def resolve_youtube_video(
         "source": "search_page",
     }
 
-    cache_key = (clean_q.lower(), kind, bool(live), bool(latest))
-    if not live and not latest:
+    cache_key = (clean_q.lower(), kind, is_live, is_latest)
+    if not is_live and not is_latest:
         cached = _MEDIA_CACHE.get(cache_key)
         if cached:
             return dict(cached)
 
-    sp = "EgJAAQ%3D%3D" if live else ("CAISAhAB" if latest else "EgIQAQ%3D%3D")
+    sp = "EgJAAQ%3D%3D" if is_live else ("CAISAhAB" if is_latest else "EgIQAQ%3D%3D")
     try:
         candidates = _query_yt_innertube(clean_q, sp_params=sp)
-        if not candidates and (live or latest):
+        if not candidates and (is_live or is_latest):
             candidates = _query_yt_innertube(clean_q)
     except Exception:
         candidates = []
 
     chosen: Optional[YTVideo] = None
-    if live:
+    if is_live:
         chosen = next((v for v in candidates if v.is_live), candidates[0] if candidates else None)
     elif kind == "song":
         chosen = next((v for v in candidates if v.duration_s is None or 55 <= v.duration_s <= 720), candidates[0] if candidates else None)
@@ -1553,11 +1640,11 @@ def resolve_youtube_video(
             channel=chosen.channel or "YouTube",
             url=f"https://www.youtube.com/watch?v={chosen.video_id}&autoplay=1",
             is_live=bool(chosen.is_live),
-            not_live_fallback=bool(live and not chosen.is_live),
+            not_live_fallback=bool(is_live and not chosen.is_live),
             resolved=True,
             source=chosen.source,
         )
-        if not live and not latest:
+        if not is_live and not is_latest:
             _MEDIA_CACHE.put(cache_key, dict(fallback), ttl_s=21600.0)
 
     return fallback
@@ -1592,7 +1679,7 @@ def get_stock_quote(query: str, range_val: str = "1d") -> Optional[Quote]:
             _YF_SEARCH_API,
             params={"q": q, "quotesCount": 5, "newsCount": 0},
             headers={"Accept": "application/json"},
-            timeout=2.4,
+            timeout=2.2,
         ).json()
         match = next(
             (item for item in (s_resp.get("quotes") or []) if item.get("symbol") and item.get("quoteType") in _VALID_ASSET_CLASSES),
@@ -1609,7 +1696,7 @@ def get_stock_quote(query: str, range_val: str = "1d") -> Optional[Quote]:
             _YF_CHART_API.format(symbol=urllib.parse.quote(symbol, safe="")),
             params={"range": range_val, "interval": interval},
             headers={"Accept": "application/json"},
-            timeout=2.4,
+            timeout=2.2,
         ).json()
 
         chart_res = ((c_resp.get("chart") or {}).get("result") or [None])[0] or {}

@@ -7,7 +7,9 @@ Clean, streamlined inference engine for Qwen 3.5 4B Instruct:
 - Clean, non-destructive streaming sentence synthesis for TTS
 """
 
+import atexit
 import datetime
+import gc
 import json
 import logging
 import os
@@ -158,7 +160,8 @@ _STATIC_VOICE_SYSTEM_PROMPT = (
     "You are Amigo, a friendly, intelligent, and capable personal AI voice assistant on the user's Windows PC.\n"
     "Core Instructions:\n"
     "- State the direct answer or solution immediately in the first sentence.\n"
-    "- Keep responses conversational and concise (1-3 spoken sentences) unless the user specifically asks for detailed explanations, lists, or steps.\n"
+    "- In [Mode: Voice], keep responses conversational and concise (1-3 spoken sentences) unless the user specifically asks for detailed explanations, lists, or steps.\n"
+    "- In [Mode: Text] and [Mode: Document Analysis], give thorough, well-structured, complete answers with clear explanations, relevant details, and formatted steps.\n"
     "- Answer ONLY the user's current question. Never bring up past topics, previous commands, active links, or background media unless the user specifically asks about them.\n"
     "- Speak naturally and confidently. Never use robotic filler phrases like 'Certainly!', 'Sure thing!', 'As an AI', or 'According to my knowledge'.\n"
     "- Never deflect with multi-choice question menus. Answer directly with what you know.\n"
@@ -167,14 +170,6 @@ _STATIC_VOICE_SYSTEM_PROMPT = (
     "- For riddles, physics puzzles, and logical word problems, reason carefully through physical space, geometry, and real-world mechanics before giving the direct answer.\n"
     "- Resolve pronouns ('it', 'that', 'they', 'he', 'she', 'there') and follow-up questions naturally from conversation history and active environment state."
 )
-
-_master_prompt_provider = None
-
-
-def set_master_prompt_provider(fn) -> None:
-    global _master_prompt_provider
-    _master_prompt_provider = fn
-
 
 def get_static_system_prompt() -> str:
     """Conversational assistant system prompt for natural speech and text responses."""
@@ -247,6 +242,26 @@ def get_clipboard_text() -> str | None:
 
 _turn_context_cache: tuple[float, tuple, str] | None = None
 _turn_context_lock = threading.Lock()
+_profile_prompt_cache: tuple[float, str] | None = None
+_profile_prompt_lock = threading.Lock()
+
+
+def _get_cached_user_profile() -> str:
+    """Cache the non-semantic user profile prompt for 60 seconds to avoid per-turn vector lookups."""
+    global _profile_prompt_cache
+    now = time.time()
+    with _profile_prompt_lock:
+        if _profile_prompt_cache is not None:
+            c_time, c_val = _profile_prompt_cache
+            if now - c_time < 60.0:
+                return c_val
+    try:
+        val = rag_engine.get_user_profile_prompt("", semantic_search=False) or ""
+    except Exception:
+        val = ""
+    with _profile_prompt_lock:
+        _profile_prompt_cache = (now, val)
+    return val
 
 
 def build_turn_runtime_context(
@@ -257,11 +272,11 @@ def build_turn_runtime_context(
 ) -> str:
     global _turn_context_cache
     now_ts = time.time()
-    cache_key = (query.strip(), bool(web_context), bool(doc_context), pending_confirmation.strip())
+    cache_key = (bool(web_context), bool(doc_context), pending_confirmation.strip())
     with _turn_context_lock:
         if _turn_context_cache is not None:
             c_time, c_key, c_val = _turn_context_cache
-            if (now_ts - c_time < 3.0) and (c_key == cache_key):
+            if (now_ts - c_time < 30.0) and (c_key == cache_key):
                 return c_val
 
     ctx_blocks: list[str] = []
@@ -294,7 +309,7 @@ def build_turn_runtime_context(
             "[Recent Results List (0=first, 1=second, ..., -1=last)]:\n" + "\n".join(item_lines)
         )
 
-    if user_prof := rag_engine.get_user_profile_prompt(query, semantic_search=True):
+    if user_prof := _get_cached_user_profile():
         ctx_blocks.append(f"[User Profile & Memory]:\n{user_prof}")
     if screen := get_last_screen_text():
         ctx_blocks.append(f"[Screen OCR]: {screen[:300]}")
@@ -440,7 +455,12 @@ def is_creativity_enabled() -> bool:
 
 
 def get_sampling_params() -> dict:
-    return {"temperature": 0.3 if _creativity_enabled else 0.15, "top_p": 0.95, "min_p": 0.05}
+    return {
+        "temperature": 0.3 if _creativity_enabled else 0.15,
+        "top_p": 0.95,
+        "min_p": 0.05,
+        "repeat_penalty": 1.05,
+    }
 
 
 def _get_physical_cores() -> int:
@@ -470,9 +490,10 @@ def _get_llm_config() -> dict:
         except Exception:
             pass
         cores = _get_physical_cores()
+        default_threads = min(4, max(2, cores // 2)) if has_gpu else max(1, cores - 1)
         _LLM_CONFIG = {
             "n_ctx": int(os.getenv("AMIGO_LLM_N_CTX", "8192")),
-            "n_threads": int(os.getenv("AMIGO_LLM_N_THREADS", str(max(1, cores - 1)))),
+            "n_threads": int(os.getenv("AMIGO_LLM_N_THREADS", str(default_threads))),
             "n_threads_batch": int(os.getenv("AMIGO_LLM_N_THREADS_BATCH", str(cores))),
             "n_batch": int(os.getenv("AMIGO_LLM_N_BATCH", "1024")),
             "n_ubatch": int(os.getenv("AMIGO_LLM_N_UBATCH", "512")),
@@ -698,14 +719,52 @@ def get_available_models() -> dict:
     return AVAILABLE_MODELS
 
 
+def _cleanup_llm_model() -> None:
+    global _local_llm_instance, _LLM_CONFIG
+    with _inference_lock, _llm_lock, _CONFIG_LOCK:
+        if _local_llm_instance is not None:
+            try:
+                if hasattr(_local_llm_instance, "close"):
+                    _local_llm_instance.close()
+            except Exception as e:
+                logger.debug("[Local AI Engine] Model close exception on cleanup: %s", e)
+            try:
+                del _local_llm_instance
+            except Exception:
+                pass
+            _local_llm_instance = None
+        _LLM_CONFIG = None
+    try:
+        gc.collect()
+    except Exception:
+        pass
+
+
+atexit.register(_cleanup_llm_model)
+
+
 def set_active_model(model_key: str = "qwen3.5-4b-instruct") -> bool:
     global _active_model_key, _local_llm_instance, _LLM_CONFIG
     if model_key not in AVAILABLE_MODELS:
         return False
     with _inference_lock, _llm_lock, _CONFIG_LOCK:
         _active_model_key = model_key
-        _local_llm_instance = None
+        if _local_llm_instance is not None:
+            try:
+                if hasattr(_local_llm_instance, "close"):
+                    _local_llm_instance.close()
+            except Exception as e:
+                logger.debug("[Local AI Engine] Model close exception on switch: %s", e)
+            try:
+                del _local_llm_instance
+            except Exception:
+                pass
+            _local_llm_instance = None
         _LLM_CONFIG = None
+    try:
+        gc.collect()
+    except Exception:
+        pass
     return init_local_llm(force_reload=True) is not None
 
 
@@ -775,14 +834,6 @@ def sanitize_for_tts(text: str) -> str:
         return clean.strip()
 
 
-def strip_markdown_for_tts(text: str) -> str:
-    return sanitize_for_tts(text)
-
-
-def clean_tts_text(text: str) -> str:
-    return sanitize_for_tts(text)
-
-
 def _prepare_chat_messages(
     system_prompt: str,
     prompt: str | list[dict],
@@ -823,7 +874,7 @@ def query_local_llm(
             "temperature": sampling["temperature"] if temperature is None else temperature,
             "top_p": sampling["top_p"],
             "min_p": sampling.get("min_p", 0.05) if min_p is None else min_p,
-            "repeat_penalty": 1.15 if repeat_penalty is None else repeat_penalty,
+            "repeat_penalty": sampling.get("repeat_penalty", 1.05) if repeat_penalty is None else repeat_penalty,
             "stop": STOP_TOKENS if stop is None else stop,
         }
 
@@ -831,6 +882,11 @@ def query_local_llm(
             try:
                 res = llm.create_chat_completion(**kwargs, stream=False)
             except Exception as e:
+                try:
+                    if hasattr(llm, "reset"):
+                        llm.reset()
+                except Exception:
+                    pass
                 if "exceed context window" in str(e).lower() and kwargs.get("max_tokens", 0) > 128:
                     kwargs["max_tokens"] = 128
                     res = llm.create_chat_completion(**kwargs, stream=False)
@@ -844,6 +900,11 @@ def query_local_llm(
         return (sanitize_for_tts(clean) or clean) if sanitize else clean
     except Exception as e:
         logger.error("[LLM Query Error]: %s", e)
+        try:
+            if hasattr(llm, "reset"):
+                llm.reset()
+        except Exception:
+            pass
         if raise_on_error:
             raise
         return "I'm having trouble processing that request."
@@ -862,18 +923,19 @@ def query_local_llm_stream(
         yield "I'm having trouble initializing the AI engine."
         return
 
+    stream_res = None
     try:
         sampling = get_sampling_params()
         temp = sampling["temperature"] if temperature is None else temperature
+        rep_pen = sampling.get("repeat_penalty", 1.05)
         with _inference_lock:
-            stream_res = None
             try:
                 stream_res = llm.create_chat_completion(
                     messages=_prepare_chat_messages(system_prompt, prompt),
                     max_tokens=max_tokens,
                     temperature=temp,
                     top_p=sampling["top_p"],
-                    repeat_penalty=1.15,
+                    repeat_penalty=rep_pen,
                     stop=STOP_TOKENS,
                     stream=True,
                 )
@@ -885,13 +947,18 @@ def query_local_llm_stream(
                     if delta := chunk["choices"][0]["delta"].get("content"):
                         yield delta
             except Exception as e:
+                try:
+                    if hasattr(llm, "reset"):
+                        llm.reset()
+                except Exception:
+                    pass
                 if "exceed context window" in str(e).lower() and max_tokens > 128:
                     stream_res = llm.create_chat_completion(
                         messages=_prepare_chat_messages(system_prompt, prompt),
                         max_tokens=128,
                         temperature=temp,
                         top_p=sampling["top_p"],
-                        repeat_penalty=1.15,
+                        repeat_penalty=rep_pen,
                         stop=STOP_TOKENS,
                         stream=True,
                     )
@@ -903,15 +970,21 @@ def query_local_llm_stream(
                 else:
                     logger.error("[LLM Stream Error]: %s", e)
                     yield "I'm having trouble processing that request."
-            finally:
-                if close_stream := getattr(stream_res, "close", None):
-                    try:
-                        close_stream()
-                    except Exception:
-                        pass
     except Exception as e:
         logger.error("[LLM Stream Init Error]: %s", e)
+        try:
+            if hasattr(llm, "reset"):
+                llm.reset()
+        except Exception:
+            pass
         yield "I'm having trouble processing that request."
+    finally:
+        if stream_res is not None:
+            if close_stream := getattr(stream_res, "close", None):
+                try:
+                    close_stream()
+                except Exception:
+                    pass
 
 
 _RE_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
@@ -986,7 +1059,7 @@ def get_ai_response(
         is_voice=is_voice,
     )
     thinking_active = is_thinking_enabled()
-    limit = max_tokens or (1024 if thinking_active else 512)
+    limit = max_tokens or (1024 if thinking_active else (320 if is_voice else 1024))
     sampling = get_sampling_params()
 
     response = query_local_llm(
@@ -1081,10 +1154,6 @@ def add_to_memory(
     )
 
 
-def query_local_vision(*args, **kwargs) -> str | None:
-    return None
-
-
 # ── Backward-Compatibility Forwarders ──────────────────────────
 
 def parse_user_intent_fast(query: str):
@@ -1095,12 +1164,6 @@ def parse_user_intent_fast(query: str):
 
 def get_agent_actions(query: str, conversation_history: list | None = None):
     from amigo.utils.tool_registry import get_agent_actions as _fn
-
-    return _fn(query, conversation_history)
-
-
-def get_agent_actions_with_response(query: str, conversation_history: list | None = None):
-    from amigo.utils.tool_registry import get_agent_actions_with_response as _fn
 
     return _fn(query, conversation_history)
 

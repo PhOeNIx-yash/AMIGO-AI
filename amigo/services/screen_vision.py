@@ -120,7 +120,7 @@ def inspect_screen(question: str = "") -> dict:
     foreground app/title, and screenshot capture) and answer *question*.
     """
     try:
-        from amigo.services.hands import get_target_app, remember_target_app
+        from amigo.services.hands import remember_target_app
         # First check what's actually in front right now
         front_res = hands.front()
         if front_res.get("ok"):
@@ -167,22 +167,11 @@ def inspect_screen(question: str = "") -> dict:
     screen_context = "\n\n".join(context_parts)
 
     q = (question or "What is currently on my screen?").strip()
-    user_prompt = (
-        f"The user is asking about what is on their screen:\n\"{q}\"\n\n"
-        f"Explain what is visible on the screen or in the active window, diagnose any error messages or code, "
-        f"and answer directly in clear, natural English without robotic boilerplate."
-    )
 
     reply = ""
     try:
-        from amigo.core.llm_agent import query_local_llm, sanitize_for_tts
-        combined_prompt = (
-            f"[Screen Context]\n{screen_context}\n\n"
-            f"[User Question]\n{q}\n\n"
-            f"Answer in 1-3 clear sentences based only on what's on screen. "
-            f"Be specific and direct. If you can see the answer clearly, state it."
-        )
-        raw = query_local_llm(combined_prompt, max_tokens=350, thinking=False)
+        from amigo.core.llm_agent import get_ai_response, sanitize_for_tts
+        raw = get_ai_response(q, doc_context=screen_context, is_voice=True)
         reply = sanitize_for_tts(raw) if raw else ""
     except Exception as e:
         reply = f"I captured your screen ({window_title}), but had trouble analyzing it: {e}"

@@ -732,14 +732,9 @@ def normalize_text_for_tts(text: str) -> str:
     return _RE_WHITESPACE.sub(' ', t).strip()
 
 
-def _clean_tts_text(text: str) -> str:
-    """Cleans and normalizes text for natural neural Pocket TTS prosody."""
-    return normalize_text_for_tts(text)
-
-
 def _compact_tts_text(text: str) -> str:
     """Cleans text for neural synthesis without truncating content."""
-    return _clean_tts_text(text)
+    return normalize_text_for_tts(text)
 
 
 def _process_audio_clarity(samples, sr=44100, is_final_chunk: bool = False) -> tuple[np.ndarray, int]:

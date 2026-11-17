@@ -88,10 +88,6 @@ _COLLECTION_TO_TAG = {
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt", ".xlsx", ".csv", ".pptx", ".md"}
 
-# Kept as empty/minimal backward-compatible exports for external callers
-SKIP_RAG_TOOLS: set[str] = set()
-LOW_VALUE_TOOLS: set[str] = set()
-
 MAX_VOICE_CONTEXT_CHARS = 3500
 MAX_FILE_SIZE = 50 * 1024 * 1024
 CHUNK_SIZE = 950
@@ -123,11 +119,15 @@ _SEARCH_CACHE: collections.OrderedDict[str, tuple[float, list[dict]]] = collecti
 _SEARCH_CACHE_TTL = 60.0
 _SEARCH_CACHE_LOCK = threading.Lock()
 
-_extracted_text_cache: collections.OrderedDict[tuple[str, float], str] = collections.OrderedDict()
+_EXTRACTED_TEXT_CACHE_TTL = 120.0
+_EXTRACTED_TEXT_CACHE_MAX = 6
+_EXTRACTED_TEXT_MAX_CHARS = 200 * 1024
+_extracted_text_cache: collections.OrderedDict[tuple[str, float], tuple[float, str]] = collections.OrderedDict()
 _extracted_text_lock = threading.Lock()
 
-_FRAME_CACHE: collections.OrderedDict[str, dict] = collections.OrderedDict()
-_FRAME_CACHE_MAX = 512
+_FRAME_CACHE: collections.OrderedDict[str, tuple[float, dict]] = collections.OrderedDict()
+_FRAME_CACHE_MAX = 256
+_FRAME_CACHE_TTL = 180.0
 _frame_cache_lock = threading.Lock()
 
 _user_facts_cache: list[dict[str, Any]] | None = None
@@ -149,16 +149,20 @@ def _clear_frame_cache() -> None:
 def _get_cached_frame(mv: Any, uri: str) -> dict:
     if not uri:
         return {}
+    now = time.monotonic()
     with _frame_cache_lock:
         if uri in _FRAME_CACHE:
-            _FRAME_CACHE.move_to_end(uri)
-            return _FRAME_CACHE[uri]
+            ts, frame_data = _FRAME_CACHE[uri]
+            if now - ts < _FRAME_CACHE_TTL:
+                _FRAME_CACHE.move_to_end(uri)
+                return frame_data
+            _FRAME_CACHE.pop(uri, None)
     try:
         with _mv_lock:
             frame_data = mv.frame(uri)
         if frame_data and isinstance(frame_data, dict):
             with _frame_cache_lock:
-                _FRAME_CACHE[uri] = frame_data
+                _FRAME_CACHE[uri] = (now, frame_data)
                 if len(_FRAME_CACHE) > _FRAME_CACHE_MAX:
                     _FRAME_CACHE.popitem(last=False)
             return frame_data
@@ -285,7 +289,7 @@ def _search_user_facts_in_memory(query: str, effective_query: str = "", top_k: i
 
 def _record_frame_tokens(text: str) -> None:
     """Update live token document-frequency statistics when a frame is stored in Memvid."""
-    global _total_tracked_frames
+    global _total_tracked_frames, _token_doc_freq
     if not text:
         return
     unique_tokens = set(_RE_WORDS.findall(text.lower()))
@@ -295,6 +299,8 @@ def _record_frame_tokens(text: str) -> None:
         _total_tracked_frames += 1
         for tok in unique_tokens:
             _token_doc_freq[tok] += 1
+        if len(_token_doc_freq) > 15000:
+            _token_doc_freq = collections.Counter(dict(_token_doc_freq.most_common(10000)))
 
 
 def _reset_memvid() -> None:
@@ -340,6 +346,15 @@ def _bootstrap_idf_from_memvid(mv: memvid_sdk.Memvid) -> None:
         logger.debug("[Memvid] Corpus IDF bootstrap note: %s", e)
 
 
+def _delete_file_hashes() -> None:
+    try:
+        from amigo.core.rag_indexer import FILE_HASHES_PATH
+        if os.path.exists(FILE_HASHES_PATH):
+            os.remove(FILE_HASHES_PATH)
+    except Exception:
+        pass
+
+
 def init_memvid() -> memvid_sdk.Memvid:
     """Initialize or open the single-file Memvid memory capsule."""
     global _mv_instance, _initialized
@@ -362,11 +377,13 @@ def init_memvid() -> memvid_sdk.Memvid:
                         try:
                             corrupt_bak = f"{MEMVID_PATH}.corrupt.{int(time.time())}"
                             os.replace(MEMVID_PATH, corrupt_bak)
+                            _delete_file_hashes()
                             mv = memvid_sdk.create(MEMVID_PATH, enable_lex=True)
                         except Exception as rec_err:
                             logger.error("[Memvid] Failed to recover memory capsule: %s", rec_err)
                             raise open_err
             else:
+                _delete_file_hashes()
                 mv = memvid_sdk.create(MEMVID_PATH, enable_lex=True)
             _mv_instance = mv
             _initialized = True
@@ -624,6 +641,11 @@ def get_active_state(clean_expired: bool = False) -> dict:
 def update_active_state(slot: str, data: dict | list | None) -> None:
     if not slot:
         return
+    if slot == "found_files":
+        if isinstance(data, list):
+            data = data[:5]
+        elif isinstance(data, dict) and "items" in data and isinstance(data["items"], list):
+            data["items"] = data["items"][:5]
     if data is None:
         if slot == "current_media":
             _ACTIVE_STATE[slot] = None
@@ -867,7 +889,7 @@ def search(
             continue
 
         raw_score = float(hit.get("score") or 0.0)
-        bm25_norm = raw_score / (raw_score + 4.5)
+        bm25_norm = raw_score / (raw_score + 2.0)
 
         combined = (
             0.42 * bm25_norm
@@ -918,10 +940,6 @@ def search(
             _SEARCH_CACHE.popitem(last=False)
 
     return final_results
-
-
-def should_skip_rag_for_tool(tool: str) -> bool:
-    return bool(tool and tool in SKIP_RAG_TOOLS)
 
 
 def search_documents(query: str, top_k: int = 5) -> list[dict]:
@@ -987,7 +1005,7 @@ def debug_search(query: str, target_collections: list[str] | None = None, top_k:
 #  6. Anti-Pollution Context Gatekeeper & Builders
 # ═══════════════════════════════════════════════════════════════
 
-def _is_chunk_grounded(r: dict, floor: float) -> bool:
+def _is_chunk_grounded(r: dict, floor: float = 0.34) -> bool:
     """
     Strict lexical & specificity gatekeeper so ungrounded Memvid frames
     never pollute the LLM prompt.
@@ -997,11 +1015,11 @@ def _is_chunk_grounded(r: dict, floor: float) -> bool:
     salient = float(r.get("salient_coverage", lex) or 0.0)
     src = r.get("source", "")
 
+    if src == DOCUMENTS:
+        return score >= 0.28 and (lex >= 0.18 or salient >= 0.40)
+
     if score < floor:
         return False
-
-    if src == DOCUMENTS:
-        return score >= max(floor, 0.34) and lex >= 0.25 and salient >= 0.45
 
     if src == CONVERSATIONS:
         return score >= max(floor, 0.48) and lex >= 0.38 and salient >= 0.60
@@ -1130,9 +1148,23 @@ def build_document_evidence(
     )
     grounded = [
         result for result in results
-        if _is_chunk_grounded(result, 0.34)
+        if _is_chunk_grounded(result, 0.28)
         and not _is_excluded_project_path((result.get("metadata") or {}).get("filepath"))
     ]
+    if not grounded and metadata_filter:
+        results = search(
+            query,
+            target_collections=[DOCUMENTS],
+            top_k=max(top_k * 5, 30),
+            metadata_filter=None,
+            conversation_history=history,
+        )
+        grounded = [
+            result for result in results
+            if _is_chunk_grounded(result, 0.28)
+            and not _is_excluded_project_path((result.get("metadata") or {}).get("filepath"))
+        ]
+
     if not grounded:
         return "", []
 
@@ -1144,7 +1176,7 @@ def build_document_evidence(
         return "", []
 
     top_score = max(float(result.get("score", 0.0) or 0.0) for result in grounded)
-    score_floor = max(0.35, top_score * 0.75)
+    score_floor = max(0.28, top_score * 0.75)
     candidate_pool = [
         result for result in grounded
         if float(result.get("score", 0.0) or 0.0) >= score_floor
@@ -1304,9 +1336,6 @@ def add_conversation(
     if state_update and isinstance(state_update, dict):
         for slot, data in state_update.items():
             update_active_state(slot, data)
-
-    if tool in LOW_VALUE_TOOLS:
-        return
 
     user_msg = _RE_CHUNK_WHITESPACE.sub(" ", user_msg).strip()[:1000]
     assistant_msg = _RE_CHUNK_WHITESPACE.sub(" ", assistant_msg or "").strip()[:1500]
@@ -1590,13 +1619,17 @@ def extract_text(filepath: str) -> str:
     if ext not in SUPPORTED_EXTENSIONS:
         return ""
 
+    now = time.monotonic()
     cache_key = None
     try:
         cache_key = (os.path.realpath(os.path.abspath(filepath)), os.path.getmtime(filepath))
         with _extracted_text_lock:
             if cache_key in _extracted_text_cache:
-                _extracted_text_cache.move_to_end(cache_key)
-                return _extracted_text_cache[cache_key]
+                ts, text = _extracted_text_cache[cache_key]
+                if now - ts < _EXTRACTED_TEXT_CACHE_TTL:
+                    _extracted_text_cache.move_to_end(cache_key)
+                    return text
+                _extracted_text_cache.pop(cache_key, None)
     except Exception:
         pass
 
@@ -1618,10 +1651,10 @@ def extract_text(filepath: str) -> str:
     except Exception as e:
         logger.debug("[Memvid] Extraction error for %s: %s", filepath, e)
 
-    if cache_key and extracted and len(extracted) <= 500 * 1024:
+    if cache_key and extracted and len(extracted) <= _EXTRACTED_TEXT_MAX_CHARS:
         with _extracted_text_lock:
-            _extracted_text_cache[cache_key] = extracted
-            if len(_extracted_text_cache) > 15:
+            _extracted_text_cache[cache_key] = (now, extracted)
+            if len(_extracted_text_cache) > _EXTRACTED_TEXT_CACHE_MAX:
                 _extracted_text_cache.popitem(last=False)
 
     return extracted
@@ -2185,8 +2218,6 @@ def get_index_stats() -> dict[str, int]:
     return dict(counts)
 
 
-get_stats = get_index_stats
-
 
 def load_memory() -> dict:
     profile = load_profile()
@@ -2256,9 +2287,26 @@ def save_memory(memory: dict) -> None:
     save_profile(profile)
 
 
+def _trigger_reindex_if_empty() -> None:
+    try:
+        if get_index_stats().get("documents", 0) == 0:
+            from amigo.core.rag_indexer import get_indexer
+            import sys
+            indexer = get_indexer(sys.modules[__name__])
+            threading.Thread(
+                target=indexer.full_index,
+                kwargs={"force": True},
+                daemon=True,
+                name="rag-auto-reindex",
+            ).start()
+    except Exception as idx_err:
+        logger.debug("[Memvid] Auto-indexing trigger note: %s", idx_err)
+
+
 def init_rag(background: bool = True) -> None:
     global _initialized, _init_error
     if _initialized:
+        _trigger_reindex_if_empty()
         return
 
     def _worker():
@@ -2267,6 +2315,7 @@ def init_rag(background: bool = True) -> None:
             init_memvid()
             _initialized = True
             _init_error = None
+            _trigger_reindex_if_empty()
         except Exception as e:
             _initialized, _init_error = False, e
             logger.error("[Memvid] Initialization failed: %s", e)
@@ -2298,6 +2347,14 @@ def search_async(query: str, target_collections: list[str] | None = None, top_k:
 def flush_write_queues() -> None:
     if _profile_cache is not None:
         _persist_profile_sync(_profile_cache)
+    try:
+        _reset_memvid()
+    except Exception:
+        pass
+    try:
+        _executor.shutdown(wait=False, cancel_futures=True)
+    except Exception:
+        pass
 
 
 atexit.register(flush_write_queues)

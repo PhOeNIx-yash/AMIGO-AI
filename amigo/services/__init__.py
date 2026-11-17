@@ -39,7 +39,6 @@ from amigo.services.os_settings import (
     reload_catalog,
 )
 from amigo.services.screen_pen import (
-    ScreenPenOverlay,
     screen_pen_annotate,
 )
 from amigo.services.screen_vision import (
@@ -88,7 +87,7 @@ __all__ = [
     "reload_catalog",
     "WindowsSystemController",
     "control_windows_system",
-    "ScreenPenOverlay",
+    "get_system_media_info",
     "screen_pen_annotate",
     "read_text_from_image",
     "analyze_image",

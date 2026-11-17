@@ -159,8 +159,18 @@ def refine(target: str, boxes: list[list[float]]) -> dict[str, Any]:
     return run_hands(["refine", target, json.dumps(boxes)], timeout=10.0)
 
 
+_screen_bounds_cache: tuple[float, float] | None = None
+_screen_bounds_cached_at: float = 0.0
+
+
 def get_screen_bounds() -> tuple[float, float]:
-    """Return logical screen `(width, height)` via the Rust native `roamies-hands` binary."""
+    """Return logical screen `(width, height)` via the Rust native `roamies-hands` binary, cached for 60s."""
+    global _screen_bounds_cache, _screen_bounds_cached_at
+    import time
+    now = time.time()
+    if _screen_bounds_cache and (now - _screen_bounds_cached_at) < 60.0:
+        return _screen_bounds_cache
+
     if is_available():
         try:
             res = windows()
@@ -169,6 +179,8 @@ def get_screen_bounds() -> tuple[float, float]:
                 max_x = max(float(w["bounds"][0]) + float(w["bounds"][2]) for w in win_list if isinstance(w, dict) and isinstance(w.get("bounds"), list) and len(w["bounds"]) == 4)
                 max_y = max(float(w["bounds"][1]) + float(w["bounds"][3]) for w in win_list if isinstance(w, dict) and isinstance(w.get("bounds"), list) and len(w["bounds"]) == 4)
                 if max_x > 0 and max_y > 0:
+                    _screen_bounds_cache = (max_x, max_y)
+                    _screen_bounds_cached_at = now
                     return max_x, max_y
         except Exception:
             pass

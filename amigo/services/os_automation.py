@@ -1545,13 +1545,11 @@ def control_windows_system(
 # --------------------------------------------------------------------------- #
 try:
     from amigo.services.screen_pen import (
-        ScreenPenOverlay,
         screen_pen_annotate,
         PEN_TOOL_DEFINITION,
     )
 except Exception as _pen_err:
     log.warning("Screen pen overlay unavailable: %s", _pen_err)
-    ScreenPenOverlay = None  # type: ignore
 
     def screen_pen_annotate(*args, **kwargs):
         return {"status": "error", "code": "PEN_UNAVAILABLE"}

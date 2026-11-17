@@ -11,7 +11,6 @@ from amigo.utils.tts import (
 )
 from amigo.utils.tool_registry import (
     UI_TOOL_HANDLERS,
-    build_action_cards,
     execute_tool,
     set_media_update_callback,
     _tool_chat,
@@ -28,7 +27,6 @@ __all__ = [
     "transcribe_b64",
     # Tool Registry
     "UI_TOOL_HANDLERS",
-    "build_action_cards",
     "execute_tool",
     "set_media_update_callback",
     "_tool_chat",

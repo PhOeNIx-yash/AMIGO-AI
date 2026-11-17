@@ -76,6 +76,8 @@ class RAGIndexer:
                 }
             except Exception:
                 self._file_hashes = {}
+        else:
+            self._file_hashes = {}
 
     def _save_hashes(self) -> None:
         try:
@@ -200,12 +202,15 @@ class RAGIndexer:
         errors = 0
 
         try:
+            if not os.path.exists(FILE_HASHES_PATH):
+                self._file_hashes.clear()
             if self._rag:
                 try:
                     stats = self._rag.get_index_stats()
-                    if stats.get("documents", 0) == 0 and self._file_hashes:
-                        logger.warning("[Indexer] Memory store has 0 documents but hash cache exists; forcing re-index")
-                        self._file_hashes.clear()
+                    if stats.get("documents", 0) == 0:
+                        if self._file_hashes:
+                            logger.warning("[Indexer] Memory store has 0 documents but hash cache exists; forcing re-index")
+                            self._file_hashes.clear()
                         force = True
                 except Exception:
                     pass

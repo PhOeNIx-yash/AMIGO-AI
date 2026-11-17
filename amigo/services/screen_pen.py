@@ -84,11 +84,15 @@ def _wrap_roamie_host_event(inner_event: Dict[str, Any]) -> Dict[str, Any]:
     """Wrap an ink event into the `{kind: 'agent', e: {...}}` envelope expected by `main.rs` / `desktop.html`."""
     etype = inner_event.get("type")
     if etype == "ink_clear":
-        return {"kind": "agent", "e": {"type": "clear", "all": bool(inner_event.get("all", True))}}
+        out = dict(inner_event)
+        out.update({"kind": "agent", "e": {"type": "clear", "all": bool(inner_event.get("all", True))}})
+        return out
     if etype == "ink":
         draw_payload = {k: v for k, v in inner_event.items() if k != "type"}
         draw_payload["type"] = "draw"
-        return {"kind": "agent", "e": draw_payload}
+        out = dict(inner_event)
+        out.update({"kind": "agent", "e": draw_payload})
+        return out
     if etype == "reminders":
         return {
             "kind": "list",
@@ -170,11 +174,6 @@ def end_tool_anim(tool_id: str, is_error: bool = False) -> None:
     })
 
 
-def play_overlay_sfx(name: str = "ink") -> int:
-    """Trigger a Roamies WebAudio `sfx.js` sound effect on connected overlays."""
-    return emit_overlay_sfx(name)
-
-
 def _get_viewport_bounds() -> tuple[float, float]:
     """Query active display bounds dynamically from `hands` without hardcoded screen dimensions."""
     from amigo.services.hands import get_screen_bounds
@@ -195,6 +194,9 @@ def _to_screen_points(x: int | float, y: int | float, normalized: bool) -> tuple
         if 0.0 <= fx <= 1.0 and 0.0 <= fy <= 1.0:
             return round(fx * sw, 1), round(fy * sh, 1)
         return round((fx / 1000.0) * sw, 1), round((fy / 1000.0) * sh, 1)
+
+
+_INTERACTIVE_ROLES = {"edit", "button", "hyperlink", "menuitem", "tabitem", "checkbox", "combobox"}
 
 
 def _resolve_target_rect(label: str, app: str | None = None) -> list[float] | None:
@@ -218,6 +220,19 @@ def _resolve_target_rect(label: str, app: str | None = None) -> list[float] | No
     try:
         from amigo.services import hands
 
+        sw, sh = hands.get_screen_bounds()
+        sw = float(sw) if sw > 0 else 1920.0
+        sh = float(sh) if sh > 0 else 1080.0
+
+        def _is_invalid_box(bx: float, by: float, bw: float, bh: float) -> bool:
+            if by < 0.0 or bx < 0.0:
+                return True
+            if bx < 30.0 and by < 50.0 and (bw > sw * 0.5 or bh > sh * 0.5):
+                return True
+            if bw > sw * 0.85 or bh > sh * 0.85:
+                return True
+            return False
+
         # 1. Inspect structured UI controls first
         try:
             from amigo.services.hands import get_target_app as _gta
@@ -228,14 +243,19 @@ def _resolve_target_rect(label: str, app: str | None = None) -> list[float] | No
         ui_res = hands.ui(_ui_target)
         if ui_res.get("ok"):
             controls = ui_res.get("controls") or []
-            best_c = None
-            best_score = -1.0
+            best_viewport_c = None
+            best_viewport_score = -1.0
+            best_chrome_c = None
+            best_chrome_score = -1.0
 
             for c in controls:
                 if not isinstance(c, dict):
                     continue
                 b = c.get("bounds")
                 if not isinstance(b, list) or len(b) != 4 or b[2] <= 0 or b[3] <= 0:
+                    continue
+                bx, by, bw, bh = float(b[0]), float(b[1]), float(b[2]), float(b[3])
+                if _is_invalid_box(bx, by, bw, bh):
                     continue
                 lbl = str(c.get("label") or c.get("name") or c.get("value") or "").strip().lower()
                 if not lbl:
@@ -254,39 +274,58 @@ def _resolve_target_rect(label: str, app: str | None = None) -> list[float] | No
                 if score <= 0.0:
                     continue
 
+                # Prefer interactive roles (Edit, Button, Hyperlink, MenuItem, TabItem, CheckBox)
+                role = str(c.get("role") or c.get("control_type") or "").strip().lower()
+                if role in _INTERACTIVE_ROLES:
+                    score *= 1.35
+
                 # Scale score inversely with area to naturally favor focused controls over whole-screen containers
-                bw, bh = float(b[2]), float(b[3])
                 scale_penalty = 1.0 / (1.0 + (bw * bh) / 150000.0)
                 final_score = score * scale_penalty
 
-                if final_score > best_score:
-                    best_score = final_score
-                    best_c = c
+                if by >= 115.0:
+                    if final_score > best_viewport_score:
+                        best_viewport_score = final_score
+                        best_viewport_c = c
+                else:
+                    if final_score > best_chrome_score:
+                        best_chrome_score = final_score
+                        best_chrome_c = c
 
-            if best_c and best_score >= 10.0:
-                b = best_c["bounds"]
+            chosen_c = best_viewport_c if (best_viewport_c and best_viewport_score >= 15.0) else (best_chrome_c if best_chrome_score >= 20.0 else None)
+            if chosen_c:
+                b = chosen_c["bounds"]
                 bw = min(float(b[2]), max(80.0, float(len(target_text) * 14.0))) if float(b[2]) > 220.0 else float(b[2])
                 return [float(b[0]), float(b[1]), bw, float(b[3])]
 
-        # 2. Fall back to OCR / text search across active display
+        # 2. Fall back to OCR / text search across active display (preferring main viewport y >= 115)
         queries = [target_text]
         if len(tokens) > 1:
             for tok in tokens:
                 if tok not in queries:
                     queries.append(tok)
 
+        chrome_match = None
         for q in queries:
             for tgt in targets:
-                hit = hands.find_text(tgt, q, scroll=False)
+                hit = hands.ocr_find(tgt, q)
                 matches = hit.get("matches") or []
                 if not matches:
-                    hit = hands.ocr_find(tgt, q)
+                    hit = hands.find_text(tgt, q, scroll=False)
                     matches = hit.get("matches") or []
-                if matches and isinstance(matches[0], dict) and isinstance(matches[0].get("bounds"), list):
-                    b = matches[0]["bounds"]
-                    if len(b) == 4 and b[2] > 0 and b[3] > 0:
-                        bw = min(float(b[2]), max(80.0, float(len(q) * 14.0))) if float(b[2]) > 220.0 else float(b[2])
-                        return [float(b[0]), float(b[1]), bw, float(b[3])]
+                for m in matches:
+                    if isinstance(m, dict) and isinstance(m.get("bounds"), list):
+                        b = m["bounds"]
+                        if len(b) == 4 and b[2] > 0 and b[3] > 0:
+                            bx, by, bw, bh = float(b[0]), float(b[1]), float(b[2]), float(b[3])
+                            if not _is_invalid_box(bx, by, bw, bh):
+                                adj_w = min(bw, max(80.0, float(len(q) * 14.0))) if bw > 220.0 else bw
+                                if by >= 115.0:
+                                    return [bx, by, adj_w, bh]
+                                elif chrome_match is None:
+                                    chrome_match = [bx, by, adj_w, bh]
+        if chrome_match is not None:
+            return chrome_match
     except Exception:
         pass
     return None
@@ -787,19 +826,11 @@ def _generate_visual_diagram_beats(
         raw = query_local_llm(prompt, max_tokens=1100, thinking=False)
         parsed = _extract_json_object(raw)
 
-    # Retry with simplified prompt if first attempt produced empty/unusable data
+    # Retry with focused prompt or clean overview if first attempt produced empty/unusable data
     _HAS_PAYLOAD = {"flow", "mindmap", "branches", "bars", "graph", "table", "timeline", "math_steps", "parts",
                     "questions", "geometry", "smiles", "map", "molecule", "nodes"}
     if not parsed or not any(k in parsed for k in _HAS_PAYLOAD):
         pk = preferred_kind or "flow"
-        simple_fallbacks = {
-            "mindmap": {"visual_type": "mindmap", "mindmap": {"title": topic[:30], "branches": [{"text": "Core Concepts", "items": ["Key Overview", "Fundamentals"], "tone": "teal"}, {"text": "Applications", "items": ["Practical Use", "Impact"], "tone": "sky"}]}},
-            "flow": {"visual_type": "flow", "flow": {"dir": "down", "nodes": [{"id": "s", "text": "Start", "shape": "round", "tone": "teal"}, {"id": "m", "text": topic[:40], "shape": "box", "tone": "sky"}, {"id": "e", "text": "End", "shape": "round", "tone": "coral"}], "links": [{"from": "s", "to": "m", "flow": True}, {"from": "m", "to": "e", "flow": True}]}},
-            "bars": {"visual_type": "bars", "bars": [{"label": "Option A", "value": 70}, {"label": "Option B", "value": 55}, {"label": "Option C", "value": 85}], "unit": "%"},
-            "table": {"visual_type": "table", "table": {"title": topic[:24], "columns": ["Item", "Detail"], "rows": [[topic[:20], "See description"]]}},
-            "timeline": {"visual_type": "timeline", "timeline": [{"when": "Step 1", "text": f"Beginning of {topic[:20]}"}, {"when": "Step 2", "text": "Middle phase"}, {"when": "Step 3", "text": "Completion"}]},
-            "map": {"visual_type": "map", "map": {"view": [-170.0, -55.0, 175.0, 75.0], "countries": [], "pins": []}},
-        }
         simple_prompt = (
             f"Output ONLY valid compact JSON for a '{pk}' visual of '{topic}'. "
             f"Include summary and the {pk} payload. No markdown, no explanation."
@@ -808,9 +839,29 @@ def _generate_visual_diagram_beats(
         parsed2 = _extract_json_object(raw2)
         if parsed2 and any(k in parsed2 for k in _HAS_PAYLOAD):
             parsed = parsed2
-        elif pk in simple_fallbacks:
-            parsed = simple_fallbacks[pk]
-        parsed.setdefault("summary", f"Here is a visual explanation of {topic}.")
+        else:
+            expl = query_local_llm(
+                f"Provide a 1-sentence summary and 3 key points about {topic}.\n"
+                f"Format:\nSummary: <one concise sentence>\n- <point 1>\n- <point 2>\n- <point 3>",
+                max_tokens=250,
+                thinking=False,
+            )
+            lines = [ln.strip() for ln in expl.splitlines() if ln.strip()]
+            lead = ""
+            points = []
+            for ln in lines:
+                if ln.lower().startswith("summary:"):
+                    lead = ln[8:].strip()
+                elif ln.startswith(("-", "*", "•")) or (len(ln) > 2 and ln[0].isdigit() and ln[1] in (".", ")")):
+                    clean_pt = re.sub(r"^[-*•\d.)\s]+", "", ln).strip()
+                    if clean_pt:
+                        points.append(clean_pt[:90])
+                elif not lead:
+                    lead = ln
+            parsed = {
+                "summary": lead or f"Overview of {topic}.",
+                "highlights": points[:4] or [f"Key aspects of {topic}."],
+            }
 
     summary = sanitize_for_tts(str(parsed.get("summary") or "")) or f"Here is a visual breakdown of {topic}."
     vtype = str(preferred_kind or parsed.get("visual_type") or "flow").strip().lower()
@@ -1182,7 +1233,7 @@ def screen_pen_annotate(
             "beats": diag_beats,
         }
         subscribers = push_overlay_event(event)
-        play_overlay_sfx("ink")
+        emit_overlay_sfx("ink")
         return {
             "status": "success",
             "drawn": act,
@@ -1229,7 +1280,7 @@ def screen_pen_annotate(
                 normalized,
             )
             mark = {"kind": "arrow", "points": [[px2, py2], [px, py]], "tone": tone, "flow": True}
-    elif act == "rect":
+    elif act in {"rect", "box"}:
         if resolved_rect:
             mark = {"kind": "rect", "at": {"rect": resolved_rect}, "tone": tone}
         else:
@@ -1268,7 +1319,7 @@ def screen_pen_annotate(
         "beats": [{"voiced": True, "caption": label or "", "marks": [mark]}],
     }
     subscribers = push_overlay_event(event)
-    play_overlay_sfx("ink")
+    emit_overlay_sfx("ink")
     return {
         "status": "success",
         "drawn": act,
@@ -1369,7 +1420,7 @@ def screen_pen_guide(
         "beats": beats,
     }
     subscribers = push_overlay_event(event)
-    play_overlay_sfx("ink")
+    emit_overlay_sfx("ink")
     return {
         "status": "success",
         "drawn": "guide",
@@ -1380,34 +1431,3 @@ def screen_pen_guide(
         "event": event,
     }
 
-
-def get_screen_pen_tools() -> list[dict[str, Any]]:
-    """Return OpenAI-compatible tool schemas for registration in Amigo's tool registry."""
-    return [PEN_TOOL_DEFINITION, GUIDE_TOOL_DEFINITION]
-
-
-class ScreenPenOverlay:
-    """Compatibility wrapper forwarding overlay dispatch calls to Roamies JS `ink.js`."""
-
-    def dispatch(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        if payload.get("action") == "guide" or "steps" in payload:
-            return screen_pen_guide(
-                steps=payload.get("steps"),
-                topic=payload.get("topic"),
-                app=payload.get("app"),
-                duration=float(payload.get("duration", 18.0)),
-            )
-        return screen_pen_annotate(
-            action=str(payload.get("action") or "diagram"),
-            x=payload.get("x"),
-            y=payload.get("y"),
-            x2=payload.get("x2"),
-            y2=payload.get("y2"),
-            label=payload.get("label"),
-            color=str(payload.get("color") or "teal"),
-            duration=float(payload.get("duration", 12.0)),
-            normalized=bool(payload.get("normalized", True)),
-            topic=payload.get("topic"),
-            data=payload.get("data"),
-            beats=payload.get("beats"),
-        )

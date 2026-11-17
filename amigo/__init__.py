@@ -94,7 +94,7 @@ def __getattr__(name):
     raise AttributeError(f"module 'amigo' has no attribute '{name}'")
 
 from amigo.utils.tts import speak, stop_speaking, set_tts_callbacks, get_tts_engine_name, transcribe_b64
-from amigo.utils.tool_registry import UI_TOOL_HANDLERS, build_action_cards, execute_tool, set_media_update_callback
+from amigo.utils.tool_registry import UI_TOOL_HANDLERS, execute_tool, set_media_update_callback
 from amigo.utils.network_utils import is_internet_connected
 from amigo.utils import resolve_settings
 
@@ -127,8 +127,6 @@ __all__ = [
     "get_clipboard_text",
     "sanitize_for_tts",
     "stream_sentence_chunks",
-    "set_llm_thinking_enabled",
-    "is_llm_thinking_enabled",
     "is_creativity_enabled",
     "get_sampling_params",
     # LLM Agent
@@ -154,8 +152,6 @@ __all__ = [
     "shutdown_proactive_intelligence",
     "get_proactive_intelligence",
     # Services
-    "open_app",
-    "close_app",
     "find_files",
     "open_folder",
     "open_windows_app",
@@ -189,7 +185,6 @@ __all__ = [
     "get_tts_engine_name",
     "transcribe_b64",
     "UI_TOOL_HANDLERS",
-    "build_action_cards",
     "execute_tool",
     "set_media_update_callback",
     "is_internet_connected",

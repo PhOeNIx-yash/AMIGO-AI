@@ -1,7 +1,5 @@
 import sys
 import amigo.core.llm_agent as llm_agent
-import amigo.core.llm_agent as local_llm
-import amigo.core.llm_agent as ai
 
 # Register legacy module names to prevent broken imports
 sys.modules.setdefault("amigo.core.local_llm", llm_agent)
@@ -104,8 +102,6 @@ __all__ = [
     "get_clipboard_text",
     "sanitize_for_tts",
     "stream_sentence_chunks",
-    "set_llm_thinking_enabled",
-    "is_llm_thinking_enabled",
     "is_creativity_enabled",
     "get_sampling_params",
     # LLM Agent

@@ -95,6 +95,11 @@ def build_unified_history_messages(*args, **kwargs):
 
 
 def update_active_state(slot: str, data: Any) -> None:
+    if slot == "found_files":
+        if isinstance(data, list):
+            data = data[:5]
+        elif isinstance(data, dict) and "items" in data and isinstance(data["items"], list):
+            data["items"] = data["items"][:5]
     rag_engine.update_active_state(slot, data)
 
 
@@ -146,6 +151,35 @@ def _offline_reply(query: str, what: str) -> str:
 #  Roamies Floating Canvas UI Emitters
 # ═══════════════════════════════════════════════════════════════
 
+def _clean_markdown_markers(text: str) -> str:
+    """Strips markdown bold, italic, code, and heading markers cleanly without dangling artifacts."""
+    if not text:
+        return ""
+    t = re.sub(r"\*\*|__|`|#+\s*", "", str(text))
+    return t.strip()
+
+
+def _format_roamies_card_content(raw_text: str) -> tuple[str, list[str]]:
+    """Cleanly splits multi-line or multi-sentence text into a lead sentence and items without markdown markers or slicing."""
+    if not raw_text:
+        return "", []
+    clean = _clean_markdown_markers(raw_text)
+    lines = [l.strip().lstrip("-*•0123456789. ") for l in clean.split("\n") if l.strip()]
+    if len(lines) > 1:
+        lead = _clean_markdown_markers(lines[0])
+        items = [_clean_markdown_markers(it) for it in lines[1:9] if _clean_markdown_markers(it)]
+        return lead, items
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", clean) if s.strip()]
+    if len(sentences) > 1:
+        lead = _clean_markdown_markers(sentences[0])
+        items = [_clean_markdown_markers(it) for it in sentences[1:9] if _clean_markdown_markers(it)]
+        return lead, items
+    return clean, []
+
+
+_format_roamies_sections = _format_roamies_card_content
+
+
 def emit_roamies_card(
     title: str,
     heading: str | None = None,
@@ -160,13 +194,23 @@ def emit_roamies_card(
         from amigo.services.screen_pen import _VALID_TONES, push_overlay_event
         push_overlay_event({"type": "ink_clear", "all": True})
         card_tone = tone if (tone and tone in _VALID_TONES) else "teal"
-        clean_items = [str(it)[:120] for it in (items or []) if str(it).strip()][:8]
+
+        card_text = str(text or "").strip()
+        card_items = list(items or [])
+        if card_text and not card_items:
+            card_text, card_items = _format_roamies_card_content(card_text)
+
+        clean_title = _clean_markdown_markers(str(title or "Amigo"))[:40]
+        clean_heading = _clean_markdown_markers(str(heading or title or ""))[:40]
+        clean_lead = _clean_markdown_markers(card_text)
+        clean_items = [_clean_markdown_markers(str(it)) for it in card_items if str(it).strip()][:8]
+
         mark: dict[str, Any] = {
             "kind": "card",
             "part": "amigo-info-card",
-            "title": str(title or "Amigo")[:40],
-            "heading": str(heading or title or "")[:36],
-            "text": str(text or "")[:400],
+            "title": clean_title,
+            "heading": clean_heading,
+            "text": clean_lead,
             "items": clean_items,
             "tone": card_tone,
         }
@@ -180,7 +224,7 @@ def emit_roamies_card(
             "fade": float(duration or 16.0),
             "beats": [{
                 "voiced": True,
-                "caption": str(heading or title or ""),
+                "caption": clean_heading or clean_title,
                 "marks": [mark, {"kind": "sfx", "name": "whoosh"}],
             }],
         })
@@ -628,7 +672,23 @@ def _tool_web_search(params, query, spoken):
             web_context=web_context,
             conversation_history=conv_history,
             use_memory=True,
-            max_tokens=180,
+            max_tokens=650,
+        )
+        # Emit rich Roamies floating card with response and top source links
+        top_sources = [
+            {"title": r.title[:60], "url": r.url}
+            for r in search_response.results[:4]
+            if getattr(r, "url", None)
+        ]
+        source_items = [f"{r.title[:45]} ({r.domain})" for r in search_response.results[:4]]
+        emit_roamies_card(
+            title=f"Web · {target[:24]}",
+            heading=target[:36],
+            text=response,
+            items=source_items,
+            tone="teal",
+            duration=22.0,
+            sources=top_sources,
         )
         meta = {
             "status": "success",
@@ -881,13 +941,17 @@ _WEATHER_TTL_SECONDS = 300.0
 
 def _cached_weather_data(city: str) -> dict:
     key = (city or "").strip().lower()
+    now = time.time()
     hit = _WEATHER_CACHE.get(key)
-    if hit and (time.time() - hit[0]) < _WEATHER_TTL_SECONDS:
+    if hit and (now - hit[0]) < _WEATHER_TTL_SECONDS:
         _WEATHER_CACHE.move_to_end(key)
         return hit[1]
     data = get_weather_data(city or "")
     if isinstance(data, dict) and data:
-        _WEATHER_CACHE[key] = (time.time(), data)
+        expired = [k for k, v in _WEATHER_CACHE.items() if (now - v[0]) >= _WEATHER_TTL_SECONDS]
+        for k in expired:
+            _WEATHER_CACHE.pop(k, None)
+        _WEATHER_CACHE[key] = (now, data)
         if len(_WEATHER_CACHE) > 32:
             _WEATHER_CACHE.popitem(last=False)
         return data
@@ -954,7 +1018,7 @@ def _tool_open_app(params, query, spoken):
 
     clean_target = app_name.strip()
     if not is_known_app(clean_target) and not is_app_already_running(clean_target):
-        return f"I couldn't find an app called '{clean_target.title()}' installed on your PC.", None
+        return f"I couldn't find an app called '{clean_target.title()}' installed on your PC. Which application would you like to open?", None
     if open_windows_app(clean_target):
         update_active_state("active_app", {"name": clean_target})
         return f"Opened {clean_target.title()}.", None, {"status": "completed", "app": clean_target}
@@ -1171,7 +1235,12 @@ def _tool_ask_document(params, query, spoken, conversation_history=None):
             if isinstance(act_f, dict) and act_f.get("path") and os.path.exists(act_f["path"]):
                 target_path = act_f["path"]
 
-    search_q = f"{filepath} {question}".strip() if (filepath and not target_path) else question
+    if filepath and not target_path:
+        matched_files = rag_engine.search_files_by_context(filepath, top_k=1)
+        if matched_files and matched_files[0].get("filepath"):
+            target_path = matched_files[0]["filepath"]
+
+    search_q = question
 
     # Live document tool badge
     tool_id = None
@@ -1228,7 +1297,7 @@ def _tool_ask_document(params, query, spoken, conversation_history=None):
     emit_roamies_card(
         title=f"Document · {primary_file}",
         heading=question[:36],
-        text=response[:380],
+        text=response,
         items=[f"{s['file']} ({s['location']})" for s in sources[:4]],
         tone="teal",
         duration=22.0,
@@ -1264,7 +1333,7 @@ def _tool_summarize_document(params, query, spoken):
             emit_roamies_card(
                 title=f"Summary · {fname}",
                 heading=fname[:36],
-                text=summary[:380],
+                text=summary,
                 tone="teal",
                 duration=22.0,
             )
@@ -1305,8 +1374,16 @@ def _tool_chat(params, query, spoken, conversation_history=None):
             if direct_reply in last_assistant or last_assistant in direct_reply:
                 is_repetition = True
 
-    is_complete = bool(direct_reply and direct_reply.rstrip()[-1:] in ('.', '!', '?', '"', "'", '`', '}', '\n'))
-    if direct_reply and not doc_context and len(direct_reply) >= 3 and is_complete and not is_repetition:
+    # If router provided a direct reply and no external document context is required, use it directly (zero second LLM call)
+    if direct_reply and not doc_context and not is_repetition:
+        if "\n" in direct_reply or len(direct_reply) > 180:
+            emit_roamies_card(
+                title="Amigo",
+                heading=query[:36] if query else "Explanation",
+                text=direct_reply,
+                tone="teal",
+                duration=20.0,
+            )
         return direct_reply, None, {"doc_context_used": False}
 
     if not query or not query.strip():
@@ -1323,6 +1400,14 @@ def _tool_chat(params, query, spoken, conversation_history=None):
             pass
 
     ai_reply = get_ai_response(query, doc_context=doc_context, conversation_history=conv_history)
+    if ai_reply and ("\n" in ai_reply or len(ai_reply) > 180):
+        emit_roamies_card(
+            title="Amigo",
+            heading=query[:36] if query else "Explanation",
+            text=ai_reply,
+            tone="teal",
+            duration=20.0,
+        )
     return ai_reply, None, ({"doc_context_used": True} if doc_context else {})
 
 
@@ -1445,16 +1530,28 @@ def _is_system_audio_playing() -> bool:
         import pythoncom
         from pycaw.pycaw import AudioUtilities, IAudioMeterInformation
         pythoncom.CoInitialize()
+        meter = None
+        sessions = None
         try:
-            for s in AudioUtilities.GetAllSessions():
+            sessions = AudioUtilities.GetAllSessions()
+            for s in sessions:
                 if s.Process:
                     try:
-                        if s._ctl.QueryInterface(IAudioMeterInformation).GetPeakValue() > 0.0005:
+                        meter = s._ctl.QueryInterface(IAudioMeterInformation)
+                        if meter.GetPeakValue() > 0.0005:
                             status = True
                             break
                     except Exception:
                         pass
+                    finally:
+                        if meter is not None:
+                            del meter
+                            meter = None
         finally:
+            if meter is not None:
+                del meter
+            if sessions is not None:
+                del sessions
             pythoncom.CoUninitialize()
     except Exception:
         pass
@@ -1885,6 +1982,20 @@ def _tool_set_volume(params, query, spoken):
     action = str(params.get("action") or "").strip().lower()
     level = params.get("level")
 
+    if level is not None:
+        try:
+            val = int(level)
+            if 0 <= val <= 100:
+                os_automation.set_volume(val)
+                actual = os_automation.get_volume()
+                final_val = actual if actual is not None else val
+                emit_interactive_volume(final_val)
+                return f"Volume set to {final_val} percent.", None
+            return "What volume level would you like, from 0 to 100?", None
+        except (ValueError, TypeError):
+            if action == "set_volume":
+                return "What volume level would you like, from 0 to 100?", None
+
     if action == "mute":
         os_automation.mute()
         emit_interactive_volume(0)
@@ -1895,28 +2006,22 @@ def _tool_set_volume(params, query, spoken):
             unmute_fn()
         else:
             os_automation.mute()
-        emit_interactive_volume(os_automation.get_volume() or 50)
+        actual = os_automation.get_volume()
+        emit_interactive_volume(actual if actual is not None else 50)
         return "Audio unmuted.", None
     if action == "volume_up":
         os_automation.volume_up()
-        emit_interactive_volume(os_automation.get_volume() or 65)
+        actual = os_automation.get_volume()
+        emit_interactive_volume(actual if actual is not None else 65)
         return "Volume increased.", None
     if action == "volume_down":
         os_automation.volume_down()
-        emit_interactive_volume(os_automation.get_volume() or 45)
+        actual = os_automation.get_volume()
+        emit_interactive_volume(actual if actual is not None else 45)
         return "Volume decreased.", None
-    if action == "set_volume" or (not action and level is not None):
-        try:
-            val = int(level)
-            if not (0 <= val <= 100):
-                return "What volume level would you like, from 0 to 100?", None
-            level = val
-        except (ValueError, TypeError):
-            return "What volume level would you like, from 0 to 100?", None
-    elif level in (None, ""):
+    if action == "set_volume" or not action:
         return "What volume level would you like, from 0 to 100?", None
-    emit_interactive_volume(level)
-    return _level_result(os_automation.set_volume(level), f"Volume set to {level} percent."), None
+    return "What volume level would you like, from 0 to 100?", None
 
 
 def _tool_set_brightness(params, query, spoken):
@@ -3021,12 +3126,12 @@ CORE OPERATING PRINCIPLES:
 4. Tool Selection Guidance:
    - Document Q&A (CRITICAL): ALWAYS use `document_qa` whenever the user asks any question about their indexed documents, files, PDFs, invoices, resumes, reports, or personal records (even if they don't say the word "document"—e.g. "what is my invoice total?", "what does the contract say about termination?", "check my resume for skills"). NEVER answer document questions with `chat`. Use `summarize_document` only when asked for a full-document summary, and `find_file` / `open_file` only to locate or launch a file.
    - Use `act_in_app` for in-window UI interactions (clicking controls, filling fields, scrolling pages, pressing keys).
-   - Use `screen_pen_annotate` for:
-     * Visual explanations and educational diagrams: `action="flow"` (process flowcharts), `action="mindmap"` (branching concept mind maps), `action="table"` (comparison tables), `action="bars"` (bar charts), `action="map"` (world map), `action="graph"` (2D function graphs), `action="math"` (LaTeX formulas), `action="model"` (3D shapes). Always provide `topic="<topic name>"`.
-       Whenever the user asks to compare, contrast, or show differences/pros and cons between two or more things, use `screen_pen_annotate` with `action="table"` or `action="bars"`.
+   - Use `chat` for all conceptual explanations, comparisons, tutorials, definitions, general knowledge, reasoning, and conversational Q&A. For `chat`, provide a direct, crisp answer right inside `"params": {"response": "<crisp answer>"}` (keep to 3–5 concise bullet points for comparisons and explanations). NEVER route conceptual explanations or comparisons to `screen_pen_annotate`.
+   - Use `screen_pen_annotate` ONLY when the user explicitly requests a visual diagram, chart, table, map, or 3D model (e.g., "draw a diagram", "show a comparison table/chart", "create a mind map") OR explicitly asks to point to/mark an on-screen UI element (e.g., "draw an arrow to Save", "circle the search bar", "highlight submit").
+     * Visual diagrams: `action="flow"` (process flowcharts), `action="mindmap"` (branching concept mind maps), `action="table"` (comparison tables), `action="bars"` (bar charts), `action="map"` (world map), `action="graph"` (2D function graphs), `action="math"` (LaTeX formulas), `action="model"` (3D shapes). Always provide `topic="<topic name>"`.
      * On-screen UI pointing & marking: `action="arrow"` (draw an arrow pointing to a UI button/control), `action="circle"` or `action="ring"` (circle a UI element), `action="box"` or `action="rect"` (box a UI element), `action="highlight"` or `action="spotlight"` or `action="underline"` (highlight UI text/control). Always provide `label="<element text to find on screen>"`.
    - Use `screen_pen_guide` for step-by-step interactive on-screen UI walkthroughs.
-   - Use `web_search` for live online information, `get_weather` for weather, `stock_quote` for ticker prices, and `chat` for general knowledge, reasoning, and conversation.
+   - Use `web_search` for live online information, `get_weather` for weather, and `stock_quote` for ticker prices.
 5. Output Format:
    - Output ONLY valid JSON matching this exact schema:
      {"actions": [{"tool": "<tool_name>", "params": {<parameters>}}]}
@@ -3047,11 +3152,14 @@ Assistant: {"actions": [{"tool": "open_app", "params": {"name": "notepad"}}, {"t
 User: find my budget file and summarize it
 Assistant: {"actions": [{"tool": "find_file", "params": {"query": "budget"}}, {"tool": "summarize_document", "params": {"target_index": 0}}]}
 
-User: search online for latest space telescope discoveries and draft an email to Alex about it
-Assistant: {"actions": [{"tool": "web_search", "params": {"query": "latest space telescope discoveries"}}, {"tool": "draft_email", "params": {"to": "Alex", "subject": "Latest Space Telescope Discoveries", "prompt": "$prev"}}]}
+User: search online for latest space telescope discoveries and draft an email to Jordan about it
+Assistant: {"actions": [{"tool": "web_search", "params": {"query": "latest space telescope discoveries"}}, {"tool": "draft_email", "params": {"to": "Jordan", "subject": "Latest Space Telescope Discoveries", "prompt": "$prev"}}]}
+
+User: explain how solar panels work
+Assistant: {"actions": [{"tool": "chat", "params": {"response": "Solar panels convert sunlight into electricity using photovoltaic cells. Photons knock electrons free from silicon atoms, generating direct current (DC) electricity that an inverter converts into alternating current (AC) for household power."}}]}
 
 User: compare python and rust
-Assistant: {"actions": [{"tool": "screen_pen_annotate", "params": {"action": "table", "topic": "Python vs Rust comparison"}}]}
+Assistant: {"actions": [{"tool": "chat", "params": {"response": "Python and Rust serve distinct purposes:\n- Productivity: Python offers rapid prototyping and dynamic typing, ideal for AI/ML and scripting.\n- Performance: Rust provides bare-metal execution speed with memory safety and zero garbage collection overhead.\n- Concurrency: Rust eliminates data races at compile time, whereas Python relies on the GIL.\n- Learning Curve: Python is beginner-friendly, while Rust has a steep learning curve due to borrow checking."}}]}
 
 User: show a comparison chart of Python, Rust, and Go popularity
 Assistant: {"actions": [{"tool": "screen_pen_annotate", "params": {"action": "bars", "topic": "Python, Rust, and Go popularity"}}]}
@@ -3068,6 +3176,9 @@ Assistant: {"actions": [{"tool": "screen_pen_annotate", "params": {"action": "ci
 User: highlight the submit button
 Assistant: {"actions": [{"tool": "screen_pen_annotate", "params": {"action": "highlight", "label": "Submit"}}]}
 
+User: decrease volume from 50 to 40
+Assistant: {"actions": [{"tool": "set_volume", "params": {"action": "set_volume", "level": 40}}]}
+
 User: scroll down on this page
 Assistant: {"actions": [{"tool": "act_in_app", "params": {"action": "scroll", "target": "down"}}]}
 
@@ -3083,9 +3194,6 @@ def get_static_master_prompt() -> str:
     if _MASTER_PROMPT_CACHE is None:
         _MASTER_PROMPT_CACHE = _MASTER_SYSTEM_PROMPT.replace("<<TOOLS>>", _tools_block())
     return _MASTER_PROMPT_CACHE
-
-
-get_static_router_prefix = get_static_master_prompt
 
 
 def build_agent_system_prompt(query: str = "", conversation_history: list | None = None) -> str:
@@ -3293,7 +3401,12 @@ def get_tool_schema(tool_name: str) -> dict | None:
     global _TOOL_SCHEMA_MAP
     if not _TOOL_SCHEMA_MAP:
         _TOOL_SCHEMA_MAP = {t["name"]: t for t in TOOL_DEFINITIONS}
-    return _TOOL_SCHEMA_MAP.get(tool_name)
+    if tool_name in _TOOL_SCHEMA_MAP:
+        return _TOOL_SCHEMA_MAP[tool_name]
+    if tool_name in _TOOL_ALIAS_MAP:
+        target, _ = _TOOL_ALIAS_MAP[tool_name]
+        return _TOOL_SCHEMA_MAP.get(target)
+    return None
 
 
 _MEDIA_ACTION_MAP = {
@@ -3560,17 +3673,14 @@ def _normalize_tool_calls(tool_calls: list[dict], final_response: str) -> None:
             if act_v == "set":
                 act_v = "set_volume"
                 p["action"] = "set_volume"
-            if act_v == "set_volume" or not act_v:
-                if "level" in p and p.get("level") is not None:
+            if "level" in p and p.get("level") is not None:
+                try:
+                    p["level"] = int(p["level"])
                     p["action"] = "set_volume"
-                    try:
-                        p["level"] = int(p["level"])
-                    except (ValueError, TypeError):
-                        pass
-                elif not act_v:
-                    p["action"] = "set_volume"
-            else:
-                p.pop("level", None)
+                except (ValueError, TypeError):
+                    pass
+            elif not act_v:
+                p["action"] = "set_volume"
 
         if call["tool"] == "read_emails":
             act = str((call.get("params") or {}).get("action") or "").lower().strip()
@@ -3600,7 +3710,7 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
         response = query_local_llm(
             messages,
             system_prompt="",
-            max_tokens=512,
+            max_tokens=420,
             temperature=0.0,
             repeat_penalty=1.0,
             thinking=False,
@@ -3633,7 +3743,7 @@ def _route_with_llm(query: str, conversation_history: list | None = None) -> tup
             repair_response = query_local_llm(
                 repair_messages,
                 system_prompt="",
-                max_tokens=512,
+                max_tokens=320,
                 temperature=0.0,
                 repeat_penalty=1.0,
                 thinking=False,
@@ -3714,9 +3824,6 @@ def get_agent_actions(query: str, conversation_history: list | None = None) -> t
     if fast is not None:
         return [fast], fast.get("speak", "")
     return _route_with_llm(cleaned, conversation_history)
-
-
-get_agent_actions_with_response = get_agent_actions
 
 
 def get_agent_action(query: str, conversation_history: list | None = None) -> list[dict]:
@@ -3884,8 +3991,3 @@ def execute_actions(
         last_tool_output = str(out_text or res_spoken or "").strip()
 
     return results
-
-
-def build_action_cards(tool: str, params: dict, result_metadata: dict, url: str | None, response_text: str, prompt: str) -> list[dict]:
-    """Action cards are replaced by Roamies floating canvas cards."""
-    return []

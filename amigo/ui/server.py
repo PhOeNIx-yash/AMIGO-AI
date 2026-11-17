@@ -21,6 +21,7 @@ import threading
 import time
 import uuid
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -66,14 +67,12 @@ from amigo.core.llm_agent import (
     get_active_model_info as get_llm_model_info,
     get_active_state,
     get_available_models as get_llm_available_models,
-    get_clipboard_text,
     get_last_thought,
     get_quick_feedback,
     init_local_llm,
     is_thinking_enabled,
     is_vision_ready,
     load_memory,
-    query_local_llm,
     save_memory,
     set_active_model,
     set_thinking_enabled,
@@ -94,16 +93,15 @@ from amigo.core.reminder_timer import (
 from amigo.services.os_automation import next_track, play_pause_media, prev_track, set_volume
 from amigo.services.weather import get_weather_data
 from amigo.utils.tool_registry import (
-    _ROUTER_STOP,
     UI_TOOL_HANDLERS,
-    build_action_cards,
     execute_actions,
     execute_tool,
     get_agent_action,
-    get_static_router_prefix,
     set_media_update_callback,
     set_ui_broadcast_callback,
 )
+
+_SILENT_TOOLS = frozenset({"stop", "stop_speaking", "blocked", "exit"})
 from amigo.utils.tts import (
     _extract_text_from_json,
     get_active_voice,
@@ -131,6 +129,8 @@ except Exception:
     pass
 
 logger = logging.getLogger("amigo.ui_server")
+
+_bg_tasks = ThreadPoolExecutor(max_workers=2, thread_name_prefix="AmigoBg")
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
@@ -296,9 +296,8 @@ def _process_query(
     clean_user_query = (display_prompt or query).strip()
     history = rag_engine.get_recent_conversations(6 if is_voice else 10)
 
-    # Check clipboard availability dynamically without hardcoded keyword gating
-    clip_text = get_clipboard_text()
-    clipboard_used = bool(clip_text)
+    # Lazy clipboard check: default to False on critical path; get_clipboard reads dynamically when needed
+    clipboard_used = False
 
     t0 = time.perf_counter()
     if attached_context:
@@ -371,6 +370,7 @@ def _process_query(
 
     primary_tool = "multi_command" if len(actions) > 1 else last_tool
     final_reply = "\n\n".join(combined_spoken).strip()
+    last_thought = get_last_thought()
     if final_reply:
         final_reply = _extract_text_from_json(final_reply)
         final_reply, reply_thought = _strip_reasoning(final_reply, fallback_to_thought=True)
@@ -382,21 +382,10 @@ def _process_query(
         if reply_thought and not last_thought:
             last_thought = reply_thought
 
-    # Persist turn to memory BEFORE speaking so rapid follow-up questions always see the latest turn!
-    add_to_memory(
-        clean_user_query,
-        final_reply,
-        tool=primary_tool,
-        params=last_params,
-        clipboard_used=clipboard_used,
-        remember=last_remember,
-        url=last_url,
-    )
-
-    last_thought = get_last_thought()
     if last_thought:
         response_metadata["thought"] = last_thought
 
+    # Broadcast chat_message to React UI FIRST so UI renders immediately without waiting for disk/voice
     broadcaster.broadcast("chat_message", {
         "sender": "assistant",
         "text": final_reply,
@@ -406,9 +395,24 @@ def _process_query(
         "user_query": clean_user_query,
     })
 
-    # Trigger TTS speech
-    if final_reply:
-        speak(final_reply, request_id=request_id)
+    # Run disk/RAG memory persistence and speech playback asynchronously in a background daemon thread
+    def _async_persist_and_speak():
+        try:
+            add_to_memory(
+                clean_user_query,
+                final_reply,
+                tool=primary_tool,
+                params=last_params,
+                clipboard_used=clipboard_used,
+                remember=last_remember,
+                url=last_url,
+            )
+        except Exception as e:
+            logger.debug("[Memory] Async save failed: %s", e)
+        if final_reply:
+            speak(final_reply, request_id=request_id)
+
+    _bg_tasks.submit(_async_persist_and_speak)
 
     return {
         "tool": primary_tool,
@@ -593,7 +597,7 @@ def api_assistant_process():
 
     prompt = str(data.get("prompt") or "").strip()
     attachment = data.get("attachment")
-    is_voice_req = bool(data.get("isVoice", True))
+    is_voice_req = bool(data.get("isVoice", False))
 
     if not prompt:
         if isinstance(attachment, dict) and attachment.get("filename"):
@@ -631,17 +635,10 @@ def api_assistant_process():
     url = result.get("url", "")
     result_metadata = result.get("metadata", {})
 
-    action_cards = [] if attachment else build_action_cards(
-        tool=tool, params=params, result_metadata=result_metadata,
-        url=url, response_text=response_text, prompt=prompt,
-    )
-
+    action_cards = []
     has_multiple_cards = bool(
-        action_cards and (
-            tool == "clarification"
-            or result_metadata.get("requires_clarification")
-            or (len(action_cards) > 1 and any(not c.get("selected") for c in action_cards))
-        )
+        tool == "clarification"
+        or result_metadata.get("requires_clarification")
     )
 
     response_text = _extract_text_from_json(response_text)
@@ -783,6 +780,11 @@ def events():
             pass
         finally:
             broadcaster.unsubscribe(q)
+            while not q.empty():
+                try:
+                    q.get_nowait()
+                except Exception:
+                    break
 
     return Response(stream(), mimetype="text/event-stream")
 
@@ -1138,12 +1140,6 @@ def rag_debug_search_endpoint():
     return jsonify(rag_engine.debug_search(query, target_collections=data.get("collections"), top_k=int(data.get("top_k", 10))))
 
 
-@app.route("/api/rag/reinitialize-reranker", methods=["POST"])
-def rag_reinitialize_reranker():
-    success = rag_engine.reinitialize_reranker()
-    return jsonify({"success": success})
-
-
 @app.route("/api/rag/reindex", methods=["POST"])
 def rag_reindex_endpoint():
     try:
@@ -1306,6 +1302,10 @@ _llm_load_error: Optional[Exception] = None
 def _cleanup_all():
     try:
         shutdown_proactive_intelligence()
+    except Exception:
+        pass
+    try:
+        _bg_tasks.shutdown(wait=False, cancel_futures=True)
     except Exception:
         pass
 
@@ -1471,6 +1471,11 @@ def api_overlay_stream():
                     yield ": keepalive\n\n"
         finally:
             unsubscribe_overlay_events(q)
+            while not q.empty():
+                try:
+                    q.get_nowait()
+                except Exception:
+                    break
 
     return Response(gen(), mimetype="text/event-stream")
 
@@ -1535,6 +1540,12 @@ def api_overlay_action():
 
     # Debounce rapid clicks on the same action (minimum 0.7 seconds)
     now = time.time()
+    if len(_recent_overlay_actions) > 64:
+        cutoff = now - 5.0
+        expired = [k for k, ts in _recent_overlay_actions.items() if ts < cutoff]
+        for k in expired:
+            _recent_overlay_actions.pop(k, None)
+
     action_key = f"{act_type}:{part}" if part else f"{act_type}:{data.get('id', '')}"
     if action_key in _in_progress_actions:
         logger.info("[Overlay Action] Action already in progress: %s", action_key)
