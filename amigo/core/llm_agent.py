@@ -272,7 +272,7 @@ def build_turn_runtime_context(
 ) -> str:
     global _turn_context_cache
     now_ts = time.time()
-    cache_key = (bool(web_context), bool(doc_context), pending_confirmation.strip())
+    cache_key = (hash(web_context), hash(doc_context), pending_confirmation.strip())
     with _turn_context_lock:
         if _turn_context_cache is not None:
             c_time, c_key, c_val = _turn_context_cache
@@ -367,6 +367,9 @@ def _build_ai_messages(
     conversation_history: list | None = None,
     is_voice: bool = True,
 ) -> list[dict]:
+    if doc_context and doc_context.strip().startswith("[Attached "):
+        use_memory = False
+
     messages: list[dict] = [{"role": "system", "content": get_static_system_prompt()}]
     if use_memory:
         history_count = 3 if is_voice else 5

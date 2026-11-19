@@ -188,11 +188,15 @@ def emit_roamies_card(
     tone: str | None = None,
     duration: float = 16.0,
     sources: list[dict[str, str]] | None = None,
+    pinned: bool = False,
+    part: str | None = None,
+    clear_previous: bool = False,
 ) -> None:
     """Emit a floating glass card directly to the Roamies desktop transparent overlay."""
     try:
         from amigo.services.screen_pen import _VALID_TONES, push_overlay_event
-        push_overlay_event({"type": "ink_clear", "all": True})
+        if clear_previous:
+            push_overlay_event({"type": "ink_clear", "all": True})
         card_tone = tone if (tone and tone in _VALID_TONES) else "teal"
 
         card_text = str(text or "").strip()
@@ -205,20 +209,22 @@ def emit_roamies_card(
         clean_lead = _clean_markdown_markers(card_text)
         clean_items = [_clean_markdown_markers(str(it)) for it in card_items if str(it).strip()][:8]
 
+        card_part = str(part or f"card_{int(time.time() * 1000)}")
         mark: dict[str, Any] = {
             "kind": "card",
-            "part": "amigo-info-card",
+            "part": card_part,
             "title": clean_title,
             "heading": clean_heading,
             "text": clean_lead,
             "items": clean_items,
             "tone": card_tone,
+            "pinned": bool(pinned),
         }
         if sources:
             mark["sources"] = sources
         push_overlay_event({
             "type": "ink",
-            "id": "amigo-card",
+            "id": card_part,
             "seg": 0,
             "last": True,
             "fade": float(duration or 16.0),

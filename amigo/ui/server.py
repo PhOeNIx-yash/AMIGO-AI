@@ -270,6 +270,7 @@ def _normalize_llm_markdown(t: str) -> str:
     t = re.sub(r"^([^|\n]+?)\s*(\|\s*[^|\n]+\|)", r"\1\n\n\2", t, flags=re.MULTILINE)
     t = re.sub(r"(\|\s*)(#{1,6}\s+)", r"\1\n\n\2", t)
     t = re.sub(r"(\|)\s*([A-Za-z*#][^|\n]*)$", r"\1\n\n\2", t, flags=re.MULTILINE)
+    t = re.sub(r"^[•*]\s+", "- ", t, flags=re.MULTILINE)
     t = re.sub(r"([^\n])\s+[-*•]\s+([A-Za-z0-9*])", r"\1\n- \2", t)
     t = re.sub(r"([^\n])\s+(\d+\.)\s+([A-Za-z0-9*])", r"\1\n\2 \3", t)
     return t
@@ -1412,6 +1413,7 @@ _OVERLAY_BRIDGE_SCRIPT = (
     "} else if (window.__roamieHost) { window.__roamieHost(msg); }"
     "else if (msg?.e?.type === 'draw' && window.Roamie?.ink) { window.Roamie.ink.play(msg.e); }"
     "else if (msg?.e?.type === 'clear' && window.Roamie?.ink) { window.Roamie.ink.clear(msg.e); }"
+    "else if ((msg?.e?.type === 'pin' || msg?.type === 'pin') && window.Roamie?.ink?.pin) { window.Roamie.ink.pin(msg.part || msg.e?.part, msg.on ?? msg.e?.on ?? true); }"
     "else if (msg?.type === 'ink' && window.Roamie?.ink) { window.Roamie.ink.play(msg); }"
     "else if (msg?.type === 'ink_clear' && window.Roamie?.ink) { window.Roamie.ink.clear({ all: true, stop: true }); }"
     "} catch (e) {}"
@@ -1516,8 +1518,21 @@ def api_overlay_action():
 
     # CRITICAL: Strictly ignore all passive/lifecycle events from Roamies (ink_closed, draw_started, draw_done, ink_cleared, etc.)
     # Handling ink_closed or other passive events as user actions causes an infinite toggle/spawn cascade.
-    if act_type not in ("ink_action", "list_toggle", "open_link", "card_image"):
+    if act_type not in ("ink_action", "list_toggle", "open_link", "card_image", "quiz_done", "ink_pinned"):
         return jsonify({"status": "ignored", "event": act_type})
+
+    # Quiz Completion (Roamies Quiz Done)
+    if act_type == "quiz_done":
+        picks = data.get("picks") or []
+        logger.info("[Overlay Action Quiz Completed] part: %s, picks: %s", part, picks)
+        broadcaster.broadcast("overlay_quiz_done", {"part": part, "picks": picks})
+        return jsonify({"status": "completed", "part": part, "picks": picks})
+
+    # Card Pinning / Unpinning (Roamies Card Pin)
+    if act_type == "ink_pinned":
+        is_pinned = bool(data.get("on", False))
+        logger.info("[Overlay Action Card Pinned] part: %s, pinned: %s", part, is_pinned)
+        return jsonify({"status": "pinned", "part": part, "pinned": is_pinned})
 
     # Save Card As Picture (Roamies 1.4.0)
     if act_type == "card_image":
@@ -1663,7 +1678,17 @@ def api_overlay_action():
             except Exception as exc:
                 return jsonify({"status": "error", "message": str(exc)}), 500
 
-        # 5. Open Link in Browser
+        # 5. Actionable Task / Job Ticket Action Button
+        elif act_type == "ink_action" and ("ticket" in part):
+            try:
+                from amigo.services.screen_pen import emit_overlay_sfx
+                emit_overlay_sfx("pip")
+                broadcaster.broadcast("overlay_ticket_clicked", {"part": part})
+                return jsonify({"status": "success", "ticket": part})
+            except Exception as exc:
+                return jsonify({"status": "error", "message": str(exc)}), 500
+
+        # 6. Open Link in Browser
         elif act_type == "open_link":
             url = data.get("url")
             if url:

@@ -570,3 +570,111 @@ def test_screen_pen_pointing_and_marking_without_diagram_fallback():
         res_missing = screen_pen_annotate(action="circle", label="NonexistentElementXYZ")
         assert res_missing["status"] == "error"
         assert res_missing["code"] == "TARGET_NOT_FOUND"
+
+
+def test_emit_roamies_quiz_ticket_medal_and_edits():
+    from amigo.services.screen_pen import (
+        emit_roamies_quiz,
+        emit_roamies_ticket,
+        emit_roamies_medal,
+        emit_overlay_edit,
+        emit_pin_part,
+        subscribe_overlay_events,
+        unsubscribe_overlay_events,
+    )
+    from amigo.ui.server import _normalize_llm_markdown, app
+
+    q = subscribe_overlay_events()
+    while not q.empty():
+        try:
+            q.get_nowait()
+        except Exception:
+            break
+    def _get_draw(queue):
+        while True:
+            ev = queue.get(timeout=2.0)
+            if ev.get("kind") == "agent" and ev.get("e", {}).get("type") == "draw" and "beats" in ev.get("e", {}):
+                return ev
+
+    try:
+        # Quiz
+        pid_q = emit_roamies_quiz(
+            title="Economics Quiz",
+            questions=[{
+                "text": "Electricity charges are what type of cost?",
+                "options": ["Fixed Cost", "Variable Cost", "Both", "Neither"],
+                "right": 1,
+                "explain": "Electricity charges vary with output.",
+            }],
+            duration=45.0,
+            pinned=True,
+        )
+        assert pid_q.startswith("quiz_")
+        ev_q = _get_draw(q)
+        inner_q = ev_q.get("e", {})
+        marks_q = inner_q.get("beats", [{}])[0].get("marks", [])
+        assert marks_q[0]["kind"] == "quiz"
+        assert marks_q[0]["pinned"] is True
+
+        # Ticket
+        pid_t = emit_roamies_ticket(
+            title="Review Notes",
+            text="Read chapters 4 & 5",
+            n=1,
+            label="Start",
+            action=True,
+        )
+        assert pid_t.startswith("ticket_")
+        ev_t = _get_draw(q)
+        marks_t = ev_t.get("e", {}).get("beats", [{}])[0].get("marks", [])
+        assert marks_t[0]["kind"] == "ticket"
+        assert marks_t[0]["n"] == 1
+
+        # Medal
+        pid_m = emit_roamies_medal(title="Goal Done", text="25 mins focus")
+        assert pid_m.startswith("medal_")
+        ev_m = _get_draw(q)
+        marks_m = ev_m.get("e", {}).get("beats", [{}])[0].get("marks", [])
+        assert marks_m[0]["kind"] == "medal"
+
+        # Edit
+        emit_overlay_edit(action="recolor", part="card_123", tone="lime")
+        while True:
+            ev_ed = q.get(timeout=2.0)
+            if ev_ed.get("kind") == "agent" and "edits" in ev_ed.get("e", {}):
+                break
+        assert ev_ed.get("e", {})["edits"][0]["do"] == "recolor"
+
+        # Pin
+        emit_pin_part(part="card_123", on=True)
+        while True:
+            ev_pin = q.get(timeout=2.0)
+            if ev_pin.get("kind") == "agent" and ev_pin.get("e", {}).get("type") == "pin":
+                break
+        assert ev_pin.get("e", {})["part"] == "card_123"
+    finally:
+        unsubscribe_overlay_events(q)
+
+    # Test Markdown formatting of bullets
+    raw = "• First point. - Second point. - Third point."
+    normalized = _normalize_llm_markdown(raw)
+    lines = normalized.split("\n")
+    assert len(lines) == 3
+    assert lines[0] == "- First point."
+    assert lines[1] == "- Second point."
+    assert lines[2] == "- Third point."
+
+    # Test Overlay Action Endpoints
+    client = app.test_client()
+    res = client.post("/api/overlay/action", json={"type": "quiz_done", "part": "quiz_101", "picks": [1, 0, 2]})
+    assert res.status_code == 200
+    assert res.get_json().get("status") == "completed"
+
+    res2 = client.post("/api/overlay/action", json={"type": "ink_pinned", "part": "quiz_101", "on": True})
+    assert res2.status_code == 200
+    assert res2.get_json().get("pinned") is True
+
+    res3 = client.post("/api/overlay/action", json={"type": "ink_action", "part": "ticket_101"})
+    assert res3.status_code == 200
+    assert res3.get_json().get("status") == "success"
+

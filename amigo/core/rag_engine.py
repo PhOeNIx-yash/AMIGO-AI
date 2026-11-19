@@ -1338,7 +1338,7 @@ def add_conversation(
             update_active_state(slot, data)
 
     user_msg = _RE_CHUNK_WHITESPACE.sub(" ", user_msg).strip()[:1000]
-    assistant_msg = _RE_CHUNK_WHITESPACE.sub(" ", assistant_msg or "").strip()[:1500]
+    assistant_msg = re.sub(r"[ \t]+", " ", assistant_msg or "").strip()[:1500]
     timestamp = datetime.datetime.now().isoformat()
     importance = _calculate_importance(user_msg, assistant_msg, importance)
 

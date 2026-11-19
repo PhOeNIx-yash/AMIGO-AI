@@ -23,6 +23,7 @@ _VALID_3D_SHAPES = {"sphere", "torus", "cone", "cylinder", "box"}
 _DIAGRAM_KINDS = {
     "diagram", "flow", "graph", "bars", "table", "timeline",
     "math", "geometry", "molecule", "map", "quiz", "model", "card", "note", "list", "mindmap",
+    "ticket", "medal",
 }
 _SCREEN_MARK_KINDS = {
     "circle", "ring", "arrow", "box", "rect", "underline",
@@ -122,6 +123,32 @@ def _wrap_roamie_host_event(inner_event: Dict[str, Any]) -> Dict[str, Any]:
                 "isError": bool(inner_event.get("is_error", False)),
             },
         }
+    if etype == "edit":
+        return {
+            "kind": "agent",
+            "e": {
+                "type": "draw",
+                "id": f"edit-{int(time.time() * 1000)}",
+                "seg": 0,
+                "last": True,
+                "edits": [{
+                    "do": str(inner_event.get("do") or "erase"),
+                    "part": str(inner_event.get("part") or ""),
+                    "tone": str(inner_event.get("tone") or "amber"),
+                    "dx": float(inner_event.get("dx") or 0.0),
+                    "dy": float(inner_event.get("dy") or 0.0),
+                }],
+            },
+        }
+    if etype == "pin":
+        return {
+            "kind": "agent",
+            "e": {
+                "type": "pin",
+                "part": str(inner_event.get("part") or ""),
+                "on": bool(inner_event.get("on", True)),
+            },
+        }
     return {"kind": "agent", "e": inner_event}
 
 
@@ -129,7 +156,7 @@ def push_overlay_event(event: Dict[str, Any]) -> int:
     """Broadcast a Roamies overlay event to all connected JS overlays."""
     global _LAST_EVENT
     envelope = _wrap_roamie_host_event(event)
-    is_transient = event.get("type") in ("ink_clear", "sfx", "emote", "tool_start", "tool_end")
+    is_transient = event.get("type") in ("ink_clear", "sfx", "emote", "tool_start", "tool_end", "edit", "pin")
     with _SUBSCRIBERS_LOCK:
         _LAST_EVENT = None if event.get("type") == "ink_clear" else (_LAST_EVENT if is_transient else (time.time(), envelope))
         targets = list(_SUBSCRIBERS)
@@ -172,6 +199,116 @@ def end_tool_anim(tool_id: str, is_error: bool = False) -> None:
         "id": tool_id,
         "is_error": is_error,
     })
+
+
+def emit_roamies_quiz(
+    title: str,
+    questions: list[dict[str, Any]],
+    duration: float = 60.0,
+    pinned: bool = False,
+    part: str | None = None,
+) -> str:
+    """Emit an interactive desktop quiz directly onto the transparent Roamies overlay."""
+    pid = str(part or f"quiz_{int(time.time() * 1000)}")
+    mark = _sanitize_mark({
+        "kind": "quiz",
+        "part": pid,
+        "title": title,
+        "questions": questions,
+        "pinned": bool(pinned),
+    })
+    push_overlay_event({
+        "type": "ink",
+        "id": pid,
+        "seg": 0,
+        "last": True,
+        "fade": max(30.0, float(duration)),
+        "beats": [{"voiced": True, "caption": title, "marks": [mark]}],
+    })
+    emit_overlay_sfx("page")
+    return pid
+
+
+def emit_roamies_ticket(
+    title: str,
+    text: str = "",
+    n: int | None = None,
+    label: str = "Try it",
+    action: bool = True,
+    duration: float = 30.0,
+    pinned: bool = False,
+    part: str | None = None,
+) -> str:
+    """Emit an actionable notched job ticket with tear line and interactive action button."""
+    pid = str(part or f"ticket_{int(time.time() * 1000)}")
+    mark = _sanitize_mark({
+        "kind": "ticket",
+        "part": pid,
+        "title": title,
+        "text": text,
+        "n": n,
+        "label": label,
+        "action": action,
+        "pinned": bool(pinned),
+    })
+    push_overlay_event({
+        "type": "ink",
+        "id": pid,
+        "seg": 0,
+        "last": True,
+        "fade": max(15.0, float(duration)),
+        "beats": [{"voiced": True, "caption": title, "marks": [mark]}],
+    })
+    emit_overlay_sfx("page")
+    return pid
+
+
+def emit_roamies_medal(
+    title: str,
+    text: str = "",
+    duration: float = 20.0,
+    part: str | None = None,
+) -> str:
+    """Emit an animated goal/milestone medal with ribbon, star trace, and hype celebration."""
+    pid = str(part or f"medal_{int(time.time() * 1000)}")
+    mark = _sanitize_mark({
+        "kind": "medal",
+        "part": pid,
+        "title": title,
+        "text": text,
+    })
+    push_overlay_event({
+        "type": "ink",
+        "id": pid,
+        "seg": 0,
+        "last": True,
+        "fade": max(12.0, float(duration)),
+        "beats": [{"voiced": True, "caption": title, "marks": [mark]}],
+    })
+    return pid
+
+
+def emit_overlay_edit(
+    action: str,
+    part: str = "",
+    tone: str = "amber",
+    dx: float = 0.0,
+    dy: float = 0.0,
+) -> int:
+    """Emit an in-place live canvas edit (erase, recolor, move, clear) without redraw flickering."""
+    return push_overlay_event({
+        "type": "edit",
+        "do": str(action).strip().lower(),
+        "part": str(part).strip(),
+        "tone": str(tone).strip(),
+        "dx": float(dx),
+        "dy": float(dy),
+    })
+
+
+def emit_pin_part(part: str, on: bool = True) -> int:
+    """Pin or unpin a card so it stays anchored through window changes and Esc."""
+    return push_overlay_event({"type": "pin", "part": str(part).strip(), "on": bool(on)})
 
 
 def _get_viewport_bounds() -> tuple[float, float]:
@@ -757,6 +894,42 @@ def _sanitize_mark(mk: dict[str, Any]) -> dict[str, Any]:
         if smiles:
             out["mol"] = _parse_smiles_to_mol(smiles)
 
+    if out.get("kind") == "quiz":
+        out["part"] = str(out.get("part") or f"quiz_{int(time.time() * 1000)}")
+        out["title"] = str(out.get("title") or "Quiz")[:60]
+        qs = out.get("questions") or []
+        clean_qs = []
+        for q in qs[:12]:
+            if isinstance(q, dict):
+                opts = [str(o)[:120] for o in (q.get("options") or [])[:6]]
+                clean_qs.append({
+                    "text": str(q.get("text") or "")[:240],
+                    "options": opts,
+                    "right": max(0, min(len(opts) - 1, int(q.get("right", 0)))),
+                    "explain": str(q.get("explain") or "")[:200],
+                })
+        out["questions"] = clean_qs
+
+    if out.get("kind") == "ticket":
+        out["part"] = str(out.get("part") or f"ticket_{int(time.time() * 1000)}")
+        out["title"] = str(out.get("title") or "Task")[:60]
+        out["text"] = str(out.get("text") or "")[:240]
+        if "n" in out and out["n"] is not None:
+            try:
+                out["n"] = int(out["n"])
+            except Exception:
+                out["n"] = None
+        out["label"] = str(out.get("label") or "Try it")[:32]
+        out["action"] = bool(out.get("action", True))
+
+    if out.get("kind") == "medal":
+        out["part"] = str(out.get("part") or f"medal_{int(time.time() * 1000)}")
+        out["title"] = str(out.get("title") or "Goal Achieved")[:60]
+        out["text"] = str(out.get("text") or "")[:240]
+
+    if "pinned" in out:
+        out["pinned"] = bool(out["pinned"])
+
     return out
 
 
@@ -1204,6 +1377,31 @@ def screen_pen_annotate(
         event: Dict[str, Any] = {"type": "ink_clear", "all": True}
         subscribers = push_overlay_event(event)
         return {"status": "success", "drawn": "clear", "engine": "roamies-ink-js", "subscribers": subscribers, "event": event}
+
+    if act in {"erase", "recolor", "move"}:
+        target_part = str((data or {}).get("part") or label or "p1")
+        dx = float((data or {}).get("dx") or 0.0)
+        dy = float((data or {}).get("dy") or 0.0)
+        subscribers = emit_overlay_edit(action=act, part=target_part, tone=color, dx=dx, dy=dy)
+        return {
+            "status": "success",
+            "action": act,
+            "part": target_part,
+            "engine": "roamies-ink-js",
+            "subscribers": subscribers,
+        }
+
+    if act == "pin":
+        target_part = str((data or {}).get("part") or label or "p1")
+        is_on = bool((data or {}).get("on", True))
+        subscribers = emit_pin_part(target_part, on=is_on)
+        return {
+            "status": "success",
+            "action": "pin",
+            "part": target_part,
+            "on": is_on,
+            "subscribers": subscribers,
+        }
 
     # Route UI label requests to screen annotations, and topic/data requests to visual diagrams
     if label and not (data or beats):

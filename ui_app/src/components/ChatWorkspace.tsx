@@ -95,8 +95,8 @@ export function normalizeMarkdownText(raw: string): string {
   text = text.replace(/(\|)\s*([A-Za-z*#][^|\n]*)$/gm, "$1\n\n$2");
 
   // 5. Expand collapsed inline bullet points:
-  // e.g. "edge. - Memory Bandwidth: ..." -> "edge.\n- Memory Bandwidth: ..."
-  text = text.replace(/([^\n])\s+-\s+([A-Za-z0-9*])/g, "$1\n- $2");
+  text = text.replace(/^[•*]\s+/gm, "- ");
+  text = text.replace(/([^\n])\s+[-*•]\s+([A-Za-z0-9*])/g, "$1\n- $2");
 
   // 6. Expand collapsed numbered list items:
   // e.g. "done 1. First step" -> "done\n1. First step"
@@ -619,8 +619,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     if (!rawPrompt && !attachment) return;
 
     let finalPrompt = rawPrompt;
-    if (effort?.id === "deep") {
-      finalPrompt = `[Deep Analysis] ${rawPrompt}`;
+    if (effort?.id === "think" || effort?.id === "deep") {
+      finalPrompt = `[Deep Reasoning] ${rawPrompt}`;
     }
 
     const currentTaskPrompt = finalPrompt || (attachment ? `Analyze ${attachment.filename}` : "");
@@ -675,7 +675,17 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     try {
       const res = await uploadFileToBackend(file);
       if (res.success) {
-        setAttachment((prev) => (prev ? { ...prev, uploadStatus: "success", filepath: res.filepath } : null));
+        setAttachment((prev) =>
+          prev
+            ? {
+                ...prev,
+                uploadStatus: "success",
+                filepath: res.filepath,
+                extractedPreview: res.extractedPreview,
+                fileType: res.fileType || prev.fileType,
+              }
+            : null
+        );
       } else {
         setAttachment((prev) => (prev ? { ...prev, uploadStatus: "error", error: res.error } : null));
       }
@@ -985,7 +995,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
                         return (
                           <StreamingResponse
-                            text={replyText}
+                            text={normalizeMarkdownText(replyText)}
                             status={isLatest && isLoading ? "streaming" : "done"}
                             ink={theme.accent || "#00F0FF"}
                             onRetry={() => {
@@ -1083,7 +1093,17 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                         uploadFileToBackend(file)
                           .then((res) => {
                             if (res.success) {
-                              setAttachment((prev) => (prev ? { ...prev, uploadStatus: "success", filepath: res.filepath } : null));
+                              setAttachment((prev) =>
+                                prev
+                                  ? {
+                                      ...prev,
+                                      uploadStatus: "success",
+                                      filepath: res.filepath,
+                                      extractedPreview: res.extractedPreview,
+                                      fileType: res.fileType || prev.fileType,
+                                    }
+                                  : null
+                              );
                             } else {
                               setAttachment((prev) => (prev ? { ...prev, uploadStatus: "error", error: res.error } : null));
                             }

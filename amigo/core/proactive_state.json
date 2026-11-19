@@ -1,30 +1,14 @@
 {
-  "last_weather_check": 1794922458.706578,
-  "last_calendar_check": 1794923505.7420142,
-  "last_system_check": 1794923686.0114658,
+  "last_weather_check": 1795102401.751271,
+  "last_calendar_check": 1795102401.751271,
+  "last_system_check": 1795103275.1740234,
   "last_notification_time": 1794918013.556244,
   "last_priority_alert_time": 0,
   "suggestions_this_hour": 0,
-  "last_hour_reset": 1794922458.706578,
-  "active_window_start": 1794923625.966992,
-  "current_window_title": "amigo-main - Antigravity IDE - server.py",
-  "recent_suggestions": [
-    {
-      "id": "wellness_break",
-      "text": "Yash, you've been working really hard on this general topic.",
-      "time": 1794839239.8060737
-    },
-    {
-      "id": "wellness_break",
-      "text": "Hey Yash, you've been crushing it, remember to stretch soon.",
-      "time": 1794847496.2670655
-    },
-    {
-      "id": "evening_wrapup",
-      "text": "You've been streaming for a while, take a quick break?",
-      "time": 1794918012.7306867
-    }
-  ],
+  "last_hour_reset": 1795100598.2986844,
+  "active_window_start": 1795103275.1740234,
+  "current_window_title": "(73) GTA 6 | #3 | Let's Have Some Fun - YouTube and 1 more page - Personal - Microsoft\u200b Edge",
+  "recent_suggestions": [],
   "learned_patterns": {},
   "user_routines": {},
   "dismissed_suggestions": [],

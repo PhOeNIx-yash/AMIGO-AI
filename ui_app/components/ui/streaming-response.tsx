@@ -52,7 +52,7 @@ type Block =
 const FENCE = /^\s*```(.*)$/
 const HEADING = /^(#{1,3})\s+(.*)$/
 const QUOTE = /^>\s?(.*)$/
-const BULLET = /^\s*[-*+]\s+(.*)$/
+const BULLET = /^\s*[-*+•]\s+(.*)$/
 const ORDERED = /^\s*(\d+)[.)]\s+(.*)$/
 const SAFE_HREF = /^(https?:|mailto:|\/|#)/i
 

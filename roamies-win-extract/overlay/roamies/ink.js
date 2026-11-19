@@ -626,7 +626,7 @@
     const S0 = scr(), fit = Math.max(1, Math.min((S0[2] - S0[0] - 32) / (w + 8), (S0[3] - S0[1] - 100) / (h + 14)));
     const k = Math.min(m.card_size === 'small' ? 0.8 : m.card_size === 'large' ? 1.5 : 1, fit);
     const [x, y] = roomFor(Math.round(w * k), Math.round(h * k), m.part), bar = o.bar === false ? 0 : 26;
-    const c = add({ z: 2, part: m.part, card: true, kind: m.kind, cw: 0, ch: 0, p: 0, done: 0, w, h, ox: x, oy: y, k, sy: 0, scrollMax: Math.max(0, full - h), color: tone(m.tone), live: o.live, box: () => [x - 4, y - 4, w + 8, h + 14],
+    const c = add({ z: 2, part: m.part, card: true, kind: m.kind, cw: 0, ch: 0, p: 0, done: 0, w, h, ox: x, oy: y, k, sy: 0, scrollMax: Math.max(0, full - h), color: tone(m.tone), live: o.live, pinned: !!m.pinned, box: () => [x - 4, y - 4, w + 8, h + 14],
       draw(b, l, t) {
         if (this.cw < 4) return;
         chrome(b, x, y, this.cw, this.ch, { edge: o.edge ? colorOf(this, this.color) : ACC });
@@ -2269,6 +2269,8 @@
     send: null, invoke: null,
     // A segment of a drawing from the sidecar: { id, seg, beats, edits, last, win, busy }.
     play(e) { G.q.push(e); pump(); },
+    pin: pinPart,
+    edit: (ed) => edit(ed),
     // { screen: true } clears the screen marks (cards stay); otherwise everything but the reminders card, which
     // { all: true } (Esc) takes too. stop: also ends what's playing.
     clear(e = {}) {

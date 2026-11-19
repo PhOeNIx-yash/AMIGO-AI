@@ -316,6 +316,11 @@ def handle_set_timer(params: dict, query: str = "") -> str:
         alert = f"Your {dur_str}{f' {clean_label}' if clean_label else ''} timer is up!"
         print(f"\n[TIMER ALERT] {alert}", flush=True)
         show_desktop_notification("Amigo Timer", alert)
+        try:
+            from amigo.services.screen_pen import emit_roamies_medal
+            emit_roamies_medal(title="Timer Complete", text=f"{dur_str}{f' {clean_label}' if clean_label else ''} completed!")
+        except Exception:
+            pass
         if _broadcast_callback:
             _broadcast_callback("timer_triggered", {"id": timer_id, "duration": dur, "label": clean_label})
         if _speak_callback:
