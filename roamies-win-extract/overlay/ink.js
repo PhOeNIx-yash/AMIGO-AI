@@ -400,7 +400,18 @@
       if (out >= 1) this.alive = false;
     } });
   }
-  const leaveAfter = async (m, ms) => { await sleep(ms); m.leave = now(); touch(0.5); };
+  // Roamies v0.1.47: Cards and reply bubbles stay for as long as needed and stay while pointer rests on it (up to 60s)
+  const leaveAfter = async (m, ms) => {
+    const t0 = now(), maxWait = 60.0;
+    while (now() - t0 < ms / 1000) {
+      if ((m.hover || m.hoverId || m.pinned) && now() - t0 < maxWait) {
+        await sleep(150);
+        continue;
+      }
+      await sleep(100);
+    }
+    m.leave = now(); touch(0.5);
+  };
 
   // ---------------------------------------------------------------- screen marks
   const strokeMark = (part, pts, color = ACC, extra = {}) => add({ z: 3, part, screen: true, pts, color, ...extra, draw(b, l, t) { pen(b, l, this, this.pts, this.p, this.color, { w: this.w }); this.more?.(b, l, t); } });
@@ -597,7 +608,8 @@
   // Where a new card goes. Only a few cards stay up at once and none sits on another: the oldest close to make way
   // (the sidecar hears each one). Regression: eight cards at once left no room, and the last was drawn over the first.
   // A drawing that goes by itself (the tour, the setup showcase) keeps all of its cards.
-  const MAX_CARDS = 4;
+  // Roamies v0.1.46: Up to 8 cards now stay on screen at once (was 4)
+  const MAX_CARDS = 8;
   function roomFor(w, h, part) {
     const old = () => [...new Set(marks.filter((q) => q.alive && q.card && !q.local && !q.pinned && !q.leaving && q.part !== part && !drawnBy.has(q.part)).sort((a, b) => a.born - b.born).map((q) => q.part))];
     const shut = (id) => { R.ink.send?.({ type: 'ink_closed', part: id }); fadeOut(partMarks(id), 0.25); };

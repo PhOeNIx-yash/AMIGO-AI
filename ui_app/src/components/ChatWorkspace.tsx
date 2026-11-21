@@ -79,20 +79,26 @@ export function normalizeMarkdownText(raw: string): string {
   if (!raw) return "";
   let text = raw.replace(/\r\n/g, "\n");
 
-  // 1. Expand collapsed table rows: '| |' or '||' -> '|\n|'
-  text = text.replace(/\|\s*\|+/g, "|\n|");
+  // Only treat '|' blocks as a Markdown table when there is an actual multi-line table structure
+  // (i.e. a header row followed by a separator row like '| --- | --- |').
+  const hasTableStructure = /(?:^|\n)\s*\|?\s*[:\-]{2,}\s*\|\s*[:\-]{2,}[\s\-:|]*(?:\n|$)/.test(text);
 
-  // 2. Separate leading intro title from table header on the same line:
-  // e.g. "GPU Comparison: RTX 4090 | Feature | RTX 4080 |" -> "GPU Comparison: RTX 4090\n\n| Feature | RTX 4080 |"
-  text = text.replace(/^([^|\n]+?)\s*(\|\s*[^|\n]+\|)/gm, "$1\n\n$2");
+  if (hasTableStructure) {
+    // 1. Expand collapsed table rows: '| |' or '||' -> '|\n|'
+    text = text.replace(/\|\s*\|+/g, "|\n|");
 
-  // 3. Separate markdown header attached immediately after a table row:
-  // e.g. "| 270 W | ## Key Takeaways" -> "| 270 W |\n\n## Key Takeaways"
-  text = text.replace(/(\|\s*)(#{1,6}\s+)/g, "$1\n\n$2");
+    // 2. Separate leading intro title from table header on the same line:
+    // e.g. "GPU Comparison: RTX 4090 | Feature | RTX 4080 |" -> "GPU Comparison: RTX 4090\n\n| Feature | RTX 4080 |"
+    text = text.replace(/^([^|\n]+?)\s*(\|\s*[^|\n]+\|)/gm, "$1\n\n$2");
 
-  // 4. Separate trailing non-pipe commentary at end of table row:
-  // e.g. "| 270 W | Summary: The..." -> "| 270 W |\n\nSummary: The..."
-  text = text.replace(/(\|)\s*([A-Za-z*#][^|\n]*)$/gm, "$1\n\n$2");
+    // 3. Separate markdown header attached immediately after a table row:
+    // e.g. "| 270 W | ## Key Takeaways" -> "| 270 W |\n\n## Key Takeaways"
+    text = text.replace(/(\|\s*)(#{1,6}\s+)/g, "$1\n\n$2");
+
+    // 4. Separate trailing non-pipe commentary at end of table row:
+    // e.g. "| 270 W | Summary: The..." -> "| 270 W |\n\nSummary: The..."
+    text = text.replace(/(\|)\s*([A-Za-z*#][^|\n]*)$/gm, "$1\n\n$2");
+  }
 
   // 5. Expand collapsed inline bullet points:
   text = text.replace(/^[•*–—]\s*/gm, "- ");
@@ -114,7 +120,8 @@ function extractTablesFromMarkdown(content: string): {
   >;
 } {
   const normalized = normalizeMarkdownText(content || "");
-  if (!normalized || !normalized.includes("|")) {
+  const hasTableStructure = /(?:^|\n)\s*\|?\s*[:\-]{2,}\s*\|\s*[:\-]{2,}[\s\-:|]*(?:\n|$)/.test(normalized);
+  if (!normalized || !hasTableStructure) {
     return { segments: [{ type: "text", text: normalized || "" }] };
   }
 

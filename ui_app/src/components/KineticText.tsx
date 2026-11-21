@@ -1,5 +1,7 @@
 import React, { useMemo } from "react";
 import { motion, AnimatePresence, type Variants } from "motion/react";
+import { Check } from "lucide-react";
+import { sfx } from "../utils/audio";
 import { ColorTheme } from "../types";
 import { COLOR_THEMES } from "../data/presets";
 
@@ -148,12 +150,14 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
   isHero,
 }) => {
   const containerRef = React.useRef<HTMLDivElement>(null);
+  const [checkedMap, setCheckedMap] = React.useState<Record<number, boolean>>({});
 
-  // Hard reset scroll position whenever text or turnId changes
+  // Hard reset scroll position and checklist states whenever text or turnId changes
   React.useEffect(() => {
     if (containerRef.current) {
       containerRef.current.scrollTop = 0;
     }
+    setCheckedMap({});
   }, [text, turnId]);
 
   const activeStyle = normalizeAnimationStyle(animationStyle);
@@ -163,16 +167,6 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
     return text.trim().split(/\s+/).filter(Boolean);
   }, [text]);
   const isLongText = words.length > 12;
-
-  const isShortDirect = isHero !== undefined ? isHero : (() => {
-    if (!text) return true;
-    const raw = text.trim();
-    if (raw.length > 240) return false;
-    if (raw.includes("|") && raw.includes("\n")) return false;
-    if (/^[•\-*]\s+|\b^\d+\.\s+/m.test(raw)) return false;
-    const paragraphs = raw.split(/\n+/).map((l) => l.trim()).filter(Boolean);
-    return paragraphs.length <= 1;
-  })();
 
   const highlightedStyle = useMemo(
     () => ({
@@ -204,8 +198,9 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
 
     let processed = text;
 
-    // 1. Check for markdown data tables
-    if (processed.includes("|")) {
+    // 1. Check for markdown data tables (only when an actual table structure with separator exists)
+    const hasTableStructure = /(?:^|\n)\s*\|?\s*[:\-]{2,}\s*\|\s*[:\-]{2,}[\s\-:|]*(?:\n|$)/.test(processed);
+    if (hasTableStructure) {
       const inlineRows = processed
         .replace(/\|\s*\|+/g, "|\n|")
         .replace(/(?:^|\n)\s*\|?[\s\-:|]{3,}\|[\s\-:|]*(?=\n|$)/g, "");
@@ -260,7 +255,7 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
       .filter(Boolean);
 
     const bulletCount = lines.filter((l) => /^[•\-*]\s+|\b^\d+\.\s+/.test(l)).length;
-    if (bulletCount >= 1 || lines.length >= 2) {
+    if (bulletCount >= 1) {
       return { tableData: null, listItems: lines };
     }
 
@@ -268,6 +263,16 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
   }, [text]);
 
   const uniqueTurnKey = `${turnId || "turn"}-${text.slice(0, 32)}-${activeStyle}`;
+
+  const isShortDirect = isHero !== undefined ? isHero : (() => {
+    if (!text) return true;
+    const raw = text.trim();
+    if (raw.length > 240) return false;
+    const hasTable = /(?:^|\n)\s*\|?\s*[:\-]{2,}\s*\|\s*[:\-]{2,}[\s\-:|]*(?:\n|$)/.test(raw);
+    if (hasTable) return false;
+    if (/^[•\-*]\s+|\b^\d+\.\s+/m.test(raw)) return false;
+    return true;
+  })();
 
   if (tableData) {
     return (
@@ -373,6 +378,52 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
                 );
               }
 
+              // Roamies v0.1.43 Interactive Checklists: Clickable ring checkboxes for task items
+              const taskMatch =
+                cleanItem.match(/^(?:(?:\d+\.)|[•\-*])\s*\[([ xX])\]\s*([\s\S]*)$/) ||
+                cleanItem.match(/^\[([ xX])\]\s*([\s\S]*)$/);
+
+              if (taskMatch) {
+                const initialChecked = taskMatch[1].toLowerCase() === "x";
+                const isChecked = checkedMap[idx] !== undefined ? checkedMap[idx] : initialChecked;
+                const taskContent = taskMatch[2].trim();
+
+                const handleToggle = () => {
+                  try {
+                    sfx.playClick();
+                  } catch {}
+                  setCheckedMap((prev) => ({ ...prev, [idx]: !isChecked }));
+                };
+
+                return (
+                  <motion.div
+                    key={idx}
+                    variants={staggeredItemVariants}
+                    onClick={handleToggle}
+                    className="flex items-start gap-3 my-2.5 text-[16px] sm:text-[16.5px] leading-[1.65] font-normal text-left group cursor-pointer select-none"
+                  >
+                    <button
+                      type="button"
+                      className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 mt-[4px] transition-all duration-200 ${
+                        isChecked
+                          ? "bg-[#2dd4bf] border border-[#2dd4bf] shadow-[0_0_10px_rgba(45,212,191,0.6)]"
+                          : "border border-[#2dd4bf]/70 group-hover:border-[#2dd4bf] group-hover:bg-[#2dd4bf]/15"
+                      }`}
+                      aria-label={isChecked ? "Mark incomplete" : "Mark complete"}
+                    >
+                      {isChecked && <Check className="w-2.5 h-2.5 text-[#0a0f1d] stroke-[3]" />}
+                    </button>
+                    <div
+                      className={`flex-1 min-w-0 transition-all duration-200 ${
+                        isChecked ? "line-through text-[#94a3b8] opacity-70" : "text-[#e2e8f0]"
+                      }`}
+                    >
+                      {renderInlineFormatting(taskContent)}
+                    </div>
+                  </motion.div>
+                );
+              }
+
               if (isBullet) {
                 let content = cleanItem.replace(/^(\d+\.|[•\-*])\s*/, "");
                 
@@ -431,15 +482,15 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
               }
 
               const cleanParagraph = cleanItem.replace(/\*\*([^*]+)\*\*/g, "$1");
-              const isLead = idx === 0 || (firstBulletIdx !== -1 && idx < firstBulletIdx);
-              const isClosing = (lastBulletIdx !== -1 && idx > lastBulletIdx) || idx === listItems.length - 1;
+              const isLead = firstBulletIdx !== -1 && idx < firstBulletIdx;
+              const isClosing = lastBulletIdx !== -1 && idx > lastBulletIdx && listItems.length >= 4;
 
               if (isLead) {
                 return (
                   <motion.h3
                     key={idx}
                     variants={staggeredItemVariants}
-                    className="text-[18px] font-semibold text-[#ffffff] mb-3 text-left tracking-tight leading-snug whitespace-pre-wrap break-words"
+                    className="text-[18px] font-semibold text-[#ffffff] mb-3 text-left tracking-tight leading-snug whitespace-pre-wrap break-words opacity-100"
                   >
                     {cleanParagraph}
                   </motion.h3>
@@ -462,7 +513,7 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
                 <motion.p
                   key={idx}
                   variants={staggeredItemVariants}
-                  className="text-[16px] sm:text-[16.5px] font-normal leading-[1.65] text-[#e2e8f0] my-2 text-left whitespace-pre-wrap break-words"
+                  className="text-[16px] sm:text-[16.5px] font-normal leading-[1.65] text-[#f1f5f9] my-2 text-left whitespace-pre-wrap break-words opacity-100"
                 >
                   {renderInlineFormatting(cleanParagraph)}
                 </motion.p>
@@ -489,7 +540,7 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
             textShadow: "0 2px 16px rgba(0, 0, 0, 0.95)",
           }}
         >
-          <p className="text-[20px] sm:text-[22px] leading-[1.5] font-normal text-[#f1f5f9] text-center whitespace-pre-wrap break-words">
+          <p className="text-[20px] sm:text-[22px] leading-[1.5] font-normal text-[#f1f5f9] text-center whitespace-pre-wrap break-words opacity-100">
             {renderInlineFormatting(text, true)}
           </p>
         </motion.div>
@@ -519,7 +570,7 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
               return (
                 <p
                   key={pIdx}
-                  className="text-[16px] sm:text-[16.5px] font-normal leading-[1.65] text-[#e2e8f0] text-left whitespace-pre-wrap break-words"
+                  className="text-[16px] sm:text-[16.5px] font-normal leading-[1.65] text-[#f1f5f9] text-left whitespace-pre-wrap break-words opacity-100"
                 >
                   {renderInlineFormatting(cleanPara)}
                 </p>

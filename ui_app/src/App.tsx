@@ -35,7 +35,7 @@ import {
   clearAssistantHistory,
   stripReasoningTags,
 } from "./services/assistantApi";
-import { Sparkles, ChevronUp, Shuffle, Copy, Check, Volume2, X } from "lucide-react";
+import { Sparkles, ChevronUp, Shuffle, Copy, Check, Volume2, X, ThumbsUp, ThumbsDown } from "lucide-react";
 import { ErrorState } from "@/components/ui/error-state";
 import { SparklesCore } from "./components/ui/sparkles-core";
 
@@ -588,6 +588,44 @@ export default function App() {
     }
   };
 
+  // Reinforcement feedback states (Roamies v0.1.46 "Good or Wrong" learning loop)
+  const [feedbackState, setFeedbackState] = useState<"idle" | "good" | "wrong_input" | "wrong_submitted">("idle");
+  const [correctionInput, setCorrectionInput] = useState<string>("");
+  const [isHoveringResponse, setIsHoveringResponse] = useState<boolean>(false);
+
+  // Reset feedback state on new turn
+  useEffect(() => {
+    setFeedbackState("idle");
+    setCorrectionInput("");
+  }, [turnId]);
+
+  const handleFeedback = async (type: "good" | "wrong", correctionText?: string) => {
+    try {
+      if (type === "good") {
+        sfx.playSuccess();
+        setFeedbackState("good");
+        setTimeout(() => setFeedbackState("idle"), 2500);
+      } else {
+        sfx.playSuccess();
+        setFeedbackState("wrong_submitted");
+        setTimeout(() => setFeedbackState("idle"), 3000);
+      }
+
+      await fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type,
+          query: activePrompt || "User prompt",
+          response: displayText,
+          correction: correctionText || "",
+        }),
+      });
+    } catch (e) {
+      console.warn("Feedback post error:", e);
+    }
+  };
+
   // Error state for assistant errors across Amigo
   const [errorState, setErrorState] = useState<{
     title: string;
@@ -613,7 +651,7 @@ export default function App() {
     if (el) {
       el.scrollTop = 0;
       const checkOverflow = () => {
-        setHasResponseOverflow(el.scrollHeight > el.clientHeight + 4);
+        setHasResponseOverflow(el.scrollHeight > el.clientHeight + 16);
       };
       checkOverflow();
       const ro = new ResizeObserver(checkOverflow);
@@ -1360,12 +1398,12 @@ export default function App() {
                           {/* Central Display Area with Orb above & Spoken / Greeting text cleanly below */}
                           <div
                             id="central-display-area"
-                            className="relative z-20 flex-1 min-h-0 w-full max-w-4xl flex flex-col items-center justify-start px-4 py-4 sm:py-6 overflow-y-auto smooth-scroll-container bg-transparent transition-opacity duration-200"
+                            className="relative z-20 flex-1 min-h-0 w-full max-w-4xl flex flex-col items-center justify-start px-4 pt-8 sm:pt-12 md:pt-14 pb-8 overflow-y-auto overflow-x-hidden smooth-scroll-container bg-transparent transition-opacity duration-200"
                           >
-                            <div className="w-full flex flex-col items-center justify-start transition-opacity duration-200 max-w-2xl">
+                            <div className="w-full flex flex-col items-center justify-start transition-opacity duration-200 max-w-2xl overflow-visible">
                               {/* 3D Orb Avatar (Positioned above text, never covered) */}
                               <div
-                                className={`relative flex items-center justify-center transition-all duration-500 ease-out select-none ${isCompact ? "h-0 opacity-0 overflow-hidden mb-0" : "h-[15rem] sm:h-[16rem] shrink-0 mb-3 sm:mb-4"
+                                className={`relative flex items-center justify-center transition-all duration-500 ease-out select-none overflow-visible ${isCompact ? "h-0 opacity-0 overflow-hidden mb-0" : "h-[15rem] sm:h-[16rem] shrink-0 mb-4 sm:mb-6"
                                   } ${state === "idle" ? "cursor-pointer active:scale-95 transition-transform" : ""}`}
                                 onClick={state === "idle" ? handleShuffleGreeting : undefined}
                                 title={state === "idle" ? "Click to change greeting phrase" : undefined}
@@ -1431,19 +1469,23 @@ export default function App() {
                                         if (!displayText) return true;
                                         const raw = displayText.trim();
                                         if (raw.length > 240) return false;
-                                        if (raw.includes("|") && raw.includes("\n")) return false;
+                                        const hasTable = /(?:^|\n)\s*\|?\s*[:\-]{2,}\s*\|\s*[:\-]{2,}[\s\-:|]*(?:\n|$)/.test(raw);
+                                        if (hasTable) return false;
                                         if (/^[•\-*]\s+|\b^\d+\.\s+/m.test(raw)) return false;
-                                        const paragraphs = raw.split(/\n+/).map((l) => l.trim()).filter(Boolean);
-                                        return paragraphs.length <= 1;
+                                        return true;
                                       })();
 
                                       return (
-                                        <div className={`w-full ${isShortDirect ? "max-w-[700px] text-center" : "max-w-[680px] text-left"} mx-auto`}>
+                                        <div
+                                          onMouseEnter={() => setIsHoveringResponse(true)}
+                                          onMouseLeave={() => setIsHoveringResponse(false)}
+                                          className={`w-full ${isShortDirect ? "max-w-[700px] text-center" : "max-w-[680px] text-left"} mx-auto`}
+                                        >
                                           <div
                                             ref={responseContainerRef}
                                             className={`relative flex flex-col ${isShortDirect ? "items-center justify-start text-center" : "items-start justify-start text-left"} w-full select-text max-h-[46vh] overflow-y-auto no-scrollbar`}
                                             style={
-                                              hasResponseOverflow
+                                              !isShortDirect && hasResponseOverflow
                                                 ? {
                                                     maskImage:
                                                       "linear-gradient(to bottom, black calc(100% - 24px), transparent 100%)",
@@ -1464,32 +1506,117 @@ export default function App() {
                                             />
                                           </div>
 
-                                          {/* Clean Action Icons: 32x32 circular hit targets, 15px icons, centered for short, left-aligned for long */}
-                                          <div className={`flex items-center ${isShortDirect ? "justify-center" : "justify-start"} gap-3 mt-4 opacity-50 hover:opacity-100 transition-opacity select-none`}>
-                                            <button
-                                              type="button"
-                                              onClick={() => handleCopyResponse(displayText)}
-                                              className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:text-[#f8fafc] hover:bg-white/[0.08] transition-colors"
-                                              title={copiedResponse ? "Copied" : "Copy text"}
-                                            >
-                                              {copiedResponse ? <Check className="w-[15px] h-[15px] text-emerald-400" /> : <Copy className="w-[15px] h-[15px]" />}
-                                            </button>
-                                            <button
-                                              type="button"
-                                              onClick={() => speakText(displayText)}
-                                              className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:text-[#f8fafc] hover:bg-white/[0.08] transition-colors"
-                                              title="Listen"
-                                            >
-                                              <Volume2 className="w-[15px] h-[15px]" />
-                                            </button>
-                                            <button
-                                              type="button"
-                                              onClick={handleDismissResponse}
-                                              className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:text-[#f8fafc] hover:bg-white/[0.08] transition-colors"
-                                              title="Dismiss"
-                                            >
-                                              <X className="w-[15px] h-[15px]" />
-                                            </button>
+                                          {/* Clean Action Icons & Roamies Feedback Loop: Copy, Listen, Good/Wrong reinforcement, Dismiss */}
+                                          <div className={`flex flex-col ${isShortDirect ? "items-center" : "items-start"} mt-4 select-none`}>
+                                            <div className="flex items-center gap-2 opacity-50 hover:opacity-100 transition-opacity">
+                                              <button
+                                                type="button"
+                                                onClick={() => handleCopyResponse(displayText)}
+                                                className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:text-[#f8fafc] hover:bg-white/[0.08] transition-colors"
+                                                title={copiedResponse ? "Copied" : "Copy text"}
+                                              >
+                                                {copiedResponse ? <Check className="w-[15px] h-[15px] text-emerald-400" /> : <Copy className="w-[15px] h-[15px]" />}
+                                              </button>
+                                              <button
+                                                type="button"
+                                                onClick={() => speakText(displayText)}
+                                                className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:text-[#f8fafc] hover:bg-white/[0.08] transition-colors"
+                                                title="Listen"
+                                              >
+                                                <Volume2 className="w-[15px] h-[15px]" />
+                                              </button>
+
+                                              <div className="w-[1px] h-3.5 bg-white/[0.12] mx-1" />
+
+                                              {/* Roamies v0.1.46 "Good" Reinforcement */}
+                                              <button
+                                                type="button"
+                                                onClick={() => handleFeedback("good")}
+                                                className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${
+                                                  feedbackState === "good"
+                                                    ? "bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-500/40"
+                                                    : "text-slate-400 hover:text-emerald-300 hover:bg-emerald-500/10"
+                                                }`}
+                                                title="Good - accurate & helpful"
+                                              >
+                                                {feedbackState === "good" ? (
+                                                  <Check className="w-[14px] h-[14px] text-emerald-400" />
+                                                ) : (
+                                                  <ThumbsUp className="w-[14px] h-[14px]" />
+                                                )}
+                                              </button>
+
+                                              {/* Roamies v0.1.46 "Wrong" Reinforcement */}
+                                              <button
+                                                type="button"
+                                                onClick={() => setFeedbackState(feedbackState === "wrong_input" ? "idle" : "wrong_input")}
+                                                className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${
+                                                  feedbackState === "wrong_input" || feedbackState === "wrong_submitted"
+                                                    ? "bg-rose-500/20 text-rose-300 ring-1 ring-rose-500/40"
+                                                    : "text-slate-400 hover:text-rose-300 hover:bg-rose-500/10"
+                                                }`}
+                                                title="Wrong - teach Amigo"
+                                              >
+                                                <ThumbsDown className="w-[14px] h-[14px]" />
+                                              </button>
+
+                                              <div className="w-[1px] h-3.5 bg-white/[0.12] mx-1" />
+
+                                              <button
+                                                type="button"
+                                                onClick={handleDismissResponse}
+                                                className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:text-[#f8fafc] hover:bg-white/[0.08] transition-colors"
+                                                title="Dismiss"
+                                              >
+                                                <X className="w-[15px] h-[15px]" />
+                                              </button>
+                                            </div>
+
+                                            {/* Roamies Inline Correction Bar */}
+                                            {feedbackState === "wrong_input" && (
+                                              <div className="w-full max-w-[460px] mt-2.5 px-3 py-1.5 rounded-full bg-black/60 border border-white/[0.12] shadow-2xl backdrop-blur-md flex items-center gap-2 animate-in fade-in zoom-in-95 duration-200">
+                                                <input
+                                                  type="text"
+                                                  value={correctionInput}
+                                                  onChange={(e) => setCorrectionInput(e.target.value)}
+                                                  onKeyDown={(e) => {
+                                                    if (e.key === "Enter" && correctionInput.trim()) {
+                                                      handleFeedback("wrong", correctionInput.trim());
+                                                    } else if (e.key === "Escape") {
+                                                      setFeedbackState("idle");
+                                                    }
+                                                  }}
+                                                  autoFocus
+                                                  placeholder="What should Amigo have done? (press Enter)"
+                                                  className="flex-1 bg-transparent text-[13px] text-[#f1f5f9] placeholder:text-slate-500 outline-none px-1"
+                                                />
+                                                <button
+                                                  type="button"
+                                                  onClick={() => {
+                                                    if (correctionInput.trim()) {
+                                                      handleFeedback("wrong", correctionInput.trim());
+                                                    }
+                                                  }}
+                                                  disabled={!correctionInput.trim()}
+                                                  className="px-2.5 py-0.5 rounded-full text-[11.5px] font-medium bg-[#2dd4bf]/20 text-[#2dd4bf] hover:bg-[#2dd4bf]/30 disabled:opacity-40 transition-colors"
+                                                >
+                                                  Teach
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  onClick={() => setFeedbackState("idle")}
+                                                  className="p-1 rounded-full text-slate-400 hover:text-slate-200 hover:bg-white/[0.08]"
+                                                >
+                                                  <X className="w-3.5 h-3.5" />
+                                                </button>
+                                              </div>
+                                            )}
+
+                                            {feedbackState === "wrong_submitted" && (
+                                              <div className="text-[12px] text-emerald-400 mt-2 font-mono flex items-center gap-1.5 animate-in fade-in duration-200">
+                                                <Check className="w-3.5 h-3.5" /> Correction saved to memory
+                                              </div>
+                                            )}
                                           </div>
                                         </div>
                                       );

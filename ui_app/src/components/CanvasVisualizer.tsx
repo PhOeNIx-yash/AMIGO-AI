@@ -365,13 +365,13 @@ export const CanvasVisualizer: React.FC<CanvasVisualizerProps> = React.memo(({
 
   return (
     <div
-      className={`amigo-orb-stage relative flex items-center justify-center z-0 pointer-events-none transition-all duration-500 ${
+      className={`amigo-orb-stage relative flex items-center justify-center z-0 pointer-events-none transition-all duration-500 overflow-visible ${
         compact ? "compact opacity-0 scale-75" : "opacity-100 scale-100"
       }`}
     >
       {/* Ambient Radiant Glow Backdrop - Significantly amplifies orb illumination and presence */}
       <div
-        className="absolute w-[18rem] h-[18rem] sm:w-[22rem] sm:h-[22rem] rounded-full pointer-events-none transition-all duration-700 ease-out"
+        className="absolute w-[18rem] h-[18rem] sm:w-[22rem] sm:h-[22rem] rounded-full pointer-events-none transition-all duration-700 ease-out overflow-visible"
         style={{
           background: isDark
             ? `radial-gradient(circle, ${orbColor}55 0%, ${orbColor}28 35%, ${orbColor}0a 60%, transparent 75%)`
@@ -381,7 +381,7 @@ export const CanvasVisualizer: React.FC<CanvasVisualizerProps> = React.memo(({
           transform: "translate3d(0, 0, 0)",
         }}
       />
-      <div ref={coreRef} className="amigo-orb-core">
+      <div ref={coreRef} className="amigo-orb-core overflow-visible">
         <HighResolutionOrb
           state={state}
           orbState={orbState}
@@ -395,4 +395,14 @@ export const CanvasVisualizer: React.FC<CanvasVisualizerProps> = React.memo(({
       </div>
     </div>
   );
-});
+}, (prev, next) =>
+  prev.state === next.state &&
+  prev.colorTheme === next.colorTheme &&
+  prev.isDark === next.isDark &&
+  prev.compact === next.compact &&
+  prev.isPaused === next.isPaused &&
+  prev.thinkingOrbStyle === next.thinkingOrbStyle &&
+  prev.webSearchOrbStyle === next.webSearchOrbStyle &&
+  prev.activeIntent === next.activeIntent &&
+  prev.activePrompt === next.activePrompt
+);

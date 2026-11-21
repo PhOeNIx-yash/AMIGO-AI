@@ -266,10 +266,14 @@ def _normalize_llm_markdown(t: str) -> str:
     if not t:
         return t
     t = t.replace("\r\n", "\n")
-    t = re.sub(r"\|\s*\|+", "|\n|", t)
-    t = re.sub(r"^([^|\n]+?)\s*(\|\s*[^|\n]+\|)", r"\1\n\n\2", t, flags=re.MULTILINE)
-    t = re.sub(r"(\|\s*)(#{1,6}\s+)", r"\1\n\n\2", t)
-    t = re.sub(r"(\|)\s*([A-Za-z*#][^|\n]*)$", r"\1\n\n\2", t, flags=re.MULTILINE)
+    # Only treat | blocks as a Markdown table when there is an actual multi-line table structure
+    # (i.e. a header row followed by a separator row like | --- | --- |).
+    has_table = bool(re.search(r"(?:^|\n)\s*\|?\s*[:\-]{2,}\s*\|\s*[:\-]{2,}[\s\-:|]*(?:\n|$)", t))
+    if has_table:
+        t = re.sub(r"\|\s*\|+", "|\n|", t)
+        t = re.sub(r"^([^|\n]+?)\s*(\|\s*[^|\n]+\|)", r"\1\n\n\2", t, flags=re.MULTILINE)
+        t = re.sub(r"(\|\s*)(#{1,6}\s+)", r"\1\n\n\2", t)
+        t = re.sub(r"(\|)\s*([A-Za-z*#][^|\n]*)$", r"\1\n\n\2", t, flags=re.MULTILINE)
     t = re.sub(r"^[•*–—]\s*", "- ", t, flags=re.MULTILINE)
     t = re.sub(r"([.!?;:\)\]])\s+[-*•–—]\s+([A-Za-z0-9*])", r"\1\n- \2", t)
     t = re.sub(r"([0-9A-Za-z_\]\)\$])\s+[-*•–—]\s+([A-Z][a-z])", r"\1\n- \2", t)
@@ -731,6 +735,34 @@ def api_action_execute():
             logger.exception("[Action Execute Error]: %s", err)
             return jsonify({"success": False, "error": str(err)}), 500
     return jsonify({"success": True, "message": "Action completed"})
+
+
+@app.route("/api/feedback", methods=["POST", "OPTIONS"])
+def api_feedback():
+    """Record user feedback (Good / Wrong correction) into memory, matching Roamies reinforcement."""
+    if request.method == "OPTIONS":
+        return jsonify({"status": "ok"})
+    data = request.get_json(silent=True) or {}
+    fb_type = str(data.get("type") or "good").strip().lower()
+    query = str(data.get("query") or "").strip()
+    resp = str(data.get("response") or "").strip()
+    correction = str(data.get("correction") or "").strip()
+
+    try:
+        if fb_type == "good":
+            fact = f"User verified helpful: For '{query or 'query'}', the answer was accurate."
+            rag_engine.add_user_fact(fact, category="user_preference")
+            logger.info("[Feedback] Recorded positive reinforcement: %s", fact)
+            return jsonify({"status": "ok", "message": "Positive feedback recorded"})
+        elif fb_type == "wrong":
+            fact = f"User correction: For '{query or 'query'}', the user clarified: '{correction}' (correction over '{resp[:120]}')"
+            rag_engine.add_user_fact(fact, category="user_correction")
+            logger.info("[Feedback] Recorded correction: %s", fact)
+            return jsonify({"status": "ok", "message": "Correction saved to memory"})
+        return jsonify({"status": "error", "message": "Unknown feedback type"}), 400
+    except Exception as err:
+        logger.exception("[Feedback Error]: %s", err)
+        return jsonify({"status": "error", "error": str(err)}), 500
 
 
 @app.route("/api/transcribe", methods=["POST", "OPTIONS"])

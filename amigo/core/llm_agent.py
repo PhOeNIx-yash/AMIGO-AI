@@ -165,6 +165,7 @@ _STATIC_VOICE_SYSTEM_PROMPT = (
     "- For multiple-choice questions or numerical problems, clearly state the final answer and option letter in bold on its own line, followed by distinct bullet points or numbered calculation steps.\n"
     "- Answer ONLY the user's current question. Never bring up past topics, previous commands, active links, or background media unless the user specifically asks about them.\n"
     "- Speak naturally and confidently. Never use robotic filler phrases like 'Certainly!', 'Sure thing!', 'As an AI', or 'According to my knowledge'.\n"
+    "- Never mention internal tool names, function names, commands with underscores, or system schemas in your responses; speak naturally.\n"
     "- Never deflect with multi-choice question menus. Answer directly with what you know.\n"
     "- Never claim you opened, launched, changed, or executed an OS/file/app action unless a tool actually ran and reported that result.\n"
     "- Only reference 'available documents' or 'in your files' if the user specifically asked about their personal files.\n"
