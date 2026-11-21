@@ -12,7 +12,7 @@ import { saveAssistantSettings } from "../services/assistantApi";
 export interface VoiceOption {
   id: string;
   name: string;
-  engine: "Kokoro ONNX" | "Edge Neural TTS";
+  engine: "Paradee 1.2";
   gender: "Female" | "Male" | "Robot";
   accent: "US" | "GB" | "IN" | "AU";
   desc: string;
@@ -24,11 +24,11 @@ export interface VoiceOption {
 import FluidOrb from "../../components/ui/fluid-orb";
 
 export const VOICES_CATALOG: VoiceOption[] = [
-  // 5 Best Flagship Female Studio Voices (Kokoro v1.0 ONNX - 24kHz Studio Offline)
+  // Flagship Studio Voices (Paradee 1.2 ONNX - 24kHz Studio Offline)
   {
     id: "af_heart",
     name: "Heart",
-    engine: "Kokoro ONNX",
+    engine: "Paradee 1.2",
     gender: "Female",
     accent: "US",
     desc: "Flagship studio female — #1 natural human cadence (Recommended / Default)",
@@ -37,105 +37,37 @@ export const VOICES_CATALOG: VoiceOption[] = [
     color: "#f43f5e",
   },
   {
-    id: "af_bella",
-    name: "Bella",
-    engine: "Kokoro ONNX",
-    gender: "Female",
-    accent: "US",
-    desc: "Bright, crisp & articulate conversational female",
-    previewText: "Hey there! I am Bella, bright, clear and ready to help.",
-    avatarGradient: "from-fuchsia-500 to-rose-600",
-    color: "#ec4899",
-  },
-  {
-    id: "af_sarah",
-    name: "Sarah",
-    engine: "Kokoro ONNX",
-    gender: "Female",
-    accent: "US",
-    desc: "Warm, confident and expressive conversational female",
-    previewText: "Hi! I am Sarah, warm, confident and easy to talk to.",
-    avatarGradient: "from-amber-400 to-rose-500",
-    color: "#f59e0b",
-  },
-  {
-    id: "af_nicole",
-    name: "Nicole",
-    engine: "Kokoro ONNX",
-    gender: "Female",
-    accent: "US",
-    desc: "Soft, gentle and calm conversational female",
-    previewText: "Hello, I am Nicole, calm, gentle and articulate.",
-    avatarGradient: "from-violet-500 to-purple-600",
-    color: "#8b5cf6",
-  },
-  {
-    id: "bf_emma",
-    name: "Emma",
-    engine: "Kokoro ONNX",
-    gender: "Female",
-    accent: "GB",
-    desc: "Crisp, refined & elegant British female",
-    previewText: "Good day! I am Emma, crisp, elegant and articulate.",
-    avatarGradient: "from-sky-400 to-blue-500",
-    color: "#0ea5e9",
-  },
-
-  // 5 Best Flagship Male Studio Voices (Kokoro v1.0 ONNX - 24kHz Studio Offline)
-  {
-    id: "am_adam",
-    name: "Adam",
-    engine: "Kokoro ONNX",
+    id: "am_puck",
+    name: "Puck",
+    engine: "Paradee 1.2",
     gender: "Male",
     accent: "US",
-    desc: "Warm, relatable and conversational companion (Recommended)",
-    previewText: "Hey there! I am Adam, your personal voice assistant.",
+    desc: "Warm, relatable and crisp conversational companion",
+    previewText: "Hey there! I am Puck, your personal voice assistant.",
     avatarGradient: "from-blue-600 to-indigo-700",
     color: "#3b82f6",
   },
   {
-    id: "am_michael",
-    name: "Michael",
-    engine: "Kokoro ONNX",
-    gender: "Male",
-    accent: "US",
-    desc: "Deep, confident and crisp executive male",
-    previewText: "Greetings! I am Michael, clear, confident and articulate.",
-    avatarGradient: "from-cyan-600 to-blue-700",
-    color: "#06b6d4",
+    id: "bf_isabella",
+    name: "Isabella",
+    engine: "Paradee 1.2",
+    gender: "Female",
+    accent: "GB",
+    desc: "Crisp, refined & elegant British studio female",
+    previewText: "Good day! I am Isabella, crisp, elegant and articulate.",
+    avatarGradient: "from-sky-400 to-blue-500",
+    color: "#0ea5e9",
   },
   {
-    id: "bm_george",
-    name: "George",
-    engine: "Kokoro ONNX",
+    id: "bm_fable",
+    name: "Fable",
+    engine: "Paradee 1.2",
     gender: "Male",
     accent: "GB",
     desc: "Polished, distinguished British gentleman",
-    previewText: "Good day! I am George, speaking polished British English.",
+    previewText: "Good day! I am Fable, speaking polished British English.",
     avatarGradient: "from-amber-600 to-orange-700",
     color: "#ea580c",
-  },
-  {
-    id: "bm_lewis",
-    name: "Lewis",
-    engine: "Kokoro ONNX",
-    gender: "Male",
-    accent: "GB",
-    desc: "Warm, natural and friendly British conversational male",
-    previewText: "Hello there! I am Lewis, friendly, natural and fast.",
-    avatarGradient: "from-teal-500 to-cyan-600",
-    color: "#14b8a6",
-  },
-  {
-    id: "af_sky",
-    name: "Sky",
-    engine: "Kokoro ONNX",
-    gender: "Female",
-    accent: "US",
-    desc: "Youthful, energetic and upbeat female delivery",
-    previewText: "Hey! I am Sky, energetic and ready whenever you are.",
-    avatarGradient: "from-emerald-500 to-teal-700",
-    color: "#10b981",
   },
 ];
 
@@ -479,10 +411,8 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
                     </div>
                   </div>
 
-                  <span
-                    className="text-[9px] font-mono px-2 py-0.5 rounded-full font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/20"
-                  >
-                    Kokoro 24kHz ONNX
+                  <span className="text-[9px] font-mono px-2 py-0.5 rounded-full font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
+                    Paradee 1.2 24kHz ONNX
                   </span>
                 </div>
 

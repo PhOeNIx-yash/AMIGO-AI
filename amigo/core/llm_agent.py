@@ -161,7 +161,8 @@ _STATIC_VOICE_SYSTEM_PROMPT = (
     "Core Instructions:\n"
     "- State the direct answer or solution immediately in the first sentence.\n"
     "- In [Mode: Voice], keep responses conversational and concise (1-3 spoken sentences) unless the user specifically asks for detailed explanations, lists, or steps.\n"
-    "- In [Mode: Text] and [Mode: Document Analysis], give thorough, well-structured, complete answers with clear explanations, relevant details, and formatted steps.\n"
+    "- In [Mode: Text] and [Mode: Document Analysis], give thorough, well-structured, complete answers with clear explanations, relevant details, and formatted steps. Use standard markdown with proper newlines between bullet points (- item) and numbered steps. Never collapse multiple points or steps onto a single line.\n"
+    "- For multiple-choice questions or numerical problems, clearly state the final answer and option letter in bold on its own line, followed by distinct bullet points or numbered calculation steps.\n"
     "- Answer ONLY the user's current question. Never bring up past topics, previous commands, active links, or background media unless the user specifically asks about them.\n"
     "- Speak naturally and confidently. Never use robotic filler phrases like 'Certainly!', 'Sure thing!', 'As an AI', or 'According to my knowledge'.\n"
     "- Never deflect with multi-choice question menus. Answer directly with what you know.\n"
@@ -498,16 +499,16 @@ def _get_llm_config() -> dict:
             "n_ctx": int(os.getenv("AMIGO_LLM_N_CTX", "8192")),
             "n_threads": int(os.getenv("AMIGO_LLM_N_THREADS", str(default_threads))),
             "n_threads_batch": int(os.getenv("AMIGO_LLM_N_THREADS_BATCH", str(cores))),
-            "n_batch": int(os.getenv("AMIGO_LLM_N_BATCH", "1024")),
-            "n_ubatch": int(os.getenv("AMIGO_LLM_N_UBATCH", "512")),
+            "n_batch": int(os.getenv("AMIGO_LLM_N_BATCH", "512")),
+            "n_ubatch": int(os.getenv("AMIGO_LLM_N_UBATCH", "256")),
             "n_gpu_layers": int(os.getenv("AMIGO_LLM_N_GPU_LAYERS", "-1" if has_gpu else "0")),
             "use_mmap": os.getenv("AMIGO_LLM_USE_MMAP", "true").lower() == "true",
             "logits_all": False,
             "embedding": False,
             "offload_kqv": has_gpu,
             "flash_attn": has_gpu,
-            "type_k": 8 if has_gpu else 0,
-            "type_v": 8 if has_gpu else 0,
+            "type_k": 2 if has_gpu else 0,
+            "type_v": 2 if has_gpu else 0,
             "numa": False,
         }
     return _LLM_CONFIG
@@ -862,6 +863,7 @@ def query_local_llm(
     raise_on_error: bool = False,
     repeat_penalty: float | None = None,
     min_p: float | None = None,
+    non_blocking: bool = False,
 ) -> str:
     llm = init_local_llm()
     if not llm:
@@ -881,7 +883,15 @@ def query_local_llm(
             "stop": STOP_TOKENS if stop is None else stop,
         }
 
-        with _inference_lock:
+        if non_blocking:
+            acquired = _inference_lock.acquire(blocking=False)
+            if not acquired:
+                logger.debug("[LLM] Skipping non-blocking inference: lock is busy.")
+                return ""
+        else:
+            _inference_lock.acquire()
+
+        try:
             try:
                 res = llm.create_chat_completion(**kwargs, stream=False)
             except Exception as e:
@@ -895,6 +905,8 @@ def query_local_llm(
                     res = llm.create_chat_completion(**kwargs, stream=False)
                 else:
                     raise
+        finally:
+            _inference_lock.release()
 
         if not isinstance(res, dict):
             raise TypeError("LLM returned stream for non-streaming query")
@@ -1195,7 +1207,7 @@ if __name__ == "__main__":
     _info = get_active_model_info()
     print("==================================================")
     print("   AMIGO VOICE ASSISTANT - UI DASHBOARD SERVER   ")
-    print(f"   [ {_info['name'].upper()} | {_info.get('tts_engine', 'KOKORO ONNX').upper()} | RAG + AGENTIC ]")
+    print(f"   [ {_info['name'].upper()} | {_info.get('tts_engine', 'PARADEE 1.2 ONNX').upper()} | RAG + AGENTIC ]")
     print("==================================================")
     initialize_amigo_async()
     launch_server(port=5000, open_browser=True)

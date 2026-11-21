@@ -519,6 +519,7 @@ class ProactiveIntelligence:
                 thinking=False,
                 sanitize=True,
                 stop=["\n", "User:", "Amigo:"],
+                non_blocking=True,
             )
             if not res:
                 return None

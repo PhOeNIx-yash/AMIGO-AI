@@ -7,7 +7,7 @@
 
 ## 1. System Overview & Architecture
 
-Amigo is a hybrid local-first voice assistant and autonomous desktop agent for Windows. It combines local LLM inference (via `llama.cpp` GGUF), offline neural text-to-speech (Kokoro v1.0 ONNX), offline speech recognition (Vosk STT), vector-based Retrieval-Augmented Generation (RAG) with SQLite/Memvid memory, Windows OS automation, and a modern React/Vite web interface.
+Amigo is a hybrid local-first voice assistant and autonomous desktop agent for Windows. It combines local LLM inference (via `llama.cpp` GGUF), offline neural text-to-speech (Paradee 1.2 ONNX), offline speech recognition (Vosk STT), vector-based Retrieval-Augmented Generation (RAG) with SQLite/Memvid memory, Windows OS automation, and a modern React/Vite web interface.
 
 ### High-Level Architecture Diagram
 
@@ -58,7 +58,7 @@ Amigo is a hybrid local-first voice assistant and autonomous desktop agent for W
                                         ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              Output Layer                                   │
-│  ├─ Speech Output: Kokoro v1.0 ONNX Offline TTS (amigo/utils/tts.py)        │
+│  ├─ Speech Output: Paradee 1.2 ONNX Offline TTS (amigo/utils/tts.py)        │
 │  ├─ Real-Time Web UI: React/Vite Dashboard via Server-Sent Events (SSE)    │
 │  └─ Action Cards: Interactive UI widgets for confirmation & data preview    │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -106,11 +106,10 @@ amigo-main/
 │       ├── network_utils.py       # Connection monitoring & ping checks
 │       ├── settings_resolver.py   # Resolves natural language to OS settings
 │       ├── tool_registry.py       # Action dispatcher, schemas, and card builder
-│       └── tts.py                 # Kokoro TTS (ONNX) + Vosk STT audio driver
+│       └── tts.py                 # Paradee 1.2 TTS (ONNX) + Vosk STT audio driver
 ├── assets/                        # Audio sound effects (chimes, clicks)
-├── models/                        # Binary models (GGUF, ONNX, Vosk)
+├── models/                        # Binary models (GGUF, Vosk)
 │   ├── LFM3-Omni-2B-*.gguf        # Primary local GGUF omni model
-│   ├── kokoro/                    # Kokoro-v1.0 ONNX model + voice vectors
 │   └── vosk/                      # Vosk acoustic models for offline STT
 ├── rag_data/                      # User RAG storage (file index, hashes, SQLite)
 │   ├── app_index.json             # Indexed Windows applications cache
@@ -155,7 +154,7 @@ amigo-main/
 - **Port:** HTTP 5000 (Flask / Waitress WSGI).
 - **Core Responsibilities:**
   1. **SSE Broadcaster (`EventBroadcaster`):** Maintains open EventSource streams to all connected React clients. Dispatches events: `assistant_state`, `speech_start`, `speech_stop`, `action_card`, `system_stats`, `proactive_alert`.
-  2. **Query Pipeline (`_process_query`):** Takes text or voice transcript, extracts clipboard/screen context, retrieves RAG memory, invokes `llm_agent` to plan actions, runs tools via `tool_registry`, synthesizes Kokoro audio, and returns structured JSON responses.
+  2. **Query Pipeline (`_process_query`):** Takes text or voice transcript, extracts clipboard/screen context, retrieves RAG memory, invokes `llm_agent` to plan actions, runs tools via `tool_registry`, synthesizes Paradee 1.2 audio, and returns structured JSON responses.
   3. **REST Endpoints:** Over 35 endpoints covering file upload, audio transcription, voice control, system statistics, Windows settings, weather, media controls, email, calendar, and reminders.
   4. **Async Bootstrapper (`initialize_amigo_async`):** Launches background workers (RAG indexer, reminders, proactive loop, hotkey listener, LLM warmup) concurrently so the web server starts with sub-second latency.
 
@@ -193,7 +192,7 @@ amigo-main/
   - `build_action_cards(tool, params, result)`: Creates formatted visual cards (e.g. weather widgets, search previews, email drafts) displayed in the UI.
 
 ### 3.7 `amigo/utils/tts.py` — Speech Input & Output Driver
-- **Text-to-Speech:** Runs `kokoro-v1.0.onnx` with local voice vectors (10 unique voices including Bella, Sarah, Nicole, Michael, Adam). Supports streaming sentence chunking.
+- **Text-to-Speech:** Runs Paradee 1.2 ONNX (`sahilmahendrakar/Paradee-8M-v1.2`) with 24kHz Studio quality (flagship voices: Heart, Puck, Isabella, Fable). Supports streaming sentence chunking.
 - **Speech-to-Text:** Runs `vosk` offline acoustic model for zero-latency local speech transcription from microphone WAV buffers.
 
 ### 3.8 `amigo/services/*` — OS Automation Modules
@@ -228,7 +227,7 @@ amigo-main/
 
 5. Response & Presentation
    ├─ ActionCard synthesized and broadcasted via SSE (/api/events)
-   ├─ Text reply synthesized into audio via Kokoro ONNX
+   ├─ Text reply synthesized into audio via Paradee 1.2 ONNX
    └─ Turn saved to RAG memory database
 ```
 

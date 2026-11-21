@@ -95,8 +95,9 @@ export function normalizeMarkdownText(raw: string): string {
   text = text.replace(/(\|)\s*([A-Za-z*#][^|\n]*)$/gm, "$1\n\n$2");
 
   // 5. Expand collapsed inline bullet points:
-  text = text.replace(/^[•*]\s+/gm, "- ");
-  text = text.replace(/([^\n])\s+[-*•]\s+([A-Za-z0-9*])/g, "$1\n- $2");
+  text = text.replace(/^[•*–—]\s*/gm, "- ");
+  text = text.replace(/([.!?;:\)\]])\s+[-*•–—]\s+([A-Za-z0-9*])/g, "$1\n- $2");
+  text = text.replace(/([0-9A-Za-z_\]\)\$])\s+[-*•–—]\s+([A-Z][a-z])/g, "$1\n- $2");
 
   // 6. Expand collapsed numbered list items:
   // e.g. "done 1. First step" -> "done\n1. First step"
@@ -261,7 +262,7 @@ const FormattedMessage: React.FC<{
               if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
                 return (
                   <div key={lIdx} className="flex items-start space-x-2 pl-2">
-                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 mt-2 shrink-0" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-teal-400 mt-2 shrink-0 shadow-[0_0_8px_rgba(45,212,191,0.6)]" />
                     <span>{renderInlineMarkdown(trimmed.replace(/^[-*]\s+/, ""))}</span>
                   </div>
                 );
@@ -272,7 +273,7 @@ const FormattedMessage: React.FC<{
               if (numMatch) {
                 return (
                   <div key={lIdx} className="flex items-start space-x-2 pl-2">
-                    <span className="font-mono text-xs font-semibold text-indigo-400 mt-0.5 shrink-0">
+                    <span className="font-mono text-xs font-semibold text-teal-400 mt-0.5 shrink-0">
                       {numMatch[1]}.
                     </span>
                     <span>{renderInlineMarkdown(numMatch[2])}</span>

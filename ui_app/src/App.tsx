@@ -555,6 +555,9 @@ export default function App() {
   const [displayText, setDisplayText] = useState<string>(greetingText);
   const [isListening, setIsListening] = useState<boolean>(false);
   const [liveTranscript, setLiveTranscript] = useState<string>("");
+  const [turnId, setTurnId] = useState<string>(() => `turn-${Date.now()}`);
+  const [hasResponseOverflow, setHasResponseOverflow] = useState<boolean>(false);
+  const responseContainerRef = useRef<HTMLDivElement>(null);
 
   const [assistantData, setAssistantData] = useState<AssistantResponse | null>(null);
   const [selectedContact, setSelectedContact] = useState<ContactItem | undefined>(undefined);
@@ -604,6 +607,25 @@ export default function App() {
     setIsRetrying(false);
   };
 
+  // Hard reset scroll position and dynamically detect overflow for smooth bottom fade
+  useEffect(() => {
+    const el = responseContainerRef.current;
+    if (el) {
+      el.scrollTop = 0;
+      const checkOverflow = () => {
+        setHasResponseOverflow(el.scrollHeight > el.clientHeight + 4);
+      };
+      checkOverflow();
+      const ro = new ResizeObserver(checkOverflow);
+      ro.observe(el);
+      return () => ro.disconnect();
+    }
+    const centralArea = document.getElementById("central-display-area");
+    if (centralArea) {
+      centralArea.scrollTop = 0;
+    }
+  }, [displayText, turnId]);
+
   // Real-time bidirectional SSE sync with Amigo Python voice loop & server events
   useEffect(() => {
     let es: EventSource | null = null;
@@ -625,7 +647,14 @@ export default function App() {
                 // Only update assistant visual state (3D Orb & HUD)
                 // Do NOT set isListening to true here, as that starts the browser's MediaRecorder
                 // while the backend hotkey is already listening, causing duplicate command execution!
+                setTurnId(`turn-${Date.now()}`);
+                setLiveTranscript("");
+                setAssistantData(null);
                 setState("listening");
+                const centralArea = document.getElementById("central-display-area");
+                if (centralArea) {
+                  centralArea.scrollTop = 0;
+                }
               } else if (s === "idle") {
                 setIsListening(false);
                 if (!loadingRef.current) {
@@ -644,6 +673,9 @@ export default function App() {
               }
             } else if (data.type === "chat_message") {
               if (data.sender === "user") {
+                setTurnId(`turn-${Date.now()}`);
+                setLiveTranscript("");
+                setAssistantData(null);
                 setActivePrompt(data.text);
                 activePromptRef.current = data.text;
                 setDisplayText(data.text);
@@ -652,6 +684,10 @@ export default function App() {
                 setLiveIntent(null);
                 setLiveParams(null);
                 setHudActive(isActionIntent(data.text));
+                const centralArea = document.getElementById("central-display-area");
+                if (centralArea) {
+                  centralArea.scrollTop = 0;
+                }
               } else if (data.sender === "assistant" || data.sender === "amigo") {
                 const userPrompt = data.user_query || activePromptRef.current || "Voice Command";
                 const cleanUser = cleanHistoryPrompt(userPrompt);
@@ -823,7 +859,14 @@ export default function App() {
   const handleSetListening = (listening: boolean) => {
     setIsListening(listening);
     if (listening) {
+      setTurnId(`turn-${Date.now()}`);
+      setLiveTranscript("");
+      setAssistantData(null);
       setState("listening");
+      const centralArea = document.getElementById("central-display-area");
+      if (centralArea) {
+        centralArea.scrollTop = 0;
+      }
     } else if (state === "listening" && !loading) {
       setState((current) => {
         if (current === "listening") {
@@ -843,8 +886,10 @@ export default function App() {
 
   // Reset conversation to initial state
   const handleReset = useCallback(() => {
+    setTurnId(`turn-${Date.now()}`);
     setState("idle");
     setActivePrompt("");
+    setLiveTranscript("");
     setDisplayText(greetingText);
     setAssistantData(null);
     setSelectedContact(undefined);
@@ -854,6 +899,10 @@ export default function App() {
     setHudActive(false);
     setLiveIntent(null);
     setLiveParams(null);
+    const centralArea = document.getElementById("central-display-area");
+    if (centralArea) {
+      centralArea.scrollTop = 0;
+    }
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
     }
@@ -866,6 +915,9 @@ export default function App() {
     const effectivePrompt = prompt.trim() || (attachment ? `Analyze ${attachment.filename}` : "");
     if (!effectivePrompt) return;
 
+    setTurnId(`turn-${Date.now()}`);
+    setLiveTranscript("");
+    setAssistantData(null);
     setErrorState(null);
     setIsRetrying(false);
     setHudDismissed(false);
@@ -878,6 +930,11 @@ export default function App() {
     setDisplayText(effectivePrompt);
     setState("processing");
     setLoading(true);
+
+    const centralArea = document.getElementById("central-display-area");
+    if (centralArea) {
+      centralArea.scrollTop = 0;
+    }
 
     try {
       const data = await processVoiceCommand(effectivePrompt, backendConfig, undefined, attachment);
@@ -1299,13 +1356,13 @@ export default function App() {
                     {(() => {
                       const isCompact = state === "contact_picker";
                       return (
-                        <div className="relative flex-1 w-full min-h-0 flex flex-col items-center justify-center overflow-hidden">
+                        <div className="relative flex-1 w-full min-h-0 flex flex-col items-center justify-start overflow-hidden">
                           {/* Central Display Area with Orb above & Spoken / Greeting text cleanly below */}
                           <div
                             id="central-display-area"
-                            className="relative z-20 flex-1 min-h-0 w-full max-w-4xl flex flex-col items-center justify-center px-4 py-4 sm:py-6 overflow-y-auto smooth-scroll-container bg-transparent transition-opacity duration-200"
+                            className="relative z-20 flex-1 min-h-0 w-full max-w-4xl flex flex-col items-center justify-start px-4 py-4 sm:py-6 overflow-y-auto smooth-scroll-container bg-transparent transition-opacity duration-200"
                           >
-                            <div className="w-full flex flex-col items-center justify-center my-auto transition-opacity duration-200 max-w-2xl">
+                            <div className="w-full flex flex-col items-center justify-start transition-opacity duration-200 max-w-2xl">
                               {/* 3D Orb Avatar (Positioned above text, never covered) */}
                               <div
                                 className={`relative flex items-center justify-center transition-all duration-500 ease-out select-none ${isCompact ? "h-0 opacity-0 overflow-hidden mb-0" : "h-[15rem] sm:h-[16rem] shrink-0 mb-3 sm:mb-4"
@@ -1346,13 +1403,15 @@ export default function App() {
                                 <div className="w-full max-w-2xl sm:max-w-3xl md:max-w-4xl mx-auto px-4 drop-shadow-[0_4px_24px_rgba(0,0,0,0.85)] pointer-events-auto">
                                   {(state === "listening" || isListening) && liveTranscript ? (
                                     <div className="flex min-w-0 w-full flex-col items-center px-2 text-center">
-                                      <p className="w-full min-w-0 max-w-2xl break-words text-center text-xl font-semibold leading-snug text-slate-100 sm:text-2xl md:text-3xl">
+                                      <p className="w-full min-w-0 max-w-2xl break-words text-center text-xl font-semibold leading-snug text-slate-100 sm:text-2xl md:text-3xl whitespace-pre-wrap">
                                         {liveTranscript}
                                       </p>
                                     </div>
                                   ) : (state === "listening" || isListening) ? (
                                     <div className="flex flex-col items-center space-y-1 text-center">
                                       <KineticHeading
+                                        key={`${turnId}-listening`}
+                                        turnId={turnId}
                                         text="Listening... speak now"
                                         isDark={isDark}
                                         colorTheme={colorTheme}
@@ -1365,16 +1424,88 @@ export default function App() {
                                     </div>
                                   ) : (() => {
                                     const isGreeting = GREETING_PRESETS.some((g) => g.text.toLowerCase() === (displayText || "").toLowerCase()) || !displayText;
+                                    const isCompletedResponse = Boolean(displayText && !isGreeting && state === "completed");
+
+                                    if (isCompletedResponse) {
+                                      const isShortDirect = (() => {
+                                        if (!displayText) return true;
+                                        const raw = displayText.trim();
+                                        if (raw.length > 240) return false;
+                                        if (raw.includes("|") && raw.includes("\n")) return false;
+                                        if (/^[•\-*]\s+|\b^\d+\.\s+/m.test(raw)) return false;
+                                        const paragraphs = raw.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+                                        return paragraphs.length <= 1;
+                                      })();
+
+                                      return (
+                                        <div className={`w-full ${isShortDirect ? "max-w-[700px] text-center" : "max-w-[680px] text-left"} mx-auto`}>
+                                          <div
+                                            ref={responseContainerRef}
+                                            className={`relative flex flex-col ${isShortDirect ? "items-center justify-start text-center" : "items-start justify-start text-left"} w-full select-text max-h-[46vh] overflow-y-auto no-scrollbar`}
+                                            style={
+                                              hasResponseOverflow
+                                                ? {
+                                                    maskImage:
+                                                      "linear-gradient(to bottom, black calc(100% - 24px), transparent 100%)",
+                                                    WebkitMaskImage:
+                                                      "linear-gradient(to bottom, black calc(100% - 24px), transparent 100%)",
+                                                  }
+                                                : undefined
+                                            }
+                                          >
+                                            <KineticHeading
+                                              key={`${turnId}-completed`}
+                                              turnId={turnId}
+                                              text={displayText}
+                                              isDark={isDark}
+                                              colorTheme={colorTheme}
+                                              animationStyle={textAnimationStyle}
+                                              isHero={isShortDirect}
+                                            />
+                                          </div>
+
+                                          {/* Clean Action Icons: 32x32 circular hit targets, 15px icons, centered for short, left-aligned for long */}
+                                          <div className={`flex items-center ${isShortDirect ? "justify-center" : "justify-start"} gap-3 mt-4 opacity-50 hover:opacity-100 transition-opacity select-none`}>
+                                            <button
+                                              type="button"
+                                              onClick={() => handleCopyResponse(displayText)}
+                                              className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:text-[#f8fafc] hover:bg-white/[0.08] transition-colors"
+                                              title={copiedResponse ? "Copied" : "Copy text"}
+                                            >
+                                              {copiedResponse ? <Check className="w-[15px] h-[15px] text-emerald-400" /> : <Copy className="w-[15px] h-[15px]" />}
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onClick={() => speakText(displayText)}
+                                              className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:text-[#f8fafc] hover:bg-white/[0.08] transition-colors"
+                                              title="Listen"
+                                            >
+                                              <Volume2 className="w-[15px] h-[15px]" />
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onClick={handleDismissResponse}
+                                              className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:text-[#f8fafc] hover:bg-white/[0.08] transition-colors"
+                                              title="Dismiss"
+                                            >
+                                              <X className="w-[15px] h-[15px]" />
+                                            </button>
+                                          </div>
+                                        </div>
+                                      );
+                                    }
 
                                     return (
                                       <div className="text-center w-full max-w-2xl mx-auto px-2">
                                         <div
-                                          className={`group relative inline-flex flex-col items-center select-none max-h-[46vh] overflow-y-auto no-scrollbar px-2 ${state === "idle" ? "cursor-pointer" : ""
+                                          className={`group relative inline-flex flex-col items-center justify-start select-none max-h-[46vh] overflow-y-auto no-scrollbar px-2 ${state === "idle" ? "cursor-pointer" : ""
                                             }`}
                                           onClick={state === "idle" ? handleShuffleGreeting : undefined}
                                           title={state === "idle" ? "Click to cycle greeting phrase" : undefined}
                                         >
                                           <KineticHeading
+                                            key={`${turnId}-${state}`}
+                                            turnId={turnId}
                                             text={
                                               state === "processing" || state === "working"
                                                 ? (activePrompt || "Thinking...")
@@ -1404,36 +1535,6 @@ export default function App() {
                                             </span>
                                           )}
                                         </div>
-
-                                        {/* Clean, seamless action toolbar without any background box */}
-                                        {displayText && !isGreeting && state === "completed" && (
-                                          <div className="flex items-center justify-center gap-2 mt-2 opacity-60 hover:opacity-100 transition-opacity">
-                                            <button
-                                              type="button"
-                                              onClick={() => handleCopyResponse(displayText)}
-                                              className="p-1 rounded text-slate-400 hover:text-slate-100 transition-colors"
-                                              title="Copy text"
-                                            >
-                                              {copiedResponse ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                                            </button>
-                                            <button
-                                              type="button"
-                                              onClick={() => speakText(displayText)}
-                                              className="p-1 rounded text-slate-400 hover:text-slate-100 transition-colors"
-                                              title="Listen"
-                                            >
-                                              <Volume2 className="w-3.5 h-3.5" />
-                                            </button>
-                                            <button
-                                              type="button"
-                                              onClick={handleDismissResponse}
-                                              className="p-1 rounded text-slate-400 hover:text-slate-100 transition-colors"
-                                              title="Dismiss"
-                                            >
-                                              <X className="w-3.5 h-3.5" />
-                                            </button>
-                                          </div>
-                                        )}
                                       </div>
                                     );
                                   })()}

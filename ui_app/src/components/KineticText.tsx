@@ -1,7 +1,106 @@
 import React, { useMemo } from "react";
-import { motion, AnimatePresence } from "motion/react";
+import { motion, AnimatePresence, type Variants } from "motion/react";
 import { ColorTheme } from "../types";
 import { COLOR_THEMES } from "../data/presets";
+
+const staggeredContainerVariants: Variants = {
+  hidden: { opacity: 0 },
+  visible: {
+    opacity: 1,
+    transition: {
+      staggerChildren: 0.045, // 45ms per block
+      delayChildren: 0.02,
+    },
+  },
+};
+
+const staggeredItemVariants: Variants = {
+  hidden: { opacity: 0, y: 6 },
+  visible: {
+    opacity: 1,
+    y: 0,
+    transition: {
+      duration: 0.22, // 220ms ease-out
+      ease: [0.16, 1, 0.3, 1],
+    },
+  },
+};
+
+export function renderInlineFormatting(text: string, heroMode = false): React.ReactNode {
+  if (!text) return null;
+
+  // Split on code `...`, bold **...**, links [text](url), or raw URLs
+  const tokens = text.split(/(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^\)]+\)|https?:\/\/[^\s\)]+)/g);
+
+  return tokens.map((part, index) => {
+    if (!part) return null;
+
+    // Inline code, metrics, or numbers in backticks: `...`
+    if (part.startsWith("`") && part.endsWith("`") && part.length >= 2) {
+      return (
+        <code
+          key={index}
+          className="inline-block px-1.5 py-[1px] mx-0.5 rounded text-[13px] font-mono font-medium bg-[#2dd4bf]/10 text-[#5eead4] border border-[#2dd4bf]/20 align-baseline"
+        >
+          {part.slice(1, -1)}
+        </code>
+      );
+    }
+
+    // Bold text: **...**
+    if (part.startsWith("**") && part.endsWith("**") && part.length >= 4) {
+      return (
+        <strong
+          key={index}
+          className="font-semibold text-[#ffffff] mr-0.5"
+          style={
+            heroMode
+              ? {
+                  textShadow:
+                    "0 0 18px rgba(45, 212, 191, 0.35), 0 2px 16px rgba(0, 0, 0, 0.95)",
+                }
+              : undefined
+          }
+        >
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+
+    // Markdown link: [Title](URL)
+    const mdLink = part.match(/^\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)$/);
+    if (mdLink) {
+      return (
+        <a
+          key={index}
+          href={mdLink[2]}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded bg-white/[0.04] hover:bg-[#2dd4bf]/10 text-[12.5px] font-medium text-[#94a3b8] hover:text-[#2dd4bf] transition-colors cursor-pointer border border-white/[0.06] hover:border-[#2dd4bf]/20"
+        >
+          {mdLink[1]}
+        </a>
+      );
+    }
+
+    // Raw URL
+    if (/^https?:\/\/[^\s\)]+$/.test(part)) {
+      return (
+        <a
+          key={index}
+          href={part}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded bg-white/[0.04] hover:bg-[#2dd4bf]/10 text-[12.5px] font-medium text-[#94a3b8] hover:text-[#2dd4bf] transition-colors break-all cursor-pointer border border-white/[0.06] hover:border-[#2dd4bf]/20"
+        >
+          {part}
+        </a>
+      );
+    }
+
+    return <span key={index}>{part}</span>;
+  });
+}
 
 export type TextAnimationStyle =
   | "silk_blur" // Apple-grade optical Gaussian blur dissipation & subtle vertical drift
@@ -30,6 +129,8 @@ interface KineticHeadingProps {
   className?: string;
   highlightWords?: string[];
   enableShimmer?: boolean;
+  turnId?: string;
+  isHero?: boolean;
 }
 
 /**
@@ -43,7 +144,18 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
   animationStyle = "silk_blur",
   className = "",
   highlightWords = [],
+  turnId,
+  isHero,
 }) => {
+  const containerRef = React.useRef<HTMLDivElement>(null);
+
+  // Hard reset scroll position whenever text or turnId changes
+  React.useEffect(() => {
+    if (containerRef.current) {
+      containerRef.current.scrollTop = 0;
+    }
+  }, [text, turnId]);
+
   const activeStyle = normalizeAnimationStyle(animationStyle);
   const theme = COLOR_THEMES[colorTheme] || COLOR_THEMES.violet;
   const words = useMemo(() => {
@@ -51,6 +163,16 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
     return text.trim().split(/\s+/).filter(Boolean);
   }, [text]);
   const isLongText = words.length > 12;
+
+  const isShortDirect = isHero !== undefined ? isHero : (() => {
+    if (!text) return true;
+    const raw = text.trim();
+    if (raw.length > 240) return false;
+    if (raw.includes("|") && raw.includes("\n")) return false;
+    if (/^[•\-*]\s+|\b^\d+\.\s+/m.test(raw)) return false;
+    const paragraphs = raw.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+    return paragraphs.length <= 1;
+  })();
 
   const highlightedStyle = useMemo(
     () => ({
@@ -138,52 +260,59 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
       .filter(Boolean);
 
     const bulletCount = lines.filter((l) => /^[•\-*]\s+|\b^\d+\.\s+/.test(l)).length;
-    if (bulletCount >= 2 || lines.length >= 3) {
+    if (bulletCount >= 1 || lines.length >= 2) {
       return { tableData: null, listItems: lines };
     }
 
     return { tableData: null, listItems: [] };
   }, [text]);
 
+  const uniqueTurnKey = `${turnId || "turn"}-${text.slice(0, 32)}-${activeStyle}`;
+
   if (tableData) {
     return (
       <AnimatePresence mode="wait">
         <motion.div
-          key={`${text}-${activeStyle}`}
+          key={uniqueTurnKey}
+          ref={containerRef}
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, transition: { duration: 0.15 } }}
-          className="w-full max-w-2xl mx-auto my-1 rounded-2xl bg-white/[0.04] border border-white/[0.08] backdrop-blur-md overflow-hidden shadow-2xl text-slate-100"
+          className="relative w-full max-w-[680px] mx-auto text-left py-1 select-text"
+          style={{
+            textShadow: "0 2px 16px rgba(0, 0, 0, 0.95)",
+          }}
         >
           {tableData.title && (
-            <div className="px-4 py-3 border-b border-white/[0.08] bg-white/[0.02]">
-              <h3 className="text-sm sm:text-base font-semibold text-slate-100 tracking-tight leading-snug">
-                {tableData.title}
-              </h3>
-            </div>
+            <h3 className="text-[18px] font-semibold text-[#ffffff] mb-3 tracking-tight">
+              {tableData.title}
+            </h3>
           )}
-          <div className="overflow-x-auto max-h-[48vh] no-scrollbar">
-            <table className="w-full text-left text-xs sm:text-sm">
-              <thead className="bg-white/[0.04] border-b border-white/[0.06] text-slate-400 font-medium text-[11px] uppercase tracking-wider sticky top-0 backdrop-blur-md">
-                <tr>
+          <div className="w-full overflow-x-auto no-scrollbar">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="border-b border-white/[0.08]">
                   {tableData.headers.map((h, i) => (
-                    <th key={i} className="px-4 py-2.5 font-semibold text-slate-300">
+                    <th
+                      key={i}
+                      className="py-2.5 px-3 text-[12px] uppercase font-semibold text-[#2dd4bf] tracking-[0.06em]"
+                    >
                       {h}
                     </th>
                   ))}
                 </tr>
               </thead>
-              <tbody className="divide-y divide-white/[0.04]">
+              <tbody className="divide-y divide-white/[0.08]">
                 {tableData.rows.map((row, rIdx) => (
                   <tr key={rIdx} className="hover:bg-white/[0.02] transition-colors">
                     {row.map((cell, cIdx) => (
                       <td
                         key={cIdx}
-                        className={`px-4 py-2.5 whitespace-nowrap ${
-                          cIdx === 0 ? "font-medium text-slate-100" : "text-slate-300"
+                        className={`py-2 px-3 text-[15.5px] leading-relaxed ${
+                          cIdx === 0 ? "font-medium text-[#ffffff]" : "text-[#cbd5e1]"
                         }`}
                       >
-                        {cell}
+                        {renderInlineFormatting(cell)}
                       </td>
                     ))}
                   </tr>
@@ -197,65 +326,206 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
   }
 
   if (listItems.length > 1) {
+    const firstBulletIdx = listItems.findIndex((l) => /^[•\-*]|\b^\d+\./.test(l));
+    let lastBulletIdx = -1;
+    for (let i = 0; i < listItems.length; i++) {
+      if (/^[•\-*]|\b^\d+\./.test(listItems[i])) {
+        lastBulletIdx = i;
+      }
+    }
+
     return (
       <AnimatePresence mode="wait">
         <motion.div
-          key={`${text}-${activeStyle}`}
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
+          key={uniqueTurnKey}
+          ref={containerRef}
+          variants={staggeredContainerVariants}
+          initial="hidden"
+          animate="visible"
           exit={{ opacity: 0, transition: { duration: 0.15 } }}
-          className="flex flex-col w-full max-w-xl mx-auto space-y-2 text-slate-100 py-1"
+          className="relative w-full max-w-[680px] mx-auto text-left py-1 select-text"
+          style={{
+            textShadow: "0 2px 16px rgba(0, 0, 0, 0.95)",
+          }}
         >
-          {listItems.map((item, idx) => {
-            const cleanItem = item.replace(/##+/g, "").replace(/^#+\s*/, "").trim();
-            if (!cleanItem) return null;
-            const numMatch = cleanItem.match(/^(\d+)\.\s+/);
-            const isBullet = /^[•\-*]|\b^\d+\./.test(cleanItem);
+          <div className="w-full">
+            {listItems.map((item, idx) => {
+              const cleanItem = item.replace(/##+/g, "").replace(/^#+\s*/, "").trim();
+              if (!cleanItem) return null;
+              const numMatch = cleanItem.match(/^(\d+)\.\s+/);
+              const isBullet = /^[•\-*]|\b^\d+\./.test(cleanItem);
 
-            if (isBullet) {
-              const marker = numMatch ? `${numMatch[1]}.` : "—";
-              let content = cleanItem.replace(/^(\d+\.|[•\-*])\s*/, "");
-              content = content.replace(/\*\*([^*]+)\*\*/g, "$1");
-              const dashMatch = content.match(/^([^\-—:]{2,50})\s*([—\-:]\s*)([\s\S]+)$/);
-              const title = dashMatch ? dashMatch[1].trim() : "";
-              const desc = dashMatch ? dashMatch[3].trim() : content;
+              // Check for source/citation row
+              const isSourceLine =
+                /^(?:Sources?|References?|Citations?):/i.test(cleanItem) ||
+                /^\s*\[?(?:Source|Ref)\s*\d*\]?:/i.test(cleanItem);
+
+              if (isSourceLine) {
+                return (
+                  <motion.div
+                    key={idx}
+                    variants={staggeredItemVariants}
+                    className="flex flex-wrap items-center gap-2 mt-4 pt-2.5 text-[12.5px] text-[#94a3b8] border-t border-white/[0.08] whitespace-pre-wrap break-words"
+                  >
+                    <span className="text-[11px] font-mono uppercase tracking-wider text-[#2dd4bf]/80">Sources:</span>
+                    {renderInlineFormatting(cleanItem.replace(/^(?:Sources?|References?|Citations?):\s*/i, ""))}
+                  </motion.div>
+                );
+              }
+
+              if (isBullet) {
+                let content = cleanItem.replace(/^(\d+\.|[•\-*])\s*/, "");
+                
+                // Highlight lead-in phrases: Label: desc or **Label**: desc
+                const boldMatch = content.match(/^(\*\*[^*]+\*\*)\s*(?:[:\-—]\s*)([\s\S]+)$/);
+                const colonMatch = !boldMatch ? content.match(/^([^:\-—*#]{2,45})\s*(?:[:\-—]\s*)([\s\S]+)$/) : null;
+                const leadingBoldMatch = !boldMatch && !colonMatch ? content.match(/^(\*\*[^*]+\*\*)([\s\S]*)$/) : null;
+
+                let label = "";
+                let detail = content;
+
+                if (boldMatch) {
+                  label = boldMatch[1].replace(/\*\*/g, "").trim();
+                  detail = boldMatch[2].trim();
+                } else if (colonMatch) {
+                  label = colonMatch[1].replace(/\*\*/g, "").trim();
+                  detail = colonMatch[2].trim();
+                } else if (leadingBoldMatch) {
+                  label = leadingBoldMatch[1].replace(/\*\*/g, "").trim();
+                  detail = leadingBoldMatch[2].trim();
+                }
+
+                return (
+                  <motion.div
+                    key={idx}
+                    variants={staggeredItemVariants}
+                    className="flex items-start gap-3 my-2 text-[16px] sm:text-[16.5px] leading-[1.65] font-normal text-left"
+                  >
+                    {/* Clean teal dot bullets (#2dd4bf) with hanging indents and 8px vertical spacing */}
+                    {numMatch ? (
+                      <span className="font-mono text-[13px] font-semibold text-[#2dd4bf] select-none shrink-0 w-5 text-right pt-[2px]">
+                        {numMatch[1]}.
+                      </span>
+                    ) : (
+                      <span
+                        className="w-1.5 h-1.5 rounded-full bg-[#2dd4bf] shrink-0 select-none mt-[10px] shadow-[0_0_8px_rgba(45,212,191,0.6)]"
+                        aria-hidden="true"
+                      />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      {label ? (
+                        <>
+                          <span className="text-[#ffffff] font-semibold mr-1.5 whitespace-pre-wrap">{label}:</span>
+                          <span className="text-[#e2e8f0] font-normal whitespace-pre-wrap break-words">
+                            {renderInlineFormatting(detail)}
+                          </span>
+                        </>
+                      ) : (
+                        <span className="text-[#e2e8f0] font-normal whitespace-pre-wrap break-words">
+                          {renderInlineFormatting(content)}
+                        </span>
+                      )}
+                    </div>
+                  </motion.div>
+                );
+              }
+
+              const cleanParagraph = cleanItem.replace(/\*\*([^*]+)\*\*/g, "$1");
+              const isLead = idx === 0 || (firstBulletIdx !== -1 && idx < firstBulletIdx);
+              const isClosing = (lastBulletIdx !== -1 && idx > lastBulletIdx) || idx === listItems.length - 1;
+
+              if (isLead) {
+                return (
+                  <motion.h3
+                    key={idx}
+                    variants={staggeredItemVariants}
+                    className="text-[18px] font-semibold text-[#ffffff] mb-3 text-left tracking-tight leading-snug whitespace-pre-wrap break-words"
+                  >
+                    {cleanParagraph}
+                  </motion.h3>
+                );
+              }
+
+              if (isClosing) {
+                return (
+                  <motion.p
+                    key={idx}
+                    variants={staggeredItemVariants}
+                    className="text-[15.5px] font-normal leading-[1.6] text-[#94a3b8] mt-3 text-left whitespace-pre-wrap break-words"
+                  >
+                    {renderInlineFormatting(cleanParagraph)}
+                  </motion.p>
+                );
+              }
 
               return (
-                <div
+                <motion.p
                   key={idx}
-                  className="flex items-baseline gap-2.5 w-full text-left px-1 leading-relaxed"
+                  variants={staggeredItemVariants}
+                  className="text-[16px] sm:text-[16.5px] font-normal leading-[1.65] text-[#e2e8f0] my-2 text-left whitespace-pre-wrap break-words"
                 >
-                  <span className="font-semibold text-xs text-indigo-400/90 select-none shrink-0 w-4 text-right">
-                    {marker}
-                  </span>
-                  <div className="text-sm sm:text-base leading-relaxed">
-                    {title ? (
-                      <>
-                        <span className="font-semibold text-slate-100 mr-1.5">{title}:</span>
-                        <span className="text-slate-300 font-normal">{desc}</span>
-                      </>
-                    ) : (
-                      <span className="text-slate-200 font-normal">{content}</span>
-                    )}
-                  </div>
-                </div>
+                  {renderInlineFormatting(cleanParagraph)}
+                </motion.p>
               );
-            }
+            })}
+          </div>
+        </motion.div>
+      </AnimatePresence>
+    );
+  }
 
-            const cleanParagraph = cleanItem.replace(/\*\*([^*]+)\*\*/g, "$1");
-            return (
-              <p
-                key={idx}
-                className={`w-full ${
-                  idx === 0
-                    ? "text-base sm:text-lg font-medium text-slate-100 tracking-tight leading-snug mb-1 text-center"
-                    : "text-sm text-slate-300 font-normal text-left px-1"
-                }`}
-              >
-                {cleanParagraph}
-              </p>
-            );
-          })}
+  // Short / Direct Answers (Hero Mode, center-aligned under orb)
+  if (isShortDirect) {
+    return (
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={uniqueTurnKey}
+          ref={containerRef}
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, transition: { duration: 0.15 } }}
+          className="relative w-full max-w-[700px] mx-auto text-center py-1 select-text"
+          style={{
+            textShadow: "0 2px 16px rgba(0, 0, 0, 0.95)",
+          }}
+        >
+          <p className="text-[20px] sm:text-[22px] leading-[1.5] font-normal text-[#f1f5f9] text-center whitespace-pre-wrap break-words">
+            {renderInlineFormatting(text, true)}
+          </p>
+        </motion.div>
+      </AnimatePresence>
+    );
+  }
+
+  // Structured / Multi-paragraph answers without bullet lists (left-aligned in 680px column)
+  if (listItems.length <= 1 && text && (text.length > 55 || text.includes("\n"))) {
+    return (
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={uniqueTurnKey}
+          ref={containerRef}
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, transition: { duration: 0.15 } }}
+          className="relative w-full max-w-[680px] mx-auto text-left py-1 select-text"
+          style={{
+            textShadow: "0 2px 16px rgba(0, 0, 0, 0.95)",
+          }}
+        >
+          <div className="w-full space-y-3">
+            {text.split(/\n+/).map((para, pIdx) => {
+              const cleanPara = para.trim();
+              if (!cleanPara) return null;
+              return (
+                <p
+                  key={pIdx}
+                  className="text-[16px] sm:text-[16.5px] font-normal leading-[1.65] text-[#e2e8f0] text-left whitespace-pre-wrap break-words"
+                >
+                  {renderInlineFormatting(cleanPara)}
+                </p>
+              );
+            })}
+          </div>
         </motion.div>
       </AnimatePresence>
     );
@@ -264,16 +534,18 @@ export const KineticHeading: React.FC<KineticHeadingProps> = ({
   return (
     <AnimatePresence mode="wait">
       <motion.div
-        key={`${text}-${activeStyle}`}
+        key={uniqueTurnKey}
+        ref={containerRef}
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0, transition: { duration: 0.15 } }}
-        className={`flex min-w-0 w-full max-w-full flex-wrap items-center justify-center gap-x-2 gap-y-1.5 text-center select-none ${
+        className={`flex min-w-0 w-full max-w-[700px] mx-auto flex-wrap items-center justify-center gap-x-2 gap-y-1.5 text-center select-none ${
           activeStyle === "calm_breathe" ? "motion-safe:animate-calm-float" : ""
         } ${className}`}
         style={{
           overflowWrap: "break-word",
           wordBreak: "break-word",
+          textShadow: "0 2px 16px rgba(0, 0, 0, 0.95)",
         }}
       >
         {words.map((word, wordIdx) => {

@@ -270,8 +270,9 @@ def _normalize_llm_markdown(t: str) -> str:
     t = re.sub(r"^([^|\n]+?)\s*(\|\s*[^|\n]+\|)", r"\1\n\n\2", t, flags=re.MULTILINE)
     t = re.sub(r"(\|\s*)(#{1,6}\s+)", r"\1\n\n\2", t)
     t = re.sub(r"(\|)\s*([A-Za-z*#][^|\n]*)$", r"\1\n\n\2", t, flags=re.MULTILINE)
-    t = re.sub(r"^[•*]\s+", "- ", t, flags=re.MULTILINE)
-    t = re.sub(r"([^\n])\s+[-*•]\s+([A-Za-z0-9*])", r"\1\n- \2", t)
+    t = re.sub(r"^[•*–—]\s*", "- ", t, flags=re.MULTILINE)
+    t = re.sub(r"([.!?;:\)\]])\s+[-*•–—]\s+([A-Za-z0-9*])", r"\1\n- \2", t)
+    t = re.sub(r"([0-9A-Za-z_\]\)\$])\s+[-*•–—]\s+([A-Z][a-z])", r"\1\n- \2", t)
     t = re.sub(r"([^\n])\s+(\d+\.)\s+([A-Za-z0-9*])", r"\1\n\2 \3", t)
     return t
 
@@ -826,7 +827,13 @@ def api_internal_broadcast():
 
 @app.route("/api/history")
 def get_history():
-    return jsonify(rag_engine.load_memory())
+    mem = rag_engine.load_memory()
+    if isinstance(mem, dict):
+        for key in ("recent_conversations", "conversations"):
+            for c in mem.get(key, []):
+                if isinstance(c, dict) and "assistant" in c:
+                    c["assistant"] = _normalize_llm_markdown(c.get("assistant") or "")
+    return jsonify(mem)
 
 
 @app.route("/api/query", methods=["POST"])

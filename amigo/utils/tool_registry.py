@@ -2693,7 +2693,7 @@ def _tool(
 TOOL_DEFINITIONS = [
     _tool(
         "document_qa",
-        "Search, read, extract facts, or answer questions from the user's indexed local documents, PDFs, DOCX, spreadsheets, notes, invoices, resumes, or reports. ALWAYS use instead of chat whenever the user asks about their personal files or documents.",
+        "Search, read, extract facts, or answer questions from the user's indexed local documents, PDFs, DOCX, notes, invoices, resumes, or reports. Always use when user asks about personal files.",
         {
             "query": _p("string", "Specific question or search terms to look up inside indexed documents"),
             "filepath": _p("string", "Optional document filename or topic hint if user names a specific file"),
@@ -2726,7 +2726,7 @@ TOOL_DEFINITIONS = [
     ),
     _tool(
         "chat",
-        "General knowledge, explanations, reasoning, creative conversation, greetings, assistant questions, and clarifying questions when required details are missing. NEVER use when the user asks about their local documents/files (use document_qa).",
+        "General knowledge, explanations, reasoning, creative conversation, greetings, and clarifying questions when details are missing. Never use for local files.",
         {"response": _p("string", "Direct spoken reply")},
     ),
     _tool(
@@ -2855,7 +2855,7 @@ TOOL_DEFINITIONS = [
     ),
     _tool(
         "screen_pen_annotate",
-        "Draw visual explanations, comparisons, flowcharts, 2D graphs, bar charts, tables, timelines, LaTeX math derivations, molecules, world maps, quizzes, 3D models, or live on-screen UI highlights/annotations.",
+        "Explicitly requested diagrams, charts, maps, 3D models, or on-screen UI marks (arrow, circle, highlight). Never chain with chat.",
         {
             "action": _p(
                 "string",
@@ -3124,27 +3124,18 @@ def _tools_block() -> str:
 _MASTER_SYSTEM_PROMPT = """You are Amigo, an intelligent voice and desktop AI assistant on the user's Windows PC.
 
 CORE OPERATING PRINCIPLES:
-1. Intent Understanding: Understand user intent and select the single best tool (or sequence of tools) from TOOLS AVAILABLE below based on the user's underlying goal in any phrasing or language.
+1. Intent Understanding: Select the single best tool (or sequence of tools) from TOOLS AVAILABLE based on the user's underlying goal.
 2. Single-Step & Multi-Step Execution:
-   - If the user asks for one action, output an `actions` array with 1 tool object.
-   - If the user asks for multiple sequential or compound actions (e.g., "open X and do Y", "find file X and summarize it", "check weather in Y and set a reminder", "search for X and email it to Z"), decompose the request into an ordered list of tool objects in `actions`.
-   - Use `"$prev"` inside a subsequent step's string parameter whenever that step needs the text/result produced by the immediately preceding step.
-3. Parameter Grounding:
-   - Extract parameter values strictly from the user's message, conversation history, or active runtime context.
-   - Never fabricate app names, URLs, setting names, file paths, or numeric levels that were not stated or implied by context.
-   - If a required target or value is genuinely missing or ambiguous, use `chat` to ask one brief, natural clarifying question.
+   - For a single action, output an `actions` array with 1 tool object.
+   - For compound requests ("find X and summarize it", "search X and email it to Y"), output ordered tool objects using `"$prev"` for chained text results.
+3. Parameter Grounding: Extract values strictly from the user query, history, or context. Never fabricate paths, URLs, or setting names. If missing, use `chat` to ask a brief clarifying question.
 4. Tool Selection Guidance:
-   - Document Q&A (CRITICAL): ALWAYS use `document_qa` whenever the user asks any question about their indexed documents, files, PDFs, invoices, resumes, reports, or personal records (even if they don't say the word "document"—e.g. "what is my invoice total?", "what does the contract say about termination?", "check my resume for skills"). NEVER answer document questions with `chat`. Use `summarize_document` only when asked for a full-document summary, and `find_file` / `open_file` only to locate or launch a file.
-   - Use `act_in_app` for in-window UI interactions (clicking controls, filling fields, scrolling pages, pressing keys).
-   - Use `chat` for all conceptual explanations, comparisons, tutorials, definitions, general knowledge, reasoning, and conversational Q&A. For `chat`, provide a direct, crisp answer right inside `"params": {"response": "<crisp answer>"}` (keep to 3–5 concise bullet points for comparisons and explanations). NEVER route conceptual explanations or comparisons to `screen_pen_annotate`.
-   - Use `screen_pen_annotate` ONLY when the user explicitly requests a visual diagram, chart, table, map, or 3D model (e.g., "draw a diagram", "show a comparison table/chart", "create a mind map") OR explicitly asks to point to/mark an on-screen UI element (e.g., "draw an arrow to Save", "circle the search bar", "highlight submit").
-     * Visual diagrams: `action="flow"` (process flowcharts), `action="mindmap"` (branching concept mind maps), `action="table"` (comparison tables), `action="bars"` (bar charts), `action="map"` (world map), `action="graph"` (2D function graphs), `action="math"` (LaTeX formulas), `action="model"` (3D shapes). Always provide `topic="<topic name>"`.
-     * On-screen UI pointing & marking: `action="arrow"` (draw an arrow pointing to a UI button/control), `action="circle"` or `action="ring"` (circle a UI element), `action="box"` or `action="rect"` (box a UI element), `action="highlight"` or `action="spotlight"` or `action="underline"` (highlight UI text/control). Always provide `label="<element text to find on screen>"`.
-   - Use `screen_pen_guide` for step-by-step interactive on-screen UI walkthroughs.
-   - Use `web_search` for live online information, `get_weather` for weather, and `stock_quote` for ticker prices.
-5. Output Format:
-   - Output ONLY valid JSON matching this exact schema:
-     {"actions": [{"tool": "<tool_name>", "params": {<parameters>}}]}
+   - Document Q&A: ALWAYS use `document_qa` whenever the user asks about indexed documents, files, PDFs, invoices, resumes, or records. Never answer file questions with `chat`. Use `summarize_document` only for full-document summaries.
+   - Use `chat` for conceptual explanations, comparisons, definitions, reasoning, and conversational Q&A. Provide a direct crisp answer in `"params": {"response": "..."}`. NEVER chain with `screen_pen_annotate`.
+   - Use `screen_pen_annotate` ONLY when the user explicitly requests a visual diagram/chart/map/3D model OR explicitly asks to mark an on-screen UI element (arrow, circle, highlight). Never for explanations.
+   - Use `act_in_app` for in-window UI interactions (clicking, typing, scrolling).
+   - Use `web_search` for live online info, `get_weather` for weather, and `stock_quote` for ticker prices.
+5. Output Format: Output ONLY valid JSON: {"actions": [{"tool": "<tool_name>", "params": {<parameters>}}]}
 
 TOOLS AVAILABLE:
 <<TOOLS>>
@@ -3153,20 +3144,11 @@ EXAMPLES:
 User: what does my contract say about termination notice?
 Assistant: {"actions": [{"tool": "document_qa", "params": {"query": "termination notice", "filepath": "contract"}}]}
 
-User: what is the total amount due on the electricity invoice?
-Assistant: {"actions": [{"tool": "document_qa", "params": {"query": "total amount due electricity invoice", "filepath": "invoice"}}]}
-
-User: open notepad and write a short haiku about rain
-Assistant: {"actions": [{"tool": "open_app", "params": {"name": "notepad"}}, {"tool": "generate_content", "params": {"type": "essay", "topic": "short haiku about rain"}}, {"tool": "insert_content", "params": {"destination": "notepad"}}]}
-
 User: find my budget file and summarize it
 Assistant: {"actions": [{"tool": "find_file", "params": {"query": "budget"}}, {"tool": "summarize_document", "params": {"target_index": 0}}]}
 
 User: search online for latest space telescope discoveries and draft an email to Jordan about it
 Assistant: {"actions": [{"tool": "web_search", "params": {"query": "latest space telescope discoveries"}}, {"tool": "draft_email", "params": {"to": "Jordan", "subject": "Latest Space Telescope Discoveries", "prompt": "$prev"}}]}
-
-User: explain how solar panels work
-Assistant: {"actions": [{"tool": "chat", "params": {"response": "Solar panels convert sunlight into electricity using photovoltaic cells. Photons knock electrons free from silicon atoms, generating direct current (DC) electricity that an inverter converts into alternating current (AC) for household power."}}]}
 
 User: compare python and rust
 Assistant: {"actions": [{"tool": "chat", "params": {"response": "Python and Rust serve distinct purposes:\n- Productivity: Python offers rapid prototyping and dynamic typing, ideal for AI/ML and scripting.\n- Performance: Rust provides bare-metal execution speed with memory safety and zero garbage collection overhead.\n- Concurrency: Rust eliminates data races at compile time, whereas Python relies on the GIL.\n- Learning Curve: Python is beginner-friendly, while Rust has a steep learning curve due to borrow checking."}}]}
@@ -3174,23 +3156,11 @@ Assistant: {"actions": [{"tool": "chat", "params": {"response": "Python and Rust
 User: show a comparison chart of Python, Rust, and Go popularity
 Assistant: {"actions": [{"tool": "screen_pen_annotate", "params": {"action": "bars", "topic": "Python, Rust, and Go popularity"}}]}
 
-User: show a world map highlighting Japan, Germany, and Brazil
-Assistant: {"actions": [{"tool": "screen_pen_annotate", "params": {"action": "map", "topic": "Japan, Germany, Brazil"}}]}
-
 User: draw an arrow to the Save button
 Assistant: {"actions": [{"tool": "screen_pen_annotate", "params": {"action": "arrow", "label": "Save button"}}]}
 
-User: circle the search bar
-Assistant: {"actions": [{"tool": "screen_pen_annotate", "params": {"action": "circle", "label": "Search bar"}}]}
-
-User: highlight the submit button
-Assistant: {"actions": [{"tool": "screen_pen_annotate", "params": {"action": "highlight", "label": "Submit"}}]}
-
 User: decrease volume from 50 to 40
 Assistant: {"actions": [{"tool": "set_volume", "params": {"action": "set_volume", "level": 40}}]}
-
-User: scroll down on this page
-Assistant: {"actions": [{"tool": "act_in_app", "params": {"action": "scroll", "target": "down"}}]}
 
 User: walk me through changing my display scale in Settings
 Assistant: {"actions": [{"tool": "screen_pen_guide", "params": {"steps": [{"target": "System", "caption": "Open System settings"}, {"target": "Display", "caption": "Select Display options"}, {"target": "Scale", "caption": "Adjust the scale percentage"}], "topic": "Change Display Scale"}}]}
@@ -3711,6 +3681,10 @@ def _normalize_tool_calls(tool_calls: list[dict], final_response: str) -> None:
                 call["params"]["reply"] = reply_val
                 if not call.get("speak"):
                     call["speak"] = reply_val
+
+    has_chat = any(c.get("tool") == "chat" for c in tool_calls)
+    if has_chat and len(tool_calls) > 1:
+        tool_calls[:] = [c for c in tool_calls if c.get("tool") != "screen_pen_annotate"]
 
 
 def _route_with_llm(query: str, conversation_history: list | None = None) -> tuple[list[dict], str]:

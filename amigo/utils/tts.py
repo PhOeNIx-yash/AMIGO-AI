@@ -1,10 +1,9 @@
 """
 Unified Speech Engine Module for Amigo Voice Assistant.
-Handles high-fidelity Neural Text-to-Speech (TTS via Kokoro v1.0 ONNX offline Studio voices with Microsoft Edge Neural cloud fallback)
+Handles high-fidelity Neural Text-to-Speech (TTS via Paradee 1.2 ONNX offline Studio voices)
 and Offline Speech-to-Text (STT via Vosk Neural Recognizer).
 """
 
-import asyncio
 import base64
 import io
 import json
@@ -12,31 +11,9 @@ import logging
 import os
 import queue
 import re
-import socket
 import threading
 import time
 import numpy as np
-
-# Force IPv4 in socket.getaddrinfo to prevent Windows 11 IPv6 connection reset error [WinError 10054]
-try:
-    _orig_getaddrinfo = socket.getaddrinfo
-    def _ipv4_getaddrinfo(*args, **kwargs):
-        res = _orig_getaddrinfo(*args, **kwargs)
-        ipv4 = [r for r in res if r[0] == socket.AF_INET]
-        return ipv4 if ipv4 else res
-    socket.getaddrinfo = _ipv4_getaddrinfo
-except Exception:
-    pass
-
-try:
-    import aiohttp
-    _orig_connector_init = aiohttp.TCPConnector.__init__
-    def _ipv4_connector_init(self, *args, **kwargs):
-        kwargs['family'] = socket.AF_INET
-        _orig_connector_init(self, *args, **kwargs)
-    aiohttp.TCPConnector.__init__ = _ipv4_connector_init
-except ImportError:
-    aiohttp = None
 
 try:
     import av
@@ -58,80 +35,54 @@ try:
 except ImportError:
     _sd = None
 
-# ── Kokoro v1.0 ONNX Offline Neural Engine ─────────────────────────────────
-_KOKORO_MODEL_PATH = None
-for _cand in (
-    os.path.join(_MODELS_ROOT, "kokoro", "kokoro-v1.0.onnx"),
-    os.path.join(_MODELS_ROOT, "kokoro", "kokoro-v1.0.int8.onnx"),
-    os.path.join(_MODELS_ROOT, "kokoro-v1.0.onnx"),
-):
-    if os.path.exists(_cand) and os.path.getsize(_cand) > 10_000_000:
-        _KOKORO_MODEL_PATH = _cand
-        break
-
-_KOKORO_VOICES_PATH = None
-for _cand in (
-    os.path.join(_MODELS_ROOT, "kokoro", "voices-v1.0.bin"),
-    os.path.join(_MODELS_ROOT, "voices-v1.0.bin"),
-):
-    if os.path.exists(_cand) and os.path.getsize(_cand) > 1_000_000:
-        _KOKORO_VOICES_PATH = _cand
-        break
-
+# ── Paradee 1.2 ONNX Offline Neural Engine ──────────────────────────────────
 try:
-    import kokoro_onnx
-    import onnxruntime as _ort
-    _USE_KOKORO_ONNX = bool(_KOKORO_MODEL_PATH and _KOKORO_VOICES_PATH)
-    if _USE_KOKORO_ONNX:
-        logger.info("[TTS] Kokoro v1.0 ONNX Offline Neural engine available (24kHz Studio, 54 voices).")
+    from paradee import Paradee, SAMPLE_RATE
+    _USE_PARADEE = True
+    logger.info("[TTS] Paradee 1.2 ONNX Offline Neural engine available (24kHz Studio, 4 voices).")
 except ImportError:
-    kokoro_onnx = None
-    _ort = None
-    _USE_KOKORO_ONNX = False
+    Paradee = None
+    SAMPLE_RATE = 24000
+    _USE_PARADEE = False
 
-# ── Microsoft Edge Neural Fallback Engine ──────────────────────────────────
-try:
-    import edge_tts
-    _USE_EDGE_TTS = True
-except ImportError:
-    edge_tts = None
-    _USE_EDGE_TTS = False
-
-_USE_TTS = _USE_KOKORO_ONNX or _USE_EDGE_TTS
+_USE_TTS = _USE_PARADEE
 
 # ── Curated Voice Catalog ───────────────────────────────────────────────────
 CURATED_VOICES = {
-    # Kokoro v1.0 Flagship Studio Voices (Primary / Offline)
-    "af_heart":    {"engine": "kokoro", "id": "af_heart",    "name": "Heart",    "gender": "Female", "accent": "US", "desc": "Flagship studio female — #1 natural human cadence (Default)"},
-    "af_bella":    {"engine": "kokoro", "id": "af_bella",    "name": "Bella",    "gender": "Female", "accent": "US", "desc": "Bright, crisp & articulate assistant female"},
-    "af_sarah":    {"engine": "kokoro", "id": "af_sarah",    "name": "Sarah",    "gender": "Female", "accent": "US", "desc": "Warm, confident & clear conversational female"},
-    "af_nicole":   {"engine": "kokoro", "id": "af_nicole",   "name": "Nicole",   "gender": "Female", "accent": "US", "desc": "Soft, pleasant & relatable conversational female"},
-    "af_sky":      {"engine": "kokoro", "id": "af_sky",      "name": "Sky",      "gender": "Female", "accent": "US", "desc": "Expressive, youthful & upbeat female"},
-    "am_adam":     {"engine": "kokoro", "id": "am_adam",     "name": "Adam",     "gender": "Male",   "accent": "US", "desc": "Warm, relatable conversational male"},
-    "am_michael":  {"engine": "kokoro", "id": "am_michael",  "name": "Michael",  "gender": "Male",   "accent": "US", "desc": "Deep, confident & crisp male"},
-    "bm_george":   {"engine": "kokoro", "id": "bm_george",   "name": "George",   "gender": "Male",   "accent": "GB", "desc": "Polished & distinguished British gentleman"},
-    "bf_emma":     {"engine": "kokoro", "id": "bf_emma",     "name": "Emma",     "gender": "Female", "accent": "GB", "desc": "Crisp, elegant British female"},
+    # Paradee 1.2 Flagship Studio Voices (24kHz Offline Neural)
+    "af_heart":    {"engine": "paradee", "id": "af_heart",    "name": "Heart",    "gender": "Female", "accent": "US", "desc": "Flagship studio female — natural human cadence (Recommended / Default)"},
+    "am_puck":     {"engine": "paradee", "id": "am_puck",     "name": "Puck",     "gender": "Male",   "accent": "US", "desc": "Warm, relatable and crisp conversational male"},
+    "bf_isabella": {"engine": "paradee", "id": "bf_isabella", "name": "Isabella", "gender": "Female", "accent": "GB", "desc": "Crisp, refined & elegant British studio female"},
+    "bm_fable":    {"engine": "paradee", "id": "bm_fable",    "name": "Fable",    "gender": "Male",   "accent": "GB", "desc": "Polished & distinguished British gentleman"},
 
-    # Edge TTS Studio Voices (Cloud / Fallback)
-    "aria":        {"engine": "edge_tts", "id": "en-US-AriaNeural",        "name": "Aria",        "gender": "Female", "accent": "US", "desc": "Clear, natural studio female (Edge TTS)"},
-    "jenny":       {"engine": "edge_tts", "id": "en-US-JennyNeural",       "name": "Jenny",       "gender": "Female", "accent": "US", "desc": "Conversational studio female (Edge TTS)"},
-    "guy":         {"engine": "edge_tts", "id": "en-US-GuyNeural",         "name": "Guy",         "gender": "Male",   "accent": "US", "desc": "Conversational studio male (Edge TTS)"},
-    "christopher": {"engine": "edge_tts", "id": "en-US-ChristopherNeural", "name": "Christopher", "gender": "Male",   "accent": "US", "desc": "Narrative studio male (Edge TTS)"},
-    "sonia":       {"engine": "edge_tts", "id": "en-GB-SoniaNeural",       "name": "Sonia",       "gender": "Female", "accent": "GB", "desc": "Crisp British female (Edge TTS)"},
-    "ryan":        {"engine": "edge_tts", "id": "en-GB-RyanNeural",        "name": "Ryan",        "gender": "Male",   "accent": "GB", "desc": "Crisp British male (Edge TTS)"},
-    "neerja":      {"engine": "edge_tts", "id": "en-IN-NeerjaNeural",      "name": "Neerja",      "gender": "Female", "accent": "IN", "desc": "Natural Indian English female (Edge TTS)"},
+    # Aliases mapped directly to Paradee voices
+    "default":     {"engine": "paradee", "id": "af_heart",    "name": "Heart",    "gender": "Female", "accent": "US", "desc": "Default Assistant Voice"},
+    "amigo":       {"engine": "paradee", "id": "am_puck",     "name": "Amigo",    "gender": "Male",   "accent": "US", "desc": "Warm companion male"},
+    "clara":       {"engine": "paradee", "id": "af_heart",    "name": "Clara",    "gender": "Female", "accent": "US", "desc": "Crisp conversational female"},
+    "sophia":      {"engine": "paradee", "id": "bf_isabella", "name": "Sophia",   "gender": "Female", "accent": "GB", "desc": "Studio female"},
+    "leo":         {"engine": "paradee", "id": "bm_fable",    "name": "Leo",      "gender": "Male",   "accent": "GB", "desc": "Narrative male"},
+    "alba":        {"engine": "paradee", "id": "af_heart",    "name": "Alba",     "gender": "Female", "accent": "US", "desc": "Studio female"},
+    "cosette":     {"engine": "paradee", "id": "bf_isabella", "name": "Cosette",  "gender": "Female", "accent": "GB", "desc": "Conversational female"},
+    "marius":      {"engine": "paradee", "id": "am_puck",     "name": "Marius",   "gender": "Male",   "accent": "US", "desc": "Conversational male"},
+    "en-us":       {"engine": "paradee", "id": "af_heart",    "name": "Default",  "gender": "Female", "accent": "US", "desc": "Default Assistant Voice"},
+    "en-default":  {"engine": "paradee", "id": "af_heart",    "name": "Default",  "gender": "Female", "accent": "US", "desc": "Default Assistant Voice"},
 
-    # Compatibility Aliases (Route to best available engine/voice with zero hardcoding)
-    "default":     {"engine": "kokoro" if _USE_KOKORO_ONNX else "edge_tts", "id": "af_heart" if _USE_KOKORO_ONNX else "en-US-AriaNeural", "name": "Heart",   "gender": "Female", "accent": "US", "desc": "Default Assistant Voice"},
-    "amigo":       {"engine": "kokoro" if _USE_KOKORO_ONNX else "edge_tts", "id": "am_adam" if _USE_KOKORO_ONNX else "en-US-GuyNeural",   "name": "Amigo",   "gender": "Male",   "accent": "US", "desc": "Warm companion male"},
-    "clara":       {"engine": "kokoro" if _USE_KOKORO_ONNX else "edge_tts", "id": "af_bella" if _USE_KOKORO_ONNX else "en-US-JennyNeural", "name": "Clara",   "gender": "Female", "accent": "US", "desc": "Crisp conversational female"},
-    "sophia":      {"engine": "kokoro" if _USE_KOKORO_ONNX else "edge_tts", "id": "af_sarah" if _USE_KOKORO_ONNX else "en-US-AriaNeural",  "name": "Sophia",  "gender": "Female", "accent": "US", "desc": "Studio female"},
-    "leo":         {"engine": "kokoro" if _USE_KOKORO_ONNX else "edge_tts", "id": "am_michael" if _USE_KOKORO_ONNX else "en-US-ChristopherNeural", "name": "Leo", "gender": "Male", "accent": "US", "desc": "Narrative male"},
-    "alba":        {"engine": "kokoro" if _USE_KOKORO_ONNX else "edge_tts", "id": "af_heart" if _USE_KOKORO_ONNX else "en-US-AriaNeural", "name": "Alba",    "gender": "Female", "accent": "US", "desc": "Studio female"},
-    "cosette":     {"engine": "kokoro" if _USE_KOKORO_ONNX else "edge_tts", "id": "af_bella" if _USE_KOKORO_ONNX else "en-US-JennyNeural", "name": "Cosette", "gender": "Female", "accent": "US", "desc": "Conversational female"},
-    "marius":      {"engine": "kokoro" if _USE_KOKORO_ONNX else "edge_tts", "id": "am_adam" if _USE_KOKORO_ONNX else "en-US-GuyNeural",   "name": "Marius",  "gender": "Male",   "accent": "US", "desc": "Conversational male"},
-    "en-us":       {"engine": "kokoro" if _USE_KOKORO_ONNX else "edge_tts", "id": "af_heart" if _USE_KOKORO_ONNX else "en-US-AriaNeural", "name": "Default", "gender": "Female", "accent": "US", "desc": "Default Assistant Voice"},
-    "en-default":  {"engine": "kokoro" if _USE_KOKORO_ONNX else "edge_tts", "id": "af_heart" if _USE_KOKORO_ONNX else "en-US-AriaNeural", "name": "Default", "gender": "Female", "accent": "US", "desc": "Default Assistant Voice"},
+    # Legacy voice aliases
+    "af_bella":    {"engine": "paradee", "id": "af_heart",    "name": "Heart",    "gender": "Female", "accent": "US", "desc": "Flagship studio female"},
+    "af_sarah":    {"engine": "paradee", "id": "af_heart",    "name": "Heart",    "gender": "Female", "accent": "US", "desc": "Flagship studio female"},
+    "af_nicole":   {"engine": "paradee", "id": "af_heart",    "name": "Heart",    "gender": "Female", "accent": "US", "desc": "Flagship studio female"},
+    "af_sky":      {"engine": "paradee", "id": "af_heart",    "name": "Heart",    "gender": "Female", "accent": "US", "desc": "Flagship studio female"},
+    "am_adam":     {"engine": "paradee", "id": "am_puck",     "name": "Puck",     "gender": "Male",   "accent": "US", "desc": "Conversational male"},
+    "am_michael":  {"engine": "paradee", "id": "am_puck",     "name": "Puck",     "gender": "Male",   "accent": "US", "desc": "Conversational male"},
+    "bm_george":   {"engine": "paradee", "id": "bm_fable",    "name": "Fable",    "gender": "Male",   "accent": "GB", "desc": "British gentleman"},
+    "bf_emma":     {"engine": "paradee", "id": "bf_isabella", "name": "Isabella", "gender": "Female", "accent": "GB", "desc": "British studio female"},
+    "aria":        {"engine": "paradee", "id": "af_heart",    "name": "Heart",    "gender": "Female", "accent": "US", "desc": "Studio female"},
+    "jenny":       {"engine": "paradee", "id": "af_heart",    "name": "Heart",    "gender": "Female", "accent": "US", "desc": "Studio female"},
+    "guy":         {"engine": "paradee", "id": "am_puck",     "name": "Puck",     "gender": "Male",   "accent": "US", "desc": "Studio male"},
+    "christopher": {"engine": "paradee", "id": "bm_fable",    "name": "Fable",    "gender": "Male",   "accent": "GB", "desc": "Studio male"},
+    "sonia":       {"engine": "paradee", "id": "bf_isabella", "name": "Isabella", "gender": "Female", "accent": "GB", "desc": "Studio female"},
+    "ryan":        {"engine": "paradee", "id": "bm_fable",    "name": "Fable",    "gender": "Male",   "accent": "GB", "desc": "Studio male"},
+    "neerja":      {"engine": "paradee", "id": "af_heart",    "name": "Heart",    "gender": "Female", "accent": "US", "desc": "Studio female"},
 }
 
 _PROFILE_PATH = os.path.join(_PROJECT_ROOT, "amigo_profile.json")
@@ -143,47 +94,43 @@ _active_stream = None
 _active_stream_lock = threading.Lock()
 _profile_mtime_tts = 0.0
 
-_kokoro_instance = None
-_kokoro_init_lock = threading.Lock()
+_paradee_instance = None
+_paradee_init_lock = threading.Lock()
 
 
-def _get_kokoro():
-    """Lazy-loads and warms up Kokoro v1.0 ONNX inference engine with optimized multi-threading."""
-    global _kokoro_instance
-    if _kokoro_instance is None and _USE_KOKORO_ONNX:
-        with _kokoro_init_lock:
-            if _kokoro_instance is None and _KOKORO_MODEL_PATH and _KOKORO_VOICES_PATH:
+def _get_paradee():
+    """Lazy-loads and warms up Paradee 1.2 ONNX inference engine with optimized multi-threading."""
+    global _paradee_instance
+    if _paradee_instance is None and _USE_PARADEE:
+        with _paradee_init_lock:
+            if _paradee_instance is None:
                 try:
-                    so = _ort.SessionOptions()
-                    so.intra_op_num_threads = min(6, os.cpu_count() or 4)
-                    so.inter_op_num_threads = 2
-                    so.graph_optimization_level = _ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-                    session = _ort.InferenceSession(_KOKORO_MODEL_PATH, sess_options=so, providers=["CPUExecutionProvider"])
-                    _kokoro_instance = kokoro_onnx.Kokoro.from_session(session, _KOKORO_VOICES_PATH)
-                    logger.info("[Kokoro] Kokoro v1.0 ONNX Engine loaded and ready.")
+                    threads = min(4, max(1, (os.cpu_count() or 4) - 1))
+                    _paradee_instance = Paradee(version="1.2", quantized=True, threads=threads)
+                    logger.info("[Paradee] Paradee 1.2 ONNX Engine loaded and ready.")
                 except Exception as e:
-                    logger.warning(f"[Kokoro] Init note: {e}")
-    return _kokoro_instance
+                    logger.warning(f"[Paradee] Init note: {e}")
+    return _paradee_instance
 
 
 def get_voice_catalog() -> dict:
-    """Returns dictionary of all curated voices with metadata, augmented dynamically from Kokoro voices."""
+    """Returns dictionary of all curated voices with metadata, augmented dynamically from Paradee voices."""
     catalog = dict(CURATED_VOICES)
-    if _USE_KOKORO_ONNX:
+    if _USE_PARADEE:
         try:
-            k = _get_kokoro()
-            if k:
-                for v in k.get_voices():
+            p = _get_paradee()
+            if p and hasattr(p, "voices"):
+                for v in p.voices:
                     if v not in catalog:
-                        gender = "Female" if v.startswith(("af_", "bf_", "ef_", "ff_", "if_", "jf_", "zf_")) else "Male"
+                        gender = "Female" if v.startswith(("af_", "bf_")) else "Male"
                         accent = "GB" if v.startswith("b") else "US"
                         catalog[v] = {
-                            "engine": "kokoro",
+                            "engine": "paradee",
                             "id": v,
                             "name": v.replace("_", " ").title(),
                             "gender": gender,
                             "accent": accent,
-                            "desc": f"Kokoro v1.0 Studio voice ({v})",
+                            "desc": f"Paradee 1.2 Studio voice ({v})",
                         }
         except Exception:
             pass
@@ -191,10 +138,8 @@ def get_voice_catalog() -> dict:
 
 
 def _get_default_voice() -> str:
-    if _USE_KOKORO_ONNX:
+    if _USE_PARADEE:
         return "af_heart"
-    elif _USE_EDGE_TTS:
-        return "aria"
     return "none"
 
 
@@ -301,81 +246,29 @@ def set_tts_callbacks(state_cb=None, broadcast_cb=None):
 
 
 def get_tts_engine_name() -> str:
-    if _USE_KOKORO_ONNX:
-        return "Kokoro v1.0 ONNX Offline Neural TTS (24kHz Studio)"
-    elif _USE_EDGE_TTS:
-        return "Microsoft Edge Neural TTS (24kHz)"
+    if _USE_PARADEE:
+        return "Paradee 1.2 ONNX Offline Neural TTS (24kHz Studio)"
     return "TTS Disabled"
 
 
-def _fetch_kokoro_audio(text: str, voice_id: str = "af_heart", stop_evt: threading.Event | None = None, speed: float = 1.05) -> tuple[np.ndarray | None, int]:
-    """Generates ultra-fast 24kHz studio audio via Kokoro v1.0 ONNX with zero cloud latency."""
-    kokoro = _get_kokoro()
-    if kokoro is None:
+def _fetch_paradee_audio(text: str, voice_id: str = "af_heart", stop_evt: threading.Event | None = None, speed: float = 1.0) -> tuple[np.ndarray | None, int]:
+    """Generates ultra-fast 24kHz studio audio via Paradee 1.2 ONNX with zero cloud latency."""
+    p = _get_paradee()
+    if p is None:
         return None, 24000
     try:
         if stop_evt and stop_evt.is_set():
             return None, 24000
-        # Determine language prefix from voice (e.g. bf_emma -> en-gb, af_heart -> en-us)
-        lang = "en-gb" if voice_id.startswith("b") else "en-us"
+        valid_voices = getattr(p, "voices", ["af_heart", "bf_isabella", "am_puck", "bm_fable"])
+        v_target = voice_id if voice_id in valid_voices else "af_heart"
         with _tts_lock:
-            samples, sr = kokoro.create(text, voice=voice_id, speed=speed, lang=lang)
+            samples = p(text, speed=speed, voice=v_target)
         if samples is None or len(samples) == 0:
             return None, 24000
         audio = np.ascontiguousarray(samples, dtype=np.float32)
-        return audio, sr
+        return audio, 24000
     except Exception as e:
-        logger.warning(f"[Kokoro] Synthesis error: {e}")
-        return None, 24000
-
-
-def _fetch_edge_tts_audio(text: str, voice_id: str, stop_evt: threading.Event | None = None, rate: str = "+8%", pitch: str = "+0Hz") -> tuple[np.ndarray | None, int]:
-    """Fetches and decodes MP3 audio bytes from Edge TTS into float32 samples with assistant pacing tuning."""
-    if not edge_tts or not av:
-        return None, 24000
-
-    async def _async_fetch():
-        comm = edge_tts.Communicate(text, voice_id, rate=rate, pitch=pitch)
-        buf = io.BytesIO()
-        async for chunk in comm.stream():
-            if stop_evt and stop_evt.is_set():
-                return None
-            if chunk["type"] == "audio":
-                buf.write(chunk["data"])
-        buf.seek(0)
-        return buf
-
-    loop = asyncio.new_event_loop()
-    try:
-        mp3_buf = loop.run_until_complete(_async_fetch())
-    except Exception as e:
-        logger.warning(f"[Edge TTS] Fetch error: {e}")
-        return None, 24000
-    finally:
-        loop.close()
-
-    if mp3_buf is None or mp3_buf.getbuffer().nbytes == 0:
-        return None, 24000
-
-    try:
-        container = av.open(mp3_buf)
-        frames = []
-        sr = 24000
-        for frame in container.decode(audio=0):
-            sr = frame.sample_rate
-            frames.append(frame.to_ndarray())
-        container.close()
-
-        if not frames:
-            return None, sr
-
-        audio = np.concatenate(frames, axis=1)
-        if audio.ndim > 1:
-            audio = audio.mean(axis=0)
-        audio = np.ascontiguousarray(audio.astype(np.float32) / 32768.0, dtype=np.float32)
-        return audio, sr
-    except Exception as e:
-        logger.warning(f"[Edge TTS] Decode error: {e}")
+        logger.warning(f"[Paradee] Synthesis error: {e}")
         return None, 24000
 
 
@@ -383,14 +276,11 @@ def _warmup_tts():
     """Warms up TTS engine in a background thread so first generation has zero delay."""
     def _warm():
         try:
-            if _USE_KOKORO_ONNX:
-                kokoro = _get_kokoro()
-                if kokoro:
-                    kokoro.create("Ready.", voice="af_heart")
-                    logger.info("[TTS] Kokoro v1.0 ONNX Engine primed and ready.")
-            elif _USE_EDGE_TTS:
-                _fetch_edge_tts_audio("Ready.", "en-US-AriaNeural")
-                logger.info("[TTS] Microsoft Edge Neural TTS initialized and connected.")
+            if _USE_PARADEE:
+                p = _get_paradee()
+                if p:
+                    p("Ready.", voice="af_heart")
+                    logger.info("[TTS] Paradee 1.2 ONNX Engine primed and ready.")
         except Exception as e:
             logger.debug(f"[TTS Warmup] {e}")
 
@@ -1007,7 +897,7 @@ def _speech_worker():
     """
     Dedicated synthesis worker:
     - Streams neural TTS audio (24kHz chunks) directly to playback worker.
-    - Yields chunks as they are generated by Kokoro v1.0 ONNX or Edge TTS with low time-to-first-sound.
+    - Yields chunks as they are generated by Paradee 1.2 ONNX with low time-to-first-sound.
     - Halts immediately without CPU waste on user interruption.
     """
     while True:
@@ -1041,8 +931,7 @@ def _speech_worker():
             catalog = get_voice_catalog()
             default_voice = _get_default_voice()
             v_info = catalog.get(target_voice) or catalog.get(default_voice) or {}
-            engine_type = v_info.get("engine", "kokoro" if _USE_KOKORO_ONNX else "edge_tts")
-            voice_id = v_info.get("id", "af_heart" if engine_type == "kokoro" else "en-US-AriaNeural")
+            voice_id = v_info.get("id", "af_heart")
 
             clean_text = _compact_tts_text(text)
             if not clean_text:
@@ -1063,20 +952,10 @@ def _speech_worker():
                 try:
                     samples = None
                     sr = 24000
-                    if engine_type == "kokoro" and _USE_KOKORO_ONNX:
-                        samples, sr = _fetch_kokoro_audio(spoken_chunk, voice_id, stop_evt)
-                        if (samples is None or len(samples) == 0) and _USE_EDGE_TTS and not stop_evt.is_set():
-                            logger.info("[TTS] Falling back to Edge TTS for chunk.")
-                            samples, sr = _fetch_edge_tts_audio(spoken_chunk, "en-US-AriaNeural", stop_evt)
-                    elif engine_type == "edge_tts" and _USE_EDGE_TTS:
-                        samples, sr = _fetch_edge_tts_audio(spoken_chunk, voice_id, stop_evt)
-                        if (samples is None or len(samples) == 0) and _USE_KOKORO_ONNX and not stop_evt.is_set():
-                            logger.info("[TTS] Falling back to Kokoro ONNX for chunk.")
-                            samples, sr = _fetch_kokoro_audio(spoken_chunk, "af_heart", stop_evt)
-                    elif _USE_KOKORO_ONNX:
-                        samples, sr = _fetch_kokoro_audio(spoken_chunk, "af_heart", stop_evt)
-                    elif _USE_EDGE_TTS:
-                        samples, sr = _fetch_edge_tts_audio(spoken_chunk, "en-US-AriaNeural", stop_evt)
+                    if _USE_PARADEE:
+                        samples, sr = _fetch_paradee_audio(spoken_chunk, voice_id, stop_evt)
+                        if (samples is None or len(samples) == 0) and not stop_evt.is_set():
+                            samples, sr = _fetch_paradee_audio(spoken_chunk, "af_heart", stop_evt)
 
                     if samples is not None and len(samples) > 0 and _speech_is_current(generation) and not stop_evt.is_set():
                         is_last = (idx == total_chunks - 1)
