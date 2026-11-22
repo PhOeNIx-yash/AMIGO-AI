@@ -1,5 +1,7 @@
 import React, { useEffect, useRef } from "react";
 import { Orb, type OrbState } from "@yogesharc/thinking-orbs";
+import { torus, cube } from "@yogesharc/thinking-orbs/shapes";
+import { mesh } from "@yogesharc/thinking-orbs/renders";
 import { AssistantState, ColorTheme, VisualizerMode, ThinkingOrbStyle } from "../types";
 import { audioBus } from "../utils/audioBus";
 
@@ -24,12 +26,12 @@ export const AMIGO_ORB_PRESETS: {
   orbState: OrbState;
   desc: string;
 }[] = [
-  { id: "orbits", name: "Reasoning Walk", orbState: "reasoning", desc: "Signature 3D reasoning thinking orb" },
-  { id: "rubik", name: "Dual Constellation", orbState: "reasoning", desc: "Twin thinking walkers exploring simultaneously" },
-  { id: "morph", name: "Compacting Core", orbState: "compacting", desc: "Dynamic squeeze and pack compression animation" },
-  { id: "ring", name: "Gyroscopic Spin", orbState: "working", desc: "Gyroscopic 3D axis orbital tilt" },
-  { id: "web", name: "Spiral Constellation", orbState: "background", desc: "Hypnotic spiral dot flow" },
-  { id: "globe", name: "Surge Pulse", orbState: "retrying", desc: "Rhythmic surge and rewind wave" },
+  { id: "orbits", name: "Cosmic Orbits", orbState: "working", desc: "3D gyroscopic particle orbits" },
+  { id: "rubik", name: "Puzzle Matrix", orbState: "reasoning", desc: "3D geometric reasoning cube matrix" },
+  { id: "morph", name: "Morphing Core", orbState: "compacting", desc: "3D topological squeeze-and-fuse geometry" },
+  { id: "ring", name: "Harmonic Rings", orbState: "working", desc: "3D quantum torus concentric orbital ring" },
+  { id: "web", name: "Neural Web", orbState: "reasoning", desc: "3D synaptic constellation neural network mesh" },
+  { id: "globe", name: "Radar Globe", orbState: "searching", desc: "3D scanning coordinate sphere with radar sweep" },
 ];
 
 export const WEB_SEARCH_ORB_PRESETS: {
@@ -38,31 +40,31 @@ export const WEB_SEARCH_ORB_PRESETS: {
   orbState: OrbState;
   desc: string;
 }[] = [
-  { id: "globe", name: "Search Lens", orbState: "searching", desc: "Sweeping optical search lens scanning the sphere" },
-  { id: "orbits", name: "Lighthouse Radar", orbState: "searching", desc: "Rotating 360° lighthouse radar beam" },
-  { id: "web", name: "Twin Searchers", orbState: "reasoning", desc: "Dual synaptic walkers tracing queries" },
-  { id: "rubik", name: "Deep Scan", orbState: "searching", desc: "Focused coordinate surface search" },
+  { id: "globe", name: "Radar Globe", orbState: "searching", desc: "3D scanning coordinate sphere with radar sweep" },
+  { id: "web", name: "Neural Web", orbState: "searching", desc: "3D synaptic constellation with packet routing" },
+  { id: "orbits", name: "Satellite Orbits", orbState: "working", desc: "3D planetary orbital tracking bands" },
+  { id: "rubik", name: "Index Matrix", orbState: "reasoning", desc: "3D segmented search index matrix" },
 ];
 
 export const THINKING_ORB_PRESETS = AMIGO_ORB_PRESETS;
 
 export const STYLE_TO_ORB_STATE: Record<ThinkingOrbStyle, OrbState> = {
   globe: "searching",
-  orbits: "reasoning",
-  web: "background",
+  orbits: "working",
+  web: "reasoning",
   morph: "compacting",
   ring: "working",
   rubik: "reasoning",
 };
 
 const ORB_LABELS: Record<AssistantState, string> = {
-  idle: "Amigo is waiting",
+  idle: "Amigo is ready",
   listening: "Amigo is listening",
   processing: "Amigo is thinking",
   action_card: "Amigo is preparing choices",
   contact_picker: "Amigo is connecting details",
   working: "Amigo is working",
-  completed: "Amigo is ready",
+  completed: "Amigo completed the task",
   generated_content: "Amigo generated content for review",
 };
 
@@ -88,80 +90,66 @@ const ORB_COLORS_LIGHT: Record<AssistantState, string> = {
   idle: "#0284c7",
 };
 
-export interface OrbConfig {
+function getOrbConfig(
+  state: AssistantState,
+  isWebSearch: boolean,
+  thinkingOrbStyle: ThinkingOrbStyle,
+  webSearchOrbStyle: ThinkingOrbStyle
+): {
   state: OrbState;
   variant?: any;
-}
-
-/**
- * Maps Amigo assistant activities to the dedicated Thinking Orbs animations:
- * - Searching -> "searching" (search lens / lighthouse)
- * - Thinking  -> "reasoning" (signature dot walk / twins)
- * - Waiting   -> "waiting"   (comet spiralling around sphere)
- * - Listening -> "using" ("record" audio pulse)
- * - Working   -> "working"   (gyroscopic 3D orbit)
- */
-export function getOrbConfig(
-  assistantState: AssistantState,
-  isWebSearch: boolean,
-  thinkingOrbStyle?: ThinkingOrbStyle,
-  webSearchOrbStyle?: ThinkingOrbStyle
-): OrbConfig {
-  // 1. Searching (live online web search or search intent)
-  if (isWebSearch) {
-    if (webSearchOrbStyle === "orbits") {
-      return { state: "searching", variant: "lighthouse" };
-    }
-    if (webSearchOrbStyle === "web") {
-      return { state: "reasoning", variant: "twins" };
-    }
-    return { state: "searching", variant: "default" };
-  }
-
-  // 2. Thinking / Reasoning
-  if (assistantState === "processing") {
-    switch (thinkingOrbStyle) {
-      case "rubik":
-        return { state: "reasoning", variant: "twins" };
-      case "morph":
-        return { state: "compacting", variant: "squeeze" };
-      case "ring":
-        return { state: "working", variant: "gyro" };
-      case "web":
-        return { state: "background", variant: "spiral" };
-      case "globe":
-        return { state: "retrying", variant: "surge" };
-      case "orbits":
-      default:
-        return { state: "reasoning", variant: "default" };
-    }
-  }
-
-  // 3. Listening (mic audio capture)
-  if (assistantState === "listening") {
+  shape?: any;
+  render?: any;
+} {
+  if (state === "listening") {
     return { state: "using", variant: "record" };
   }
-
-  // 4. Working (running tools, executing system tasks)
-  if (assistantState === "working") {
-    return { state: "working", variant: "gyro" };
+  if (isWebSearch && (state === "processing" || state === "working")) {
+    switch (webSearchOrbStyle) {
+      case "web":
+        return { state: "searching", render: mesh };
+      case "orbits":
+        return { state: "working", variant: "gyro" };
+      case "rubik":
+        return { state: "reasoning", shape: cube };
+      case "globe":
+      default:
+        return { state: "searching", variant: "lighthouse" };
+    }
   }
-
-  // 5. Waiting / Idle (Amigo waiting for user input or ready)
-  if (
-    assistantState === "idle" ||
-    assistantState === "completed" ||
-    assistantState === "action_card" ||
-    assistantState === "contact_picker"
-  ) {
-    return { state: "waiting", variant: "default" };
+  if (state === "processing") {
+    switch (thinkingOrbStyle) {
+      case "globe":
+        return { state: "searching", variant: "lighthouse" };
+      case "web":
+        return { state: "reasoning", render: mesh };
+      case "rubik":
+        return { state: "reasoning", shape: cube };
+      case "ring":
+        return { state: "working", shape: torus };
+      case "morph":
+        return { state: "compacting", variant: "squeeze" };
+      case "orbits":
+      default:
+        return { state: "working", variant: "gyro" };
+    }
   }
-
-  if (assistantState === "generated_content") {
+  if (state === "working") {
+    return { state: "working", variant: "default" };
+  }
+  if (state === "action_card") {
+    return { state: "using", variant: "tap" };
+  }
+  if (state === "contact_picker") {
+    return { state: "searching", variant: "default" };
+  }
+  if (state === "completed") {
+    return { state: "idle", variant: "default" };
+  }
+  if (state === "generated_content") {
     return { state: "reasoning", variant: "twins" };
   }
-
-  return { state: "waiting", variant: "default" };
+  return { state: "idle", variant: "default" };
 }
 
 export const OrbVisualizer: React.FC<OrbVisualizerProps> = React.memo(({
@@ -176,37 +164,24 @@ export const OrbVisualizer: React.FC<OrbVisualizerProps> = React.memo(({
   activePrompt = null,
 }) => {
   const isWebSearch =
-    activeIntent === "web_search" ||
-    activeIntent === "search_web" ||
-    activeIntent === "search" ||
-    activeIntent === "google_search" ||
-    (activePrompt ? /search|google|find online|look up/i.test(activePrompt) : false);
-
-  const orbConfig = getOrbConfig(state, isWebSearch, thinkingOrbStyle, webSearchOrbStyle);
+    activeIntent === "web_search" || activeIntent === "search_web";
 
   let orbColor = isDark ? (ORB_COLORS_DARK[state] || "#38bdf8") : (ORB_COLORS_LIGHT[state] || "#0284c7");
   if (isWebSearch && (state === "processing" || state === "working")) {
     orbColor = isDark ? "#00f0ff" : "#0284c7";
   }
 
-  // Adaptive speed per animation state
-  const speed = isPaused
-    ? 0
-    : orbConfig.state === "searching"
+  const speed = isWebSearch && (state === "processing" || state === "working")
     ? 1.4
-    : orbConfig.state === "reasoning"
-    ? 1.3
-    : orbConfig.state === "working"
-    ? 1.35
-    : orbConfig.state === "using"
-    ? 1.15
-    : 1.0;
+    : state === "processing" || state === "working"
+    ? 1.2
+    : 0.95;
 
   const coreRef = useRef<HTMLDivElement>(null);
   const audioTargetRef = useRef(0);
   const audioSmoothRef = useRef(0);
 
-  // Live microphone audio reactivity for natural breathing pulse while speaking
+  // Live microphone audio reactivity for natural breathing pulse
   useEffect(() => {
     return audioBus.subscribe((level) => {
       audioTargetRef.current = Math.min(Math.max(level, 0), 1);
@@ -235,13 +210,11 @@ export const OrbVisualizer: React.FC<OrbVisualizerProps> = React.memo(({
   }, [state]);
 
   const ariaLabel =
-    orbConfig.state === "searching"
-      ? "Amigo is searching"
-      : orbConfig.state === "reasoning"
-      ? "Amigo is thinking"
-      : orbConfig.state === "waiting"
-      ? "Amigo is waiting"
+    isWebSearch && (state === "processing" || state === "working")
+      ? "Amigo is searching the web"
       : ORB_LABELS[state] || ORB_LABELS.idle;
+
+  const orbConfig = getOrbConfig(state, isWebSearch, thinkingOrbStyle, webSearchOrbStyle);
 
   return (
     <div
@@ -268,7 +241,9 @@ export const OrbVisualizer: React.FC<OrbVisualizerProps> = React.memo(({
       >
         <Orb
           state={orbConfig.state as any}
-          variant={orbConfig.variant as any}
+          variant={orbConfig.variant}
+          shape={orbConfig.shape}
+          render={orbConfig.render}
           size={compact ? 120 : 210}
           speed={speed}
           paused={isPaused}

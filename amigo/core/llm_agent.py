@@ -1,7 +1,7 @@
 """
 LLM-Based Agent for Amigo Voice Assistant.
 Clean, streamlined inference engine for Qwen 3.5 4B Instruct:
-- Direct GGUF inference via llama-cpp-python on RTX 3050 GPU (with CPU fallback)
+- Direct GGUF inference via llama-cpp-python on GPU (with CPU fallback)
 - Fast KV-cache reuse with unified system prompt prefix
 - Multi-turn conversation context (single & multi-step) and RAG profile integration
 - Clean, non-destructive streaming sentence synthesis for TTS
@@ -42,6 +42,7 @@ for _cand in (_PROJECT_ROOT, _PROJECT_ROOT / "amigo"):
 
 
 _cuda_dirs_setup: bool = False
+_cuda_setup_lock = threading.Lock()
 
 
 def _setup_cuda_dll_directory() -> None:
@@ -49,105 +50,116 @@ def _setup_cuda_dll_directory() -> None:
     global _cuda_dirs_setup
     if _cuda_dirs_setup or sys.platform != "win32":
         return
-    _cuda_dirs_setup = True
-    try:
-        import site
 
-        sp_list = [
-            *(site.getsitepackages() or []),
-            site.getusersitepackages(),
-            sys.prefix,
-            os.path.join(sys.prefix, "Lib", "site-packages"),
-        ]
-        cuda_dirs = [
-            os.path.join(sp, "nvidia", sub, "bin")
-            for sp in sp_list
-            if isinstance(sp, str)
-            for sub in ("cuda_runtime", "cublas", "cuda_nvrtc")
-        ]
-        for env_key in (
-            "CUDA_PATH",
-            "CUDA_HOME",
-            "CUDA_PATH_V12_4",
-            "CUDA_PATH_V12_5",
-            "CUDA_PATH_V12_0",
-            "CUDA_PATH_V11_8",
-        ):
-            if cuda_home := os.environ.get(env_key):
-                cuda_dirs.append(os.path.join(cuda_home, "bin"))
+    with _cuda_setup_lock:
+        if _cuda_dirs_setup:
+            return
+        _cuda_dirs_setup = True
 
-        # Prioritize bundled modern llama.cpp binary directory
-        bundled_llama = os.path.join(str(_PROJECT_ROOT), "amigo", "lib", "llama")
-        if not os.path.isdir(bundled_llama):
-            bundled_llama = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib", "llama")
-
-        if os.path.isdir(bundled_llama):
-            os.environ["LLAMA_CPP_LIB_PATH"] = bundled_llama
-            cuda_dirs.insert(0, bundled_llama)
-        else:
-            try:
-                import llama_cpp
-
-                lib_dir = os.path.join(os.path.dirname(llama_cpp.__file__), "lib")
-                if os.path.isdir(lib_dir):
-                    cuda_dirs.append(lib_dir)
-            except Exception:
-                pass
-
-        path_env = os.environ.get("PATH", "")
-        for d in cuda_dirs:
-            if os.path.isdir(d):
-                try:
-                    os.add_dll_directory(d)
-                except Exception:
-                    pass
-                if d not in path_env:
-                    path_env = d + os.pathsep + path_env
-        os.environ["PATH"] = path_env
-
-        # Pre-load ggml backend plugins so llama.cpp doesn't report 'no backends are loaded'
         try:
-            active_lib = os.environ.get("LLAMA_CPP_LIB_PATH")
-            if not active_lib:
-                import llama_cpp
+            import site
 
-                active_lib = os.path.join(os.path.dirname(llama_cpp.__file__), "lib")
-            base_dll = os.path.join(active_lib, "ggml-base.dll")
-            if os.path.exists(base_dll):
+            sp_list = [
+                *(site.getsitepackages() or []),
+                site.getusersitepackages(),
+                sys.prefix,
+                os.path.join(sys.prefix, "Lib", "site-packages"),
+            ]
+            cuda_dirs = [
+                os.path.join(sp, "nvidia", sub, "bin")
+                for sp in sp_list
+                if isinstance(sp, str)
+                for sub in ("cuda_runtime", "cublas", "cuda_nvrtc")
+            ]
+            for env_key in (
+                "CUDA_PATH",
+                "CUDA_HOME",
+                "CUDA_PATH_V12_4",
+                "CUDA_PATH_V12_5",
+                "CUDA_PATH_V12_0",
+                "CUDA_PATH_V11_8",
+            ):
+                if cuda_home := os.environ.get(env_key):
+                    cuda_dirs.append(os.path.join(cuda_home, "bin"))
+
+            bundled_llama = os.path.join(str(_PROJECT_ROOT), "amigo", "lib", "llama")
+            if not os.path.isdir(bundled_llama):
+                bundled_llama = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib", "llama")
+
+            if os.path.isdir(bundled_llama):
+                os.environ["LLAMA_CPP_LIB_PATH"] = bundled_llama
+                cuda_dirs.insert(0, bundled_llama)
+            else:
                 try:
+                    import llama_cpp
+
+                    lib_dir = os.path.join(os.path.dirname(llama_cpp.__file__), "lib")
+                    if os.path.isdir(lib_dir):
+                        cuda_dirs.append(lib_dir)
+                except Exception as exc:
+                    logger.debug("[CUDA Setup] Unable to inspect llama_cpp lib directory: %s", exc)
+
+            path_env = os.environ.get("PATH", "")
+            for d in cuda_dirs:
+                if os.path.isdir(d):
+                    try:
+                        os.add_dll_directory(d)
+                    except OSError as exc:
+                        logger.debug("[CUDA Setup] add_dll_directory failed for %s: %s", d, exc)
+                    if d not in path_env:
+                        path_env = d + os.pathsep + path_env
+            os.environ["PATH"] = path_env
+
+            try:
+                active_lib = os.environ.get("LLAMA_CPP_LIB_PATH")
+                if not active_lib:
+                    import llama_cpp
+
+                    active_lib = os.path.join(os.path.dirname(llama_cpp.__file__), "lib")
+                base_dll = os.path.join(active_lib, "ggml-base.dll")
+                if os.path.exists(base_dll):
+                    try:
+                        import ctypes
+
+                        ctypes.CDLL(base_dll)
+                    except OSError as exc:
+                        logger.debug("[CUDA Setup] Preload failed for ggml-base.dll: %s", exc)
+                ggml_dll = os.path.join(active_lib, "ggml.dll")
+                if os.path.exists(ggml_dll):
                     import ctypes
 
-                    ctypes.CDLL(base_dll)
-                except Exception:
-                    pass
-            ggml_dll = os.path.join(active_lib, "ggml.dll")
-            if os.path.exists(ggml_dll):
-                import ctypes
+                    ggml = ctypes.CDLL(ggml_dll)
+                    if hasattr(ggml, "ggml_backend_load_all_from_path"):
+                        ggml.ggml_backend_load_all_from_path(active_lib.encode("utf-8"))
+                    elif hasattr(ggml, "ggml_backend_load_all"):
+                        ggml.ggml_backend_load_all()
+            except Exception as exc:
+                logger.debug("[CUDA Setup] Backend plugin preload warning: %s", exc)
+        except Exception as exc:
+            logger.warning("[CUDA Setup] DLL directory initialization encountered an error: %s", exc)
 
-                ggml = ctypes.CDLL(ggml_dll)
-                if hasattr(ggml, "ggml_backend_load_all_from_path"):
-                    ggml.ggml_backend_load_all_from_path(active_lib.encode("utf-8"))
-                elif hasattr(ggml, "ggml_backend_load_all"):
-                    ggml.ggml_backend_load_all()
-        except Exception:
-            pass
-    except Exception:
-        pass
-
-
-_setup_cuda_dll_directory()
 
 import amigo.core.rag_engine as rag_engine
 from amigo.utils.network_utils import is_internet_connected
 
 logger = logging.getLogger("amigo.llm_agent")
+_setup_cuda_dll_directory()
 
+# Lock ordering hierarchy: _llm_lock -> _CONFIG_LOCK -> _inference_lock
+# Never acquire _llm_lock or _CONFIG_LOCK while holding _inference_lock.
 _thread_local = threading.local()
 _inference_lock = threading.Lock()
 _llm_lock = threading.Lock()
 _CONFIG_LOCK = threading.Lock()
+_internet_cache_lock = threading.Lock()
+_screen_state_lock = threading.Lock()
+_mode_lock = threading.Lock()
 
-_internet_status_cache = {"status": "Connected (Online)", "online": True, "timestamp": 0.0}
+_internet_status_cache: dict[str, object] = {
+    "status": "Connected (Online)",
+    "online": True,
+    "timestamp": 0.0,
+}
 _INTERNET_CACHE_TTL = 30.0
 
 _RE_SPEAKER_PREFIX = re.compile(r"^(Amigo|Assistant|AI):\s*", flags=re.IGNORECASE)
@@ -173,6 +185,7 @@ _STATIC_VOICE_SYSTEM_PROMPT = (
     "- Resolve pronouns ('it', 'that', 'they', 'he', 'she', 'there') and follow-up questions naturally from conversation history and active environment state."
 )
 
+
 def get_static_system_prompt() -> str:
     """Conversational assistant system prompt for natural speech and text responses."""
     return _STATIC_VOICE_SYSTEM_PROMPT
@@ -180,12 +193,17 @@ def get_static_system_prompt() -> str:
 
 def _get_internet_status() -> tuple[str, bool]:
     now = time.time()
-    if now - _internet_status_cache["timestamp"] > _INTERNET_CACHE_TTL:
-        online = is_internet_connected()
-        _internet_status_cache["status"] = "Connected (Online)" if online else "Disconnected (Offline)"
+    with _internet_cache_lock:
+        if now - float(_internet_status_cache["timestamp"]) <= _INTERNET_CACHE_TTL:
+            return str(_internet_status_cache["status"]), bool(_internet_status_cache["online"])
+
+    online = is_internet_connected()
+    status = "Connected (Online)" if online else "Disconnected (Offline)"
+    with _internet_cache_lock:
+        _internet_status_cache["status"] = status
         _internet_status_cache["online"] = online
         _internet_status_cache["timestamp"] = now
-    return _internet_status_cache["status"], _internet_status_cache["online"]
+    return status, online
 
 
 def _day_period(hour: int) -> str:
@@ -216,19 +234,21 @@ def get_quick_feedback(action_desc: str) -> str:
 def set_last_screen_text(text: str) -> None:
     global _last_screen_text, _last_screen_time
     if text and isinstance(text, str) and len(text.strip()) > 10:
-        _last_screen_text = text.strip()[:1500]
-        _last_screen_time = time.time()
+        with _screen_state_lock:
+            _last_screen_text = text.strip()[:1500]
+            _last_screen_time = time.time()
 
 
 def get_last_screen_text(consume: bool = False) -> str:
-    global _last_screen_text
-    if not _last_screen_text or (time.time() - _last_screen_time > 60):
-        _last_screen_text = ""
-        return ""
-    text = _last_screen_text
-    if consume:
-        _last_screen_text = ""
-    return text
+    global _last_screen_text, _last_screen_time
+    with _screen_state_lock:
+        if not _last_screen_text or (time.time() - _last_screen_time > 60):
+            _last_screen_text = ""
+            return ""
+        text = _last_screen_text
+        if consume:
+            _last_screen_text = ""
+        return text
 
 
 def get_clipboard_text() -> str | None:
@@ -237,8 +257,8 @@ def get_clipboard_text() -> str | None:
             text = pyperclip.paste()
             if text and isinstance(text, str):
                 return text[:1000].strip()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[Clipboard] Unable to read clipboard text: %s", exc)
     return None
 
 
@@ -259,7 +279,8 @@ def _get_cached_user_profile() -> str:
                 return c_val
     try:
         val = rag_engine.get_user_profile_prompt("", semantic_search=False) or ""
-    except Exception:
+    except Exception as exc:
+        logger.debug("[Profile Cache] Failed to load profile prompt: %s", exc)
         val = ""
     with _profile_prompt_lock:
         _profile_prompt_cache = (now, val)
@@ -274,12 +295,6 @@ def build_turn_runtime_context(
 ) -> str:
     global _turn_context_cache
     now_ts = time.time()
-    cache_key = (hash(web_context), hash(doc_context), pending_confirmation.strip())
-    with _turn_context_lock:
-        if _turn_context_cache is not None:
-            c_time, c_key, c_val = _turn_context_cache
-            if (now_ts - c_time < 30.0) and (c_key == cache_key):
-                return c_val
 
     ctx_blocks: list[str] = []
     now = datetime.datetime.now()
@@ -288,16 +303,25 @@ def build_turn_runtime_context(
 
     if pending_confirmation:
         ctx_blocks.append(pending_confirmation)
-    if active_ctx := rag_engine.get_active_context_prompt():
+
+    active_ctx = ""
+    try:
+        active_ctx = rag_engine.get_active_context_prompt() or ""
+    except Exception as exc:
+        logger.debug("[Runtime Context] Active context unavailable: %s", exc)
+    if active_ctx:
         ctx_blocks.append(active_ctx)
 
-    state = rag_engine.get_active_state(clean_expired=False) or {}
+    state: dict = {}
+    try:
+        state = rag_engine.get_active_state(clean_expired=False) or {}
+    except Exception as exc:
+        logger.debug("[Runtime Context] Active state unavailable: %s", exc)
+
     if gen_info := state.get("generated_content"):
         if isinstance(gen_info, dict) and gen_info.get("content"):
             ctx_blocks.append(f"[Active Draft: {gen_info.get('type', 'content')} about '{gen_info.get('topic', '')}']")
 
-    # Ordinals Context: include most recent search/tool result list (cap at 10 items)
-    # Convention: 0 = first, 1 = second, ..., -1 = last item
     recent_items = state.get("found_files") or state.get("recent_items") or []
     if isinstance(recent_items, dict):
         recent_items = recent_items.get("items", [])
@@ -311,17 +335,36 @@ def build_turn_runtime_context(
             "[Recent Results List (0=first, 1=second, ..., -1=last)]:\n" + "\n".join(item_lines)
         )
 
-    if user_prof := _get_cached_user_profile():
+    user_prof = _get_cached_user_profile()
+    if user_prof:
         ctx_blocks.append(f"[User Profile & Memory]:\n{user_prof}")
-    if screen := get_last_screen_text():
+
+    screen = get_last_screen_text()
+    if screen:
         ctx_blocks.append(f"[Screen OCR]: {screen[:300]}")
+
     if web_context:
         ctx_blocks.append(f"[Live Web Search Results]:\n{web_context}")
     if doc_context:
         ctx_blocks.append(f"[Retrieved Local Context]:\n{doc_context}")
 
     res = "\n\n".join(ctx_blocks)
+    cache_key = (
+        query.strip(),
+        web_context,
+        doc_context,
+        pending_confirmation.strip(),
+        active_ctx,
+        user_prof,
+        screen[:300],
+        tuple(item_lines) if isinstance(recent_items, list) and recent_items else (),
+    )
+
     with _turn_context_lock:
+        if _turn_context_cache is not None:
+            c_time, c_key, c_val = _turn_context_cache
+            if (now_ts - c_time < 30.0) and (c_key == cache_key):
+                return c_val
         _turn_context_cache = (now_ts, cache_key, res)
     return res
 
@@ -439,29 +482,34 @@ _creativity_enabled: bool = True
 
 def set_thinking_enabled(enabled: bool) -> None:
     global _thinking_enabled
-    _thinking_enabled = bool(enabled)
+    with _mode_lock:
+        _thinking_enabled = bool(enabled)
 
 
 def is_thinking_enabled() -> bool:
-    return _thinking_enabled
+    with _mode_lock:
+        return _thinking_enabled
 
 
 def get_current_thinking_enabled() -> bool:
-    return _thinking_enabled
+    return is_thinking_enabled()
 
 
 def set_creativity_enabled(enabled: bool) -> None:
     global _creativity_enabled
-    _creativity_enabled = bool(enabled)
+    with _mode_lock:
+        _creativity_enabled = bool(enabled)
 
 
 def is_creativity_enabled() -> bool:
-    return _creativity_enabled
+    with _mode_lock:
+        return _creativity_enabled
 
 
 def get_sampling_params() -> dict:
+    creative = is_creativity_enabled()
     return {
-        "temperature": 0.3 if _creativity_enabled else 0.15,
+        "temperature": 0.3 if creative else 0.15,
         "top_p": 0.95,
         "min_p": 0.05,
         "repeat_penalty": 1.05,
@@ -475,15 +523,14 @@ def _get_physical_cores() -> int:
             import psutil
 
             _PHYSICAL_CORES = psutil.cpu_count(logical=False) or os.cpu_count() or 4
-        except Exception:
+        except Exception as exc:
+            logger.debug("[CPU Cores] psutil unavailable, falling back to os.cpu_count(): %s", exc)
             _PHYSICAL_CORES = os.cpu_count() or 4
     return _PHYSICAL_CORES
 
 
 def _get_llm_config() -> dict:
     global _LLM_CONFIG
-    if _LLM_CONFIG is not None:
-        return _LLM_CONFIG
     with _CONFIG_LOCK:
         if _LLM_CONFIG is not None:
             return _LLM_CONFIG
@@ -492,24 +539,26 @@ def _get_llm_config() -> dict:
             import llama_cpp
 
             has_gpu = bool(llama_cpp.llama_supports_gpu_offload())
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[LLM Config] Failed to query GPU offload support: %s", exc)
         cores = _get_physical_cores()
         default_threads = min(4, max(2, cores // 2)) if has_gpu else max(1, cores - 1)
+        n_gpu_layers = int(os.getenv("AMIGO_LLM_N_GPU_LAYERS", "-1" if has_gpu else "0"))
+        gpu_active = has_gpu and n_gpu_layers != 0
         _LLM_CONFIG = {
             "n_ctx": int(os.getenv("AMIGO_LLM_N_CTX", "8192")),
             "n_threads": int(os.getenv("AMIGO_LLM_N_THREADS", str(default_threads))),
             "n_threads_batch": int(os.getenv("AMIGO_LLM_N_THREADS_BATCH", str(cores))),
             "n_batch": int(os.getenv("AMIGO_LLM_N_BATCH", "512")),
             "n_ubatch": int(os.getenv("AMIGO_LLM_N_UBATCH", "256")),
-            "n_gpu_layers": int(os.getenv("AMIGO_LLM_N_GPU_LAYERS", "-1" if has_gpu else "0")),
+            "n_gpu_layers": n_gpu_layers,
             "use_mmap": os.getenv("AMIGO_LLM_USE_MMAP", "true").lower() == "true",
             "logits_all": False,
             "embedding": False,
-            "offload_kqv": has_gpu,
-            "flash_attn": has_gpu,
-            "type_k": 2 if has_gpu else 0,
-            "type_v": 2 if has_gpu else 0,
+            "offload_kqv": gpu_active,
+            "flash_attn": gpu_active,
+            "type_k": 2 if gpu_active else 0,
+            "type_v": 2 if gpu_active else 0,
             "numa": False,
         }
     return _LLM_CONFIG
@@ -530,7 +579,7 @@ def _download_hf_file(targets: list[tuple[str, str]], target_path: str, min_size
                     os.replace(downloaded, target_path)
                 return target_path
         except Exception as e:
-            logger.warning("Download attempt failed for %s/%s: %s", repo, fname, e)
+            logger.warning("Download attempt failed for %s/%s (%s): %s", repo, fname, label, e)
     return target_path
 
 
@@ -593,10 +642,11 @@ def ensure_model_downloaded() -> str:
         )
 
 
-def _setup_chat_formatter(llm) -> None:
+def _setup_chat_formatter(llm, thinking_override: bool | None = None) -> None:
     try:
         from llama_cpp import llama_chat_format
 
+        target_thinking = is_thinking_enabled() if thinking_override is None else bool(thinking_override)
         handler = llm.chat_handler or getattr(llm, "_chat_handlers", {}).get(llm.chat_format)
         if handler and getattr(handler, "__closure__", None):
             for c in handler.__closure__:
@@ -604,32 +654,54 @@ def _setup_chat_formatter(llm) -> None:
                 if hasattr(formatter, "template"):
 
                     class _Formatter:
-                        def __init__(self, base):
+                        def __init__(self, base, enable_thinking: bool):
                             self.base = base
+                            self.enable_thinking = enable_thinking
 
                         def __call__(self, *args, **kwargs):
-                            kwargs["enable_thinking"] = _thinking_enabled
+                            kwargs["enable_thinking"] = self.enable_thinking
                             return self.base(*args, **kwargs)
 
-                    llm.chat_handler = llama_chat_format.chat_formatter_to_chat_completion_handler(_Formatter(formatter))
+                    llm.chat_handler = llama_chat_format.chat_formatter_to_chat_completion_handler(
+                        _Formatter(formatter, target_thinking)
+                    )
                     break
     except Exception as e:
         logger.debug("[Chat Formatter Setup] %s", e)
+
+
+def _release_llm_instance_locked() -> None:
+    """Caller must hold _llm_lock and _CONFIG_LOCK (and _inference_lock when mutating active instance)."""
+    global _local_llm_instance, _LLM_CONFIG
+    if _local_llm_instance is not None:
+        try:
+            if hasattr(_local_llm_instance, "close"):
+                _local_llm_instance.close()
+        except Exception as e:
+            logger.debug("[Local AI Engine] Model close exception: %s", e)
+        try:
+            del _local_llm_instance
+        except Exception as e:
+            logger.debug("[Local AI Engine] Model delete exception: %s", e)
+        _local_llm_instance = None
+    _LLM_CONFIG = None
 
 
 def init_local_llm(force_reload: bool = False):
     global _local_llm_instance, _model_load_failed, _model_load_error, _model_loading, _model_load_failed_at
 
     if not force_reload:
-        if _local_llm_instance is not None:
-            return _local_llm_instance
-        if _model_load_failed and (time.time() - _model_load_failed_at) < _MODEL_RETRY_SECONDS:
-            return None
+        with _llm_lock:
+            if _local_llm_instance is not None:
+                return _local_llm_instance
+            if _model_load_failed and (time.time() - _model_load_failed_at) < _MODEL_RETRY_SECONDS:
+                return None
 
     with _llm_lock:
         if not force_reload and _local_llm_instance is not None:
             return _local_llm_instance
 
+        _model_loading = True
         try:
             model_file = get_model_path()
             if not os.path.exists(model_file) or os.path.getsize(model_file) < 500_000_000:
@@ -640,7 +712,7 @@ def init_local_llm(force_reload: bool = False):
 
             from llama_cpp import Llama
 
-            config = _get_llm_config()
+            config = dict(_get_llm_config())
             kwargs = {
                 "model_path": model_file,
                 "n_ctx": config["n_ctx"],
@@ -662,17 +734,14 @@ def init_local_llm(force_reload: bool = False):
             }
             active_info = AVAILABLE_MODELS.get(_active_model_key, next(iter(AVAILABLE_MODELS.values())))
             try:
-                _local_llm_instance = Llama(**kwargs)
+                instance = Llama(**kwargs)
+                device_label = "GPU offload" if kwargs["n_gpu_layers"] != 0 else "CPU"
                 logger.info(
-                    "[Local AI Engine] Initialized %s on GPU (n_gpu_layers=%s, n_ctx=%s)",
+                    "[Local AI Engine] Initialized %s (%s, n_gpu_layers=%s, n_ctx=%s)",
                     active_info["name"],
+                    device_label,
                     kwargs["n_gpu_layers"],
                     kwargs["n_ctx"],
-                )
-                print(
-                    f"[Local AI Engine] {active_info['name']} is running on GPU: NVIDIA GeForce RTX 3050 "
-                    f"(n_gpu_layers={kwargs['n_gpu_layers']}, n_ctx={kwargs['n_ctx']}, flash_attn={kwargs['flash_attn']})",
-                    flush=True,
                 )
             except Exception as gpu_err:
                 logger.warning("[Local AI Engine] GPU load failed (%s), falling back to CPU", gpu_err)
@@ -681,9 +750,11 @@ def init_local_llm(force_reload: bool = False):
                 kwargs["flash_attn"] = False
                 kwargs["type_k"] = 0
                 kwargs["type_v"] = 0
-                _local_llm_instance = Llama(**kwargs)
+                instance = Llama(**kwargs)
 
-            _setup_chat_formatter(_local_llm_instance)
+            _setup_chat_formatter(instance)
+            with _inference_lock:
+                _local_llm_instance = instance
             _model_load_failed = False
             _model_load_error = None
             return _local_llm_instance
@@ -693,10 +764,12 @@ def init_local_llm(force_reload: bool = False):
             _model_load_error = str(e)
             logger.error("[Local AI Engine] Load error: %s", e)
             return None
+        finally:
+            _model_loading = False
 
 
 def warmup_router_prefix() -> float:
-    """Pre-evaluates the static router prefix into GPU KV cache so first turn takes ~450ms instead of ~7.8s."""
+    """Pre-evaluates the static router prefix into KV cache so first turn is fast."""
     from amigo.utils.tool_registry import _ROUTER_STOP, get_static_master_prompt
 
     t0 = time.perf_counter()
@@ -725,51 +798,32 @@ def get_available_models() -> dict:
 
 
 def _cleanup_llm_model() -> None:
-    global _local_llm_instance, _LLM_CONFIG
-    with _inference_lock, _llm_lock, _CONFIG_LOCK:
-        if _local_llm_instance is not None:
-            try:
-                if hasattr(_local_llm_instance, "close"):
-                    _local_llm_instance.close()
-            except Exception as e:
-                logger.debug("[Local AI Engine] Model close exception on cleanup: %s", e)
-            try:
-                del _local_llm_instance
-            except Exception:
-                pass
-            _local_llm_instance = None
-        _LLM_CONFIG = None
+    with _llm_lock:
+        with _CONFIG_LOCK:
+            with _inference_lock:
+                _release_llm_instance_locked()
     try:
         gc.collect()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("[Local AI Engine] GC exception on cleanup: %s", exc)
 
 
 atexit.register(_cleanup_llm_model)
 
 
 def set_active_model(model_key: str = "qwen3.5-4b-instruct") -> bool:
-    global _active_model_key, _local_llm_instance, _LLM_CONFIG
+    global _active_model_key
     if model_key not in AVAILABLE_MODELS:
         return False
-    with _inference_lock, _llm_lock, _CONFIG_LOCK:
-        _active_model_key = model_key
-        if _local_llm_instance is not None:
-            try:
-                if hasattr(_local_llm_instance, "close"):
-                    _local_llm_instance.close()
-            except Exception as e:
-                logger.debug("[Local AI Engine] Model close exception on switch: %s", e)
-            try:
-                del _local_llm_instance
-            except Exception:
-                pass
-            _local_llm_instance = None
-        _LLM_CONFIG = None
+    with _llm_lock:
+        with _CONFIG_LOCK:
+            with _inference_lock:
+                _active_model_key = model_key
+                _release_llm_instance_locked()
     try:
         gc.collect()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("[Local AI Engine] GC exception on model switch: %s", exc)
     return init_local_llm(force_reload=True) is not None
 
 
@@ -781,8 +835,8 @@ def get_active_model_info() -> dict:
         import llama_cpp
 
         has_gpu = bool(llama_cpp.llama_supports_gpu_offload())
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("[Model Info] Failed to check GPU offload: %s", exc)
     return {
         "key": _active_model_key,
         "name": m_info["name"],
@@ -834,7 +888,8 @@ def sanitize_for_tts(text: str) -> str:
         from amigo.utils.tts import normalize_text_for_tts
 
         return normalize_text_for_tts(text)
-    except Exception:
+    except Exception as exc:
+        logger.debug("[TTS Sanitize] Fallback cleaner used: %s", exc)
         clean, _ = _strip_reasoning(text)
         return clean.strip()
 
@@ -849,6 +904,36 @@ def _prepare_chat_messages(
         messages = ([{"role": "system", "content": system_prompt}] if system_prompt else []) + prompt
         return cast(list["ChatCompletionRequestMessage"], messages)
     return [{"role": "system", "content": system_prompt}, {"role": "user", "content": str(prompt)}]
+
+
+def _shrink_messages_for_context(messages: list[dict]) -> list[dict]:
+    """Trim older non-system messages or shorten oversized user content if context window is exceeded."""
+    if not messages:
+        return messages
+    system_msgs = [m for m in messages if m.get("role") == "system"]
+    other_msgs = [m for m in messages if m.get("role") != "system"]
+    if len(other_msgs) > 1:
+        # Keep only the latest user/assistant turn if multi-turn history caused overflow
+        trimmed_others = [other_msgs[-1]]
+    elif len(other_msgs) == 1:
+        last = dict(other_msgs[0])
+        content = str(last.get("content") or "")
+        if len(content) > 2000:
+            last["content"] = content[-2000:]
+        trimmed_others = [last]
+    else:
+        trimmed_others = []
+    return system_msgs + trimmed_others
+
+
+def _safe_reset_llm(llm) -> None:
+    if llm is None:
+        return
+    try:
+        if hasattr(llm, "reset"):
+            llm.reset()
+    except Exception as exc:
+        logger.debug("[LLM Reset] Ignored reset exception: %s", exc)
 
 
 # ── Core Inference APIs ─────────────────────────────────────────
@@ -893,17 +978,22 @@ def query_local_llm(
             _inference_lock.acquire()
 
         try:
+            active_llm = _local_llm_instance
+            if active_llm is None:
+                if raise_on_error:
+                    raise RuntimeError("language model unloaded during query")
+                return "I'm having trouble initializing the AI engine."
+
+            _setup_chat_formatter(active_llm, thinking_override=thinking)
             try:
-                res = llm.create_chat_completion(**kwargs, stream=False)
+                res = active_llm.create_chat_completion(**kwargs, stream=False)
             except Exception as e:
-                try:
-                    if hasattr(llm, "reset"):
-                        llm.reset()
-                except Exception:
-                    pass
-                if "exceed context window" in str(e).lower() and kwargs.get("max_tokens", 0) > 128:
-                    kwargs["max_tokens"] = 128
-                    res = llm.create_chat_completion(**kwargs, stream=False)
+                _safe_reset_llm(active_llm)
+                if "exceed context window" in str(e).lower():
+                    kwargs["messages"] = _shrink_messages_for_context(kwargs["messages"])
+                    if kwargs.get("max_tokens", 0) > 128:
+                        kwargs["max_tokens"] = 128
+                    res = active_llm.create_chat_completion(**kwargs, stream=False)
                 else:
                     raise
         finally:
@@ -916,14 +1006,49 @@ def query_local_llm(
         return (sanitize_for_tts(clean) or clean) if sanitize else clean
     except Exception as e:
         logger.error("[LLM Query Error]: %s", e)
-        try:
-            if hasattr(llm, "reset"):
-                llm.reset()
-        except Exception:
-            pass
+        _safe_reset_llm(_local_llm_instance)
         if raise_on_error:
             raise
         return "I'm having trouble processing that request."
+
+
+def _iter_stream_chunks(
+    active_llm,
+    messages: list[dict],
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+    min_p: float,
+    repeat_penalty: float,
+    interruption_event: threading.Event | None,
+) -> Generator[str, None, None]:
+    stream_res = None
+    try:
+        stream_res = active_llm.create_chat_completion(
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            min_p=min_p,
+            repeat_penalty=repeat_penalty,
+            stop=STOP_TOKENS,
+            stream=True,
+        )
+        if isinstance(stream_res, dict):
+            raise TypeError("LLM returned non-stream response for streaming query")
+        for chunk in stream_res:
+            if interruption_event and interruption_event.is_set():
+                break
+            if delta := chunk["choices"][0]["delta"].get("content"):
+                yield delta
+    finally:
+        if stream_res is not None:
+            close_stream = getattr(stream_res, "close", None)
+            if callable(close_stream):
+                try:
+                    close_stream()
+                except Exception as exc:
+                    logger.debug("[LLM Stream] Close warning: %s", exc)
 
 
 def query_local_llm_stream(
@@ -933,74 +1058,62 @@ def query_local_llm_stream(
     interruption_event: threading.Event | None = None,
     temperature: float | None = None,
     thinking: bool | None = None,
+    min_p: float | None = None,
+    repeat_penalty: float | None = None,
 ) -> Generator[str, None, None]:
     llm = init_local_llm()
     if not llm:
         yield "I'm having trouble initializing the AI engine."
         return
 
-    stream_res = None
     try:
         sampling = get_sampling_params()
         temp = sampling["temperature"] if temperature is None else temperature
-        rep_pen = sampling.get("repeat_penalty", 1.05)
+        top_p = sampling["top_p"]
+        effective_min_p = sampling.get("min_p", 0.05) if min_p is None else min_p
+        rep_pen = sampling.get("repeat_penalty", 1.05) if repeat_penalty is None else repeat_penalty
+        prepared_messages = _prepare_chat_messages(system_prompt, prompt)
+
         with _inference_lock:
+            active_llm = _local_llm_instance
+            if active_llm is None:
+                yield "I'm having trouble initializing the AI engine."
+                return
+
+            _setup_chat_formatter(active_llm, thinking_override=thinking)
             try:
-                stream_res = llm.create_chat_completion(
-                    messages=_prepare_chat_messages(system_prompt, prompt),
+                yield from _iter_stream_chunks(
+                    active_llm,
+                    prepared_messages,
                     max_tokens=max_tokens,
                     temperature=temp,
-                    top_p=sampling["top_p"],
+                    top_p=top_p,
+                    min_p=effective_min_p,
                     repeat_penalty=rep_pen,
-                    stop=STOP_TOKENS,
-                    stream=True,
+                    interruption_event=interruption_event,
                 )
-                if isinstance(stream_res, dict):
-                    raise TypeError("LLM returned non-stream response for streaming query")
-                for chunk in stream_res:
-                    if interruption_event and interruption_event.is_set():
-                        break
-                    if delta := chunk["choices"][0]["delta"].get("content"):
-                        yield delta
             except Exception as e:
-                try:
-                    if hasattr(llm, "reset"):
-                        llm.reset()
-                except Exception:
-                    pass
-                if "exceed context window" in str(e).lower() and max_tokens > 128:
-                    stream_res = llm.create_chat_completion(
-                        messages=_prepare_chat_messages(system_prompt, prompt),
-                        max_tokens=128,
+                _safe_reset_llm(active_llm)
+                if "exceed context window" in str(e).lower():
+                    shrunk_messages = _shrink_messages_for_context(prepared_messages)
+                    fallback_max_tokens = min(max_tokens, 128)
+                    yield from _iter_stream_chunks(
+                        active_llm,
+                        shrunk_messages,
+                        max_tokens=fallback_max_tokens,
                         temperature=temp,
-                        top_p=sampling["top_p"],
+                        top_p=top_p,
+                        min_p=effective_min_p,
                         repeat_penalty=rep_pen,
-                        stop=STOP_TOKENS,
-                        stream=True,
+                        interruption_event=interruption_event,
                     )
-                    for chunk in stream_res:
-                        if interruption_event and interruption_event.is_set():
-                            break
-                        if delta := chunk["choices"][0]["delta"].get("content"):
-                            yield delta
                 else:
                     logger.error("[LLM Stream Error]: %s", e)
                     yield "I'm having trouble processing that request."
     except Exception as e:
         logger.error("[LLM Stream Init Error]: %s", e)
-        try:
-            if hasattr(llm, "reset"):
-                llm.reset()
-        except Exception:
-            pass
+        _safe_reset_llm(_local_llm_instance)
         yield "I'm having trouble processing that request."
-    finally:
-        if stream_res is not None:
-            if close_stream := getattr(stream_res, "close", None):
-                try:
-                    close_stream()
-                except Exception:
-                    pass
 
 
 _RE_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
@@ -1019,7 +1132,10 @@ def stream_sentence_chunks(
     for token in token_generator:
         if interruption_event and interruption_event.is_set():
             if hasattr(token_generator, "close"):
-                token_generator.close()
+                try:
+                    token_generator.close()
+                except Exception as exc:
+                    logger.debug("[Sentence Stream] Generator close warning: %s", exc)
             return
 
         buffer += token
@@ -1123,6 +1239,8 @@ def get_ai_response_stream(
         max_tokens=max_tokens,
         interruption_event=interruption_event,
         temperature=sampling["temperature"],
+        min_p=sampling["min_p"],
+        repeat_penalty=sampling["repeat_penalty"],
         thinking=thinking_active,
     )
 
