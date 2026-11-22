@@ -39,7 +39,7 @@ import { KineticHeading, TextAnimationStyle } from "./KineticText";
 import { COLOR_THEMES, GREETING_PRESETS } from "../data/presets";
 import { testBackendConnection, fetchRagStatus, triggerRagReindex, fetchAssistantSettings, RagStatusData } from "../services/assistantApi";
 import { VoiceSettingsTab } from "./VoiceSettingsTab";
-import { AMIGO_ORB_PRESETS, WEB_SEARCH_ORB_PRESETS } from "./CanvasVisualizer";
+import { AMIGO_ORB_PRESETS, WEB_SEARCH_ORB_PRESETS } from "./OrbVisualizer";
 import { DeleteButton } from "./HistoryPanel";
 
 interface SettingsPageProps {

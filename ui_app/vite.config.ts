@@ -34,7 +34,7 @@ export default defineConfig(() => {
             'vendor-react': ['react', 'react-dom'],
             'vendor-motion': ['motion'],
             'vendor-shaders': ['@paper-design/shaders-react'],
-            'vendor-ui': ['lucide-react', 'thinking-orbs', '@hugeicons/react'],
+            'vendor-ui': ['lucide-react', '@yogesharc/thinking-orbs', '@hugeicons/react'],
             // App chunks - split by feature
             'app-core': ['src/App.tsx', 'src/main.tsx'],
           },

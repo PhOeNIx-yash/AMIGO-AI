@@ -13,7 +13,7 @@ import {
   AttachmentItem,
   ViewMode,
 } from "./types";
-import { CanvasVisualizer } from "./components/CanvasVisualizer";
+import { OrbVisualizer } from "./components/OrbVisualizer";
 import { TitleBar } from "./components/TitleBar";
 import { ContactPicker } from "./components/ContactPicker";
 import { VoiceControls } from "./components/VoiceControls";
@@ -1408,7 +1408,7 @@ export default function App() {
                                 onClick={state === "idle" ? handleShuffleGreeting : undefined}
                                 title={state === "idle" ? "Click to change greeting phrase" : undefined}
                               >
-                                <CanvasVisualizer
+                                <OrbVisualizer
                                   mode={visualizerMode}
                                   state={state}
                                   colorTheme={colorTheme}

@@ -236,13 +236,6 @@
           drop-shadow(0 0 75px rgba(14, 165, 233, 0.28));
 }
 
-.amigo-high-resolution-orb {
-  display: block;
-  width: 15rem;
-  height: 15rem;
-  filter: brightness(1.35) contrast(1.12);
-}
-
 .amigo-listening-dot {
   animation: amigo-listening-pulse 1.3s ease-in-out infinite;
 }
@@ -254,11 +247,6 @@
 
 @media (max-width: 640px) {
   .amigo-orb-core {
-    width: 12rem;
-    height: 12rem;
-  }
-
-  .amigo-high-resolution-orb {
     width: 12rem;
     height: 12rem;
   }
