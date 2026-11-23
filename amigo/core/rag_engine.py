@@ -5,6 +5,7 @@ Zero ChromaDB, zero vector/embedding bloat, zero hardcoded stopword/phrase lists
 
 import atexit
 import collections
+import copy
 import csv
 import datetime
 import io
@@ -109,6 +110,8 @@ _profile_cache: dict | None = None
 _profile_mtime: float = 0.0
 _profile_last_check: float = 0.0
 _profile_lock = threading.Lock()
+
+_state_lock = threading.Lock()
 
 _BUFFER_MAX = 15
 _conversation_buffer: collections.deque | None = None
@@ -538,7 +541,6 @@ def _evaluate_lexical_match(query: str, frame_text: str) -> tuple[float, float, 
     matched_w = sum(w * m for w, m in token_scores)
     weighted_overlap = matched_w / total_w if total_w > 1e-6 else 0.0
 
-    # Salient coverage: verify the top 1-2 most specific tokens in the query are present
     token_scores.sort(key=lambda x: x[0], reverse=True)
     top_n = max(1, min(2, len(token_scores)))
     top_w = sum(w for w, _ in token_scores[:top_n])
@@ -621,8 +623,9 @@ def _persist_profile_sync(profile_snapshot: dict) -> None:
 
 def save_profile(profile: dict) -> None:
     global _profile_cache
-    _profile_cache = profile
-    _executor.submit(_persist_profile_sync, dict(profile))
+    snapshot = copy.deepcopy(profile)
+    _profile_cache = snapshot
+    _executor.submit(_persist_profile_sync, copy.deepcopy(snapshot))
 
 
 _ACTIVE_STATE: dict[str, Any] = {
@@ -635,33 +638,35 @@ _ACTIVE_STATE: dict[str, Any] = {
 
 
 def get_active_state(clean_expired: bool = False) -> dict:
-    return _ACTIVE_STATE
+    with _state_lock:
+        return copy.deepcopy(_ACTIVE_STATE)
 
 
 def update_active_state(slot: str, data: dict | list | None) -> None:
     if not slot:
         return
-    if slot == "found_files":
-        if isinstance(data, list):
-            data = data[:5]
-        elif isinstance(data, dict) and "items" in data and isinstance(data["items"], list):
-            data["items"] = data["items"][:5]
-    if data is None:
-        if slot == "current_media":
-            _ACTIVE_STATE[slot] = None
-        else:
-            existing = _ACTIVE_STATE.get(slot)
-            if isinstance(existing, dict):
-                _ACTIVE_STATE[slot] = {k: (None if k == "timestamp" else "") for k in existing}
-            else:
+    with _state_lock:
+        if slot == "found_files":
+            if isinstance(data, list):
+                data = data[:5]
+            elif isinstance(data, dict) and "items" in data and isinstance(data["items"], list):
+                data["items"] = data["items"][:5]
+        if data is None:
+            if slot == "current_media":
                 _ACTIVE_STATE[slot] = None
-        return
+            else:
+                existing = _ACTIVE_STATE.get(slot)
+                if isinstance(existing, dict):
+                    _ACTIVE_STATE[slot] = {k: (None if k == "timestamp" else "") for k in existing}
+                else:
+                    _ACTIVE_STATE[slot] = None
+            return
 
-    slot_data = {"items": data} if isinstance(data, list) else (dict(data) if isinstance(data, dict) else {})
-    if not slot_data:
-        return
-    slot_data["timestamp"] = datetime.datetime.now().isoformat()
-    _ACTIVE_STATE[slot] = slot_data
+        slot_data = {"items": data} if isinstance(data, list) else (dict(data) if isinstance(data, dict) else {})
+        if not slot_data:
+            return
+        slot_data["timestamp"] = datetime.datetime.now().isoformat()
+        _ACTIVE_STATE[slot] = copy.deepcopy(slot_data)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -724,13 +729,14 @@ def resolve_contextual_query(query: str, conversation_history: list[dict] | None
         prev_source = f"{prev_turn.get('user') or ''} {prev_turn.get('assistant') or ''}".strip()
         context_terms = _extract_salient_terms(prev_source, max_terms=3)
 
+    state_snap = get_active_state()
     if not context_terms:
-        subj = (_ACTIVE_STATE.get("active_subject") or {}).get("name") or ""
+        subj = (state_snap.get("active_subject") or {}).get("name") or ""
         if subj:
             context_terms = _extract_salient_terms(subj, max_terms=3)
 
     if not context_terms:
-        active_fname = (_ACTIVE_STATE.get("active_file") or {}).get("name") or ""
+        active_fname = (state_snap.get("active_file") or {}).get("name") or ""
         if active_fname:
             stem = os.path.splitext(active_fname)[0].replace("_", " ").replace("-", " ")
             context_terms = _extract_salient_terms(stem, max_terms=3)
@@ -801,9 +807,6 @@ def search(
 
     effective_query = resolve_contextual_query(query, conversation_history)
 
-    if target_collections == [USER_FACTS]:
-        return _search_user_facts_in_memory(query, effective_query=effective_query, top_k=top_k)
-
     cache_key = (
         f"{effective_query.lower()}::{sorted(target_collections)}::{top_k}::"
         f"{json.dumps(metadata_filter or {}, sort_keys=True)}"
@@ -815,29 +818,31 @@ def search(
             if now - cached_time < _SEARCH_CACHE_TTL:
                 return cached_results
 
-    try:
-        mv = init_memvid()
-    except Exception as e:
-        logger.error("[Memvid] Cannot search, init failed: %s", e)
-        return []
-
+    hits = []
     tantivy_q = _format_tantivy_query(effective_query)
-    if not tantivy_q:
-        return []
-
-    target_tags = {
-        _COLLECTION_TO_TAG[col]
-        for col in target_collections
-        if col in _COLLECTION_TO_TAG
-    } or set(_TAG_TO_COLLECTION.keys())
-
-    with _mv_lock:
+    if tantivy_q:
         try:
-            res = mv.find(tantivy_q, k=min(100, max(top_k * 10, 50)))
-            hits = res.get("hits") or []
+            mv = init_memvid()
+            target_tags = {
+                _COLLECTION_TO_TAG[col]
+                for col in target_collections
+                if col in _COLLECTION_TO_TAG
+            } or set(_TAG_TO_COLLECTION.keys())
+
+            with _mv_lock:
+                try:
+                    res = mv.find(tantivy_q, k=min(100, max(top_k * 10, 50)))
+                    hits = res.get("hits") or []
+                except Exception as e:
+                    logger.debug("[Memvid] Search note on '%s': %s", tantivy_q, e)
+                    hits = []
         except Exception as e:
-            logger.debug("[Memvid] Search note on '%s': %s", tantivy_q, e)
+            logger.error("[Memvid] Cannot search, init failed: %s", e)
+            if USER_FACTS not in target_collections:
+                return []
             hits = []
+    elif USER_FACTS not in target_collections:
+        return []
 
     now_dt = datetime.datetime.now()
     deduped: dict[str, dict[str, Any]] = {}
@@ -912,8 +917,7 @@ def search(
 
         calibrated_score = round(min(1.0, max(0.0, combined)), 4)
 
-        norm_prefix = _RE_CHUNK_WHITESPACE.sub(" ", text_content[:200]).lower()
-        dedup_key = f"{col_name}::{norm_prefix}"
+        norm_text = _RE_CHUNK_WHITESPACE.sub(" ", text_content).lower()
         candidate = {
             "text": text_content,
             "source": col_name,
@@ -924,8 +928,19 @@ def search(
             "metadata": meta,
         }
 
-        if dedup_key not in deduped or calibrated_score > deduped[dedup_key]["score"]:
-            deduped[dedup_key] = candidate
+        if norm_text not in deduped or calibrated_score > float(deduped[norm_text].get("score") or 0.0):
+            deduped[norm_text] = candidate
+
+    if USER_FACTS in target_collections:
+        user_facts_candidates = _search_user_facts_in_memory(query, effective_query=effective_query, top_k=top_k)
+        for cand in user_facts_candidates:
+            cand_text = (cand.get("text") or "").strip()
+            if not cand_text:
+                continue
+            cand_norm = _RE_CHUNK_WHITESPACE.sub(" ", cand_text).lower()
+            cand_score = float(cand.get("score") or 0.0)
+            if cand_norm not in deduped or cand_score > float(deduped[cand_norm].get("score") or 0.0):
+                deduped[cand_norm] = cand
 
     results = sorted(
         deduped.values(),
@@ -1086,19 +1101,20 @@ def build_rag_context(
 
                 if src == DOCUMENTS:
                     fname = meta.get("filename", "document")
-                    parts.append(f"[From document '{fname}']:\r\n{chunk_text}")
+                    parts.append(f"[From document '{fname}']:\n{chunk_text}")
                 elif src == CONVERSATIONS:
-                    parts.append(f"[Past conversation]:\r\n{chunk_text}")
+                    parts.append(f"[Past conversation]:\n{chunk_text}")
                 elif src == EMAILS:
-                    parts.append(f"[Email]:\r\n{chunk_text}")
+                    parts.append(f"[Email]:\n{chunk_text}")
                 elif src == CALENDAR:
-                    parts.append(f"[Calendar Event]:\r\n{chunk_text}")
+                    parts.append(f"[Calendar Event]:\n{chunk_text}")
                 elif src == USER_FACTS:
                     parts.append(f"[Known user fact]: {chunk_text}")
 
                 total_chars += len(chunk_text)
 
-    active_fp = str((_ACTIVE_STATE.get("active_file") or {}).get("path") or "")
+    state_snap = get_active_state()
+    active_fp = str((state_snap.get("active_file") or {}).get("path") or "")
     if (
         not any("[From document" in p for p in parts)
         and active_fp
@@ -1112,15 +1128,15 @@ def build_rag_context(
     if not parts:
         return ""
 
-    body = "\r\n\r\n".join(parts)
+    body = "\n\n".join(parts)
     return (
-        "<supplementary_context>\r\n"
-        "NOTE: Verified local reference passages from the user's Memvid records:\r\n"
-        "- Use ONLY passages that directly answer the user's specific question and entity.\r\n"
-        "- Do not blend facts from different entities, documents, or unrelated records.\r\n"
-        "- Preserve exact dates, codes, numbers, and terminology as written.\r\n"
-        "- If none of the passages below directly answer the user's question, ignore this block completely.\r\n\r\n"
-        f"{body}\r\n"
+        "<supplementary_context>\n"
+        "NOTE: Verified local reference passages from the user's Memvid records:\n"
+        "- Use ONLY passages that directly answer the user's specific question and entity.\n"
+        "- Do not blend facts from different entities, documents, or unrelated records.\n"
+        "- Preserve exact dates, codes, numbers, and terminology as written.\n"
+        "- If none of the passages below directly answer the user's question, ignore this block completely.\n\n"
+        f"{body}\n"
         "</supplementary_context>"
     )
 
@@ -1221,7 +1237,7 @@ def build_document_evidence(
             })
 
         passages.append(
-            f"[Source {source_id}: {filename}, passage {chunk_index + 1}]\r\n{text[:900]}"
+            f"[Source {source_id}: {filename}, passage {chunk_index + 1}]\n{text[:900]}"
         )
 
     if not passages:
@@ -1235,14 +1251,14 @@ def build_document_evidence(
             update_active_state("active_file", {"path": f_path, "name": f_name})
 
     instructions = (
-        "Answer the user's question using the verified document passages below.\r\n"
-        "- Answer directly using only facts that explicitly attribute to the entity or subject asked about.\r\n"
-        "- Do not attribute background descriptions, organizational overviews, or third-party details to a different entity or person.\r\n"
-        "- Structure your answer cleanly with Markdown formatting: use bullet points (`- `) and bold key identifiers or headings.\r\n"
-        "- Preserve all exact dates, numbers, codes, and domain terminology directly as stated in the source.\r\n"
+        "Answer the user's question using the verified document passages below.\n"
+        "- Answer directly using only facts that explicitly attribute to the entity or subject asked about.\n"
+        "- Do not attribute background descriptions, organizational overviews, or third-party details to a different entity or person.\n"
+        "- Structure your answer cleanly with Markdown formatting: use bullet points (`- `) and bold key identifiers or headings.\n"
+        "- Preserve all exact dates, numbers, codes, and domain terminology directly as stated in the source.\n"
         "- If the passages do not contain explicit evidence answering the question, state clearly that the indexed documents do not specify this information."
     )
-    return f"{instructions}\r\n\r\n" + "\r\n\r\n".join(passages), sources
+    return f"{instructions}\n\n" + "\n\n".join(passages), sources
 
 
 def build_file_context(filepath: str, question: str, max_chars: int = 2500) -> str:
@@ -1283,7 +1299,7 @@ def build_file_context(filepath: str, question: str, max_chars: int = 2500) -> s
                     total_len += len(snippet)
             if selected:
                 update_active_state("active_file", {"path": canonical_path, "name": filename})
-                return f"[Relevant sections from '{filename}']:\r\n" + "\r\n\r\n".join(selected)
+                return f"[Relevant sections from '{filename}']:\n" + "\n\n".join(selected)
     except Exception as e:
         logger.debug("[Memvid] build_file_context error: %s", e)
 
@@ -1296,7 +1312,7 @@ def get_file_summary_context(filepath: str) -> str:
         return ""
     fname = os.path.basename(filepath)
     update_active_state("active_file", {"path": os.path.realpath(os.path.abspath(filepath)), "name": fname})
-    return f"[Content from '{fname}']:\r\n{text[:8000]}"
+    return f"[Content from '{fname}']:\n{text[:8000]}"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1376,7 +1392,7 @@ def add_conversation(
         try:
             mv = init_memvid()
             title = f"Conv: {user_msg[:40]}"
-            text = f"User: {user_msg}\r\nAssistant: {assistant_msg}"
+            text = f"User: {user_msg}\nAssistant: {assistant_msg}"
             metadata = {
                 "user_msg": user_msg,
                 "assistant_msg": assistant_msg,
@@ -1399,6 +1415,7 @@ def add_conversation(
 
             _record_frame_tokens(text)
             _invalidate_stats_cache()
+            clear_search_cache()
             extract_user_profile_updates(user_msg, remember=remember)
         except Exception as e:
             logger.debug("[Memvid] Background conv persist note: %s", e)
@@ -1477,8 +1494,9 @@ def clear_conversations() -> None:
     with _conv_cache_lock:
         _all_conversations_cache = collections.deque(maxlen=200)
 
-    for slot in _ACTIVE_STATE:
-        _ACTIVE_STATE[slot] = None if slot == "current_media" else {k: "" for k in _ACTIVE_STATE[slot]}
+    with _state_lock:
+        for slot in _ACTIVE_STATE:
+            _ACTIVE_STATE[slot] = None if slot == "current_media" else {k: "" for k in _ACTIVE_STATE[slot]}
     clear_search_cache()
     _clear_frame_cache()
     _invalidate_stats_cache()
@@ -1679,7 +1697,7 @@ def _format_table_as_markdown(rows: list[list[Any]]) -> str:
         "| " + " | ".join(["---"] * max_cols) + " |",
     ]
     lines.extend("| " + " | ".join(r) + " |" for r in cleaned[1:])
-    return "\r\n".join(lines)
+    return "\n".join(lines)
 
 
 def _extract_csv_enhanced(filepath: str) -> str:
@@ -1724,13 +1742,13 @@ def _extract_pdf_enhanced(filepath: str) -> str:
                     parts.append(c.strip())
                 parts.extend(table_mds)
                 if parts:
-                    pages.append("\r\n\r\n".join(parts))
-        return "\r\n\r\n".join(pages)
+                    pages.append("\n\n".join(parts))
+        return "\n\n".join(pages)
     except Exception:
         try:
             from pypdf import PdfReader
             reader = PdfReader(filepath)
-            return "\r\n\r\n".join(
+            return "\n\n".join(
                 _RE_PDF_ADJACENT.sub(r"\1 \2", _RE_PDF_NEWLINES.sub(" ", (p.extract_text() or ""))).strip()
                 for p in reader.pages if p.extract_text()
             )
@@ -1742,14 +1760,14 @@ def _extract_docx_enhanced(filepath: str) -> str:
     import docx
     doc = docx.Document(filepath)
     parts = [
-        f"\r\n## {p.text.strip()}\r\n" if p.style.name.startswith("Heading") else p.text.strip()
+        f"\n## {p.text.strip()}\n" if p.style.name.startswith("Heading") else p.text.strip()
         for p in doc.paragraphs if p.text.strip()
     ]
     for table in doc.tables:
         md = _format_table_as_markdown([[c.text for c in r.cells] for r in table.rows])
         if md:
             parts.append(md)
-    return "\r\n\r\n".join(parts)
+    return "\n\n".join(parts)
 
 
 def _extract_xlsx_enhanced(filepath: str) -> str:
@@ -1766,8 +1784,8 @@ def _extract_xlsx_enhanced(filepath: str) -> str:
                         break
             md = _format_table_as_markdown(rows)
             if md:
-                sheets.append(f"## Sheet: {sheet.title}\r\n\r\n{md}")
-        return "\r\n\r\n".join(sheets)
+                sheets.append(f"## Sheet: {sheet.title}\n\n{md}")
+        return "\n\n".join(sheets)
     finally:
         wb.close()
 
@@ -1786,8 +1804,8 @@ def _extract_pptx_enhanced(filepath: str) -> str:
                 if md:
                     s_parts.append(md)
         if len(s_parts) > 1:
-            slides.append("\r\n".join(s_parts))
-    return "\r\n\r\n".join(slides)
+            slides.append("\n".join(s_parts))
+    return "\n\n".join(slides)
 
 
 def _is_markdown_table(text: str) -> bool:
@@ -1819,7 +1837,7 @@ def semantic_chunk(
     for header, body in sections:
         if not body:
             continue
-        bc = f"[{' > '.join(filter(None, [document_title, header]))}]\r\n" if (document_title or header) else ""
+        bc = f"[{' > '.join(filter(None, [document_title, header]))}]\n" if (document_title or header) else ""
         avail = max(120, chunk_size - len(bc))
         current_sents: list[str] = []
         current_len = 0
@@ -1853,16 +1871,16 @@ def semantic_chunk(
             if _is_markdown_table(p):
                 _flush_sentences(keep_overlap=False)
                 lines = [ln.strip() for ln in p.splitlines() if ln.strip()]
-                hdr = "\r\n".join(lines[:2]) + "\r\n"
+                hdr = "\n".join(lines[:2]) + "\n"
                 rows_acc: list[str] = []
                 for row in lines[2:]:
-                    if len(bc) + len(hdr) + len("\r\n".join(rows_acc + [row])) > chunk_size and rows_acc:
-                        all_chunks.append((bc + hdr + "\r\n".join(rows_acc)).strip())
+                    if len(bc) + len(hdr) + len("\n".join(rows_acc + [row])) > chunk_size and rows_acc:
+                        all_chunks.append((bc + hdr + "\n".join(rows_acc)).strip())
                         rows_acc = [row]
                     else:
                         rows_acc.append(row)
                 if rows_acc:
-                    all_chunks.append((bc + hdr + "\r\n".join(rows_acc)).strip())
+                    all_chunks.append((bc + hdr + "\n".join(rows_acc)).strip())
                 continue
 
             p_norm = _RE_CHUNK_WHITESPACE.sub(" ", p)
@@ -2030,7 +2048,7 @@ def index_document(filepath: str) -> bool:
 
 
 def index_email(subject: str, sender: str, body_preview: str, date: str, is_read: bool = True, folder: str = "Inbox") -> None:
-    doc_text = f"Subject: {subject}\r\nFrom: {sender}\r\nDate: {date}\r\n{body_preview}"
+    doc_text = f"Subject: {subject}\nFrom: {sender}\nDate: {date}\n{body_preview}"
     metadata = {
         "subject": (subject or "")[:200],
         "sender": (sender or "")[:100],
@@ -2058,9 +2076,9 @@ def index_email(subject: str, sender: str, body_preview: str, date: str, is_read
 
 def index_calendar_event(subject: str, start: str, end: str, location: str = "", body: str = "") -> None:
     doc_text = (
-        f"Event: {subject}\r\nWhen: {start} to {end}"
-        + (f"\r\nWhere: {location}" if location else "")
-        + (f"\r\n{body[:300]}" if body else "")
+        f"Event: {subject}\nWhen: {start} to {end}"
+        + (f"\nWhere: {location}" if location else "")
+        + (f"\n{body[:300]}" if body else "")
     )
     metadata = {
         "subject": (subject or "")[:200],
@@ -2145,10 +2163,10 @@ def get_user_profile_prompt(query: str = "", semantic_search: bool = True) -> st
         return ""
 
     return (
-        "<user_profile_context>\r\n"
-        "Background info about the user (use ONLY if directly relevant to their question; otherwise ignore):\r\n"
-        + "\r\n".join(parts)
-        + "\r\n</user_profile_context>"
+        "<user_profile_context>\n"
+        "Background info about the user (use ONLY if directly relevant to their question; otherwise ignore):\n"
+        + "\n".join(parts)
+        + "\n</user_profile_context>"
     )
 
 
@@ -2194,9 +2212,16 @@ def get_index_stats() -> dict[str, int]:
             timeline = mv.timeline(limit=total) or []
             for item in timeline:
                 preview = item.get("preview") or ""
+                preview_low = preview.lower()
                 matched = False
                 for col, tag in _COLLECTION_TO_TAG.items():
-                    if f"tags: {tag}" in preview or f" {tag}" in preview or f"tags: [{tag}" in preview:
+                    t_low = tag.lower()
+                    if (
+                        f"tags: {t_low}" in preview_low
+                        or f"tags: [{t_low}" in preview_low
+                        or f"'{t_low}'" in preview_low
+                        or f'"{t_low}"' in preview_low
+                    ):
                         counts[col] += 1
                         matched = True
                         break
@@ -2216,7 +2241,6 @@ def get_index_stats() -> dict[str, int]:
         _stats_cache = counts
         _stats_cache_time = now
     return dict(counts)
-
 
 
 def load_memory() -> dict:
@@ -2345,16 +2369,19 @@ def search_async(query: str, target_collections: list[str] | None = None, top_k:
 
 
 def flush_write_queues() -> None:
-    if _profile_cache is not None:
-        _persist_profile_sync(_profile_cache)
-    try:
-        _reset_memvid()
-    except Exception:
-        pass
     try:
         _executor.shutdown(wait=False, cancel_futures=True)
     except Exception:
         pass
+    try:
+        _reset_memvid()
+    except Exception:
+        pass
+    if _profile_cache is not None:
+        try:
+            _persist_profile_sync(copy.deepcopy(_profile_cache))
+        except Exception as e:
+            logger.debug("[RAG] Flush profile persistence exception: %s", e)
 
 
 atexit.register(flush_write_queues)

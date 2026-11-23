@@ -777,15 +777,38 @@ def _tool_web_search(params, query, spoken):
             if getattr(r, "url", None)
         ]
         source_items = [f"{r.title[:45]} ({r.domain})" for r in search_response.results[:4]]
-        emit_roamies_card(
-            title=f"Web · {target[:24]}",
-            heading=target[:36],
-            text=response,
-            items=source_items,
-            tone="teal",
-            duration=22.0,
-            sources=top_sources,
-        )
+        top_images = (search_response.structured_data or {}).get("images") or []
+        if top_images:
+            try:
+                from amigo.services.screen_pen import emit_roamies_images
+                emit_roamies_images(
+                    title=f"Web · {target[:24]}",
+                    images=top_images,
+                    summary=response,
+                    bullets=source_items,
+                    duration=24.0,
+                )
+            except Exception as exc:
+                logger.debug("[Web Search] emit_roamies_images error: %s", exc)
+                emit_roamies_card(
+                    title=f"Web · {target[:24]}",
+                    heading=target[:36],
+                    text=response,
+                    items=source_items,
+                    tone="teal",
+                    duration=22.0,
+                    sources=top_sources,
+                )
+        else:
+            emit_roamies_card(
+                title=f"Web · {target[:24]}",
+                heading=target[:36],
+                text=response,
+                items=source_items,
+                tone="teal",
+                duration=22.0,
+                sources=top_sources,
+            )
         meta = {
             "status": "success",
             "query_type": search_response.query_type,
@@ -2032,8 +2055,56 @@ def _make_file_handler(default_action):
 
 
 def _tool_show_images(params, query, spoken):
-    target = (params or {}).get("query", query)
-    return spoken or "Showing image results.", f"https://www.google.com/search?q={urllib.parse.quote(target)}", {"status": "success"}
+    params = params if isinstance(params, dict) else {}
+    target = str(params.get("query") or query or "").strip()
+    if not target:
+        return spoken or "What would you like to see images of?", None, {"status": "missing_query"}
+
+    from amigo.services.web_search import search_images
+    from amigo.services.screen_pen import emit_roamies_images
+
+    images = search_images(target, max_results=4)
+    primary_url = images[0]["source_url"] if images else f"https://www.google.com/search?q={urllib.parse.quote(target)}"
+
+    explanation = ""
+    try:
+        explanation = get_ai_response(
+            f"Provide a crisp, direct 1 to 2 sentence visual description and explanation of {target}.",
+            max_tokens=140,
+            is_voice=True,
+        ).strip()
+    except Exception as exc:
+        logger.debug("[Show Images] Explanation generation note: %s", exc)
+
+    if images:
+        bullets = [f"{im['title'][:40]} ({im['domain']})" for im in images[:4] if im.get("title") and im.get("domain")]
+        emit_roamies_images(
+            title=f"Images · {target[:28]}",
+            images=images,
+            summary=explanation or f"Visual results for {target}.",
+            bullets=bullets,
+            duration=26.0,
+        )
+        speech = spoken or (explanation if explanation else f"Here are image results for {target}.")
+    else:
+        # Fall back to a card mark with the synthesized explanation instead of rendering nothing on the overlay
+        desc = explanation or f"No direct web images found for {target}."
+        emit_roamies_card(
+            title=f"Images · {target[:28]}",
+            heading=target[:36],
+            text=desc,
+            items=[f"Query: {target}", "Visual summary displayed"],
+            tone="teal",
+            duration=22.0,
+        )
+        speech = spoken or (explanation if explanation else f"I couldn't find web photos for {target}, but here is a visual overview: {desc}")
+
+    return speech, primary_url, {
+        "status": "success",
+        "query": target,
+        "images": images,
+        "count": len(images),
+    }
 
 
 def _tool_search_and_type(params, query, spoken):
@@ -2817,6 +2888,12 @@ TOOL_DEFINITIONS = [
         ["query"],
     ),
     _tool(
+        "show_images",
+        "Search and display web images, photos, or visual diagrams for a concept, entity, place, or object directly on the desktop overlay.",
+        {"query": _p("string", "Subject or concept to show images for")},
+        ["query"],
+    ),
+    _tool(
         "stock_quote",
         "Fetch live price quote for a financial ticker symbol or asset (e.g., MSFT, NVDA, BTC).",
         {"symbol": _p("string", "Ticker or asset symbol")},
@@ -3220,13 +3297,16 @@ CORE OPERATING PRINCIPLES:
    - Use `chat` for conceptual explanations, comparisons, definitions, reasoning, and conversational Q&A. Provide a direct crisp answer in `"params": {"response": "..."}`. NEVER chain with `screen_pen_annotate`. Never mention internal tool names (e.g., `play_youtube`, `web_search`, `document_qa`), JSON, schemas, or parameter names in your spoken/chat `response`. Always describe capabilities in plain, natural language (e.g., 'Just tell me the song or artist you want to hear').
    - Use `screen_pen_annotate` ONLY when the user explicitly requests a visual diagram/chart/map/3D model OR explicitly asks to mark an on-screen UI element (arrow, circle, highlight). Never for explanations.
    - Use `act_in_app` for in-window UI interactions (clicking, typing, scrolling).
-   - Use `web_search` for live online info, `get_weather` for weather, and `stock_quote` for ticker prices.
+   - Use `web_search` for live online info, `show_images` to find and show pictures or images of a topic, `get_weather` for weather, and `stock_quote` for ticker prices.
 5. Output Format: Output ONLY valid JSON: {"actions": [{"tool": "<tool_name>", "params": {<parameters>}}]}
 
 TOOLS AVAILABLE:
 <<TOOLS>>
 
 EXAMPLES:
+User: show me pictures of the James Webb Space Telescope
+Assistant: {"actions": [{"tool": "show_images", "params": {"query": "James Webb Space Telescope"}}]}
+
 User: what does my contract say about termination notice?
 Assistant: {"actions": [{"tool": "document_qa", "params": {"query": "termination notice", "filepath": "contract"}}]}
 
@@ -3914,6 +3994,7 @@ def get_last_played_song(conversation_history: list | None = None) -> dict | Non
 TOOL_ACTION_PROMPTS = {
     "play_youtube": "play audio or video on YouTube",
     "web_search": "search Google on the web",
+    "show_images": "show images or photos on your screen",
     "chat": "explain or tell you about this",
     "open_app": "open an application on your PC",
     "close_app": "close an application",

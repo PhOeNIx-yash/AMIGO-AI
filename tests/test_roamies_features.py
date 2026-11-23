@@ -245,7 +245,7 @@ def test_roamies_cards_emission_and_action_cards_suppression():
     }
     with patch("amigo.utils.tool_registry._cached_weather_data", return_value=fake_weather), \
          patch("amigo.utils.tool_registry.emit_interactive_weather") as mock_weather:
-        res, _ = _tool_get_weather({"city": "London"}, "weather in London", "")
+        res, *_ = _tool_get_weather({"city": "London"}, "weather in London", "")
         assert "London" in res
         mock_weather.assert_called_once()
         assert mock_weather.call_args[0][0] == "London"
@@ -281,7 +281,7 @@ def test_roamies_cards_emission_and_action_cards_suppression():
     with patch("amigo.utils.tool_registry.handle_set_timer", return_value="Timer set for 5 minutes."), \
          patch("amigo.utils.tool_registry.parse_relative_seconds", return_value=300), \
          patch("amigo.utils.tool_registry.emit_roamies_card") as mock_card:
-        res, _ = _tool_set_timer({"duration": "5 minutes", "label": "Tea"}, "set timer for 5 minutes", "")
+        res, *_ = _tool_set_timer({"duration": "5 minutes", "label": "Tea"}, "set timer for 5 minutes", "")
         assert "5 minutes" in res
         mock_card.assert_called_once()
         assert "Timer" in mock_card.call_args[1]["title"]
@@ -677,4 +677,82 @@ def test_emit_roamies_quiz_ticket_medal_and_edits():
     res3 = client.post("/api/overlay/action", json={"type": "ink_action", "part": "ticket_101"})
     assert res3.status_code == 200
     assert res3.get_json().get("status") == "success"
+
+
+def test_roamies_image_and_gallery_overlay_features():
+    from amigo.services.screen_pen import emit_roamies_images, push_overlay_event
+    from amigo.utils.tool_registry import _tool_show_images
+
+    # 1. Single image emits kind="image"
+    sample_images = [
+        {
+            "title": "Golden Gate Bridge",
+            "image_url": "https://example.com/bridge.jpg",
+            "thumbnail_url": "https://example.com/bridge_thumb.jpg",
+            "source_url": "https://example.com/bridge",
+            "domain": "example.com",
+        }
+    ]
+    with patch("amigo.services.screen_pen.push_overlay_event") as mock_push:
+        emit_roamies_images("Golden Gate Bridge", sample_images, summary="Iconic suspension bridge.", bullets=["Located in SF"])
+        assert mock_push.called
+        event = mock_push.call_args[0][0]
+        assert event["type"] == "ink"
+        mark = event["beats"][0]["marks"][0]
+        assert mark["kind"] == "image"
+        assert mark["image_url"] == "https://example.com/bridge.jpg"
+        assert mark["title"] == "Golden Gate Bridge"
+        assert mark["summary"] == "Iconic suspension bridge."
+
+    # 2. Multiple images emit kind="gallery"
+    gallery_images = sample_images + [
+        {
+            "title": "Alcatraz Island",
+            "image_url": "https://example.com/alcatraz.jpg",
+            "thumbnail_url": "https://example.com/alcatraz_thumb.jpg",
+            "source_url": "https://example.com/alcatraz",
+            "domain": "example.com",
+        }
+    ]
+    with patch("amigo.services.screen_pen.push_overlay_event") as mock_push:
+        emit_roamies_images("San Francisco Landmarks", gallery_images)
+        assert mock_push.called
+        event = mock_push.call_args[0][0]
+        mark = event["beats"][0]["marks"][0]
+        assert mark["kind"] == "gallery"
+        assert len(mark["images"]) == 2
+        assert mark["images"][1]["title"] == "Alcatraz Island"
+
+    # 3. _tool_show_images routes through search_images & emit_roamies_images
+    with patch("amigo.services.web_search.search_images", return_value=gallery_images), \
+         patch("amigo.services.screen_pen.emit_roamies_images") as mock_emit, \
+         patch("amigo.core.llm_agent.get_ai_response", return_value="Here are views of the Golden Gate Bridge."):
+        resp, url, meta = _tool_show_images({"query": "Golden Gate Bridge"}, "show images of golden gate bridge", "")
+        assert "Golden Gate" in resp
+        mock_emit.assert_called_once()
+        called_images = mock_emit.call_args[1].get("images") or mock_emit.call_args[0][1]
+        assert len(called_images) == 2
+        assert meta["status"] == "success"
+        assert meta["count"] == 2
+
+    # 4. Overlay events pass through unconditionally
+    count = push_overlay_event({"type": "ink", "beats": []})
+    assert count >= 0
+
+    # 5. 0 images in _tool_show_images falls back to emit_roamies_card
+    with patch("amigo.services.web_search.search_images", return_value=[]), \
+         patch("amigo.utils.tool_registry.emit_roamies_card") as mock_card, \
+         patch("amigo.core.llm_agent.get_ai_response", return_value="A visual overview of dark matter."):
+        resp, url, meta = _tool_show_images({"query": "Dark Matter"}, "show images of dark matter", "")
+        assert "Dark Matter" in resp or "dark matter" in resp
+        mock_card.assert_called_once()
+        assert "Dark Matter" in mock_card.call_args[1]["title"]
+        assert meta["count"] == 0
+
+    # 6. emit_roamies_images with 0 images falls back to emit_roamies_card
+    with patch("amigo.utils.tool_registry.emit_roamies_card") as mock_card:
+        res = emit_roamies_images("Empty topic", [], summary="No images found")
+        assert mock_card.called
+
+
 

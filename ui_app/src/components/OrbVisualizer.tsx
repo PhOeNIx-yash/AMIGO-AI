@@ -135,7 +135,7 @@ function getOrbConfig(
     }
   }
   if (state === "working") {
-    return { state: "working", variant: "default" };
+    return { state: "working", variant: "gyro" };
   }
   if (state === "action_card") {
     return { state: "using", variant: "tap" };
@@ -149,7 +149,7 @@ function getOrbConfig(
   if (state === "generated_content") {
     return { state: "reasoning", variant: "twins" };
   }
-  return { state: "idle", variant: "default" };
+  return { state: "idle", variant: "blink" };
 }
 
 export const OrbVisualizer: React.FC<OrbVisualizerProps> = React.memo(({
@@ -164,7 +164,12 @@ export const OrbVisualizer: React.FC<OrbVisualizerProps> = React.memo(({
   activePrompt = null,
 }) => {
   const isWebSearch =
-    activeIntent === "web_search" || activeIntent === "search_web";
+    activeIntent === "web_search" ||
+    activeIntent === "search_web" ||
+    activeIntent === "show_images" ||
+    state === ("searching" as any) ||
+    (Boolean(activePrompt) &&
+      /search|google|image|picture|find|look up|who is|what is|browse|web/i.test(activePrompt!));
 
   let orbColor = isDark ? (ORB_COLORS_DARK[state] || "#38bdf8") : (ORB_COLORS_LIGHT[state] || "#0284c7");
   if (isWebSearch && (state === "processing" || state === "working")) {
@@ -240,13 +245,14 @@ export const OrbVisualizer: React.FC<OrbVisualizerProps> = React.memo(({
         style={{ color: orbColor }}
       >
         <Orb
+          key={`${orbConfig.state}-${orbConfig.variant || "default"}`}
           state={orbConfig.state as any}
           variant={orbConfig.variant}
           shape={orbConfig.shape}
           render={orbConfig.render}
           size={compact ? 120 : 210}
           speed={speed}
-          paused={isPaused}
+          paused={Boolean(isPaused)}
           label={ariaLabel}
           className="transition-transform duration-300 pointer-events-none"
         />

@@ -1019,6 +1019,8 @@
     quiz: (m) => drawQuiz(m),
     ticket: (m) => drawTicket(m),
     medal: (m) => drawMedal(m),
+    image: (m) => drawImageCard(m),
+    gallery: (m) => drawGalleryCard(m),
   };
 
   // ---------------------------------------------------------------- molecules: a 2D layout from the parsed SMILES
@@ -1815,6 +1817,350 @@
     await trace(ring.map(([px, py]) => [px + cx - 60, py + cy - 60]), 0.9, (e) => (rp = e));
     await trace(star.map(([px, py]) => [px + cx, py + cy]), 0.8, (e) => (sp = e));
     sfx('hype'); burst(cx, cy, true);
+  }
+
+  function loadOverlayImage(url, fbUrl) {
+    return new Promise((resolve) => {
+      if (!url && !fbUrl) return resolve(null);
+      const img = new Image();
+      let done = false;
+      const timer = setTimeout(() => {
+        if (!done) { done = true; resolve(null); }
+      }, 4000);
+      img.onload = () => {
+        if (!done) {
+          done = true;
+          clearTimeout(timer);
+          touch();
+          resolve(img.naturalWidth && img.naturalHeight ? img : null);
+        }
+      };
+      img.onerror = () => {
+        if (fbUrl && fbUrl !== url) {
+          const fb = new Image();
+          fb.onload = () => {
+            if (!done) {
+              done = true;
+              clearTimeout(timer);
+              touch();
+              resolve(fb.naturalWidth && fb.naturalHeight ? fb : null);
+            }
+          };
+          fb.onerror = () => {
+            if (!done) { done = true; clearTimeout(timer); resolve(null); }
+          };
+          fb.src = fbUrl;
+        } else {
+          if (!done) { done = true; clearTimeout(timer); resolve(null); }
+        }
+      };
+      img.src = url || fbUrl;
+    });
+  }
+
+  async function drawImageCard(m) {
+    const w = 400;
+    const HEAD = `800 18px ${DOTO}`, BODY_FONT = `400 12px ${MONO}`;
+    const imgUrl = m.image_url || m.src || m.url || '';
+    const fbUrl = m.thumbnail_url || m.thumb || '';
+
+    // Asynchronously load image without blocking card creation:
+    // First try thumbnail (or direct URL) for instant display, then swap in full-res
+    const state = { img: null, loaded: false, failed: false };
+    const primaryUrl = fbUrl || imgUrl;
+    if (primaryUrl) {
+      const im1 = new Image();
+      im1.onload = () => {
+        if (!state.failed) {
+          state.img = im1;
+          state.loaded = true;
+          touch(1.2);
+        }
+        if (imgUrl && imgUrl !== primaryUrl) {
+          const im2 = new Image();
+          im2.onload = () => {
+            if (!state.failed) {
+              state.img = im2;
+              touch(1.2);
+            }
+          };
+          im2.src = imgUrl;
+        }
+      };
+      im1.onerror = () => {
+        if (imgUrl && imgUrl !== primaryUrl) {
+          const im2 = new Image();
+          im2.onload = () => {
+            state.img = im2;
+            state.loaded = true;
+            touch(1.2);
+          };
+          im2.onerror = () => {
+            state.failed = true;
+            touch(0.6);
+          };
+          im2.src = imgUrl;
+        } else {
+          state.failed = true;
+          touch(0.6);
+        }
+      };
+      im1.src = primaryUrl;
+    } else {
+      state.failed = true;
+    }
+
+    const pad = 20;
+    const contentW = w - pad * 2;
+    const heads = m.heading ? wrapRows(m.heading, contentW, HEAD) : [];
+    const headH = heads.length ? heads.length * 24 + 8 : 0;
+    const rows = m.text ? wrapRows(m.text, contentW, BODY_FONT) : [];
+    const textH = rows.length ? rows.length * 17 + 8 : 0;
+    const items = (m.items ?? []).map((it) => wrapRows(it, contentW - 24, BODY_FONT));
+    const itemsH = items.reduce((s, r) => s + r.length * 17 + 6, 0);
+
+    const imgH = primaryUrl ? 175 : 0;
+    const domain = m.domain || (m.source_url ? ellipsize(m.source_url.replace(/^https?:\/\//, ''), 32, `500 10px ${MONO}`) : '');
+    const domH = domain ? 26 : 0;
+    const h = 26 + 16 + (imgH ? imgH + 14 : 0) + headH + textH + itemsH + domH + 12;
+
+    const ticks = items.map((_, i) => handLine([0, 0], [7, 0], { jitter: 0.3 }));
+    let hits = [];
+
+    const c = await card(m, w, h, function (b, l, t, x, y, age) {
+      let yy = y + 26 + 14;
+      if (imgH) {
+        const ix = x + pad, iy = yy;
+        if (!state.failed) {
+          b.save();
+          b.beginPath();
+          const r = 6;
+          b.moveTo(ix + r, iy);
+          b.lineTo(ix + contentW - r, iy);
+          b.quadraticCurveTo(ix + contentW, iy, ix + contentW, iy + r);
+          b.lineTo(ix + contentW, iy + imgH - r);
+          b.quadraticCurveTo(ix + contentW, iy + imgH, ix + contentW - r, iy + imgH);
+          b.lineTo(ix + r, iy + imgH);
+          b.quadraticCurveTo(ix, iy + imgH, ix, iy + imgH - r);
+          b.lineTo(ix, iy + r);
+          b.quadraticCurveTo(ix, iy, ix + r, iy);
+          b.closePath();
+          b.clip();
+
+          if (state.loaded && state.img && state.img.naturalWidth && state.img.naturalHeight) {
+            const sAspect = contentW / imgH;
+            const iAspect = state.img.naturalWidth / state.img.naturalHeight;
+            let sx = 0, sy = 0, sw = state.img.naturalWidth, sh = state.img.naturalHeight;
+            if (iAspect > sAspect) {
+              sw = Math.round(sh * sAspect);
+              sx = Math.round((state.img.naturalWidth - sw) / 2);
+            } else {
+              sh = Math.round(sw / sAspect);
+              sy = Math.round((state.img.naturalHeight - sh) / 2);
+            }
+            b.drawImage(state.img, sx, sy, sw, sh, ix, iy, contentW, imgH);
+          } else {
+            b.fillStyle = 'rgba(120, 255, 226, 0.04)';
+            b.fillRect(ix, iy, contentW, imgH);
+            typed(b, 'Loading visual...', ix + contentW / 2, iy + imgH / 2 + 4, `500 11px ${MONO}`, DIM, 1, { anchor: 'middle' });
+          }
+          b.restore();
+
+          b.strokeStyle = 'rgba(120, 255, 226, 0.2)';
+          b.lineWidth = 1;
+          b.strokeRect(ix, iy, contentW, imgH);
+
+          if (m.source_url) {
+            hits.push({ rect: [ix, iy, contentW, imgH], kind: 'link', url: m.source_url });
+          }
+        }
+        yy += imgH + 14;
+      }
+
+      if (heads.length) {
+        heads.forEach((r, i) => typed(b, r, x + pad, yy + 16 + i * 24, HEAD, TEXT, (age - i * 0.2) / 0.5));
+        yy += headH;
+      }
+
+      if (rows.length) {
+        wrapped(b, rows, x + pad, yy + 4, 17, BODY_FONT, TEXT, (age - 0.2) / 0.6);
+        yy += textH;
+      }
+
+      if (items.length) {
+        items.forEach((r, i) => {
+          const a = age - 0.3 - i * 0.2;
+          if (a <= 0) return;
+          pen(b, l, this, ticks[i].map(([px, py]) => [px + x + pad + 2, py + yy + 1]), clamp(a / 0.2, 0, 1), this.color, { key: 'imgk' + i, w: 2.4 });
+          wrapped(b, r, x + pad + 16, yy + 4, 17, BODY_FONT, TEXT, a / 0.5);
+          yy += r.length * 17 + 6;
+        });
+      }
+
+      if (domain && m.source_url) {
+        const dw = Math.round(textW(domain, `500 10px ${MONO}`) + 24);
+        const dx = x + pad, dy = yy + 2;
+        b.fillStyle = 'rgba(120, 255, 226, 0.08)';
+        b.fillRect(dx, dy, dw, 18);
+        b.strokeStyle = 'rgba(120, 255, 226, 0.25)';
+        b.strokeRect(dx, dy, dw, 18);
+        typed(b, domain + ' ↗', dx + 8, dy + 13, `500 10px ${MONO}`, ACC, (age - 0.4) / 0.4);
+        hits.push({ rect: [dx, dy, dw, 18], kind: 'link', url: m.source_url });
+      }
+    }, { title: m.title || 'image' });
+
+    c.more = () => hits.map((q) => ({ ...q, part: m.part }));
+  }
+
+  async function drawGalleryCard(m) {
+    const w = 450;
+    const HEAD = `800 18px ${DOTO}`, BODY_FONT = `400 12px ${MONO}`;
+    const rawImgs = Array.isArray(m.images) ? m.images.slice(0, 4) : [];
+
+    // Asynchronously load gallery images without stalling card presentation
+    const states = rawImgs.map((im) => {
+      const state = { img: null, loaded: false, failed: false, item: im };
+      const u = im.image_url || im.src || im.url || '';
+      const fb = im.thumbnail_url || im.thumb || '';
+      const firstSrc = fb || u;
+      if (firstSrc) {
+        const im1 = new Image();
+        im1.onload = () => {
+          if (!state.failed) {
+            state.img = im1;
+            state.loaded = true;
+            touch(1.2);
+          }
+          if (u && u !== firstSrc) {
+            const im2 = new Image();
+            im2.onload = () => {
+              if (!state.failed) {
+                state.img = im2;
+                touch(1.2);
+              }
+            };
+            im2.src = u;
+          }
+        };
+        im1.onerror = () => {
+          if (u && u !== firstSrc) {
+            const im2 = new Image();
+            im2.onload = () => {
+              state.img = im2;
+              state.loaded = true;
+              touch(1.2);
+            };
+            im2.onerror = () => {
+              state.failed = true;
+              touch(0.6);
+            };
+            im2.src = u;
+          } else {
+            state.failed = true;
+            touch(0.6);
+          }
+        };
+        im1.src = firstSrc;
+      } else {
+        state.failed = true;
+      }
+      return state;
+    });
+
+    const count = states.length;
+    const pad = 20;
+    const contentW = w - pad * 2;
+
+    const heads = m.heading ? wrapRows(m.heading, contentW, HEAD) : [];
+    const headH = heads.length ? heads.length * 24 + 8 : 0;
+    const rows = m.text ? wrapRows(m.text, contentW, BODY_FONT) : [];
+    const textH = rows.length ? rows.length * 17 + 8 : 0;
+
+    const cols = count >= 2 ? 2 : 1;
+    const cellW = cols === 2 ? Math.floor((contentW - 10) / 2) : contentW;
+    const cellH = cols === 2 ? 115 : 170;
+    const gridRows = count > 2 ? 2 : (count > 0 ? 1 : 0);
+    const gridH = gridRows ? gridRows * cellH + (gridRows - 1) * 10 + 14 : 0;
+
+    const h = 26 + 16 + headH + (gridH || 0) + textH + 16;
+    let hits = [];
+
+    const c = await card(m, w, h, function (b, l, t, x, y, age) {
+      let yy = y + 26 + 14;
+
+      if (heads.length) {
+        heads.forEach((r, i) => typed(b, r, x + pad, yy + 16 + i * 24, HEAD, TEXT, (age - i * 0.2) / 0.5));
+        yy += headH;
+      }
+
+      if (count > 0) {
+        states.forEach((st, idx) => {
+          const item = st.item;
+          const col = idx % cols;
+          const row = Math.floor(idx / cols);
+          const cx = x + pad + col * (cellW + 10);
+          const cy = yy + row * (cellH + 10);
+
+          b.save();
+          b.beginPath();
+          const r = 6;
+          b.moveTo(cx + r, cy);
+          b.lineTo(cx + cellW - r, cy);
+          b.quadraticCurveTo(cx + cellW, cy, cx + cellW, cy + r);
+          b.lineTo(cx + cellW, cy + cellH - r);
+          b.quadraticCurveTo(cx + cellW, cy + cellH, cx + cellW - r, cy + cellH);
+          b.lineTo(cx + r, cy + cellH);
+          b.quadraticCurveTo(cx, cy + cellH, cx, cy + cellH - r);
+          b.lineTo(cx, cy + r);
+          b.quadraticCurveTo(cx, cy, cx + r, cy);
+          b.closePath();
+          b.clip();
+
+          if (st.loaded && st.img && st.img.naturalWidth && st.img.naturalHeight) {
+            const sAspect = cellW / cellH;
+            const iAspect = st.img.naturalWidth / st.img.naturalHeight;
+            let sx = 0, sy = 0, sw = st.img.naturalWidth, sh = st.img.naturalHeight;
+            if (iAspect > sAspect) {
+              sw = Math.round(sh * sAspect);
+              sx = Math.round((st.img.naturalWidth - sw) / 2);
+            } else {
+              sh = Math.round(sw / sAspect);
+              sy = Math.round((st.img.naturalHeight - sh) / 2);
+            }
+            b.drawImage(st.img, sx, sy, sw, sh, cx, cy, cellW, cellH);
+          } else {
+            b.fillStyle = 'rgba(120, 255, 226, 0.04)';
+            b.fillRect(cx, cy, cellW, cellH);
+            if (!st.failed) {
+              typed(b, '...', cx + cellW / 2, cy + cellH / 2, `500 11px ${MONO}`, DIM, 1, { anchor: 'middle' });
+            }
+          }
+
+          b.fillStyle = 'rgba(0,0,0,0.65)';
+          b.fillRect(cx, cy + cellH - 22, cellW, 22);
+          b.restore();
+
+          const cap = ellipsize(item.title || item.domain || 'Source', cellW - 12, `500 10px ${MONO}`);
+          typed(b, cap, cx + 6, cy + cellH - 7, `500 10px ${MONO}`, TEXT, age / 0.4);
+
+          b.strokeStyle = 'rgba(120, 255, 226, 0.2)';
+          b.lineWidth = 1;
+          b.strokeRect(cx, cy, cellW, cellH);
+
+          const linkUrl = item.source_url || item.image_url;
+          if (linkUrl) {
+            hits.push({ rect: [cx, cy, cellW, cellH], kind: 'link', url: linkUrl });
+          }
+        });
+        yy += gridH;
+      }
+
+      if (rows.length) {
+        wrapped(b, rows, x + pad, yy + 6, 17, BODY_FONT, TEXT, (age - 0.2) / 0.6);
+      }
+    }, { title: m.title || 'gallery' });
+
+    c.more = () => hits.map((q) => ({ ...q, part: m.part }));
   }
 
   // ---------------------------------------------------------------- edits on what's drawn (part ids p1, p2 …)

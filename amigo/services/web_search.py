@@ -32,6 +32,7 @@ import re
 import threading
 import time
 import urllib.parse
+import urllib.request
 import webbrowser
 import xml.etree.ElementTree as ET
 from collections import Counter, OrderedDict, defaultdict
@@ -58,6 +59,7 @@ __all__ = [
     "Quote",
     "search_web",
     "async_search_web",
+    "search_images",
     "format_for_llm",
     "scrape_web_info",
     "searchGoogle",
@@ -1445,6 +1447,15 @@ def search_web(
     if use_cache and response and response.results:
         _RESULT_CACHE.put(cache_key, response, ttl_s=300.0)
 
+    # Attach top visual imagery to structured_data when results exist
+    if response and response.results and not response.structured_data.get("images"):
+        try:
+            top_imgs = search_images(raw_q, max_results=2)
+            if top_imgs:
+                response.structured_data["images"] = top_imgs
+        except Exception as exc:
+            logger.debug("[Web Search] Top image attachment note: %s", exc)
+
     return response
 
 
@@ -1496,6 +1507,128 @@ def searchGoogle(query: str) -> None:
     q = (query or "").strip()
     if q:
         webbrowser.open("https://www.google.com/search?q=" + urllib.parse.quote_plus(q))
+
+
+_IMAGE_CACHE: dict[str, tuple[float, list[dict[str, str]]]] = {}
+_IMAGE_CACHE_LOCK = threading.Lock()
+_IMAGE_CACHE_TTL = 300.0
+
+
+def _search_images_wikimedia(query: str, max_results: int = 4) -> list[dict[str, str]]:
+    """Clean Wikimedia / Wikipedia Commons image fallback when DDG is rate-limited or unavailable."""
+    try:
+        clean_q = urllib.parse.quote(query.strip())
+        url = (
+            f"https://en.wikipedia.org/w/api.php?action=query&generator=search"
+            f"&gsrsearch={clean_q}&prop=pageimages|extracts&piprop=thumbnail&pithumbsize=640"
+            f"&format=json&origin=*"
+        )
+        headers = {
+            "User-Agent": "AmigoVoiceAssistant/1.0 (Desktop AI Companion; https://github.com/amigo)"
+        }
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=3.5) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+
+        pages = data.get("query", {}).get("pages", {})
+        results: list[dict[str, str]] = []
+        for p in pages.values():
+            thumb = (p.get("thumbnail") or {}).get("source")
+            if not thumb:
+                continue
+            title = str(p.get("title") or query)
+            pageid = p.get("pageid")
+            source_url = f"https://en.wikipedia.org/?curid={pageid}" if pageid else f"https://en.wikipedia.org/wiki/{urllib.parse.quote(title)}"
+            results.append({
+                "title": title,
+                "image_url": thumb,
+                "thumbnail_url": thumb,
+                "source_url": source_url,
+                "domain": "en.wikipedia.org",
+            })
+            if len(results) >= max_results:
+                break
+        logger.info("[search_images:Wikimedia] Fallback retrieved %d images for %r", len(results), query)
+        return results
+    except Exception as exc:
+        logger.warning("[search_images:Wikimedia] Wikimedia fallback failed for %r: %s", query, exc)
+        return []
+
+
+def search_images(query: str, max_results: int = 4) -> list[dict[str, str]]:
+    """Search web images using DuckDuckGo with Wikipedia/Wikimedia Commons fallback."""
+    raw_q = (query or "").strip()
+    if not raw_q:
+        return []
+
+    cache_key = f"{raw_q.lower()}::{max_results}"
+    now = time.monotonic()
+    with _IMAGE_CACHE_LOCK:
+        if cache_key in _IMAGE_CACHE:
+            ts, cached_hits = _IMAGE_CACHE[cache_key]
+            if now - ts < _IMAGE_CACHE_TTL:
+                logger.info("[search_images] Cache hit for %r (%d images)", raw_q, len(cached_hits))
+                return [dict(h) for h in cached_hits]
+
+    results: list[dict[str, str]] = []
+    provider_used = "none"
+
+    # 1. Primary: DuckDuckGo Images
+    try:
+        inst = _get_ddgs_instance()
+        if inst is not None:
+            raw_hits = list(inst.images(raw_q, safesearch="moderate", max_results=max_results))
+            for item in raw_hits:
+                img_url = (item.get("image") or "").strip()
+                if not img_url or not img_url.startswith(("http://", "https://")):
+                    continue
+                thumb_url = (item.get("thumbnail") or img_url).strip()
+                src_url = (item.get("url") or img_url).strip()
+                dom = _extract_host(src_url) or _extract_host(img_url) or "web"
+                title = (item.get("title") or raw_q).strip()
+                results.append({
+                    "title": title,
+                    "image_url": img_url,
+                    "thumbnail_url": thumb_url,
+                    "source_url": src_url,
+                    "domain": dom,
+                })
+                if len(results) >= max_results:
+                    break
+            if results:
+                provider_used = "DuckDuckGo"
+                logger.info(
+                    "[search_images] DDGS found %d images for %r. Sample URLs: %s",
+                    len(results),
+                    raw_q,
+                    [r["image_url"] for r in results[:2]],
+                )
+    except Exception as exc:
+        logger.warning("[search_images] DDGS images lookup error for %r: %s", raw_q, exc)
+
+    # 2. Fallback: Wikimedia Commons API if DDGS failed or was empty
+    if not results:
+        logger.info("[search_images] DDGS returned 0 images for %r; trying Wikimedia fallback...", raw_q)
+        results = _search_images_wikimedia(raw_q, max_results=max_results)
+        if results:
+            provider_used = "Wikimedia"
+            logger.info(
+                "[search_images] Wikimedia fallback succeeded with %d images for %r. Sample URLs: %s",
+                len(results),
+                raw_q,
+                [r["image_url"] for r in results[:2]],
+            )
+        else:
+            logger.warning("[search_images] No images found from any provider for %r", raw_q)
+
+    logger.info("[search_images] Final return: %d images for %r via %s", len(results), raw_q, provider_used)
+
+    with _IMAGE_CACHE_LOCK:
+        _IMAGE_CACHE[cache_key] = (now, [dict(h) for h in results])
+        if len(_IMAGE_CACHE) > 100:
+            _IMAGE_CACHE.pop(next(iter(_IMAGE_CACHE)))
+
+    return results
 
 
 async def async_search_web(query: str, **kwargs) -> SearchResponse:

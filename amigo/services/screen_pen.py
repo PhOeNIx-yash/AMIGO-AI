@@ -11,6 +11,7 @@ import json
 import logging
 import queue
 import re
+import sys
 import threading
 import time
 from typing import Any, Callable, Dict, Optional
@@ -27,7 +28,7 @@ _VALID_3D_SHAPES = {"sphere", "torus", "cone", "cylinder", "box"}
 _DIAGRAM_KINDS = {
     "diagram", "flow", "graph", "bars", "table", "timeline",
     "math", "geometry", "molecule", "map", "quiz", "model", "card", "note", "list", "mindmap",
-    "ticket", "medal",
+    "ticket", "medal", "image", "gallery",
 }
 _SCREEN_MARK_KINDS = {
     "circle", "ring", "arrow", "box", "rect", "underline",
@@ -188,8 +189,9 @@ def _wrap_roamie_host_event(inner_event: Dict[str, Any]) -> Dict[str, Any]:
 def push_overlay_event(event: Dict[str, Any]) -> int:
     """Broadcast a Roamies overlay event to all connected JS overlays."""
     global _LAST_EVENT
-    envelope = _wrap_roamie_host_event(event)
     etype = event.get("type")
+
+    envelope = _wrap_roamie_host_event(event)
     is_transient = etype in ("ink_clear", "sfx", "emote", "tool_start", "tool_end", "edit", "pin")
 
     with _SUBSCRIBERS_LOCK:
@@ -207,6 +209,7 @@ def push_overlay_event(event: Dict[str, Any]) -> int:
             delivered += 1
         except queue.Full:
             logger.debug("[Overlay Push] Subscriber queue full; dropping event '%s'", etype)
+    logger.info("[push_overlay_event] Delivered '%s' event to %d/%d subscribers", etype, delivered, len(targets))
     return delivered
 
 
@@ -338,6 +341,92 @@ def emit_roamies_medal(
             "text": text,
         },
     )
+
+
+def emit_roamies_images(
+    title: str,
+    images: list[dict],
+    summary: str = "",
+    bullets: list[str] | None = None,
+    duration: float = 24.0,
+    tone: str = "teal",
+    clear_previous: bool = False,
+) -> int:
+    """Emit a hero image or visual gallery card directly to the Roamies desktop overlay."""
+    raw_images = images if isinstance(images, list) else []
+    clean_images = [
+        img for img in raw_images
+        if isinstance(img, dict) and (img.get("image_url") or img.get("src") or img.get("url"))
+    ]
+
+    logger.info(
+        "[emit_roamies_images] Invoked: title=%r, raw_images=%d, clean_images=%d, summary_len=%d",
+        title,
+        len(raw_images),
+        len(clean_images),
+        len(summary or ""),
+    )
+
+    if not clean_images:
+        logger.info("[emit_roamies_images] 0 valid images passed; falling back to text card mark on overlay")
+        from amigo.utils.tool_registry import emit_roamies_card
+        emit_roamies_card(
+            title=str(title or "Visual Info")[:60],
+            heading=str(title or "Visual Summary")[:80],
+            text=str(summary or "")[:500],
+            items=list(bullets or [])[:6],
+            tone=tone,
+            duration=duration,
+        )
+        return 1
+
+    event_id = f"img_{int(time.time() * 1000)}"
+    if len(clean_images) == 1:
+        first = clean_images[0]
+        mark: dict[str, Any] = {
+            "kind": "image",
+            "part": event_id,
+            "title": str(title or first.get("title") or "Image")[:60],
+            "heading": str(first.get("title") or title or "")[:80],
+            "text": str(summary or "")[:500],
+            "image_url": str(first.get("image_url") or first.get("src") or first.get("url") or ""),
+            "thumbnail_url": str(first.get("thumbnail_url") or first.get("thumb") or first.get("image_url") or ""),
+            "source_url": str(first.get("source_url") or first.get("url") or first.get("image_url") or ""),
+            "domain": str(first.get("domain") or "")[:40],
+            "items": list(bullets or [])[:6],
+            "tone": _resolve_tone(tone),
+        }
+    else:
+        mark: dict[str, Any] = {
+            "kind": "gallery",
+            "part": event_id,
+            "title": str(title or "Image Gallery")[:60],
+            "heading": str(title or "Visual Highlights")[:80],
+            "text": str(summary or "")[:500],
+            "images": clean_images[:4],
+            "items": list(bullets or [])[:6],
+            "tone": _resolve_tone(tone),
+        }
+
+    beats = [{
+        "voiced": True,
+        "caption": str(title or "Visual results"),
+        "marks": [_sanitize_mark(mark), {"kind": "sfx", "name": "whoosh"}],
+    }]
+
+    if clear_previous:
+        push_overlay_event({"type": "ink_clear", "all": True})
+
+    subscribers = push_overlay_event({
+        "type": "ink",
+        "id": event_id,
+        "seg": 0,
+        "last": True,
+        "fade": max(12.0, float(duration)),
+        "beats": beats,
+    })
+    logger.info("[emit_roamies_images] push_overlay_event returned %d active subscribers", subscribers)
+    return subscribers
 
 
 def emit_overlay_edit(
@@ -1005,6 +1094,57 @@ def _sanitize_medal_mark(out: dict[str, Any]) -> None:
     out["text"] = str(out.get("text") or "")[:240]
 
 
+def _sanitize_image_mark(out: dict[str, Any]) -> None:
+    out["part"] = str(out.get("part") or f"image_{int(time.time() * 1000)}")
+    out["title"] = str(out.get("title") or "Image")[:60]
+    out["heading"] = str(out.get("heading") or "")[:80]
+    out["text"] = str(out.get("text") or out.get("summary") or out.get("caption") or "")[:500]
+    out["summary"] = out["text"]
+    out["image_url"] = str(out.get("image_url") or out.get("src") or out.get("url") or "")
+    out["thumbnail_url"] = str(out.get("thumbnail_url") or out.get("thumb") or out["image_url"])
+    out["source_url"] = str(out.get("source_url") or out["image_url"])
+    out["domain"] = str(out.get("domain") or "")[:40]
+    if isinstance(out.get("items"), list):
+        out["items"] = [str(it)[:160] for it in out["items"][:6]]
+    else:
+        out["items"] = []
+
+
+def _sanitize_gallery_mark(out: dict[str, Any]) -> None:
+    out["part"] = str(out.get("part") or f"gallery_{int(time.time() * 1000)}")
+    out["title"] = str(out.get("title") or "Gallery")[:60]
+    out["heading"] = str(out.get("heading") or "")[:80]
+    out["text"] = str(out.get("text") or out.get("summary") or out.get("caption") or "")[:500]
+    out["summary"] = out["text"]
+    clean_images = []
+    raw_images = out.get("images") or []
+    if isinstance(raw_images, list):
+        for img in raw_images[:6]:
+            if isinstance(img, dict):
+                img_url = str(img.get("image_url") or img.get("src") or img.get("url") or "")
+                if img_url:
+                    clean_images.append({
+                        "title": str(img.get("title") or "")[:60],
+                        "image_url": img_url,
+                        "thumbnail_url": str(img.get("thumbnail_url") or img.get("thumb") or img_url),
+                        "source_url": str(img.get("source_url") or img_url),
+                        "domain": str(img.get("domain") or "")[:40],
+                    })
+            elif isinstance(img, str) and img.strip():
+                clean_images.append({
+                    "title": "",
+                    "image_url": img.strip(),
+                    "thumbnail_url": img.strip(),
+                    "source_url": img.strip(),
+                    "domain": "",
+                })
+    out["images"] = clean_images
+    if isinstance(out.get("items"), list):
+        out["items"] = [str(it)[:160] for it in out["items"][:6]]
+    else:
+        out["items"] = []
+
+
 _MARK_SANITIZERS: dict[str, Callable[[dict[str, Any]], None]] = {
     "model": _sanitize_model_mark,
     "flow": _sanitize_flow_mark,
@@ -1014,6 +1154,8 @@ _MARK_SANITIZERS: dict[str, Callable[[dict[str, Any]], None]] = {
     "quiz": _sanitize_quiz_mark,
     "ticket": _sanitize_ticket_mark,
     "medal": _sanitize_medal_mark,
+    "image": _sanitize_image_mark,
+    "gallery": _sanitize_gallery_mark,
 }
 
 
@@ -1583,13 +1725,19 @@ def screen_pen_annotate(
         }
 
     has_explicit_coords = x is not None and y is not None
-    resolved_rect = _resolve_target_rect(label) if (label and not has_explicit_coords) else None
-    if label and not has_explicit_coords and not resolved_rect:
-        return {
-            "status": "error",
-            "code": "TARGET_NOT_FOUND",
-            "error": f"Could not locate '{label}' on screen.",
-        }
+    is_placeholder_coords = bool(x == 0 and y == 0)
+    if label and (is_placeholder_coords or not has_explicit_coords):
+        resolved_rect = _resolve_target_rect(label)
+        if resolved_rect:
+            has_explicit_coords = False
+        elif not has_explicit_coords or is_placeholder_coords:
+            return {
+                "status": "error",
+                "code": "TARGET_NOT_FOUND",
+                "error": f"Could not locate '{label}' on screen.",
+            }
+    else:
+        resolved_rect = None
 
     sw, sh = _get_viewport_bounds()
     default_x = 500.0 if normalized else sw * 0.5
