@@ -111,7 +111,7 @@ def main():
     print("=" * 60)
     print("\nActive Engine Stack:")
     print(f"  Agent Engine  — {model_name_display} : high-accuracy formal logic & agentic execution")
-    print("  Speech Engine — Paradee 1.2 ONNX : 24kHz ultra-fast offline neural speech synthesis (af_heart flagship)")
+    print("  Speech Engine — Pocket TTS (Kyutai 24kHz) : 24kHz offline neural speech synthesis (alba / marius / cosette / george)")
     print("  Voice Input   — Vosk          : offline high-accuracy speech recognition")
     print("\nHow to launch Amigo:")
     print("  1. Web Dashboard (Recommended):")

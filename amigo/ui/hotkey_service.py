@@ -92,30 +92,20 @@ def _broadcast(event_type: str, data: dict = None):
 
 
 def _play_sound_async(sound_path: str):
-    """Play an audio file asynchronously using sounddevice directly without popping up any window."""
-    def _worker():
-        try:
-            if os.path.exists(sound_path):
-                import sounddevice as sd
-                import soundfile as sf
-                data, sr = sf.read(sound_path, dtype="float32")
-                sd.play(data, sr)
-                sd.wait()
-        except Exception as e:
-            logger.debug(f"[Sound] Failed to play {sound_path}: {e}")
-
-    threading.Thread(target=_worker, daemon=True, name="HotkeySoundThread").start()
+    """Play an audio file asynchronously using safe PortAudio manager without conflict."""
+    try:
+        from amigo.utils.tts import play_sound_file
+        play_sound_file(sound_path, wait=False)
+    except Exception as e:
+        logger.debug(f"[Sound] Failed to play {sound_path}: {e}")
 
 
 def _play_activating_sound(wait_finish: bool = True):
     """Plays the activation sound (Alt+V pressed) cleanly before mic opens."""
     if wait_finish and os.path.exists(ACTIVATING_SOUND):
         try:
-            import sounddevice as sd
-            import soundfile as sf
-            data, sr = sf.read(ACTIVATING_SOUND, dtype="float32")
-            sd.play(data, sr)
-            sd.wait()
+            from amigo.utils.tts import play_sound_file
+            play_sound_file(ACTIVATING_SOUND, wait=True)
             return
         except Exception as e:
             logger.debug(f"[Sound] Failed to play activating sound synchronously: {e}")

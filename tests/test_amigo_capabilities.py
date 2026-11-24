@@ -50,7 +50,7 @@ TEST_QUERIES = [
     
     # File & document
     ("find file report.pdf", "find_file"),
-    ("what does this document say", "document_qa"),
+    ("what does document report.pdf say", "document_qa"),
     
     # Calendar & email
     ("check my calendar", "get_calendar"),

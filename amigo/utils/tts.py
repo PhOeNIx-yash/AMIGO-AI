@@ -1,18 +1,21 @@
 """
 Unified Speech Engine Module for Amigo Voice Assistant.
-Handles high-fidelity Neural Text-to-Speech (TTS via Paradee 1.2 ONNX offline Studio voices)
+Handles high-fidelity Neural Text-to-Speech (TTS via Pocket TTS / Kyutai 24kHz Offline Mimi neural engine)
 and Offline Speech-to-Text (STT via Vosk Neural Recognizer).
 """
 
 import base64
+from functools import lru_cache
 import io
 import json
 import logging
+from math import gcd
 import os
 import queue
 import re
 import threading
 import time
+from typing import Any
 import numpy as np
 
 try:
@@ -25,6 +28,11 @@ try:
 except ImportError:
     num2words = None
 
+try:
+    import scipy.signal as _signal
+except ImportError:
+    _signal = None
+
 logger = logging.getLogger("amigo.speech")
 
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -35,119 +43,118 @@ try:
 except ImportError:
     _sd = None
 
-# ── Paradee 1.2 ONNX Offline Neural Engine ──────────────────────────────────
+# ── Pocket TTS (Kyutai Labs 24kHz Offline Mimi Neural Engine) ───────────────
 try:
-    from paradee import Paradee, SAMPLE_RATE
-    _USE_PARADEE = True
-    logger.info("[TTS] Paradee 1.2 ONNX Offline Neural engine available (24kHz Studio, 4 voices).")
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    import pocket_tts
+    _USE_POCKET = True
+    logger.info("[TTS] Pocket TTS (Kyutai Labs 24kHz Offline) engine available.")
 except ImportError:
-    Paradee = None
-    SAMPLE_RATE = 24000
-    _USE_PARADEE = False
+    pocket_tts = None
+    _USE_POCKET = False
 
-_USE_TTS = _USE_PARADEE
+_USE_TTS = _USE_POCKET
 
 # ── Curated Voice Catalog ───────────────────────────────────────────────────
 CURATED_VOICES = {
-    # Paradee 1.2 Flagship Studio Voices (24kHz Offline Neural)
-    "af_heart":    {"engine": "paradee", "id": "af_heart",    "name": "Heart",    "gender": "Female", "accent": "US", "desc": "Flagship studio female — natural human cadence (Recommended / Default)"},
-    "am_puck":     {"engine": "paradee", "id": "am_puck",     "name": "Puck",     "gender": "Male",   "accent": "US", "desc": "Warm, relatable and crisp conversational male"},
-    "bf_isabella": {"engine": "paradee", "id": "bf_isabella", "name": "Isabella", "gender": "Female", "accent": "GB", "desc": "Crisp, refined & elegant British studio female"},
-    "bm_fable":    {"engine": "paradee", "id": "bm_fable",    "name": "Fable",    "gender": "Male",   "accent": "GB", "desc": "Polished & distinguished British gentleman"},
+    "alba":        {"engine": "pocket_tts", "id": "alba",        "name": "Alba",     "gender": "Female", "accent": "US", "desc": "Flagship conversational female — natural cadence & warm expression (Recommended / Default)"},
+    "marius":      {"engine": "pocket_tts", "id": "marius",      "name": "Marius",   "gender": "Male",   "accent": "US", "desc": "Warm, crisp & relatable conversational male companion (Amigo Default)"},
+    "javert":      {"engine": "pocket_tts", "id": "javert",      "name": "Javert",   "gender": "Male",   "accent": "US", "desc": "Confident, authoritative & deep narrative male"},
+    "cosette":     {"engine": "pocket_tts", "id": "cosette",     "name": "Cosette",  "gender": "Female", "accent": "GB", "desc": "Refined, articulate & melodic British studio female"},
+    "george":      {"engine": "pocket_tts", "id": "george",      "name": "George",   "gender": "Male",   "accent": "GB", "desc": "Polished & distinguished British gentleman"},
+    "anna":        {"engine": "pocket_tts", "id": "anna",        "name": "Anna",     "gender": "Female", "accent": "US", "desc": "Bright, articulate & clear conversational female"},
+    "michael":     {"engine": "pocket_tts", "id": "michael",     "name": "Michael",  "gender": "Male",   "accent": "US", "desc": "Relaxed & natural conversational male"},
+    "eve":         {"engine": "pocket_tts", "id": "eve",         "name": "Eve",      "gender": "Female", "accent": "US", "desc": "Soft, calm & gentle conversational female"},
 
-    # Aliases mapped directly to Paradee voices
-    "default":     {"engine": "paradee", "id": "af_heart",    "name": "Heart",    "gender": "Female", "accent": "US", "desc": "Default Assistant Voice"},
-    "amigo":       {"engine": "paradee", "id": "am_puck",     "name": "Amigo",    "gender": "Male",   "accent": "US", "desc": "Warm companion male"},
-    "clara":       {"engine": "paradee", "id": "af_heart",    "name": "Clara",    "gender": "Female", "accent": "US", "desc": "Crisp conversational female"},
-    "sophia":      {"engine": "paradee", "id": "bf_isabella", "name": "Sophia",   "gender": "Female", "accent": "GB", "desc": "Studio female"},
-    "leo":         {"engine": "paradee", "id": "bm_fable",    "name": "Leo",      "gender": "Male",   "accent": "GB", "desc": "Narrative male"},
-    "alba":        {"engine": "paradee", "id": "af_heart",    "name": "Alba",     "gender": "Female", "accent": "US", "desc": "Studio female"},
-    "cosette":     {"engine": "paradee", "id": "bf_isabella", "name": "Cosette",  "gender": "Female", "accent": "GB", "desc": "Conversational female"},
-    "marius":      {"engine": "paradee", "id": "am_puck",     "name": "Marius",   "gender": "Male",   "accent": "US", "desc": "Conversational male"},
-    "en-us":       {"engine": "paradee", "id": "af_heart",    "name": "Default",  "gender": "Female", "accent": "US", "desc": "Default Assistant Voice"},
-    "en-default":  {"engine": "paradee", "id": "af_heart",    "name": "Default",  "gender": "Female", "accent": "US", "desc": "Default Assistant Voice"},
-
-    # Legacy voice aliases
-    "af_bella":    {"engine": "paradee", "id": "af_heart",    "name": "Heart",    "gender": "Female", "accent": "US", "desc": "Flagship studio female"},
-    "af_sarah":    {"engine": "paradee", "id": "af_heart",    "name": "Heart",    "gender": "Female", "accent": "US", "desc": "Flagship studio female"},
-    "af_nicole":   {"engine": "paradee", "id": "af_heart",    "name": "Heart",    "gender": "Female", "accent": "US", "desc": "Flagship studio female"},
-    "af_sky":      {"engine": "paradee", "id": "af_heart",    "name": "Heart",    "gender": "Female", "accent": "US", "desc": "Flagship studio female"},
-    "am_adam":     {"engine": "paradee", "id": "am_puck",     "name": "Puck",     "gender": "Male",   "accent": "US", "desc": "Conversational male"},
-    "am_michael":  {"engine": "paradee", "id": "am_puck",     "name": "Puck",     "gender": "Male",   "accent": "US", "desc": "Conversational male"},
-    "bm_george":   {"engine": "paradee", "id": "bm_fable",    "name": "Fable",    "gender": "Male",   "accent": "GB", "desc": "British gentleman"},
-    "bf_emma":     {"engine": "paradee", "id": "bf_isabella", "name": "Isabella", "gender": "Female", "accent": "GB", "desc": "British studio female"},
-    "aria":        {"engine": "paradee", "id": "af_heart",    "name": "Heart",    "gender": "Female", "accent": "US", "desc": "Studio female"},
-    "jenny":       {"engine": "paradee", "id": "af_heart",    "name": "Heart",    "gender": "Female", "accent": "US", "desc": "Studio female"},
-    "guy":         {"engine": "paradee", "id": "am_puck",     "name": "Puck",     "gender": "Male",   "accent": "US", "desc": "Studio male"},
-    "christopher": {"engine": "paradee", "id": "bm_fable",    "name": "Fable",    "gender": "Male",   "accent": "GB", "desc": "Studio male"},
-    "sonia":       {"engine": "paradee", "id": "bf_isabella", "name": "Isabella", "gender": "Female", "accent": "GB", "desc": "Studio female"},
-    "ryan":        {"engine": "paradee", "id": "bm_fable",    "name": "Fable",    "gender": "Male",   "accent": "GB", "desc": "Studio male"},
-    "neerja":      {"engine": "paradee", "id": "af_heart",    "name": "Heart",    "gender": "Female", "accent": "US", "desc": "Studio female"},
+    # Direct aliases for Amigo
+    "default":     {"engine": "pocket_tts", "id": "alba",        "name": "Alba",     "gender": "Female", "accent": "US", "desc": "Default Assistant Voice"},
+    "amigo":       {"engine": "pocket_tts", "id": "marius",      "name": "Marius",   "gender": "Male",   "accent": "US", "desc": "Warm companion male"},
 }
+
+_VALID_POCKET_VOICES = frozenset({"alba", "marius", "javert", "cosette", "george", "anna", "michael", "eve"})
 
 _PROFILE_PATH = os.path.join(_PROJECT_ROOT, "amigo_profile.json")
 if not os.path.exists(_PROFILE_PATH):
     _PROFILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "amigo_profile.json")
 
 _tts_lock = threading.Lock()
+_audio_device_lock = threading.RLock()
 _active_stream = None
 _active_stream_lock = threading.Lock()
 _profile_mtime_tts = 0.0
 
-_paradee_instance = None
-_paradee_init_lock = threading.Lock()
+_pocket_model = None
+_pocket_lock = threading.Lock()
+_voice_states: dict[str, Any] = {}
 
 
-def _get_paradee():
-    """Lazy-loads and warms up Paradee 1.2 ONNX inference engine with optimized multi-threading."""
-    global _paradee_instance
-    if _paradee_instance is None and _USE_PARADEE:
-        with _paradee_init_lock:
-            if _paradee_instance is None:
-                try:
-                    threads = min(4, max(1, (os.cpu_count() or 4) - 1))
-                    _paradee_instance = Paradee(version="1.2", quantized=True, threads=threads)
-                    logger.info("[Paradee] Paradee 1.2 ONNX Engine loaded and ready.")
-                except Exception as e:
-                    logger.warning(f"[Paradee] Init note: {e}")
-    return _paradee_instance
+def _get_pocket_model():
+    """Loads and caches Pocket TTS (Kyutai) 24kHz offline model."""
+    global _pocket_model
+    if _pocket_model is not None:
+        return _pocket_model
+    if not _USE_POCKET:
+        return None
+
+    with _pocket_lock:
+        if _pocket_model is not None:
+            return _pocket_model
+        try:
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            from pocket_tts import TTSModel
+            _pocket_model = TTSModel.load_model()
+            logger.info("[PocketTTS] Kyutai 24kHz offline engine loaded successfully.")
+            return _pocket_model
+        except Exception as e:
+            logger.error("[PocketTTS] Failed to initialize engine: %s", e)
+            return None
+
+
+def _resolve_pocket_voice_id(voice_name: str | None) -> str:
+    v = (voice_name or "alba").lower().strip()
+    clean_v = CURATED_VOICES.get(v, {}).get("id", v)
+    return clean_v if clean_v in _VALID_POCKET_VOICES else "alba"
+
+
+def _get_pocket_voice_state(voice_name: str):
+    """Retrieves or computes cached voice conditioning state."""
+    clean_v = _resolve_pocket_voice_id(voice_name)
+    cached = _voice_states.get(clean_v)
+    if cached is not None:
+        return cached
+
+    model = _get_pocket_model()
+    if model is None:
+        return None
+
+    with _pocket_lock:
+        if clean_v in _voice_states:
+            return _voice_states[clean_v]
+        try:
+            state = model.get_state_for_audio_prompt(clean_v)
+            _voice_states[clean_v] = state
+            return state
+        except Exception as e:
+            logger.error("[PocketTTS] Failed to get voice state for %s: %s", clean_v, e)
+            return None
 
 
 def get_voice_catalog() -> dict:
-    """Returns dictionary of all curated voices with metadata, augmented dynamically from Paradee voices."""
-    catalog = dict(CURATED_VOICES)
-    if _USE_PARADEE:
-        try:
-            p = _get_paradee()
-            if p and hasattr(p, "voices"):
-                for v in p.voices:
-                    if v not in catalog:
-                        gender = "Female" if v.startswith(("af_", "bf_")) else "Male"
-                        accent = "GB" if v.startswith("b") else "US"
-                        catalog[v] = {
-                            "engine": "paradee",
-                            "id": v,
-                            "name": v.replace("_", " ").title(),
-                            "gender": gender,
-                            "accent": accent,
-                            "desc": f"Paradee 1.2 Studio voice ({v})",
-                        }
-        except Exception:
-            pass
-    return catalog
+    return dict(CURATED_VOICES)
+
+
+def get_available_voices() -> list[str]:
+    return list(CURATED_VOICES.keys())
 
 
 def _get_default_voice() -> str:
-    if _USE_PARADEE:
-        return "af_heart"
-    return "none"
+    return "alba" if _USE_POCKET else "none"
 
 
 ACTIVE_VOICE = _get_default_voice()
 
 
 def sync_voice_from_profile() -> str:
-    """Synchronizes active voice selection from amigo_profile.json, caching disk reads by mtime."""
     global ACTIVE_VOICE, _profile_mtime_tts
     default_voice = _get_default_voice()
     try:
@@ -164,38 +171,33 @@ def sync_voice_from_profile() -> str:
                 )
                 if v and isinstance(v, str):
                     v_key = v.strip().lower()
-                    catalog = get_voice_catalog()
-                    if v_key in catalog:
+                    if v_key in CURATED_VOICES:
                         ACTIVE_VOICE = v_key
                         return v_key
-                    elif default_voice != "none":
+                    if default_voice != "none":
                         ACTIVE_VOICE = default_voice
                         return default_voice
     except Exception as e:
-        logger.debug(f"[TTS] Voice profile sync note: {e}")
+        logger.debug("[TTS] Voice profile sync note: %s", e)
     if (ACTIVE_VOICE == "none" or not ACTIVE_VOICE) and default_voice != "none":
         ACTIVE_VOICE = default_voice
     return ACTIVE_VOICE
 
 
-# Initialize active voice from user preference immediately on startup
 sync_voice_from_profile()
 
 
 def set_voice(voice_name: str) -> str:
-    """Sets the active voice, updates engine settings, and immediately persists to user profile atomically."""
     global ACTIVE_VOICE, _profile_mtime_tts
     key = voice_name.lower().strip()
-    catalog = get_voice_catalog()
     default_voice = _get_default_voice()
-    if key in catalog:
+    if key in CURATED_VOICES:
         ACTIVE_VOICE = key
-        display_name = catalog[key].get("name", voice_name)
+        display_name = CURATED_VOICES[key].get("name", voice_name)
     else:
         ACTIVE_VOICE = default_voice
-        display_name = catalog.get(default_voice, {}).get("name", default_voice)
+        display_name = CURATED_VOICES.get(default_voice, {}).get("name", default_voice)
 
-    # Persist to profile atomically so voice selection is remembered across restarts
     try:
         pdata = {}
         if os.path.exists(_PROFILE_PATH):
@@ -211,33 +213,30 @@ def set_voice(voice_name: str) -> str:
         os.replace(tmp_file, _PROFILE_PATH)
         _profile_mtime_tts = os.path.getmtime(_PROFILE_PATH)
 
-        # Notify and update rag_engine's in-memory profile cache directly if loaded
         try:
             from amigo.core import rag_engine
-            if hasattr(rag_engine, "_profile_cache") and rag_engine._profile_cache is not None:
-                rag_engine._profile_cache.setdefault("preferences", {})["voice"] = ACTIVE_VOICE
-                rag_engine._profile_cache.setdefault("ui_settings", {})["voice"] = ACTIVE_VOICE
-                rag_engine._profile_cache.setdefault("user_profile", {}).setdefault("preferences", {})["voice"] = ACTIVE_VOICE
+            cache = getattr(rag_engine, "_profile_cache", None)
+            if isinstance(cache, dict):
+                cache.setdefault("preferences", {})["voice"] = ACTIVE_VOICE
+                cache.setdefault("ui_settings", {})["voice"] = ACTIVE_VOICE
+                cache.setdefault("user_profile", {}).setdefault("preferences", {})["voice"] = ACTIVE_VOICE
         except Exception:
             pass
     except Exception as e:
-        logger.debug(f"[TTS] Voice persistence note: {e}")
+        logger.debug("[TTS] Voice persistence note: %s", e)
 
     return display_name
 
 
 def get_active_voice() -> str:
-    """Returns the current active voice identifier."""
     return ACTIVE_VOICE
 
 
-# Callbacks for UI updates
 _on_state_change = None
 _on_broadcast = None
 
 
 def set_tts_callbacks(state_cb=None, broadcast_cb=None):
-    """Register state change and broadcast event callbacks."""
     global _on_state_change, _on_broadcast
     if state_cb:
         _on_state_change = state_cb
@@ -246,43 +245,68 @@ def set_tts_callbacks(state_cb=None, broadcast_cb=None):
 
 
 def get_tts_engine_name() -> str:
-    if _USE_PARADEE:
-        return "Paradee 1.2 ONNX Offline Neural TTS (24kHz Studio)"
+    if _USE_POCKET:
+        return "Pocket TTS (Kyutai 24kHz)"
     return "TTS Disabled"
 
 
-def _fetch_paradee_audio(text: str, voice_id: str = "af_heart", stop_evt: threading.Event | None = None, speed: float = 1.0) -> tuple[np.ndarray | None, int]:
-    """Generates ultra-fast 24kHz studio audio via Paradee 1.2 ONNX with zero cloud latency."""
-    p = _get_paradee()
-    if p is None:
+def _trim_silence(samples: np.ndarray, threshold: float = 0.008, pad_samples: int = 480) -> np.ndarray:
+    """Trims excessive leading/trailing silence padding so consecutive chunks flow seamlessly."""
+    if samples is None or len(samples) == 0:
+        return samples
+    above = np.flatnonzero(np.abs(samples) > threshold)
+    if len(above) == 0:
+        return samples
+    start = max(0, int(above[0]) - pad_samples)
+    end = min(len(samples), int(above[-1]) + pad_samples)
+    return samples[start:end]
+
+
+def _fetch_pocket_audio(
+    text: str,
+    voice_id: str = "alba",
+    stop_evt: threading.Event | None = None,
+    cached_state: Any = None,
+) -> tuple[np.ndarray | None, int]:
+    """Generates ultra-expressive 24kHz studio audio via Pocket TTS (Kyutai Labs) with zero cloud latency."""
+    if stop_evt and stop_evt.is_set():
         return None, 24000
+    model = _get_pocket_model()
+    if model is None:
+        return None, 24000
+    state = cached_state if cached_state is not None else _get_pocket_voice_state(voice_id)
+    if state is None:
+        state = _get_pocket_voice_state("alba")
+    if state is None:
+        return None, 24000
+
     try:
-        if stop_evt and stop_evt.is_set():
-            return None, 24000
-        valid_voices = getattr(p, "voices", ["af_heart", "bf_isabella", "am_puck", "bm_fable"])
-        v_target = voice_id if voice_id in valid_voices else "af_heart"
         with _tts_lock:
-            samples = p(text, speed=speed, voice=v_target)
-        if samples is None or len(samples) == 0:
-            return None, 24000
-        audio = np.ascontiguousarray(samples, dtype=np.float32)
-        return audio, 24000
+            if stop_evt and stop_evt.is_set():
+                return None, 24000
+            audio_tensor = model.generate_audio(state, text)
+            if audio_tensor is None or audio_tensor.numel() == 0:
+                return None, 24000
+            audio = audio_tensor.detach().cpu().numpy().astype(np.float32)
+            audio = _trim_silence(audio, pad_samples=int(0.02 * 24000))
+            return audio, 24000
     except Exception as e:
-        logger.warning(f"[Paradee] Synthesis error: {e}")
+        logger.warning("[PocketTTS] Synthesis error: %s", e)
         return None, 24000
 
 
 def _warmup_tts():
-    """Warms up TTS engine in a background thread so first generation has zero delay."""
     def _warm():
         try:
-            if _USE_PARADEE:
-                p = _get_paradee()
-                if p:
-                    p("Ready.", voice="af_heart")
-                    logger.info("[TTS] Paradee 1.2 ONNX Engine primed and ready.")
+            if _USE_POCKET:
+                m = _get_pocket_model()
+                if m:
+                    _get_pocket_voice_state("alba")
+                    _get_pocket_voice_state("marius")
+                    _get_mastering_sos(24000)
+                    logger.info("[TTS] Pocket TTS (Kyutai 24kHz) primed and ready.")
         except Exception as e:
-            logger.debug(f"[TTS Warmup] {e}")
+            logger.debug("[TTS Warmup] %s", e)
 
     threading.Thread(target=_warm, daemon=True, name="TTS-Warmup").start()
 
@@ -296,6 +320,7 @@ _playback_queue = queue.Queue(maxsize=32)
 _speech_generation = 0
 _speech_generation_lock = threading.Lock()
 _generation_stop_events: dict[int, threading.Event] = {}
+_active_synthesizers = 0
 _state_lock = threading.Lock()
 _is_speaking_state = False
 
@@ -318,19 +343,22 @@ def _cleanup_stop_event(generation: int) -> None:
 
 
 def _update_state(new_state: str):
-    """Updates assistant state and triggers UI callbacks only on genuine state changes."""
     global _is_speaking_state
+    cb = None
     with _state_lock:
         if new_state == "speaking":
             if not _is_speaking_state:
                 _is_speaking_state = True
-                if _on_state_change:
-                    _on_state_change("speaking")
+                cb = _on_state_change
         elif new_state == "idle":
             if _is_speaking_state:
                 _is_speaking_state = False
-                if _on_state_change:
-                    _on_state_change("idle")
+                cb = _on_state_change
+    if cb:
+        try:
+            cb(new_state)
+        except Exception as e:
+            logger.debug("[TTS] State callback error: %s", e)
 
 
 _RE_URL = re.compile(r'https?://\S+|www\.\S+', re.IGNORECASE)
@@ -342,7 +370,6 @@ _RE_INLINE_CITATION = re.compile(r'\[(?:\d+|Source\s*\d+[^\]]*)\]', re.IGNORECAS
 
 
 def _extract_text_from_json(text: str) -> str:
-    """Safely extract human-readable text from a JSON payload if raw router/tool JSON is passed to TTS."""
     if not text or not isinstance(text, str):
         return ""
     s = text.strip()
@@ -368,7 +395,7 @@ def _extract_text_from_json(text: str) -> str:
                                 if isinstance(val, str) and val.strip():
                                     return val.strip()
                 return ""
-            elif isinstance(parsed, list) and parsed:
+            if isinstance(parsed, list) and parsed:
                 first = parsed[0]
                 if isinstance(first, dict):
                     for k in ("response", "reply", "speak", "text"):
@@ -381,18 +408,18 @@ def _extract_text_from_json(text: str) -> str:
     return text
 
 
+def _to_ordinal_word(num: int) -> str:
+    if num2words is not None:
+        try:
+            return num2words.num2words(num, to="ordinal")
+        except Exception:
+            pass
+    fallback = {1: "First", 2: "Second", 3: "Third", 4: "Fourth", 5: "Fifth"}
+    return fallback.get(num, f"Number {num}")
+
+
 def normalize_text_for_tts(text: str) -> str:
-    """
-    Normalizes raw text into clean, phonetically expressive speech:
-    - Preserves hyphenated words (well-known, state-of-the-art) while converting ranges (3-1 -> 3 to 1)
-    - Decimals read accurately (23.5 -> twenty-three point five)
-    - Long digit sequences (phone numbers, OTPs, codes) read digit-by-digit
-    - Large formatted numbers (1,234,567) converted cleanly to cardinal words
-    - Affirmation openers only accented when followed by punctuation, preserving phrases (Done correctly)
-    - 4-digit years spoken as years only when preceded by year indicators (in, since, year, dated)
-    - Acronyms spelled out without mangling common words (NASA, CHAT, OPEN, PLAY, STOP)
-    - Zero content truncation
-    """
+    """Normalizes raw text into natural speech without inserting artificial pauses."""
     if not text:
         return ""
     try:
@@ -402,11 +429,10 @@ def normalize_text_for_tts(text: str) -> str:
         pass
     t = _extract_text_from_json(text)
 
-    # Strip bibliographic/sources blocks so citations are displayed in UI but not read aloud by TTS
     t = _RE_SOURCES_BLOCK.sub('', t).strip()
     t = _RE_INLINE_CITATION.sub('', t)
 
-    # 1. Markdown tables to natural conversational speech
+    # 1. Markdown tables to natural speech
     t = re.sub(r'\|\s*\|+', '|\n|', t)
     t = re.sub(r'(?:^|\n)\s*\|?[\s\-:|]{3,}\|[\s\-:|]*(?=\n|$)', '\n', t)
     lines = t.split('\n')
@@ -432,10 +458,10 @@ def normalize_text_for_tts(text: str) -> str:
                 for idx, cell in enumerate(cells[1:], 1):
                     col_name = headers[idx] if idx < len(headers) else ''
                     if col_name and not col_name.lower().startswith('col'):
-                        details.append(f"{col_name}: {cell}")
+                        details.append(f"{col_name} {cell}")
                     else:
                         details.append(cell)
-                row_str = f"{subject}: {', '.join(details)}." if details else f"{subject}."
+                row_str = f"{subject}, {', '.join(details)}." if details else f"{subject}."
                 parsed_lines.append(row_str)
         else:
             parsed_lines.append(line)
@@ -444,28 +470,23 @@ def normalize_text_for_tts(text: str) -> str:
     # 2. Remove URLs
     t = _RE_URL.sub('', t)
 
-    # 3. Markdown headers (# Header -> Header.)
+    # 3. Markdown headers
     t = re.sub(r'^(?:#{1,6}\s+)(.+)$', r'\1.', t, flags=re.MULTILINE)
     t = re.sub(r'#{1,6}\s*', '', t)
 
-    # 4. Markdown bullet points (* item / - item / • item -> , item)
-    t = re.sub(r'(?:^|\n)\s*[-*•]\s+', r', ', t)
+    # 4. Markdown bullet points -> clean space join
+    t = re.sub(r'(?:^|\n)\s*[-*•]\s+', r' ', t)
 
-    # 5. Numbered lists (1. item \n 2. item -> First, item. Second, item.)
-    ord_map = {1: 'First', 2: 'Second', 3: 'Third', 4: 'Fourth', 5: 'Fifth'}
+    # 5. Numbered lists
     def _list_repl(m):
         num = int(m.group(1))
-        return f"{ord_map.get(num, f'Number {num}')}, "
+        return f"{_to_ordinal_word(num).capitalize()}, "
     t = re.sub(r'(?:^|\n)\s*(\d+)\.\s+', _list_repl, t)
 
-    # 6. Affirmation openers: ONLY when followed by punctuation (.,) so phrases like "Done correctly" or "Great news" are not mangled
-    t = re.sub(r'^(Sure|Certainly|Great|Awesome|Done|Got it|Alright|Of course|Perfect|Understood|Absolutely)[,.](?:\s+|$)', r'\1! ', t, flags=re.IGNORECASE)
-    t = re.sub(r'(?<=[.!?]\s)(Sure|Certainly|Great|Awesome|Done|Got it|Alright|Of course|Perfect|Understood|Absolutely)[,.](?:\s+|$)', r'\1! ', t, flags=re.IGNORECASE)
-
-    # 7. Number ranges & scores BEFORE hyphens are touched (3-1 -> 3 to 1, 2024-2025 -> 2024 to 2025)
+    # 6. Number ranges
     t = re.sub(r'(\d+)\s*[-–—]\s*(\d+)', r'\1 to \2', t)
 
-    # 7.5 Currency normalization BEFORE decimal substitution ($50.25 -> fifty dollars and twenty-five cents)
+    # 7. Currency normalization
     if num2words is not None:
         def _curr_cents_repl(m):
             try:
@@ -491,13 +512,13 @@ def normalize_text_for_tts(text: str) -> str:
                 return m.group(0)
         t = re.sub(r'\$(\d+)\b', _curr_whole_repl, t)
 
-    # 8. Phone numbers (e.g. +1-800-555-0199 or 98765 43210 or 123-456-7890) -> digit by digit
+    # 8. Phone numbers -> digit by digit
     def _phone_repl(m):
         cleaned = re.sub(r'\D', '', m.group(0))
         return " ".join(num2words.num2words(int(d)) if num2words else d for d in cleaned)
     t = re.sub(r'\b(?:\+?\d{1,3}[- ]?)?\(?\d{3}\)?[- ]?\d{3}[- ]?\d{4}\b', _phone_repl, t)
 
-    # 9. Explicit OTP / PIN / Code / PNR patterns (e.g. OTP: 583921 or code is 123456)
+    # 9. OTP / PIN / Code patterns
     def _otp_repl(m):
         prefix = m.group(1)
         digits = m.group(2)
@@ -505,7 +526,7 @@ def normalize_text_for_tts(text: str) -> str:
         return f"{prefix}{dec}"
     t = re.sub(r'\b((?:otp|code|pin|verification|pnr|id|password|flight)\s*(?:is|:)?\s*)(\d{4,8})\b', _otp_repl, t, flags=re.IGNORECASE)
 
-    # 10. Formatted large numbers with commas: e.g. 1,234,567 -> convert to cardinal words directly
+    # 10. Formatted large numbers
     if num2words is not None:
         def _comma_num_repl(m):
             raw = m.group(0).replace(",", "")
@@ -515,7 +536,7 @@ def normalize_text_for_tts(text: str) -> str:
                 return raw
         t = re.sub(r'\b\d{1,3}(?:,\d{3})+\b', _comma_num_repl, t)
 
-    # 11. Decimals: 23.5 -> twenty-three point five
+    # 11. Decimals
     def _dec_repl(m):
         integer_part = m.group(1)
         decimal_digits = m.group(2)
@@ -524,32 +545,25 @@ def normalize_text_for_tts(text: str) -> str:
         return f"{int_str} point {dec_str}"
     t = re.sub(r'\b(\d+)\.(\d+)\b', _dec_repl, t)
 
-    # 12. Standalone 7+ unformatted digit strings -> digit by digit
+    # 12. Standalone 7+ digit strings
     def _long_digits_repl(m):
         digits = m.group(0)
         return " ".join(num2words.num2words(int(d)) if num2words else d for d in digits)
     t = re.sub(r'\b\d{7,}\b', _long_digits_repl, t)
 
-    # 13. Standalone em-dashes and spaced hyphens -> comma pause, while PRESERVING intra-word hyphens (well-known)
-    t = re.sub(r'(?<=\s)[-–—]+(?=\s)', ', ', t)
-    t = re.sub(r'[–—]', ', ', t)
+    # 13. Clean dashes, colons, parentheses, and semicolons without stacking commas
+    t = re.sub(r'(?<=\s)[-–—]+(?=\s)', ' ', t)
+    t = re.sub(r'[–—]', ' ', t)
+    t = re.sub(r':(?=\s|$)', ' ', t)
+    t = re.sub(r'\(([^)]+)\)', r', \1 ', t)
+    t = re.sub(r';\s*', ', ', t)
 
-    # 14. Colons at the end of clauses -> natural comma pause
-    t = re.sub(r':(?=\s|$)', r', ', t)
-
-    # 15. Parentheses: (extra info) -> , extra info,
-    t = re.sub(r'\(([^)]+)\)', r', \1, ', t)
-
-    # 16. Semicolons -> comma pause
-    t = re.sub(r';\s*', r', ', t)
-
-    # 17. Strip remaining markdown formatting characters
+    # 14. Strip remaining markdown formatting characters
     t = _RE_SPECIAL_CHARS.sub(' ', t)
     t = re.sub(r'[/|]', ' ', t)
 
-    # 18. Percentages, dates, and comprehensive number-to-words normalization
+    # 15. Percentages, dates, and numbers
     if num2words is not None:
-        # Percentages: 50% -> fifty percent, 3.5% -> three point five percent
         def _percent_repl(m):
             try:
                 val = m.group(1)
@@ -563,7 +577,6 @@ def normalize_text_for_tts(text: str) -> str:
                 return m.group(0)
         t = re.sub(r'(\d+(?:\.\d+)?)\s*%', _percent_repl, t)
 
-        # Dates: e.g. September 6, 2026
         def _date_repl(m):
             month = m.group(1)
             day = int(m.group(2))
@@ -582,16 +595,13 @@ def normalize_text_for_tts(text: str) -> str:
             flags=re.I,
         )
 
-        # Ordinals (1st, 2nd, 3rd, 4th, 21st)
         def _ord_repl(m):
             try:
                 return num2words.num2words(int(m.group(1)), to='ordinal')
             except Exception:
                 return m.group(0)
-
         t = re.sub(r'\b(\d+)(?:st|nd|rd|th)\b', _ord_repl, t, flags=re.I)
 
-        # Four-digit years: convert to "year" when preceded by year indicators
         def _year_repl(m):
             prefix = m.group(1)
             year = int(m.group(2))
@@ -599,10 +609,8 @@ def normalize_text_for_tts(text: str) -> str:
                 return f"{prefix}{num2words.num2words(year, to='year')}"
             except Exception:
                 return m.group(0)
-
         t = re.sub(r'\b(in |since |year |dated |from |circa )(18\d\d|19\d\d|20\d\d)\b', _year_repl, t, flags=re.I)
 
-        # Standalone years between 1900 and 2040
         def _standalone_year_repl(m):
             val = int(m.group(0))
             if 1900 <= val <= 2040:
@@ -613,36 +621,34 @@ def normalize_text_for_tts(text: str) -> str:
             return m.group(0)
         t = re.sub(r'\b(19\d\d|20[0-3]\d)\b', _standalone_year_repl, t)
 
-        # Other standalone numbers (cardinals)
         def _num_repl(m):
             try:
                 return num2words.num2words(int(m.group(1)))
             except Exception:
                 return m.group(0)
-
         t = re.sub(r'\b(\d+)\b', _num_repl, t)
     else:
         t = re.sub(r'\$(\d+(?:\.\d{2})?)', r'\1 dollars', t)
         t = re.sub(r'(\d+)%', r'\1 percent', t)
 
-    # 19. Acronyms vs common pronounceable capitalized words
+    # 16. Acronyms
     PRONOUNCEABLE = {'NASA', 'CHAT', 'OPEN', 'PLAY', 'HELP', 'STOP', 'DONE', 'ASAP', 'PIN', 'STEM', 'NATO', 'AIDS', 'RAM', 'ROM', 'LASER', 'MUTE', 'NEXT', 'QUIT', 'EXIT'}
     ACRONYMS = {'CPU', 'GPU', 'API', 'USB', 'URL', 'TTS', 'STT', 'HTML', 'JSON', 'SDK', 'LLM', 'AI', 'UI', 'OS', 'IP', 'ID', 'PC', 'OCR', 'VAD', 'RMS', 'SNR', 'DAC'}
 
     def _acronym_repl(m):
         w = m.group(0)
         if w in ACRONYMS:
-            return '. '.join(list(w)) + '.'
+            return ' '.join(list(w))
         if w in PRONOUNCEABLE:
             return w.lower()
         if len(w) <= 3:
-            return '. '.join(list(w)) + '.'
+            return ' '.join(list(w))
         return w.capitalize()
 
     t = re.sub(r'\b[A-Z]{2,5}\b', _acronym_repl, t)
 
-    # 20. Clean consecutive punctuation and whitespace
-    t = _RE_CONSECUTIVE_DOTS.sub(', ', t)
+    # 17. Clean consecutive punctuation and whitespace
+    t = _RE_CONSECUTIVE_DOTS.sub(' ', t)
     t = re.sub(r'!{2,}', '!', t)
     t = re.sub(r'\?{2,}', '?', t)
     t = re.sub(r'[,]{2,}', ',', t)
@@ -653,104 +659,92 @@ def normalize_text_for_tts(text: str) -> str:
 
 
 def _compact_tts_text(text: str) -> str:
-    """Cleans text for neural synthesis without truncating content."""
     return normalize_text_for_tts(text)
 
 
-def _process_audio_clarity(samples, sr=44100, is_final_chunk: bool = False) -> tuple[np.ndarray, int]:
-    """
-    Studio audio mastering & anti-artifact pipeline:
-    - DC offset removal & 45Hz subsonic filtering to eliminate low-end thump and drift.
-    - Broadcast studio presence EQ (+0.8 dB @ 260Hz warmth, +1.2 dB @ 4.8kHz clarity & air).
-    - Micro-fade in/out (2ms) for continuous intra-sentence chunks to avoid clicks without pauses.
-    - Tail trimming, 20ms fade-out, and 25ms cushion applied only to the final chunk.
-    - Soft peak limiter: only downscales if peak > 0.95, preventing inter-chunk loudness jumps.
-    """
+def _peaking_sos(fc: float, gain_db: float, q: float, fs: float) -> np.ndarray:
+    a_amp = 10.0 ** (gain_db / 40.0)
+    w0 = 2.0 * np.pi * fc / fs
+    alpha = np.sin(w0) / (2.0 * q)
+    cos_w0 = np.cos(w0)
+    b0 = 1.0 + alpha * a_amp
+    b1 = -2.0 * cos_w0
+    b2 = 1.0 - alpha * a_amp
+    a0 = 1.0 + alpha / a_amp
+    a1 = -2.0 * cos_w0
+    a2 = 1.0 - alpha / a_amp
+    return np.array([[b0 / a0, b1 / a0, b2 / a0, 1.0, a1 / a0, a2 / a0]], dtype=np.float32)
+
+
+@lru_cache(maxsize=8)
+def _get_mastering_sos(sr: int) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]:
+    if _signal is None or sr <= 0:
+        return None, None, None
+    hp_sos = _signal.butter(2, 45.0, btype="high", fs=sr, output="sos").astype(np.float32)
+    warm_sos = _peaking_sos(260.0, 0.8, 0.85, float(sr))
+    pres_sos = _peaking_sos(4800.0, 1.2, 0.9, float(sr))
+    return hp_sos, warm_sos, pres_sos
+
+
+def _process_audio_clarity(samples, sr=24000, is_final_chunk: bool = False) -> tuple[np.ndarray, int]:
+    """Audio mastering & smooth boundary transitions without inter-chunk gaps."""
     if samples is None or len(samples) == 0:
         return samples, int(sr)
     samples = np.asarray(samples, dtype=np.float32)
+    sr = int(sr)
 
-    # 1. Resample only if non-standard
-    target_sr = int(sr)
-    if sr not in (44100, 24000, 48000, 16000) and len(samples) > 0:
+    if sr not in (44100, 24000, 22050, 48000, 16000) and len(samples) > 0 and _signal is not None:
         target_sr = 44100
         try:
-            import scipy.signal
-            from math import gcd
-            g = gcd(int(sr), target_sr)
-            samples = scipy.signal.resample_poly(samples, target_sr // g, int(sr) // g).astype(np.float32)
+            g = gcd(sr, target_sr)
+            samples = _signal.resample_poly(samples, target_sr // g, sr // g).astype(np.float32)
             sr = target_sr
         except Exception:
             pass
 
-    # 2. DC-bias removal & 45Hz subsonic high-pass cleanup
     samples = samples - np.mean(samples)
-    try:
-        import scipy.signal
-        sos = scipy.signal.butter(2, 45, btype="high", fs=sr, output="sos")
-        samples = scipy.signal.sosfilt(sos, samples).astype(np.float32)
-    except Exception:
-        pass
 
-    # 3. Broadcast studio presence EQ (+0.8 dB @ 260Hz warmth, +1.2 dB @ 4.8kHz clarity & air)
-    try:
-        import scipy.signal
-        def _peaking_sos(fc, gain_db, q, fs):
-            A = 10.0 ** (gain_db / 40.0)
-            w0 = 2.0 * np.pi * fc / fs
-            alpha = np.sin(w0) / (2.0 * q)
-            b0 = 1.0 + alpha * A
-            b1 = -2.0 * np.cos(w0)
-            b2 = 1.0 - alpha * A
-            a0 = 1.0 + alpha / A
-            a1 = -2.0 * np.cos(w0)
-            a2 = 1.0 - alpha / A
-            return np.array([[b0 / a0, b1 / a0, b2 / a0, 1.0, a1 / a0, a2 / a0]], dtype=np.float32)
+    if _signal is not None:
+        try:
+            hp_sos, warm_sos, pres_sos = _get_mastering_sos(sr)
+            if hp_sos is not None:
+                samples = _signal.sosfilt(hp_sos, samples).astype(np.float32)
+            if warm_sos is not None:
+                samples = _signal.sosfilt(warm_sos, samples).astype(np.float32)
+            if pres_sos is not None:
+                samples = _signal.sosfilt(pres_sos, samples).astype(np.float32)
+        except Exception:
+            pass
 
-        sos_warm = _peaking_sos(260.0, 0.8, 0.85, target_sr)
-        sos_pres = _peaking_sos(4800.0, 1.2, 0.9, target_sr)
-        samples = scipy.signal.sosfilt(sos_warm, samples).astype(np.float32)
-        samples = scipy.signal.sosfilt(sos_pres, samples).astype(np.float32)
-    except Exception:
-        pass
-
-    # 4. Micro-fade in (2ms) to guarantee clean click-free onset
     fade_in_len = min(int(0.002 * sr), len(samples))
     if fade_in_len > 0:
         ramp_in = 0.5 * (1.0 - np.cos(np.linspace(0.0, np.pi, fade_in_len, dtype=np.float32)))
         samples[:fade_in_len] *= ramp_in
 
-    # 5. Intra-chunk vs Final-chunk boundary treatment
     if is_final_chunk:
-        # Smooth fade-out and trailing silence cushion so the DAC buffer plays out every syllable
         fade_out_len = min(int(0.015 * sr), len(samples))
         if fade_out_len > 0:
             ramp_out = 0.5 * (1.0 + np.cos(np.linspace(0.0, np.pi, fade_out_len, dtype=np.float32)))
             samples[-fade_out_len:] *= ramp_out
-
-        # Generous 120ms cushion at the end to prevent hardware buffer cut-off
-        cushion = np.zeros(int(0.12 * sr), dtype=np.float32)
+        cushion = np.zeros(int(0.08 * sr), dtype=np.float32)
         samples = np.concatenate([samples, cushion])
     else:
-        # Intermediate chunk within sentence: 2ms micro-fade out, NO silence cushion to prevent pause gaps
         fade_out_len = min(int(0.002 * sr), len(samples))
         if fade_out_len > 0:
             ramp_out = 0.5 * (1.0 + np.cos(np.linspace(0.0, np.pi, fade_out_len, dtype=np.float32)))
             samples[-fade_out_len:] *= ramp_out
 
-    # 6. Soft ceiling peak limiter: only downscales if clipping, preserving natural dynamics
     peak = float(np.max(np.abs(samples)))
     if peak > 0.95:
         samples = samples * (0.92 / peak)
 
-    return samples, int(sr)
+    return samples, sr
 
 
-def _split_into_safe_tts_chunks(text: str, max_chunk_len: int = 250) -> list[str]:
+def _split_into_safe_tts_chunks(text: str, max_chunk_len: int = 300) -> list[str]:
     """
-    Splits text along natural sentence boundaries (. ! ? \n) to maintain complete
-    prosodic flow, while splitting the first sentence at clause boundaries if long
-    for ultra-fast time-to-first-sound.
+    Splits text strictly along natural sentence boundaries (. ! ? \n) without chopping
+    mid-sentence at commas, balancing low time-to-first-audio with smooth prosody.
     """
     if not text or not text.strip():
         return []
@@ -760,31 +754,12 @@ def _split_into_safe_tts_chunks(text: str, max_chunk_len: int = 250) -> list[str
         return [text.strip()]
 
     chunks = []
-    for s_idx, s in enumerate(raw_sentences):
-        # Fast Time-to-First-Audio: split first sentence at clause punctuation if > 90 chars
-        if s_idx == 0 and len(s) > 90:
-            clauses = [c.strip() for c in re.split(r'(?<=[,;:—])\s+', s) if c.strip()]
-            if len(clauses) > 1:
-                cur = []
-                cur_len = 0
-                for p in clauses:
-                    if cur_len + len(p) + 1 > 90 and cur:
-                        chunks.append(" ".join(cur))
-                        cur = [p]
-                        cur_len = len(p)
-                    else:
-                        cur.append(p)
-                        cur_len += len(p) + 1
-                if cur:
-                    chunks.append(" ".join(cur))
-                continue
-
+    for s in raw_sentences:
         if len(s) <= max_chunk_len:
             chunks.append(s)
             continue
 
-        # Split long sentences along clause boundaries
-        subparts = [c.strip() for c in re.split(r'(?<=[,;:—])\s+', s) if c.strip()]
+        subparts = [c.strip() for c in re.split(r'(?<=[,;:])\s+', s) if c.strip()]
         cur = []
         cur_len = 0
         for p in subparts:
@@ -801,35 +776,69 @@ def _split_into_safe_tts_chunks(text: str, max_chunk_len: int = 250) -> list[str
     return chunks or [text.strip()]
 
 
-# ── Audio Playback Worker (Continuous Stream across Sentences) ──────────────
+# ── Audio Playback Worker ───────────────────────────────────────────────────
+def _close_stream_locked(stream) -> None:
+    if stream is None:
+        return
+    with _active_stream_lock:
+        global _active_stream
+        if _active_stream is stream:
+            _active_stream = None
+    try:
+        stream.stop()
+    except Exception:
+        pass
+    try:
+        stream.close()
+    except Exception:
+        pass
+
+
+def play_sound_file(sound_path: str, wait: bool = False) -> None:
+    """Safely plays an audio file on the shared audio lock without colliding with active streams."""
+    if not sound_path or not os.path.exists(sound_path) or _sd is None:
+        return
+
+    def _play():
+        with _audio_device_lock:
+            try:
+                import soundfile as sf
+                data, sr = sf.read(sound_path, dtype="float32")
+                if data.ndim > 1:
+                    data = np.mean(data, axis=1).astype(np.float32)
+                data = np.ascontiguousarray(data, dtype=np.float32)
+                with _sd.OutputStream(samplerate=int(sr), channels=1, dtype="float32", blocksize=2048) as out_s:
+                    for offset in range(0, len(data), 2048):
+                        out_s.write(data[offset:offset + 2048])
+            except Exception as e:
+                logger.debug("[Sound] Failed to play %s: %s", sound_path, e)
+
+    if wait:
+        _play()
+    else:
+        threading.Thread(target=_play, daemon=True, name="SafeSoundPlayback").start()
+
+
 def _playback_worker():
     """
-    Dedicated audio output worker:
-    - Maintains an active sounddevice OutputStream across consecutive chunks and sentences.
-    - Eliminates per-sentence driver opening/closing latency and dead-air sleep.
-    - Transitions assistant state to 'idle' only when all queues are genuinely empty and playback finishes.
+    Keeps the sounddevice OutputStream open across consecutive sentences (1.5s idle grace)
+    with crash-proof lock protection and safe buffer handling.
     """
-    global _active_stream
     stream = None
     stream_sr = None
 
     while True:
         try:
-            item = _playback_queue.get(timeout=0.4)
+            item = _playback_queue.get(timeout=1.5)
         except queue.Empty:
-            # Idle timeout: no audio was queued for 400ms
-            if stream is not None and _speech_queue.empty() and _playback_queue.empty():
-                with _active_stream_lock:
-                    if _active_stream is stream:
-                        _active_stream = None
-                try:
-                    time.sleep(0.08)  # Allow hardware DAC buffer to drain before stopping stream
-                    stream.stop()
-                    stream.close()
-                except Exception:
-                    pass
-                stream = None
-                stream_sr = None
+            with _audio_device_lock:
+                if stream is not None and _speech_queue.empty() and _playback_queue.empty():
+                    _close_stream_locked(stream)
+                    stream = None
+                    stream_sr = None
+            with _state_lock:
+                synthesizing = _active_synthesizers > 0
+            if not synthesizing and _speech_queue.empty() and _playback_queue.empty():
                 _update_state("idle")
             continue
 
@@ -845,61 +854,52 @@ def _playback_worker():
 
         _update_state("speaking")
 
-        try:
-            if _sd is not None:
-                if stream is None or stream_sr != sr:
-                    if stream is not None:
-                        try:
-                            stream.stop()
-                            stream.close()
-                        except Exception:
-                            pass
-                        stream = None
-                    stream = _sd.OutputStream(samplerate=sr, channels=1, dtype="float32", blocksize=1024)
-                    stream.start()
-                    stream_sr = sr
-                    with _active_stream_lock:
-                        _active_stream = stream
+        with _audio_device_lock:
+            try:
+                if _sd is not None and _speech_is_current(gen):
+                    if stream is None or stream_sr != sr:
+                        _close_stream_locked(stream)
+                        stream = _sd.OutputStream(samplerate=sr, channels=1, dtype="float32", blocksize=2048)
+                        stream.start()
+                        stream_sr = sr
+                        with _active_stream_lock:
+                            global _active_stream
+                            _active_stream = stream
 
-                if _speech_is_current(gen) and len(samples) > 0 and stream is not None:
-                    stream.write(samples)
+                    if len(samples) > 0 and stream is not None:
+                        chunk_frames = 2048
+                        for offset in range(0, len(samples), chunk_frames):
+                            if not _speech_is_current(gen):
+                                break
+                            chunk = samples[offset:offset + chunk_frames]
+                            if not chunk.flags["C_CONTIGUOUS"]:
+                                chunk = np.ascontiguousarray(chunk, dtype=np.float32)
+                            stream.write(chunk)
 
-        except Exception as e:
-            logger.debug(f"[Audio Playback Worker Note] {e}")
-            if stream is not None:
-                try:
-                    stream.stop()
-                    stream.close()
-                except Exception:
-                    pass
-            stream = None
-            stream_sr = None
-            with _active_stream_lock:
-                _active_stream = None
+            except Exception as e:
+                logger.debug("[Audio Playback Worker Note] %s", e)
+                _close_stream_locked(stream)
+                stream = None
+                stream_sr = None
 
-        # Check if playback is finished and all queues are empty
-        if is_last_in_utterance and _speech_queue.empty() and _playback_queue.empty():
-            time.sleep(0.08)
-            if _speech_queue.empty() and _playback_queue.empty():
-                _update_state("idle")
-                try:
-                    from amigo.utils.tool_registry import start_pending_confirmation_timer
-                    start_pending_confirmation_timer()
-                except Exception:
-                    pass
+        with _state_lock:
+            synthesizing = _active_synthesizers > 0
+
+        if is_last_in_utterance and not synthesizing and _speech_queue.empty() and _playback_queue.empty():
+            _update_state("idle")
+            try:
+                from amigo.utils.tool_registry import start_pending_confirmation_timer
+                start_pending_confirmation_timer()
+            except Exception:
+                pass
 
 
 threading.Thread(target=_playback_worker, daemon=True, name="TTS-Playback").start()
 
 
-# ── Speech Synthesis Worker (Pipelines ahead of playback) ─────────────────
+# ── Speech Synthesis Worker ─────────────────────────────────────────────────
 def _speech_worker():
-    """
-    Dedicated synthesis worker:
-    - Streams neural TTS audio (24kHz chunks) directly to playback worker.
-    - Yields chunks as they are generated by Paradee 1.2 ONNX with low time-to-first-sound.
-    - Halts immediately without CPU waste on user interruption.
-    """
+    global _active_synthesizers
     while True:
         item = _speech_queue.get()
         voice_override = None
@@ -917,21 +917,23 @@ def _speech_worker():
             continue
 
         stop_evt = _get_or_create_stop_event(generation)
+        with _state_lock:
+            _active_synthesizers += 1
+
         try:
             tts_started = time.perf_counter()
-            _update_state("speaking")
             if broadcast_chat and _on_broadcast:
                 _on_broadcast("chat_message", {"sender": "assistant", "text": text})
 
             if not _USE_TTS:
-                _update_state("idle")
                 continue
 
             target_voice = voice_override.lower().strip() if voice_override else sync_voice_from_profile()
-            catalog = get_voice_catalog()
             default_voice = _get_default_voice()
-            v_info = catalog.get(target_voice) or catalog.get(default_voice) or {}
-            voice_id = v_info.get("id", "af_heart")
+            v_info = CURATED_VOICES.get(target_voice) or CURATED_VOICES.get(default_voice) or {}
+            voice_id = _resolve_pocket_voice_id(v_info.get("id", "alba"))
+            voice_state = _get_pocket_voice_state(voice_id) or _get_pocket_voice_state("alba")
+            fallback_state = _get_pocket_voice_state("alba") if voice_id != "alba" else voice_state
 
             clean_text = _compact_tts_text(text)
             if not clean_text:
@@ -947,23 +949,22 @@ def _speech_worker():
                 if not chunk or not _speech_is_current(generation) or stop_evt.is_set():
                     break
 
-                spoken_chunk = chunk if chunk.endswith((".", "!", "?", ",", ";", ":")) else chunk + "."
-
                 try:
                     samples = None
                     sr = 24000
-                    if _USE_PARADEE:
-                        samples, sr = _fetch_paradee_audio(spoken_chunk, voice_id, stop_evt)
-                        if (samples is None or len(samples) == 0) and not stop_evt.is_set():
-                            samples, sr = _fetch_paradee_audio(spoken_chunk, "af_heart", stop_evt)
+                    if _USE_POCKET:
+                        samples, sr = _fetch_pocket_audio(chunk, voice_id, stop_evt, cached_state=voice_state)
+                        if (samples is None or len(samples) == 0) and not stop_evt.is_set() and voice_id != "alba":
+                            samples, sr = _fetch_pocket_audio(chunk, "alba", stop_evt, cached_state=fallback_state)
 
                     if samples is not None and len(samples) > 0 and _speech_is_current(generation) and not stop_evt.is_set():
                         is_last = (idx == total_chunks - 1)
                         samples, sr = _process_audio_clarity(samples, sr, is_final_chunk=is_last)
+                        _update_state("speaking")
                         _playback_queue.put((samples, sr, generation, is_last))
 
                 except Exception as chunk_err:
-                    logger.error(f"[TTS Chunk Error] {chunk_err} on chunk: {chunk[:60]}")
+                    logger.error("[TTS Chunk Error] %s on chunk: %s", chunk_err, chunk[:60])
                     continue
 
             logger.debug(
@@ -973,8 +974,13 @@ def _speech_worker():
             )
 
         except Exception as e:
-            logger.error(f"[TTS] Speech synthesis error: {e}")
+            logger.error("[TTS] Speech synthesis error: %s", e)
         finally:
+            with _state_lock:
+                _active_synthesizers = max(0, _active_synthesizers - 1)
+                synthesizing_left = _active_synthesizers > 0
+            if not synthesizing_left and _speech_queue.empty() and _playback_queue.empty():
+                _update_state("idle")
             _cleanup_stop_event(generation)
             _speech_queue.task_done()
 
@@ -988,14 +994,11 @@ _speech_dedup_lock = threading.Lock()
 
 
 def speak(text: str, block: bool = False, request_id: str | None = None, broadcast_chat: bool = False, voice: str | None = None) -> None:
-    """Speak text asynchronously, update assistant state, and stream audio with zero dead air."""
     if not text:
         return
     global _last_spoken_text, _last_spoken_time
     clean = text.strip()
-    now = time.time()
-    # Deduplicate only longer phrases (> 3 words) repeated within 1.0 second.
-    # Never suppress short confirmations like "Done.", "Sure.", "Cancelled."
+    now = time.monotonic()
     with _speech_dedup_lock:
         if clean == _last_spoken_text and (now - _last_spoken_time) < 1.0 and len(clean.split()) > 3:
             return
@@ -1017,15 +1020,13 @@ def speak(text: str, block: bool = False, request_id: str | None = None, broadca
 
 
 def stop_speaking() -> None:
-    """Stop current audio immediately, signal model to halt generation, flush queues, and abort stream."""
-    global _speech_generation, _active_stream
+    global _speech_generation
     with _speech_generation_lock:
         for evt in list(_generation_stop_events.values()):
             evt.set()
         _speech_generation += 1
         _generation_stop_events[_speech_generation] = threading.Event()
 
-    # Flush speech queue
     while True:
         try:
             _speech_queue.get_nowait()
@@ -1033,29 +1034,12 @@ def stop_speaking() -> None:
         except queue.Empty:
             break
 
-    # Flush playback queue
     while True:
         try:
             _playback_queue.get_nowait()
             _playback_queue.task_done()
         except queue.Empty:
             break
-
-    # Abort active sounddevice output stream immediately
-    with _active_stream_lock:
-        if _active_stream is not None:
-            try:
-                _active_stream.abort()
-                _active_stream.close()
-            except Exception:
-                pass
-            _active_stream = None
-
-    if _sd is not None:
-        try:
-            _sd.stop()
-        except Exception:
-            pass
 
     _update_state("idle")
 
@@ -1072,7 +1056,6 @@ _VOSK_DIR = os.path.join(_MODELS_ROOT, "vosk")
 
 
 def _find_vosk_model_path() -> str:
-    """Finds best available Vosk model directory (prefers Indian English, then US English)."""
     candidates = [
         os.path.join(_VOSK_DIR, "vosk-model-small-en-in-0.4"),
         os.path.join(_VOSK_DIR, "vosk-model-small-en-us-0.15"),
@@ -1083,7 +1066,6 @@ def _find_vosk_model_path() -> str:
         if os.path.isdir(path) and (os.path.exists(os.path.join(path, "am")) or os.path.exists(os.path.join(path, "ivector"))):
             return path
 
-    # Check any subfolder in _VOSK_DIR
     if os.path.isdir(_VOSK_DIR):
         for sub in os.listdir(_VOSK_DIR):
             sub_path = os.path.join(_VOSK_DIR, sub)
@@ -1093,7 +1075,6 @@ def _find_vosk_model_path() -> str:
 
 
 def _ensure_vosk_model_downloaded() -> str:
-    """Ensures a clean Vosk offline model is present on disk."""
     existing = _find_vosk_model_path()
     if existing:
         return existing
@@ -1129,7 +1110,6 @@ def _ensure_vosk_model_downloaded() -> str:
 
 
 def get_stt_recognizer():
-    """Lazy-loads the Vosk offline speech recognizer."""
     global _vosk_model, _VOSK_INIT_ATTEMPTED, _VOSK_IS_AVAILABLE
     if _vosk_model is not None:
         return _vosk_model
@@ -1155,11 +1135,11 @@ def get_stt_recognizer():
             return None
 
         try:
-            t0 = time.time()
+            t0 = time.perf_counter()
             logger.info("[STT] Loading Vosk offline engine from %s...", model_path)
             _vosk_model = Model(model_path)
             _VOSK_IS_AVAILABLE = True
-            logger.info("[STT] Vosk offline STT ready in %.1fms.", (time.time() - t0) * 1000)
+            logger.info("[STT] Vosk offline STT ready in %.1fms.", (time.perf_counter() - t0) * 1000)
             return _vosk_model
         except Exception as e:
             logger.error("[STT] Failed to initialize Vosk model: %s", e)
@@ -1168,80 +1148,64 @@ def get_stt_recognizer():
 
 
 def is_stt_available() -> bool:
-    """Returns True if offline STT is initialized and available."""
     return get_stt_recognizer() is not None
 
 
 def get_stt_engine_name() -> str:
-    """Returns descriptive name of active STT engine."""
     if is_stt_available():
         return "Vosk (Offline Neural STT)"
     return "Unavailable"
 
 
 def transcribe_samples(samples: np.ndarray, sample_rate: int = 16000) -> str:
-    """Transcribes raw float32 audio samples [-1.0, 1.0] completely offline with Vosk."""
     model = get_stt_recognizer()
     if model is None or samples is None or len(samples) == 0:
         return ""
 
     try:
         samples = np.asarray(samples, dtype=np.float32)
-        # Resample to 16000 Hz if necessary
-        if sample_rate != 16000 and len(samples) > 0:
+        sample_rate = int(sample_rate)
+        if sample_rate != 16000 and len(samples) > 0 and _signal is not None:
             try:
-                import scipy.signal
-                from math import gcd
-                g = gcd(int(sample_rate), 16000)
-                samples = scipy.signal.resample_poly(samples, 16000 // g, int(sample_rate) // g).astype(np.float32)
+                g = gcd(sample_rate, 16000)
+                samples = _signal.resample_poly(samples, 16000 // g, sample_rate // g).astype(np.float32)
             except Exception:
                 pass
 
-        if len(samples) < 1600:  # Less than 100ms
+        if len(samples) < 1600:
             return ""
 
         peak = float(np.max(np.abs(samples)))
         if peak < 0.01:
             return ""
 
-        # Normalize gain if too low or high
-        if peak > 0:
-            samples = samples / max(peak, 0.2)
-
+        samples = samples / max(peak, 0.2)
         pcm_bytes = (np.clip(samples, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
 
         from vosk import KaldiRecognizer
-        with _vosk_model_lock:
-            rec = KaldiRecognizer(model, 16000)
-            rec.AcceptWaveform(pcm_bytes)
-            res = json.loads(rec.FinalResult())
-            raw_text = res.get("text", "")
-            return raw_text.strip()
+        rec = KaldiRecognizer(model, 16000)
+        rec.AcceptWaveform(pcm_bytes)
+        res = json.loads(rec.FinalResult())
+        return res.get("text", "").strip()
     except Exception as e:
         logger.error("[STT] Vosk transcription error: %s", e)
         return ""
 
 
 def transcribe_audio_data(audio_data) -> str:
-    """
-    Transcribes speech_recognition.AudioData offline.
-    Converts 16-bit PCM buffer to normalized float32 waveform.
-    """
     try:
         raw_pcm = audio_data.get_raw_data(convert_rate=16000, convert_width=2)
         samples = np.frombuffer(raw_pcm, dtype=np.int16).astype(np.float32) / 32768.0
         return transcribe_samples(samples, 16000)
     except Exception as e:
-        logger.error(f"[STT] AudioData conversion error: {e}")
+        logger.error("[STT] AudioData conversion error: %s", e)
         return ""
 
 
 def transcribe_audio_bytes(audio_bytes: bytes) -> str:
-    """Transcribes audio bytes from uploaded WebM, Opus, Ogg, WAV, or PCM buffer completely offline."""
     if not audio_bytes:
         return ""
 
-    # 1. Try PyAV (handles WebM/Opus from browser MediaRecorder, OGG, WAV, MP3, AAC, FLAC)
     if av is not None:
         try:
             with io.BytesIO(audio_bytes) as in_bio:
@@ -1251,16 +1215,14 @@ def transcribe_audio_bytes(audio_bytes: bytes) -> str:
                 for frame in container.decode(audio=0):
                     for rf in resampler.resample(frame):
                         chunks.append(rf.to_ndarray()[0])
-                # Flush resampler buffer so the tail is never dropped
                 for rf in resampler.resample(None):
                     chunks.append(rf.to_ndarray()[0])
                 if chunks:
                     audio_samples = np.concatenate(chunks)
                     return transcribe_samples(audio_samples, 16000)
         except Exception as e_av:
-            logger.debug(f"[STT] PyAV decode note: {e_av}")
+            logger.debug("[STT] PyAV decode note: %s", e_av)
 
-    # 2. Try soundfile (WAV, FLAC, OGG)
     try:
         import soundfile as sf
         with io.BytesIO(audio_bytes) as bio:
@@ -1271,17 +1233,15 @@ def transcribe_audio_bytes(audio_bytes: bytes) -> str:
     except Exception:
         pass
 
-    # 3. Fallback: Raw 16-bit PCM
     try:
         samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
         return transcribe_samples(samples, 16000)
     except Exception as e2:
-        logger.error(f"[STT] Raw audio byte transcription failed: {e2}")
+        logger.error("[STT] Raw audio byte transcription failed: %s", e2)
         return ""
 
 
 def transcribe_b64(audio_b64: str) -> str:
-    """Decodes base64-encoded audio data and transcribes it offline with Vosk."""
     if not audio_b64:
         return ""
     try:
@@ -1290,18 +1250,18 @@ def transcribe_b64(audio_b64: str) -> str:
         raw_bytes = base64.b64decode(audio_b64)
         return transcribe_audio_bytes(raw_bytes)
     except Exception as e:
-        logger.error(f"[STT] Base64 decode error: {e}")
+        logger.error("[STT] Base64 decode error: %s", e)
         return ""
 
 
-# Warm up STT in background thread
 def _warmup_stt():
     def _run():
         try:
             model = get_stt_recognizer()
             if model:
-                dummy = np.zeros(16000, dtype=np.float32)
-                transcribe_samples(dummy, 16000)
+                t = np.linspace(0.0, 0.2, 3200, dtype=np.float32)
+                warmup_signal = (0.02 * np.sin(2.0 * np.pi * 440.0 * t)).astype(np.float32)
+                transcribe_samples(warmup_signal, 16000)
                 logger.debug("[STT] Vosk STT primed.")
         except Exception:
             pass

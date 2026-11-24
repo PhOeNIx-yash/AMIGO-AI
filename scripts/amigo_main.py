@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
 Amigo Voice Assistant - Main Entry Point
-Coordinates voice/type input, LLM agent action dispatching, and Paradee 1.2 ONNX TTS / Vosk Offline STT.
+Coordinates voice/type input, LLM agent action dispatching, and Pocket TTS (Kyutai 24kHz) / Vosk Offline STT.
 """
 
 import os

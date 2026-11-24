@@ -1414,7 +1414,7 @@ export default function App() {
                                   colorTheme={colorTheme}
                                   isDark={isDark}
                                   compact={isCompact}
-                                  isPaused={showSettings || showBackendModal}
+                                  isPaused={showBackendModal}
                                   thinkingOrbStyle={thinkingOrbStyle}
                                   webSearchOrbStyle={webSearchOrbStyle}
                                   activeIntent={liveIntent || assistantData?.intent}

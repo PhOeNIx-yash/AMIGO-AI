@@ -12,7 +12,7 @@ import { saveAssistantSettings } from "../services/assistantApi";
 export interface VoiceOption {
   id: string;
   name: string;
-  engine: "Paradee 1.2";
+  engine: "Pocket TTS" | string;
   gender: "Female" | "Male" | "Robot";
   accent: "US" | "GB" | "IN" | "AU";
   desc: string;
@@ -24,50 +24,94 @@ export interface VoiceOption {
 import FluidOrb from "../../components/ui/fluid-orb";
 
 export const VOICES_CATALOG: VoiceOption[] = [
-  // Flagship Studio Voices (Paradee 1.2 ONNX - 24kHz Studio Offline)
+  // Flagship Expressive Voices (Pocket TTS - Kyutai Labs 24kHz Offline)
   {
-    id: "af_heart",
-    name: "Heart",
-    engine: "Paradee 1.2",
+    id: "alba",
+    name: "Alba",
+    engine: "Pocket TTS",
     gender: "Female",
     accent: "US",
-    desc: "Flagship studio female — #1 natural human cadence (Recommended / Default)",
-    previewText: "Hello! I am Heart, clear, natural and articulate.",
+    desc: "Flagship studio female — natural human cadence & warm expression (Recommended / Default)",
+    previewText: "Hello! I am Alba, speaking with natural human cadence and clear expression.",
     avatarGradient: "from-rose-500 to-pink-600",
     color: "#f43f5e",
   },
   {
-    id: "am_puck",
-    name: "Puck",
-    engine: "Paradee 1.2",
+    id: "marius",
+    name: "Marius",
+    engine: "Pocket TTS",
     gender: "Male",
     accent: "US",
-    desc: "Warm, relatable and crisp conversational companion",
-    previewText: "Hey there! I am Puck, your personal voice assistant.",
+    desc: "Crisp, warm & relatable conversational male companion (Amigo Default)",
+    previewText: "Hey there! I am Marius, your personal conversational voice assistant.",
     avatarGradient: "from-blue-600 to-indigo-700",
     color: "#3b82f6",
   },
   {
-    id: "bf_isabella",
-    name: "Isabella",
-    engine: "Paradee 1.2",
+    id: "cosette",
+    name: "Cosette",
+    engine: "Pocket TTS",
     gender: "Female",
     accent: "GB",
-    desc: "Crisp, refined & elegant British studio female",
-    previewText: "Good day! I am Isabella, crisp, elegant and articulate.",
+    desc: "Refined, articulate & elegant British studio female",
+    previewText: "Good day! I am Cosette, speaking refined and articulate British English.",
     avatarGradient: "from-sky-400 to-blue-500",
     color: "#0ea5e9",
   },
   {
-    id: "bm_fable",
-    name: "Fable",
-    engine: "Paradee 1.2",
+    id: "george",
+    name: "George",
+    engine: "Pocket TTS",
     gender: "Male",
     accent: "GB",
-    desc: "Polished, distinguished British gentleman",
-    previewText: "Good day! I am Fable, speaking polished British English.",
+    desc: "Polished & distinguished British gentleman",
+    previewText: "Good day! I am George, a polished and distinguished British speaker.",
     avatarGradient: "from-amber-600 to-orange-700",
     color: "#ea580c",
+  },
+  {
+    id: "javert",
+    name: "Javert",
+    engine: "Pocket TTS",
+    gender: "Male",
+    accent: "US",
+    desc: "Confident, authoritative & deep narrative male",
+    previewText: "Greetings. I am Javert, with a confident and authoritative tone.",
+    avatarGradient: "from-slate-700 to-zinc-900",
+    color: "#475569",
+  },
+  {
+    id: "anna",
+    name: "Anna",
+    engine: "Pocket TTS",
+    gender: "Female",
+    accent: "US",
+    desc: "Bright, clear & articulate conversational female",
+    previewText: "Hi! I am Anna, bright, clear and ready to help.",
+    avatarGradient: "from-fuchsia-500 to-purple-600",
+    color: "#d946ef",
+  },
+  {
+    id: "michael",
+    name: "Michael",
+    engine: "Pocket TTS",
+    gender: "Male",
+    accent: "US",
+    desc: "Relaxed & natural conversational male",
+    previewText: "Hey there! I am Michael, relaxed and easy going.",
+    avatarGradient: "from-emerald-500 to-teal-600",
+    color: "#10b981",
+  },
+  {
+    id: "eve",
+    name: "Eve",
+    engine: "Pocket TTS",
+    gender: "Female",
+    accent: "US",
+    desc: "Soft, calm & pleasant conversational female",
+    previewText: "Hello! I am Eve, calm, pleasant and easy to listen to.",
+    avatarGradient: "from-violet-500 to-purple-600",
+    color: "#8b5cf6",
   },
 ];
 
@@ -113,8 +157,8 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ payload: { tool: "stop_speaking" } }),
-        }).catch(() => {});
-      } catch {}
+        }).catch(() => { });
+      } catch { }
     };
   }, []);
 
@@ -127,7 +171,7 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
     setSelectedVoice(voiceId);
     try {
       localStorage.setItem("amigo_selected_voice", voiceId);
-    } catch (_) {}
+    } catch (_) { }
     try {
       await saveAssistantSettings({
         user_profile: { preferences: { voice: voiceId } },
@@ -139,7 +183,7 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ voice: voiceId }),
         });
-      } catch (_) {}
+      } catch (_) { }
       if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
       setSavedBanner(true);
       savedTimerRef.current = setTimeout(() => setSavedBanner(false), 2000);
@@ -172,7 +216,7 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ payload: { tool: "stop_speaking" } }),
         });
-      } catch {}
+      } catch { }
       return;
     }
 
@@ -183,7 +227,7 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ payload: { tool: "stop_speaking" } }),
       });
-    } catch {}
+    } catch { }
 
     setPlayingVoiceIdLocal(voice.id);
     setPlayingVoiceId(voice.id);
@@ -233,9 +277,8 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
         const isSpeakingActive = Boolean(playingVoiceIdLocal);
         return (
           <div
-            className={`p-4 rounded-2xl border relative overflow-hidden transition-all ${
-              isDark ? "bg-white/[0.03]" : "bg-white shadow-sm"
-            }`}
+            className={`p-4 rounded-2xl border relative overflow-hidden transition-all ${isDark ? "bg-white/[0.03]" : "bg-white shadow-sm"
+              }`}
             style={{ borderColor: isDark ? `${theme.primary}18` : `${theme.primary}12` }}
           >
             <div className="flex items-center justify-between">
@@ -273,13 +316,12 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
               <button
                 type="button"
                 onClick={(e) => handleTogglePlayPreview(e, activeVoice)}
-                className={`p-2.5 rounded-xl border transition-all flex items-center justify-center ${
-                  playingVoiceIdLocal === activeVoice.id
-                    ? "bg-rose-500/20 border-rose-500/40 text-rose-300"
-                    : isDark
+                className={`p-2.5 rounded-xl border transition-all flex items-center justify-center ${playingVoiceIdLocal === activeVoice.id
+                  ? "bg-rose-500/20 border-rose-500/40 text-rose-300"
+                  : isDark
                     ? "bg-white/5 border-white/10 hover:bg-white/10 text-white/80"
                     : "bg-black/5 border-black/10 hover:bg-black/10 text-slate-700"
-                }`}
+                  }`}
                 title={playingVoiceIdLocal === activeVoice.id ? "Stop Preview" : "Preview Sample"}
               >
                 {playingVoiceIdLocal === activeVoice.id ? (
@@ -299,9 +341,8 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
         <div
           role="radiogroup"
           aria-label="Filter voices by gender"
-          className={`inline-flex p-1 rounded-xl border self-start sm:self-auto ${
-            isDark ? "bg-black/30" : "bg-slate-100"
-          }`}
+          className={`inline-flex p-1 rounded-xl border self-start sm:self-auto ${isDark ? "bg-black/30" : "bg-slate-100"
+            }`}
           style={{ borderColor: isDark ? `${theme.primary}18` : `${theme.primary}12` }}
         >
           {(
@@ -320,13 +361,12 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
                 setVoiceFilter(f.id);
                 setVoiceFilterLocal(f.id);
               }}
-              className={`px-3 py-1 rounded-lg text-[11px] font-medium transition-all ${
-                voiceFilterLocal === f.id
-                  ? isDark
-                    ? "bg-white/15 text-white font-semibold shadow-sm"
-                    : "bg-white text-slate-900 font-semibold shadow-sm"
-                  : "opacity-60 hover:opacity-100"
-              }`}
+              className={`px-3 py-1 rounded-lg text-[11px] font-medium transition-all ${voiceFilterLocal === f.id
+                ? isDark
+                  ? "bg-white/15 text-white font-semibold shadow-sm"
+                  : "bg-white text-slate-900 font-semibold shadow-sm"
+                : "opacity-60 hover:opacity-100"
+                }`}
             >
               {f.label}
             </button>
@@ -353,20 +393,19 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
                 }
               }}
               onClick={() => handleSelectVoice(voice.id)}
-              className={`group relative p-3.5 rounded-2xl border text-left transition-all cursor-pointer select-none flex flex-col justify-between ${
-                isSelected
-                  ? "shadow-sm"
-                  : isDark
+              className={`group relative p-3.5 rounded-2xl border text-left transition-all cursor-pointer select-none flex flex-col justify-between ${isSelected
+                ? "shadow-sm"
+                : isDark
                   ? "border-white/10 bg-white/[0.02] hover:bg-white/[0.05] hover:border-white/20"
                   : "border-black/10 bg-white hover:bg-slate-50 hover:border-black/20 shadow-sm"
-              }`}
+                }`}
               style={
                 isSelected
                   ? {
-                      borderColor: `${theme.primary}80`,
-                      backgroundColor: `${theme.primary}10`,
-                      boxShadow: `0 0 0 1px ${theme.primary}30`,
-                    }
+                    borderColor: `${theme.primary}80`,
+                    backgroundColor: `${theme.primary}10`,
+                    boxShadow: `0 0 0 1px ${theme.primary}30`,
+                  }
                   : {}
               }
             >
@@ -375,9 +414,8 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
                   <div className="flex items-center space-x-2.5">
                     <div className="relative flex items-center justify-center p-0.5 flex-shrink-0">
                       <div
-                        className={`w-9 h-9 rounded-full bg-gradient-to-tr ${voice.avatarGradient} flex items-center justify-center relative shadow-sm transition-all duration-300 ${
-                          isPlaying ? "scale-105 shadow-md ring-2 ring-white/40" : "group-hover:scale-105"
-                        }`}
+                        className={`w-9 h-9 rounded-full bg-gradient-to-tr ${voice.avatarGradient} flex items-center justify-center relative shadow-sm transition-all duration-300 ${isPlaying ? "scale-105 shadow-md ring-2 ring-white/40" : "group-hover:scale-105"
+                          }`}
                         style={{
                           boxShadow: isPlaying
                             ? `0 0 16px ${voice.color || theme.primary}80`
@@ -412,7 +450,7 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
                   </div>
 
                   <span className="text-[9px] font-mono px-2 py-0.5 rounded-full font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
-                    Paradee 1.2 24kHz ONNX
+                    Pocket TTS 24kHz
                   </span>
                 </div>
 
@@ -424,13 +462,12 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
                 <button
                   type="button"
                   onClick={(e) => handleTogglePlayPreview(e, voice)}
-                  className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
-                    isPlaying
-                      ? "bg-rose-500/20 text-rose-300 border border-rose-500/30"
-                      : isDark
+                  className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${isPlaying
+                    ? "bg-rose-500/20 text-rose-300 border border-rose-500/30"
+                    : isDark
                       ? "bg-white/5 hover:bg-white/10 text-white/80 border border-white/10"
                       : "bg-black/5 hover:bg-black/10 text-slate-700 border border-black/10"
-                  }`}
+                    }`}
                 >
                   {isPlaying ? (
                     <>
@@ -446,9 +483,8 @@ export const VoiceSettingsTab: React.FC<VoiceSettingsTabProps> = ({
                 </button>
 
                 <span
-                  className={`text-[10px] font-medium ${
-                    isSelected ? "font-semibold" : "opacity-40"
-                  }`}
+                  className={`text-[10px] font-medium ${isSelected ? "font-semibold" : "opacity-40"
+                    }`}
                   style={isSelected ? { color: isDark ? (theme.accent || theme.primary) : theme.primary } : {}}
                 >
                   {isSelected ? "Selected" : "Click to select"}

@@ -1326,7 +1326,7 @@ if __name__ == "__main__":
     _info = get_active_model_info()
     print("==================================================")
     print("   AMIGO VOICE ASSISTANT - UI DASHBOARD SERVER   ")
-    print(f"   [ {_info['name'].upper()} | {_info.get('tts_engine', 'PARADEE 1.2 ONNX').upper()} | RAG + AGENTIC ]")
+    print(f"   [ {_info['name'].upper()} | {_info.get('tts_engine', 'POCKET TTS (KYUTAI 24KHZ)').upper()} | RAG + AGENTIC ]")
     print("==================================================")
     initialize_amigo_async()
     launch_server(port=5000, open_browser=True)
