@@ -29,14 +29,25 @@ export default defineConfig(() => {
       // Code splitting with manual chunks
       rollupOptions: {
         output: {
-          manualChunks: {
-            // Vendor chunks
-            'vendor-react': ['react', 'react-dom'],
-            'vendor-motion': ['motion'],
-            'vendor-shaders': ['@paper-design/shaders-react'],
-            'vendor-ui': ['lucide-react', '@yogesharc/thinking-orbs', '@hugeicons/react'],
-            // App chunks - split by feature
-            'app-core': ['src/App.tsx', 'src/main.tsx'],
+          manualChunks(id) {
+            if (id.includes('node_modules')) {
+              // Group React and its tightly-coupled ecosystem into vendor-framework to prevent circular references
+              if (
+                id.includes('react') ||
+                id.includes('react-dom') ||
+                id.includes('scheduler') ||
+                id.includes('motion') ||
+                id.includes('framer-motion') ||
+                id.includes('@paper-design') ||
+                id.includes('@yogesharc')
+              ) {
+                return 'vendor-framework';
+              }
+              if (id.includes('lucide-react') || id.includes('@hugeicons')) {
+                return 'vendor-icons';
+              }
+              return 'vendor-deps';
+            }
           },
           // Optimize chunk naming
           chunkFileNames: 'assets/[name]-[hash].js',

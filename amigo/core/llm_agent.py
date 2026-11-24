@@ -1,11 +1,12 @@
 """
 LLM-Based Agent for Amigo Voice Assistant.
-Clean, streamlined inference engine for Qwen 3.5 4B Instruct:
 - Direct GGUF inference via llama-cpp-python on GPU (with CPU fallback)
-- Fast KV-cache reuse with unified system prompt prefix
+- Fast KV-cache reuse with static system prompt prefix and formatter state caching
 - Multi-turn conversation context (single & multi-step) and RAG profile integration
-- Clean, non-destructive streaming sentence synthesis for TTS
+- Real-time, non-destructive streaming sentence synthesis for TTS
 """
+
+from __future__ import annotations
 
 import atexit
 import datetime
@@ -14,13 +15,17 @@ import json
 import logging
 import os
 
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
 import re
+import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Generator, cast
+from typing import TYPE_CHECKING, Any, Generator, cast
+
+from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
     from llama_cpp.llama_types import ChatCompletionRequestMessage
@@ -39,6 +44,27 @@ _PROJECT_ROOT = next(
 for _cand in (_PROJECT_ROOT, _PROJECT_ROOT / "amigo"):
     if _cand.is_dir() and str(_cand) not in sys.path:
         sys.path.insert(0, str(_cand))
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, default))
+    except (ValueError, TypeError):
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, default))
+    except (ValueError, TypeError):
+        return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
 _cuda_dirs_setup: bool = False
@@ -71,16 +97,9 @@ def _setup_cuda_dll_directory() -> None:
                 if isinstance(sp, str)
                 for sub in ("cuda_runtime", "cublas", "cuda_nvrtc")
             ]
-            for env_key in (
-                "CUDA_PATH",
-                "CUDA_HOME",
-                "CUDA_PATH_V12_4",
-                "CUDA_PATH_V12_5",
-                "CUDA_PATH_V12_0",
-                "CUDA_PATH_V11_8",
-            ):
-                if cuda_home := os.environ.get(env_key):
-                    cuda_dirs.append(os.path.join(cuda_home, "bin"))
+            for env_key, env_val in os.environ.items():
+                if env_key.startswith(("CUDA_PATH", "CUDA_HOME")) and env_val:
+                    cuda_dirs.append(os.path.join(env_val, "bin"))
 
             bundled_llama = os.path.join(str(_PROJECT_ROOT), "amigo", "lib", "llama")
             if not os.path.isdir(bundled_llama):
@@ -111,6 +130,8 @@ def _setup_cuda_dll_directory() -> None:
             os.environ["PATH"] = path_env
 
             try:
+                import ctypes
+
                 active_lib = os.environ.get("LLAMA_CPP_LIB_PATH")
                 if not active_lib:
                     import llama_cpp
@@ -119,15 +140,11 @@ def _setup_cuda_dll_directory() -> None:
                 base_dll = os.path.join(active_lib, "ggml-base.dll")
                 if os.path.exists(base_dll):
                     try:
-                        import ctypes
-
                         ctypes.CDLL(base_dll)
                     except OSError as exc:
                         logger.debug("[CUDA Setup] Preload failed for ggml-base.dll: %s", exc)
                 ggml_dll = os.path.join(active_lib, "ggml.dll")
                 if os.path.exists(ggml_dll):
-                    import ctypes
-
                     ggml = ctypes.CDLL(ggml_dll)
                     if hasattr(ggml, "ggml_backend_load_all_from_path"):
                         ggml.ggml_backend_load_all_from_path(active_lib.encode("utf-8"))
@@ -146,7 +163,6 @@ logger = logging.getLogger("amigo.llm_agent")
 _setup_cuda_dll_directory()
 
 # Lock ordering hierarchy: _llm_lock -> _CONFIG_LOCK -> _inference_lock
-# Never acquire _llm_lock or _CONFIG_LOCK while holding _inference_lock.
 _thread_local = threading.local()
 _inference_lock = threading.Lock()
 _llm_lock = threading.Lock()
@@ -155,15 +171,59 @@ _internet_cache_lock = threading.Lock()
 _screen_state_lock = threading.Lock()
 _mode_lock = threading.Lock()
 
-_internet_status_cache: dict[str, object] = {
+
+# ── Typed Configuration Models (Pydantic v2) ───────────────────
+
+class AgentSettings(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    model_dir: str = Field(
+        default_factory=lambda: os.path.abspath(
+            os.getenv("AMIGO_MODEL_DIR", os.path.join(os.path.dirname(__file__), "..", "..", "models"))
+        )
+    )
+    active_model_key: str = Field(default_factory=lambda: os.getenv("AMIGO_ACTIVE_MODEL", "qwen3.5-4b-instruct"))
+    default_repo: str = Field(default_factory=lambda: os.getenv("AMIGO_MODEL_REPO", "unsloth/Qwen3.5-4B-GGUF"))
+    default_filename: str = Field(default_factory=lambda: os.getenv("AMIGO_MODEL_FILENAME", "Qwen3.5-4B-Q4_K_M.gguf"))
+    min_model_bytes: int = Field(default_factory=lambda: _env_int("AMIGO_MIN_MODEL_BYTES", 500_000_000))
+    min_mmproj_bytes: int = Field(default_factory=lambda: _env_int("AMIGO_MIN_MMPROJ_BYTES", 50_000_000))
+    model_retry_seconds: float = Field(default_factory=lambda: _env_float("AMIGO_MODEL_RETRY_SECONDS", 60.0))
+    internet_cache_ttl: float = Field(default_factory=lambda: _env_float("AMIGO_INTERNET_CACHE_TTL", 30.0))
+    profile_cache_ttl: float = Field(default_factory=lambda: _env_float("AMIGO_PROFILE_CACHE_TTL", 60.0))
+    turn_context_ttl: float = Field(default_factory=lambda: _env_float("AMIGO_TURN_CONTEXT_TTL", 30.0))
+    screen_text_ttl: float = Field(default_factory=lambda: _env_float("AMIGO_SCREEN_TEXT_TTL", 60.0))
+    screen_text_max_chars: int = Field(default_factory=lambda: _env_int("AMIGO_SCREEN_TEXT_MAX_CHARS", 1500))
+    clipboard_max_chars: int = Field(default_factory=lambda: _env_int("AMIGO_CLIPBOARD_MAX_CHARS", 1000))
+    voice_max_tokens: int = Field(default_factory=lambda: _env_int("AMIGO_VOICE_MAX_TOKENS", 320))
+    text_max_tokens: int = Field(default_factory=lambda: _env_int("AMIGO_TEXT_MAX_TOKENS", 1024))
+    thinking_max_tokens: int = Field(default_factory=lambda: _env_int("AMIGO_THINKING_MAX_TOKENS", 1024))
+    stream_max_tokens: int = Field(default_factory=lambda: _env_int("AMIGO_STREAM_MAX_TOKENS", 512))
+
+
+class ModelSpec(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    key: str
+    name: str
+    repo: str
+    filename: str
+    path: str
+    targets: tuple[tuple[str, str], ...] = ()
+    size_gb: float = 2.55
+    mmproj_path: str = ""
+
+
+SETTINGS = AgentSettings()
+
+_internet_status_cache: dict[str, Any] = {
     "status": "Connected (Online)",
     "online": True,
     "timestamp": 0.0,
 }
-_INTERNET_CACHE_TTL = 30.0
 
 _RE_SPEAKER_PREFIX = re.compile(r"^(Amigo|Assistant|AI):\s*", flags=re.IGNORECASE)
-_RE_THINK = re.compile(r"<think>([\s\S]*?)(?:</think>|$)", re.IGNORECASE)
+_RE_THINK_OPEN = re.compile(r"<think>", flags=re.IGNORECASE)
+_RE_THINK_CLOSE = re.compile(r"</think>", flags=re.IGNORECASE)
 
 _last_screen_text = ""
 _last_screen_time = 0.0
@@ -194,7 +254,7 @@ def get_static_system_prompt() -> str:
 def _get_internet_status() -> tuple[str, bool]:
     now = time.time()
     with _internet_cache_lock:
-        if now - float(_internet_status_cache["timestamp"]) <= _INTERNET_CACHE_TTL:
+        if now - float(_internet_status_cache["timestamp"]) <= SETTINGS.internet_cache_ttl:
             return str(_internet_status_cache["status"]), bool(_internet_status_cache["online"])
 
     online = is_internet_connected()
@@ -235,14 +295,14 @@ def set_last_screen_text(text: str) -> None:
     global _last_screen_text, _last_screen_time
     if text and isinstance(text, str) and len(text.strip()) > 10:
         with _screen_state_lock:
-            _last_screen_text = text.strip()[:1500]
+            _last_screen_text = text.strip()[: SETTINGS.screen_text_max_chars]
             _last_screen_time = time.time()
 
 
 def get_last_screen_text(consume: bool = False) -> str:
     global _last_screen_text, _last_screen_time
     with _screen_state_lock:
-        if not _last_screen_text or (time.time() - _last_screen_time > 60):
+        if not _last_screen_text or (time.time() - _last_screen_time > SETTINGS.screen_text_ttl):
             _last_screen_text = ""
             return ""
         text = _last_screen_text
@@ -256,7 +316,7 @@ def get_clipboard_text() -> str | None:
         try:
             text = pyperclip.paste()
             if text and isinstance(text, str):
-                return text[:1000].strip()
+                return text[: SETTINGS.clipboard_max_chars].strip()
         except Exception as exc:
             logger.debug("[Clipboard] Unable to read clipboard text: %s", exc)
     return None
@@ -269,13 +329,13 @@ _profile_prompt_lock = threading.Lock()
 
 
 def _get_cached_user_profile() -> str:
-    """Cache the non-semantic user profile prompt for 60 seconds to avoid per-turn vector lookups."""
+    """Cache the non-semantic user profile prompt to avoid per-turn vector lookups."""
     global _profile_prompt_cache
     now = time.time()
     with _profile_prompt_lock:
         if _profile_prompt_cache is not None:
             c_time, c_val = _profile_prompt_cache
-            if now - c_time < 60.0:
+            if now - c_time < SETTINGS.profile_cache_ttl:
                 return c_val
     try:
         val = rag_engine.get_user_profile_prompt("", semantic_search=False) or ""
@@ -298,8 +358,7 @@ def build_turn_runtime_context(
 
     ctx_blocks: list[str] = []
     now = datetime.datetime.now()
-    env_line = f"[Current Time: {now.strftime('%A, %B %d, %Y %I:%M %p').lstrip('0')} ({_day_period(now.hour)})]"
-    ctx_blocks.append(env_line)
+    ctx_blocks.append(f"[Current Time: {now.strftime('%A, %B %d, %Y %I:%M %p').lstrip('0')} ({_day_period(now.hour)})]")
 
     if pending_confirmation:
         ctx_blocks.append(pending_confirmation)
@@ -325,15 +384,12 @@ def build_turn_runtime_context(
     recent_items = state.get("found_files") or state.get("recent_items") or []
     if isinstance(recent_items, dict):
         recent_items = recent_items.get("items", [])
+    item_lines: list[str] = []
     if isinstance(recent_items, list) and recent_items:
-        capped = recent_items[:10]
-        item_lines = []
-        for i, it in enumerate(capped):
+        for i, it in enumerate(recent_items[:10]):
             val = os.path.basename(str(it)) if os.path.isabs(str(it)) else str(it)
             item_lines.append(f"  [{i}]: {val}")
-        ctx_blocks.append(
-            "[Recent Results List (0=first, 1=second, ..., -1=last)]:\n" + "\n".join(item_lines)
-        )
+        ctx_blocks.append("[Recent Results List (0=first, 1=second, ..., -1=last)]:\n" + "\n".join(item_lines))
 
     user_prof = _get_cached_user_profile()
     if user_prof:
@@ -357,13 +413,13 @@ def build_turn_runtime_context(
         active_ctx,
         user_prof,
         screen[:300],
-        tuple(item_lines) if isinstance(recent_items, list) and recent_items else (),
+        tuple(item_lines),
     )
 
     with _turn_context_lock:
         if _turn_context_cache is not None:
             c_time, c_key, c_val = _turn_context_cache
-            if (now_ts - c_time < 30.0) and (c_key == cache_key):
+            if (now_ts - c_time < SETTINGS.turn_context_ttl) and (c_key == cache_key):
                 return c_val
         _turn_context_cache = (now_ts, cache_key, res)
     return res
@@ -397,8 +453,7 @@ def build_unified_history_messages(
                         formatted.append({"role": "assistant", "content": json.dumps({"actions": clean_actions})})
                         continue
                 if tool and tool != "chat" and isinstance(params, dict):
-                    action_content = json.dumps({"actions": [{"tool": tool, "params": params}]})
-                    formatted.append({"role": "assistant", "content": action_content})
+                    formatted.append({"role": "assistant", "content": json.dumps({"actions": [{"tool": tool, "params": params}]})})
                     continue
             formatted.append({"role": "assistant", "content": spoken or "Done."})
     return formatted
@@ -436,48 +491,77 @@ def _build_ai_messages(
 
 # ── Model Configuration & Lifecycle ────────────────────────────
 
-MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "models"))
+MODEL_DIR = SETTINGS.model_dir
 MODEL_NAME = "Qwen 3.5 4B Instruct"
-MODEL_FILENAME = "Qwen3.5-4B-Q4_K_M.gguf"
+MODEL_FILENAME = SETTINGS.default_filename
 MODEL_PATH = os.path.join(MODEL_DIR, MODEL_FILENAME)
 MODEL_TARGETS = [
-    ("unsloth/Qwen3.5-4B-GGUF", "Qwen3.5-4B-Q4_K_M.gguf"),
+    (SETTINGS.default_repo, SETTINGS.default_filename),
     ("lmstudio-community/Qwen3.5-4B-GGUF", "Qwen3.5-4B-Q4_K_M.gguf"),
     ("openresearchtools/Qwen3.5-4B-Instruct-GGUF", "Q4_K_M.gguf"),
 ]
 
 STOP_TOKENS = ["<eos>", "<turn|>", "<|turn|>", "<|endoftext|>", "<|im_end|>", "<|im_start|>", "<|eot_id|>"]
 
-AVAILABLE_MODELS = {
-    "qwen3.5-4b-instruct": {
-        "key": "qwen3.5-4b-instruct",
-        "name": "Qwen 3.5 4B Instruct",
-        "repo": "unsloth/Qwen3.5-4B-GGUF",
-        "filename": "Qwen3.5-4B-Q4_K_M.gguf",
-        "path": os.path.join(MODEL_DIR, "Qwen3.5-4B-Q4_K_M.gguf"),
-        "targets": [
-            ("unsloth/Qwen3.5-4B-GGUF", "Qwen3.5-4B-Q4_K_M.gguf"),
-            ("lmstudio-community/Qwen3.5-4B-GGUF", "Qwen3.5-4B-Q4_K_M.gguf"),
-            ("openresearchtools/Qwen3.5-4B-Instruct-GGUF", "Q4_K_M.gguf"),
-        ],
-        "downloaded": os.path.exists(os.path.join(MODEL_DIR, "Qwen3.5-4B-Q4_K_M.gguf"))
-        and os.path.getsize(os.path.join(MODEL_DIR, "Qwen3.5-4B-Q4_K_M.gguf")) > 500_000_000,
-        "size_gb": 2.55,
-    },
+_MODEL_REGISTRY: dict[str, ModelSpec] = {
+    SETTINGS.active_model_key: ModelSpec(
+        key=SETTINGS.active_model_key,
+        name=MODEL_NAME,
+        repo=SETTINGS.default_repo,
+        filename=MODEL_FILENAME,
+        path=MODEL_PATH,
+        targets=tuple(MODEL_TARGETS),
+        size_gb=2.55,
+    ),
 }
 
-_active_model_key = "qwen3.5-4b-instruct"
+
+def _is_valid_model_file(path: str, min_bytes: int | None = None) -> bool:
+    threshold = SETTINGS.min_model_bytes if min_bytes is None else min_bytes
+    try:
+        return bool(path and os.path.isfile(path) and os.path.getsize(path) >= threshold)
+    except OSError:
+        return False
+
+
+def _discover_models() -> dict[str, ModelSpec]:
+    specs = dict(_MODEL_REGISTRY)
+    if os.path.isdir(MODEL_DIR):
+        try:
+            for entry in os.scandir(MODEL_DIR):
+                if entry.is_file() and entry.name.lower().endswith(".gguf") and "mmproj" not in entry.name.lower():
+                    key = Path(entry.name).stem.lower()
+                    if key not in specs and all(s.path != entry.path for s in specs.values()):
+                        size_gb = round(entry.stat().st_size / (1024**3), 2)
+                        specs[key] = ModelSpec(
+                            key=key,
+                            name=Path(entry.name).stem.replace("-", " "),
+                            repo="",
+                            filename=entry.name,
+                            path=entry.path,
+                            size_gb=size_gb,
+                        )
+        except OSError as exc:
+            logger.debug("[Model Discovery] Could not scan %s: %s", MODEL_DIR, exc)
+    return specs
+
+
+AVAILABLE_MODELS: dict[str, dict[str, Any]] = {
+    k: {**v.model_dump(), "targets": list(v.targets), "downloaded": _is_valid_model_file(v.path)}
+    for k, v in _MODEL_REGISTRY.items()
+}
+
+_active_model_key = SETTINGS.active_model_key
 _local_llm_instance = None
+_applied_thinking_state: bool | None = None
 _model_load_failed = False
 _model_load_error = None
-_model_loading = False
 _model_load_failed_at = 0.0
-_MODEL_RETRY_SECONDS = 60.0
-_PHYSICAL_CORES = None
-_LLM_CONFIG = None
+_PHYSICAL_CORES: int | None = None
+_LLM_CONFIG: dict[str, Any] | None = None
 
-_thinking_enabled: bool = False
-_creativity_enabled: bool = True
+_thinking_enabled: bool = _env_bool("AMIGO_THINKING_ENABLED", False)
+_creativity_enabled: bool = _env_bool("AMIGO_CREATIVITY_ENABLED", True)
 
 
 def set_thinking_enabled(enabled: bool) -> None:
@@ -506,7 +590,7 @@ def is_creativity_enabled() -> bool:
         return _creativity_enabled
 
 
-def get_sampling_params() -> dict:
+def get_sampling_params() -> dict[str, float]:
     creative = is_creativity_enabled()
     return {
         "temperature": 0.3 if creative else 0.15,
@@ -529,7 +613,7 @@ def _get_physical_cores() -> int:
     return _PHYSICAL_CORES
 
 
-def _get_llm_config() -> dict:
+def _get_llm_config() -> dict[str, Any]:
     global _LLM_CONFIG
     with _CONFIG_LOCK:
         if _LLM_CONFIG is not None:
@@ -543,16 +627,16 @@ def _get_llm_config() -> dict:
             logger.debug("[LLM Config] Failed to query GPU offload support: %s", exc)
         cores = _get_physical_cores()
         default_threads = min(4, max(2, cores // 2)) if has_gpu else max(1, cores - 1)
-        n_gpu_layers = int(os.getenv("AMIGO_LLM_N_GPU_LAYERS", "-1" if has_gpu else "0"))
+        n_gpu_layers = _env_int("AMIGO_LLM_N_GPU_LAYERS", -1 if has_gpu else 0)
         gpu_active = has_gpu and n_gpu_layers != 0
         _LLM_CONFIG = {
-            "n_ctx": int(os.getenv("AMIGO_LLM_N_CTX", "8192")),
-            "n_threads": int(os.getenv("AMIGO_LLM_N_THREADS", str(default_threads))),
-            "n_threads_batch": int(os.getenv("AMIGO_LLM_N_THREADS_BATCH", str(cores))),
-            "n_batch": int(os.getenv("AMIGO_LLM_N_BATCH", "512")),
-            "n_ubatch": int(os.getenv("AMIGO_LLM_N_UBATCH", "256")),
+            "n_ctx": _env_int("AMIGO_LLM_N_CTX", 8192),
+            "n_threads": _env_int("AMIGO_LLM_N_THREADS", default_threads),
+            "n_threads_batch": _env_int("AMIGO_LLM_N_THREADS_BATCH", cores),
+            "n_batch": _env_int("AMIGO_LLM_N_BATCH", 512),
+            "n_ubatch": _env_int("AMIGO_LLM_N_UBATCH", 256),
             "n_gpu_layers": n_gpu_layers,
-            "use_mmap": os.getenv("AMIGO_LLM_USE_MMAP", "true").lower() == "true",
+            "use_mmap": _env_bool("AMIGO_LLM_USE_MMAP", True),
             "logits_all": False,
             "embedding": False,
             "offload_kqv": gpu_active,
@@ -566,7 +650,7 @@ def _get_llm_config() -> dict:
 
 def _download_hf_file(targets: list[tuple[str, str]], target_path: str, min_size: int, label: str) -> str:
     os.makedirs(os.path.dirname(target_path), exist_ok=True)
-    if os.path.exists(target_path) and os.path.getsize(target_path) >= min_size:
+    if _is_valid_model_file(target_path, min_size):
         return target_path
 
     for repo, fname in targets:
@@ -574,7 +658,7 @@ def _download_hf_file(targets: list[tuple[str, str]], target_path: str, min_size
             from huggingface_hub import hf_hub_download
 
             downloaded = hf_hub_download(repo_id=repo, filename=fname, local_dir=MODEL_DIR)
-            if os.path.exists(downloaded) and os.path.getsize(downloaded) >= min_size:
+            if _is_valid_model_file(downloaded, min_size):
                 if downloaded != target_path and not os.path.exists(target_path):
                     os.replace(downloaded, target_path)
                 return target_path
@@ -584,46 +668,47 @@ def _download_hf_file(targets: list[tuple[str, str]], target_path: str, min_size
 
 
 def get_model_path() -> str:
-    active_info = AVAILABLE_MODELS.get(_active_model_key, next(iter(AVAILABLE_MODELS.values())))
-    target_path = active_info["path"]
-    if os.path.exists(target_path) and os.path.getsize(target_path) >= 500_000_000:
-        return target_path
+    models = _discover_models()
+    active_spec = models.get(_active_model_key) or next(iter(models.values()))
+    if _is_valid_model_file(active_spec.path):
+        return active_spec.path
 
-    downloaded = _download_hf_file(
-        active_info.get("targets", MODEL_TARGETS),
-        target_path,
-        500_000_000,
-        active_info["name"],
-    )
-    if os.path.exists(downloaded) and os.path.getsize(downloaded) >= 500_000_000:
-        return downloaded
+    if active_spec.targets:
+        downloaded = _download_hf_file(
+            list(active_spec.targets),
+            active_spec.path,
+            SETTINGS.min_model_bytes,
+            active_spec.name,
+        )
+        if _is_valid_model_file(downloaded):
+            return downloaded
 
-    for m in AVAILABLE_MODELS.values():
-        if os.path.exists(m["path"]) and os.path.getsize(m["path"]) >= 500_000_000:
-            logger.info("[Local AI Engine] Falling back to available model on disk: %s", m["name"])
-            return m["path"]
+    for spec in models.values():
+        if _is_valid_model_file(spec.path):
+            logger.info("[Local AI Engine] Falling back to available model on disk: %s", spec.name)
+            return spec.path
 
-    return target_path
+    return active_spec.path
 
 
 def is_vision_ready() -> bool:
-    active_info = AVAILABLE_MODELS.get(_active_model_key, {})
-    mmproj = active_info.get("mmproj_path", "")
-    return bool(mmproj and os.path.exists(mmproj) and os.path.getsize(mmproj) > 50_000_000)
+    models = _discover_models()
+    active_spec = models.get(_active_model_key)
+    mmproj = active_spec.mmproj_path if active_spec else ""
+    return _is_valid_model_file(mmproj, SETTINGS.min_mmproj_bytes)
 
 
 def ensure_model_downloaded() -> str:
     path = get_model_path()
-    if os.path.exists(path) and os.path.getsize(path) > 500_000_000:
+    if _is_valid_model_file(path):
         return path
-    m_info = AVAILABLE_MODELS.get(_active_model_key, {})
-    repo = m_info.get("repo", "unsloth/Qwen3.5-4B-GGUF")
-    filename = m_info.get("filename", MODEL_FILENAME)
-    logger.info("Downloading %s (%s) to %s...", m_info.get("name", "Model"), filename, path)
+    models = _discover_models()
+    spec = models.get(_active_model_key) or next(iter(models.values()))
+    repo = spec.repo or SETTINGS.default_repo
+    filename = spec.filename or SETTINGS.default_filename
+    logger.info("Downloading %s (%s) to %s...", spec.name, filename, path)
     os.makedirs(MODEL_DIR, exist_ok=True)
     try:
-        import subprocess
-
         url = f"https://huggingface.co/{repo}/resolve/main/{filename}"
         subprocess.run(
             ["curl.exe", "-4", "-L", "-C", "-", "--retry", "5", "--retry-delay", "2", "-o", path, url],
@@ -643,36 +728,47 @@ def ensure_model_downloaded() -> str:
 
 
 def _setup_chat_formatter(llm, thinking_override: bool | None = None) -> None:
+    global _applied_thinking_state
+    target_thinking = is_thinking_enabled() if thinking_override is None else bool(thinking_override)
+    if _applied_thinking_state is target_thinking:
+        return
+
     try:
         from llama_cpp import llama_chat_format
 
-        target_thinking = is_thinking_enabled() if thinking_override is None else bool(thinking_override)
-        handler = llm.chat_handler or getattr(llm, "_chat_handlers", {}).get(llm.chat_format)
-        if handler and getattr(handler, "__closure__", None):
-            for c in handler.__closure__:
-                formatter = c.cell_contents
-                if hasattr(formatter, "template"):
+        base_formatter = getattr(llm, "_amigo_base_formatter", None)
+        if base_formatter is None:
+            handler = llm.chat_handler or getattr(llm, "_chat_handlers", {}).get(llm.chat_format)
+            if handler and getattr(handler, "__closure__", None):
+                for c in handler.__closure__:
+                    formatter = c.cell_contents
+                    if hasattr(formatter, "template"):
+                        base_formatter = formatter
+                        llm._amigo_base_formatter = base_formatter
+                        break
 
-                    class _Formatter:
-                        def __init__(self, base, enable_thinking: bool):
-                            self.base = base
-                            self.enable_thinking = enable_thinking
+        if base_formatter is not None:
 
-                        def __call__(self, *args, **kwargs):
-                            kwargs["enable_thinking"] = self.enable_thinking
-                            return self.base(*args, **kwargs)
+            class _Formatter:
+                def __init__(self, base, enable_thinking: bool):
+                    self.base = base
+                    self.enable_thinking = enable_thinking
 
-                    llm.chat_handler = llama_chat_format.chat_formatter_to_chat_completion_handler(
-                        _Formatter(formatter, target_thinking)
-                    )
-                    break
+                def __call__(self, *args, **kwargs):
+                    kwargs["enable_thinking"] = self.enable_thinking
+                    return self.base(*args, **kwargs)
+
+            llm.chat_handler = llama_chat_format.chat_formatter_to_chat_completion_handler(
+                _Formatter(base_formatter, target_thinking)
+            )
+        _applied_thinking_state = target_thinking
     except Exception as e:
         logger.debug("[Chat Formatter Setup] %s", e)
 
 
 def _release_llm_instance_locked() -> None:
     """Caller must hold _llm_lock and _CONFIG_LOCK (and _inference_lock when mutating active instance)."""
-    global _local_llm_instance, _LLM_CONFIG
+    global _local_llm_instance, _LLM_CONFIG, _applied_thinking_state
     if _local_llm_instance is not None:
         try:
             if hasattr(_local_llm_instance, "close"):
@@ -685,26 +781,26 @@ def _release_llm_instance_locked() -> None:
             logger.debug("[Local AI Engine] Model delete exception: %s", e)
         _local_llm_instance = None
     _LLM_CONFIG = None
+    _applied_thinking_state = None
 
 
 def init_local_llm(force_reload: bool = False):
-    global _local_llm_instance, _model_load_failed, _model_load_error, _model_loading, _model_load_failed_at
+    global _local_llm_instance, _model_load_failed, _model_load_error, _model_load_failed_at, _applied_thinking_state
 
     if not force_reload:
         with _llm_lock:
             if _local_llm_instance is not None:
                 return _local_llm_instance
-            if _model_load_failed and (time.time() - _model_load_failed_at) < _MODEL_RETRY_SECONDS:
+            if _model_load_failed and (time.time() - _model_load_failed_at) < SETTINGS.model_retry_seconds:
                 return None
 
     with _llm_lock:
         if not force_reload and _local_llm_instance is not None:
             return _local_llm_instance
 
-        _model_loading = True
         try:
             model_file = get_model_path()
-            if not os.path.exists(model_file) or os.path.getsize(model_file) < 500_000_000:
+            if not _is_valid_model_file(model_file):
                 _model_load_failed = True
                 _model_load_failed_at = time.time()
                 _model_load_error = f"Model file not found: {model_file}"
@@ -732,13 +828,14 @@ def init_local_llm(force_reload: bool = False):
                 "numa": False,
                 "verbose": False,
             }
-            active_info = AVAILABLE_MODELS.get(_active_model_key, next(iter(AVAILABLE_MODELS.values())))
+            models = _discover_models()
+            active_spec = models.get(_active_model_key) or next(iter(models.values()))
             try:
                 instance = Llama(**kwargs)
                 device_label = "GPU offload" if kwargs["n_gpu_layers"] != 0 else "CPU"
                 logger.info(
                     "[Local AI Engine] Initialized %s (%s, n_gpu_layers=%s, n_ctx=%s)",
-                    active_info["name"],
+                    active_spec.name,
                     device_label,
                     kwargs["n_gpu_layers"],
                     kwargs["n_ctx"],
@@ -752,6 +849,7 @@ def init_local_llm(force_reload: bool = False):
                 kwargs["type_v"] = 0
                 instance = Llama(**kwargs)
 
+            _applied_thinking_state = None
             _setup_chat_formatter(instance)
             with _inference_lock:
                 _local_llm_instance = instance
@@ -764,8 +862,6 @@ def init_local_llm(force_reload: bool = False):
             _model_load_error = str(e)
             logger.error("[Local AI Engine] Load error: %s", e)
             return None
-        finally:
-            _model_loading = False
 
 
 def warmup_router_prefix() -> float:
@@ -791,10 +887,18 @@ def warmup_router_prefix() -> float:
     return elapsed
 
 
-def get_available_models() -> dict:
-    for m in AVAILABLE_MODELS.values():
-        m["downloaded"] = os.path.exists(m["path"]) and os.path.getsize(m["path"]) > 500_000_000
-    return AVAILABLE_MODELS
+def get_available_models() -> dict[str, dict[str, Any]]:
+    models = _discover_models()
+    snapshot: dict[str, dict[str, Any]] = {}
+    for k, spec in models.items():
+        snapshot[k] = {
+            **spec.model_dump(),
+            "targets": list(spec.targets),
+            "downloaded": _is_valid_model_file(spec.path),
+        }
+    AVAILABLE_MODELS.clear()
+    AVAILABLE_MODELS.update(snapshot)
+    return snapshot
 
 
 def _cleanup_llm_model() -> None:
@@ -811,14 +915,16 @@ def _cleanup_llm_model() -> None:
 atexit.register(_cleanup_llm_model)
 
 
-def set_active_model(model_key: str = "qwen3.5-4b-instruct") -> bool:
+def set_active_model(model_key: str | None = None) -> bool:
     global _active_model_key
-    if model_key not in AVAILABLE_MODELS:
+    target_key = model_key or SETTINGS.active_model_key
+    models = _discover_models()
+    if target_key not in models:
         return False
     with _llm_lock:
         with _CONFIG_LOCK:
             with _inference_lock:
-                _active_model_key = model_key
+                _active_model_key = target_key
                 _release_llm_instance_locked()
     try:
         gc.collect()
@@ -827,9 +933,9 @@ def set_active_model(model_key: str = "qwen3.5-4b-instruct") -> bool:
     return init_local_llm(force_reload=True) is not None
 
 
-def get_active_model_info() -> dict:
-    m_info = AVAILABLE_MODELS.get(_active_model_key, next(iter(AVAILABLE_MODELS.values())))
-    m_path = m_info["path"]
+def get_active_model_info() -> dict[str, Any]:
+    models = _discover_models()
+    spec = models.get(_active_model_key) or next(iter(models.values()))
     has_gpu = False
     try:
         import llama_cpp
@@ -838,12 +944,12 @@ def get_active_model_info() -> dict:
     except Exception as exc:
         logger.debug("[Model Info] Failed to check GPU offload: %s", exc)
     return {
-        "key": _active_model_key,
-        "name": m_info["name"],
-        "filename": m_info["filename"],
-        "path": m_path,
-        "downloaded": os.path.exists(m_path) and os.path.getsize(m_path) > 500_000_000,
-        "size_gb": m_info.get("size_gb", 1.10),
+        "key": spec.key,
+        "name": spec.name,
+        "filename": spec.filename,
+        "path": spec.path,
+        "downloaded": _is_valid_model_file(spec.path),
+        "size_gb": spec.size_gb,
         "vision_ready": is_vision_ready(),
         "accelerator": "NVIDIA(CUDA)" if has_gpu else "CPU",
         "gpu_offload": has_gpu,
@@ -859,15 +965,15 @@ def _strip_reasoning(text: str, fallback_to_thought: bool = False) -> tuple[str,
     thoughts: list[str] = []
     clean = text
 
-    if "</think>" in clean.lower():
-        parts = re.split(r"</think>", clean, flags=re.IGNORECASE)
+    if _RE_THINK_CLOSE.search(clean):
+        parts = _RE_THINK_CLOSE.split(clean)
         for part in parts[:-1]:
-            t = re.sub(r"<think>", "", part, flags=re.IGNORECASE).strip()
+            t = _RE_THINK_OPEN.sub("", part).strip()
             if t:
                 thoughts.append(t)
         clean = parts[-1].strip()
-    elif "<think>" in clean.lower():
-        parts = re.split(r"<think>", clean, flags=re.IGNORECASE)
+    elif _RE_THINK_OPEN.search(clean):
+        parts = _RE_THINK_OPEN.split(clean)
         clean = parts[0].strip()
         for part in parts[1:]:
             t = part.strip()
@@ -906,24 +1012,25 @@ def _prepare_chat_messages(
     return [{"role": "system", "content": system_prompt}, {"role": "user", "content": str(prompt)}]
 
 
-def _shrink_messages_for_context(messages: list[dict]) -> list[dict]:
-    """Trim older non-system messages or shorten oversized user content if context window is exceeded."""
+def _shrink_messages_for_context(messages: list[dict], max_chars: int = 12000) -> list[dict]:
+    """Progressively trim older turns first, then preserve head+tail of the latest turn on context overflow."""
     if not messages:
         return messages
     system_msgs = [m for m in messages if m.get("role") == "system"]
-    other_msgs = [m for m in messages if m.get("role") != "system"]
-    if len(other_msgs) > 1:
-        # Keep only the latest user/assistant turn if multi-turn history caused overflow
-        trimmed_others = [other_msgs[-1]]
-    elif len(other_msgs) == 1:
-        last = dict(other_msgs[0])
-        content = str(last.get("content") or "")
-        if len(content) > 2000:
-            last["content"] = content[-2000:]
-        trimmed_others = [last]
-    else:
-        trimmed_others = []
-    return system_msgs + trimmed_others
+    other_msgs = [dict(m) for m in messages if m.get("role") != "system"]
+
+    while len(other_msgs) > 1 and sum(len(str(m.get("content", ""))) for m in system_msgs + other_msgs) > max_chars:
+        other_msgs.pop(0)
+
+    if len(other_msgs) == 1:
+        content = str(other_msgs[0].get("content") or "")
+        sys_len = sum(len(str(m.get("content", ""))) for m in system_msgs)
+        budget = max(2000, max_chars - sys_len)
+        if len(content) > budget:
+            half = budget // 2
+            other_msgs[0]["content"] = f"{content[:half]}\n...[truncated]...\n{content[-half:]}"
+
+    return system_msgs + other_msgs
 
 
 def _safe_reset_llm(llm) -> None:
@@ -950,6 +1057,7 @@ def query_local_llm(
     repeat_penalty: float | None = None,
     min_p: float | None = None,
     non_blocking: bool = False,
+    response_format: dict[str, Any] | None = None,
 ) -> str:
     llm = init_local_llm()
     if not llm:
@@ -959,19 +1067,20 @@ def query_local_llm(
 
     try:
         sampling = get_sampling_params()
-        kwargs = {
+        kwargs: dict[str, Any] = {
             "messages": _prepare_chat_messages(system_prompt, prompt),
             "max_tokens": max_tokens,
             "temperature": sampling["temperature"] if temperature is None else temperature,
             "top_p": sampling["top_p"],
-            "min_p": sampling.get("min_p", 0.05) if min_p is None else min_p,
-            "repeat_penalty": sampling.get("repeat_penalty", 1.05) if repeat_penalty is None else repeat_penalty,
+            "min_p": sampling["min_p"] if min_p is None else min_p,
+            "repeat_penalty": sampling["repeat_penalty"] if repeat_penalty is None else repeat_penalty,
             "stop": STOP_TOKENS if stop is None else stop,
         }
+        if response_format is not None:
+            kwargs["response_format"] = response_format
 
         if non_blocking:
-            acquired = _inference_lock.acquire(blocking=False)
-            if not acquired:
+            if not _inference_lock.acquire(blocking=False):
                 logger.debug("[LLM] Skipping non-blocking inference: lock is busy.")
                 return ""
         else:
@@ -1070,8 +1179,8 @@ def query_local_llm_stream(
         sampling = get_sampling_params()
         temp = sampling["temperature"] if temperature is None else temperature
         top_p = sampling["top_p"]
-        effective_min_p = sampling.get("min_p", 0.05) if min_p is None else min_p
-        rep_pen = sampling.get("repeat_penalty", 1.05) if repeat_penalty is None else repeat_penalty
+        effective_min_p = sampling["min_p"] if min_p is None else min_p
+        rep_pen = sampling["repeat_penalty"] if repeat_penalty is None else repeat_penalty
         prepared_messages = _prepare_chat_messages(system_prompt, prompt)
 
         with _inference_lock:
@@ -1096,11 +1205,10 @@ def query_local_llm_stream(
                 _safe_reset_llm(active_llm)
                 if "exceed context window" in str(e).lower():
                     shrunk_messages = _shrink_messages_for_context(prepared_messages)
-                    fallback_max_tokens = min(max_tokens, 128)
                     yield from _iter_stream_chunks(
                         active_llm,
                         shrunk_messages,
-                        max_tokens=fallback_max_tokens,
+                        max_tokens=min(max_tokens, 128),
                         temperature=temp,
                         top_p=top_p,
                         min_p=effective_min_p,
@@ -1127,7 +1235,7 @@ def stream_sentence_chunks(
 ) -> Generator[str, None, None]:
     """Yield sentence-level chunks suitable for real-time TTS and UI streaming."""
     buffer = ""
-    in_think = thinking_enabled
+    in_think = False
 
     for token in token_generator:
         if interruption_event and interruption_event.is_set():
@@ -1139,16 +1247,19 @@ def stream_sentence_chunks(
             return
 
         buffer += token
-        if "<think>" in buffer:
+        if _RE_THINK_OPEN.search(buffer):
             in_think = True
         if in_think:
-            if "</think>" in buffer:
-                buffer = buffer.split("</think>", 1)[1]
+            close_match = _RE_THINK_CLOSE.search(buffer)
+            if close_match:
+                buffer = buffer[close_match.end() :]
                 in_think = False
             else:
                 continue
-        elif "</think>" in buffer:
-            buffer = buffer.split("</think>", 1)[1]
+        else:
+            close_match = _RE_THINK_CLOSE.search(buffer)
+            if close_match:
+                buffer = buffer[close_match.end() :]
 
         splits = _RE_SENTENCE_SPLIT.split(buffer)
         if len(splits) > 1:
@@ -1162,9 +1273,10 @@ def stream_sentence_chunks(
 
     if buffer.strip() and not (interruption_event and interruption_event.is_set()):
         clean = _RE_SPEAKER_PREFIX.sub("", buffer.strip()).strip()
-        if "</think>" in clean:
-            clean = clean.split("</think>")[-1].strip()
-        if clean and not (in_think and not clean):
+        close_match = _RE_THINK_CLOSE.search(clean)
+        if close_match:
+            clean = clean[close_match.end() :].strip()
+        if clean and not in_think:
             yield clean
 
 
@@ -1191,7 +1303,11 @@ def get_ai_response(
         is_voice=is_voice,
     )
     thinking_active = is_thinking_enabled()
-    limit = max_tokens or (1024 if thinking_active else (320 if is_voice else 1024))
+    limit = max_tokens or (
+        SETTINGS.thinking_max_tokens
+        if thinking_active
+        else (SETTINGS.voice_max_tokens if is_voice else SETTINGS.text_max_tokens)
+    )
     sampling = get_sampling_params()
 
     response = query_local_llm(
@@ -1231,7 +1347,7 @@ def get_ai_response_stream(
         is_voice=is_voice,
     )
     thinking_active = is_thinking_enabled()
-    max_tokens = 1024 if thinking_active else 512
+    max_tokens = SETTINGS.thinking_max_tokens if thinking_active else SETTINGS.stream_max_tokens
     sampling = get_sampling_params()
     token_gen = query_local_llm_stream(
         messages,
@@ -1324,9 +1440,10 @@ if __name__ == "__main__":
     from amigo.ui.server import initialize_amigo_async, launch_server
 
     _info = get_active_model_info()
+    port = _env_int("AMIGO_SERVER_PORT", 5000)
     print("==================================================")
     print("   AMIGO VOICE ASSISTANT - UI DASHBOARD SERVER   ")
     print(f"   [ {_info['name'].upper()} | {_info.get('tts_engine', 'POCKET TTS (KYUTAI 24KHZ)').upper()} | RAG + AGENTIC ]")
     print("==================================================")
     initialize_amigo_async()
-    launch_server(port=5000, open_browser=True)
+    launch_server(port=port, open_browser=True)

@@ -30,13 +30,228 @@ import {
   AttachmentItem,
   BackendConfig,
 } from "../types";
-import { COLOR_THEMES } from "../data/presets";
+import { COLOR_THEMES, ColorThemeDefinition } from "../data/presets";
 import { speakText, sfx } from "../utils/audio";
 import { uploadFileToBackend } from "../services/assistantApi";
 import {
   DataVisualizationCard,
   ParsedTableData,
 } from "./DataVisualizationCard";
+
+export type ChatContentSegment =
+  | { type: "text"; text: string }
+  | { type: "table"; table: ParsedTableData };
+
+interface ChatTurnItemProps {
+  entry: HistoryEntry;
+  isLatest: boolean;
+  isLoading: boolean;
+  speakingId: string | null;
+  retryingId: string | null;
+  isDark: boolean;
+  theme: ColorTheme | ColorThemeDefinition;
+  onToggleSpeak: (id: string, text: string) => void;
+  onRetry: (prompt: string, entryId: string) => void;
+  extractTables: (markdown: string) => { segments: ChatContentSegment[] };
+  normalizeMarkdown: (raw: string) => string;
+}
+
+export const ChatTurnItem: React.FC<ChatTurnItemProps> = React.memo(({
+  entry,
+  isLatest,
+  isLoading,
+  speakingId,
+  retryingId,
+  isDark,
+  theme,
+  onToggleSpeak,
+  onRetry,
+  extractTables,
+  normalizeMarkdown,
+}) => {
+  const isError =
+    entry.status === "error" ||
+    entry.response.intent === "error" ||
+    entry.response.executionSummary?.status === "error" ||
+    entry.response.executionSummary?.status === "failed" ||
+    Boolean(entry.response.metadata?.error);
+
+  const errorTitle =
+    entry.response.executionSummary?.headline ||
+    (entry.response.intent === "error" ? "Execution Error" : "Command Error");
+
+  const errorDetail =
+    entry.response.metadata?.error ||
+    entry.response.executionSummary?.details ||
+    entry.response.speechReply ||
+    "An error occurred while processing this command.";
+
+  const replyText =
+    entry.response.speechReply ||
+    entry.response.executionSummary?.details ||
+    entry.response.displayTitle ||
+    "";
+
+  const { segments, hasTable } = useMemo(() => {
+    if (!replyText) return { segments: [], hasTable: false };
+    const res = extractTables(replyText);
+    return {
+      segments: res.segments,
+      hasTable: res.segments.some((s) => s.type === "table"),
+    };
+  }, [replyText, extractTables]);
+
+  const normalizedText = useMemo(() => {
+    return normalizeMarkdown(replyText);
+  }, [replyText, normalizeMarkdown]);
+
+  const themeGradient = typeof theme === "object" && theme !== null && "gradient" in theme ? theme.gradient : undefined;
+  const themeAccent = typeof theme === "object" && theme !== null && "accent" in theme ? theme.accent : "#00F0FF";
+  const themeNameForCard = typeof theme === "string" ? theme : undefined;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8 }}
+      transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+      className="space-y-4"
+    >
+      {/* User Message Bubble - Right-aligned */}
+      <div className="flex justify-end">
+        <div
+          className={`px-5 py-3 rounded-3xl max-w-[85%] sm:max-w-[75%] text-[15px] leading-relaxed shadow-sm ${
+            isDark
+              ? "bg-[#2f2f2f] text-slate-100"
+              : "bg-[#f4f4f4] text-slate-900 border border-slate-200/60"
+          }`}
+        >
+          <p className="whitespace-pre-wrap">{entry.prompt}</p>
+          <div className="mt-1 flex items-center justify-end text-[10px] opacity-40 font-mono">
+            {new Date(entry.timestamp).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* Assistant Message or Error State */}
+      {isError ? (
+        <div className="flex items-start space-x-3.5 py-1">
+          <div className="w-7 h-7 rounded-full flex items-center justify-center text-white shrink-0 mt-1 shadow-sm bg-red-500/80">
+            <Bot className="w-3.5 h-3.5" />
+          </div>
+
+          <div className="flex-1 min-w-0 space-y-2">
+            <ErrorState
+              title={errorTitle}
+              detail={errorDetail}
+              retrying={Boolean(isLoading && retryingId === entry.id)}
+              onRetry={() => onRetry(entry.prompt, entry.id)}
+              className="max-w-lg border border-red-500/20 shadow-md backdrop-blur-sm"
+            />
+            <div className="flex items-center space-x-1.5 pt-1 text-xs opacity-60">
+              <span className="text-[10px] font-mono opacity-50 mr-2">
+                {entry.response.intent || "error"} •{" "}
+                {new Date(entry.timestamp).toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </span>
+            </div>
+          </div>
+        </div>
+      ) : replyText ? (
+        <div className="flex items-start space-x-3.5 py-1">
+          <div
+            className="w-7 h-7 rounded-full flex items-center justify-center text-white shrink-0 mt-1 shadow-sm"
+            style={themeGradient ? { background: themeGradient } : undefined}
+          >
+            <Bot className="w-3.5 h-3.5" />
+          </div>
+
+          <div className="flex-1 min-w-0 space-y-2">
+            {/* Message Header Bar */}
+            <div className="flex items-center justify-between pb-1 text-xs opacity-60">
+              <div className="flex items-center space-x-2">
+                <AiStatus
+                  state="done"
+                  label={entry.response.intent ? entry.response.intent.replace(/_/g, " ") : "Done"}
+                  timer={false}
+                  className="scale-90 origin-left text-xs opacity-75"
+                />
+                <span className="text-[10px] font-mono opacity-50">
+                  •{" "}
+                  {new Date(entry.timestamp).toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </span>
+              </div>
+
+              <div className="flex items-center space-x-1.5">
+                <button
+                  type="button"
+                  onClick={() => onToggleSpeak(entry.id, replyText)}
+                  className="p-1.5 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
+                  title={speakingId === entry.id ? "Stop voice" : "Read aloud"}
+                >
+                  {speakingId === entry.id ? (
+                    <VolumeX className="w-3.5 h-3.5 text-rose-400 animate-pulse" />
+                  ) : (
+                    <Volume2 className="w-3.5 h-3.5" />
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Streaming Markdown Response & Data Visualizations */}
+            {hasTable ? (
+              <div className="space-y-4">
+                {segments.map((seg, sIdx) =>
+                  seg.type === "table" ? (
+                    <DataVisualizationCard
+                      key={`table-${sIdx}`}
+                      tableData={seg.table}
+                      colorTheme={themeNameForCard}
+                      isDark={isDark}
+                    />
+                  ) : (
+                    <StreamingResponse
+                      key={`text-${sIdx}`}
+                      text={seg.text}
+                      status={isLatest && isLoading ? "streaming" : "done"}
+                      ink={themeAccent}
+                      onRetry={() => {
+                        sfx.playClick?.();
+                        onRetry(entry.prompt, entry.id);
+                      }}
+                      onCopy={() => sfx.playClick?.()}
+                    />
+                  )
+                )}
+              </div>
+            ) : (
+              <StreamingResponse
+                text={normalizedText}
+                status={isLatest && isLoading ? "streaming" : "done"}
+                ink={themeAccent}
+                onRetry={() => {
+                  sfx.playClick?.();
+                  onRetry(entry.prompt, entry.id);
+                }}
+                onCopy={() => sfx.playClick?.()}
+              />
+            )}
+          </div>
+        </div>
+      ) : null}
+    </motion.div>
+  );
+});
+
+ChatTurnItem.displayName = "ChatTurnItem";
 
 interface ChatWorkspaceProps {
   history: HistoryEntry[];
@@ -211,145 +426,6 @@ function extractTablesFromMarkdown(content: string): {
   flushText();
 
   return { segments: segments.length ? segments : [{ type: "text", text: normalized }] };
-}
-
-// Markdown Formatter Component with code blocks and styled elements
-const FormattedMessage: React.FC<{
-  content: string;
-  isDark: boolean;
-  colorTheme?: ColorTheme;
-}> = ({ content, isDark, colorTheme }) => {
-  const { segments } = useMemo(() => extractTablesFromMarkdown(content), [content]);
-
-  return (
-    <div className="space-y-3 leading-relaxed text-sm">
-      {segments.map((seg, idx) => {
-        if (seg.type === "table") {
-          return (
-            <DataVisualizationCard
-              key={`table-${idx}`}
-              tableData={seg.table}
-              colorTheme={colorTheme}
-              isDark={isDark}
-            />
-          );
-        }
-
-        const lines = seg.text.split("\n");
-        return (
-          <div key={`text-${idx}`} className="space-y-2">
-            {lines.map((line, lIdx) => {
-              const trimmed = line.trim();
-              if (!trimmed) return <div key={lIdx} className="h-2" />;
-
-              // Headers
-              if (trimmed.startsWith("### ")) {
-                return (
-                  <h4 key={lIdx} className="text-sm font-bold tracking-tight text-slate-100 mt-2">
-                    {trimmed.replace(/^###\s+/, "")}
-                  </h4>
-                );
-              }
-              if (trimmed.startsWith("## ")) {
-                return (
-                  <h3 key={lIdx} className="text-base font-bold tracking-tight text-slate-100 mt-2.5">
-                    {trimmed.replace(/^##\s+/, "")}
-                  </h3>
-                );
-              }
-              if (trimmed.startsWith("# ")) {
-                return (
-                  <h2 key={lIdx} className="text-lg font-bold tracking-tight text-slate-100 mt-3">
-                    {trimmed.replace(/^#\s+/, "")}
-                  </h2>
-                );
-              }
-
-              // Bullet points
-              if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
-                return (
-                  <div key={lIdx} className="flex items-start space-x-2 pl-2">
-                    <span className="w-1.5 h-1.5 rounded-full bg-teal-400 mt-2 shrink-0 shadow-[0_0_8px_rgba(45,212,191,0.6)]" />
-                    <span>{renderInlineMarkdown(trimmed.replace(/^[-*]\s+/, ""))}</span>
-                  </div>
-                );
-              }
-
-              // Numbered lists
-              const numMatch = trimmed.match(/^(\d+)\.\s+(.+)$/);
-              if (numMatch) {
-                return (
-                  <div key={lIdx} className="flex items-start space-x-2 pl-2">
-                    <span className="font-mono text-xs font-semibold text-teal-400 mt-0.5 shrink-0">
-                      {numMatch[1]}.
-                    </span>
-                    <span>{renderInlineMarkdown(numMatch[2])}</span>
-                  </div>
-                );
-              }
-
-              return <p key={lIdx}>{renderInlineMarkdown(trimmed)}</p>;
-            })}
-          </div>
-        );
-      })}
-    </div>
-  );
-};
-
-// Inline parser for markdown links, raw URLs, bold, italic, code
-function renderInlineMarkdown(text: string): React.ReactNode {
-  const parts = text.split(/(\[[^\]]+\]\(https?:\/\/[^\s\)]+\)|https?:\/\/[^\s\)]+|\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/g);
-  return parts.map((part, index) => {
-    const mdLink = part.match(/^\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)$/);
-    if (mdLink) {
-      return (
-        <a
-          key={index}
-          href={mdLink[2]}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-1 font-medium text-cyan-400 hover:text-cyan-300 underline underline-offset-2 transition-colors cursor-pointer"
-        >
-          {mdLink[1]}
-        </a>
-      );
-    }
-    if (/^https?:\/\/[^\s\)]+$/.test(part)) {
-      return (
-        <a
-          key={index}
-          href={part}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-1 font-medium text-cyan-400 hover:text-cyan-300 underline underline-offset-2 break-all transition-colors cursor-pointer"
-        >
-          {part}
-        </a>
-      );
-    }
-    if (part.startsWith("**") && part.endsWith("**")) {
-      return (
-        <strong key={index} className="font-semibold text-slate-100">
-          {part.slice(2, -2)}
-        </strong>
-      );
-    }
-    if (part.startsWith("`") && part.endsWith("`")) {
-      return (
-        <code
-          key={index}
-          className="px-1.5 py-0.5 rounded text-xs font-mono bg-black/40 text-pink-400 border border-white/10"
-        >
-          {part.slice(1, -1)}
-        </code>
-      );
-    }
-    if (part.startsWith("*") && part.endsWith("*")) {
-      return <em key={index}>{part.slice(1, -1)}</em>;
-    }
-    return part;
-  });
 }
 
 export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
@@ -841,183 +917,25 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
           {/* Chat Messages */}
           {messages.map((entry) => {
-            const isError =
-              entry.status === "error" ||
-              entry.response.intent === "error" ||
-              entry.response.executionSummary?.status === "error" ||
-              entry.response.executionSummary?.status === "failed" ||
-              Boolean(entry.response.metadata?.error);
-
-            const errorTitle =
-              entry.response.executionSummary?.headline ||
-              (entry.response.intent === "error" ? "Execution Error" : "Command Error");
-
-            const errorDetail =
-              entry.response.metadata?.error ||
-              entry.response.executionSummary?.details ||
-              entry.response.speechReply ||
-              "An error occurred while processing this command.";
-
-            const replyText =
-              entry.response.speechReply ||
-              entry.response.executionSummary?.details ||
-              entry.response.displayTitle ||
-              "";
-
+            const isLatest = entry.id === messages[messages.length - 1]?.id;
             return (
-              <motion.div
+              <ChatTurnItem
                 key={entry.id}
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-                className="space-y-4"
-              >
-                {/* User Message Bubble - Right-aligned ChatGPT style */}
-                <div className="flex justify-end">
-                  <div
-                    className={`px-5 py-3 rounded-3xl max-w-[85%] sm:max-w-[75%] text-[15px] leading-relaxed shadow-sm ${
-                      isDark
-                        ? "bg-[#2f2f2f] text-slate-100"
-                        : "bg-[#f4f4f4] text-slate-900 border border-slate-200/60"
-                    }`}
-                  >
-                    <p className="whitespace-pre-wrap">{entry.prompt}</p>
-                    <div className="mt-1 flex items-center justify-end text-[10px] opacity-40 font-mono">
-                      {new Date(entry.timestamp).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Assistant Message or Error State */}
-                {isError ? (
-                  <div className="flex items-start space-x-3.5 py-1">
-                    <div
-                      className="w-7 h-7 rounded-full flex items-center justify-center text-white shrink-0 mt-1 shadow-sm bg-red-500/80"
-                    >
-                      <Bot className="w-3.5 h-3.5" />
-                    </div>
-
-                    <div className="flex-1 min-w-0 space-y-2">
-                      <ErrorState
-                        title={errorTitle}
-                        detail={errorDetail}
-                        retrying={Boolean(isLoading && retryingId === entry.id)}
-                        onRetry={() => {
-                          setRetryingId(entry.id);
-                          onProcessCommand(entry.prompt);
-                        }}
-                        className="max-w-lg border border-red-500/20 shadow-md backdrop-blur-sm"
-                      />
-                      <div className="flex items-center space-x-1.5 pt-1 text-xs opacity-60">
-                        <span className="text-[10px] font-mono opacity-50 mr-2">
-                          {entry.response.intent || "error"} •{" "}
-                          {new Date(entry.timestamp).toLocaleTimeString([], {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                ) : replyText ? (
-                  <div className="flex items-start space-x-3.5 py-1">
-                    <div
-                      className="w-7 h-7 rounded-full flex items-center justify-center text-white shrink-0 mt-1 shadow-sm"
-                      style={{ background: theme.gradient }}
-                    >
-                      <Bot className="w-3.5 h-3.5" />
-                    </div>
-
-                    <div className="flex-1 min-w-0 space-y-2">
-                      {/* Message Header Bar */}
-                      <div className="flex items-center justify-between pb-1 text-xs opacity-60">
-                        <div className="flex items-center space-x-2">
-                          <AiStatus
-                            state={isError ? "error" : "done"}
-                            label={isError ? "Failed" : (entry.response.intent ? entry.response.intent.replace(/_/g, " ") : "Done")}
-                            timer={false}
-                            className="scale-90 origin-left text-xs opacity-75"
-                          />
-                          <span className="text-[10px] font-mono opacity-50">
-                            •{" "}
-                            {new Date(entry.timestamp).toLocaleTimeString([], {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })}
-                          </span>
-                        </div>
-
-                        <div className="flex items-center space-x-1.5">
-                          <button
-                            type="button"
-                            onClick={() => handleToggleSpeak(entry.id, replyText)}
-                            className="p-1.5 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
-                            title={speakingId === entry.id ? "Stop voice" : "Read aloud"}
-                          >
-                            {speakingId === entry.id ? (
-                              <VolumeX className="w-3.5 h-3.5 text-rose-400 animate-pulse" />
-                            ) : (
-                              <Volume2 className="w-3.5 h-3.5" />
-                            )}
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Streaming Markdown Response & Data Visualizations */}
-                      {(() => {
-                        const { segments } = extractTablesFromMarkdown(replyText);
-                        const hasTable = segments.some((s) => s.type === "table");
-                        const isLatest = entry.id === messages[messages.length - 1]?.id;
-
-                        if (hasTable) {
-                          return (
-                            <div className="space-y-4">
-                              {segments.map((seg, sIdx) =>
-                                seg.type === "table" ? (
-                                  <DataVisualizationCard
-                                    key={`table-${sIdx}`}
-                                    tableData={seg.table}
-                                    colorTheme={colorTheme}
-                                    isDark={isDark}
-                                  />
-                                ) : (
-                                  <StreamingResponse
-                                    key={`text-${sIdx}`}
-                                    text={seg.text}
-                                    status={isLatest && isLoading ? "streaming" : "done"}
-                                    ink={theme.accent || "#00F0FF"}
-                                    onRetry={() => {
-                                      sfx.playClick?.();
-                                      onProcessCommand(entry.prompt);
-                                    }}
-                                    onCopy={() => sfx.playClick?.()}
-                                  />
-                                )
-                              )}
-                            </div>
-                          );
-                        }
-
-                        return (
-                          <StreamingResponse
-                            text={normalizeMarkdownText(replyText)}
-                            status={isLatest && isLoading ? "streaming" : "done"}
-                            ink={theme.accent || "#00F0FF"}
-                            onRetry={() => {
-                              sfx.playClick?.();
-                              onProcessCommand(entry.prompt);
-                            }}
-                            onCopy={() => sfx.playClick?.()}
-                          />
-                        );
-                      })()}
-                    </div>
-                  </div>
-                ) : null}
-              </motion.div>
+                entry={entry}
+                isLatest={isLatest}
+                isLoading={isLoading}
+                speakingId={speakingId}
+                retryingId={retryingId}
+                isDark={isDark}
+                theme={theme}
+                onToggleSpeak={handleToggleSpeak}
+                onRetry={(prompt, entryId) => {
+                  setRetryingId(entryId);
+                  onProcessCommand(prompt);
+                }}
+                extractTables={extractTablesFromMarkdown}
+                normalizeMarkdown={normalizeMarkdownText}
+              />
             );
           })}
 

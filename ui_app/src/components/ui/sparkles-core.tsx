@@ -1,8 +1,9 @@
 "use client";
 
 import React, { useEffect, useRef, useState, useId, useCallback, useMemo } from "react";
-import { motion, type HTMLMotionProps } from "framer-motion";
+import { motion, type HTMLMotionProps } from "motion/react";
 import { cn } from "@/lib/utils";
+import { runtimeConfig } from "../../config/runtimeConfig";
 
 export type SparkleShape = "circle" | "star" | "cross" | "mixed";
 export type SparkleDirection = "none" | "top" | "bottom" | "left" | "right";
@@ -28,7 +29,7 @@ export interface SparklesCoreProps
   particleColor?: string;
   /** Array of colors to distribute among particles for chromatic starry fields */
   particleColors?: string[];
-  /** Relative particle density count per 400x400 area. Default: 120 */
+  /** Relative particle density count per 400x400 area. Default: runtimeConfig.defaultSparklesDensity */
   particleDensity?: number;
   /** Exact particle count override */
   particleCount?: number;
@@ -87,7 +88,7 @@ export const SparklesCore: React.FC<SparklesCoreProps> = ({
   speed = 1,
   particleColor = "#FFFFFF",
   particleColors,
-  particleDensity = 120,
+  particleDensity = runtimeConfig.defaultSparklesDensity,
   particleCount,
   particleShape = "circle",
   direction = "none",
@@ -109,6 +110,12 @@ export const SparklesCore: React.FC<SparklesCoreProps> = ({
   const particlesRef = useRef<Particle[]>([]);
   const rafId = useRef<number | null>(null);
   const mouseRef = useRef({ x: -9999, y: -9999, active: false });
+  const cachedRectRef = useRef<{ left: number; top: number; width: number; height: number }>({
+    left: 0,
+    top: 0,
+    width: 0,
+    height: 0,
+  });
   const [isReady, setIsReady] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(false);
 
@@ -133,7 +140,7 @@ export const SparklesCore: React.FC<SparklesCoreProps> = ({
   const twinkleSpeedRef = useRef(twinkleSpeed);
   twinkleSpeedRef.current = twinkleSpeed;
 
-  // Watch for reduced motion
+  // Watch for reduced motion preference
   useEffect(() => {
     if (typeof window === "undefined") return;
     const media = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -252,6 +259,17 @@ export const SparklesCore: React.FC<SparklesCoreProps> = ({
     let height = 0;
     let dpr = 1;
 
+    const updateCachedRect = () => {
+      const r = container.getBoundingClientRect();
+      cachedRectRef.current = {
+        left: r.left,
+        top: r.top,
+        width: r.width,
+        height: r.height,
+      };
+      return r;
+    };
+
     const initParticles = (w: number, h: number) => {
       width = w;
       height = h;
@@ -274,23 +292,31 @@ export const SparklesCore: React.FC<SparklesCoreProps> = ({
       setIsReady(true);
     };
 
-    const rect = container.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) {
-      initParticles(rect.width, rect.height);
+    const initialRect = updateCachedRect();
+    if (initialRect.width > 0 && initialRect.height > 0) {
+      initParticles(initialRect.width, initialRect.height);
     }
 
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const { width: nw, height: nh } = entry.contentRect;
         if (nw > 0 && nh > 0) {
+          updateCachedRect();
           initParticles(nw, nh);
         }
       }
     });
     observer.observe(container);
 
+    let isIntersecting = true;
+
     // Animation Tick
     const render = () => {
+      if (!isIntersecting || paused || reducedMotion) {
+        rafId.current = null;
+        return;
+      }
+
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, width, height);
 
@@ -374,21 +400,14 @@ export const SparklesCore: React.FC<SparklesCoreProps> = ({
       }
 
       ctx.globalAlpha = 1;
-
-      if (!isIntersecting || paused || reducedMotion) {
-        rafId.current = null;
-        return;
-      }
-
       rafId.current = requestAnimationFrame(render);
     };
 
-    let isIntersecting = true;
     let intersectionObserver: IntersectionObserver | undefined;
-    if (typeof IntersectionObserver === 'function') {
+    if (typeof IntersectionObserver === "function") {
       intersectionObserver = new IntersectionObserver(
         ([entry]) => {
-          const visible = entry ? (entry.isIntersecting || entry.intersectionRatio > 0) : true;
+          const visible = entry ? entry.isIntersecting || entry.intersectionRatio > 0 : true;
           if (visible !== isIntersecting) {
             isIntersecting = visible;
             if (isIntersecting && !paused && !reducedMotion) {
@@ -401,34 +420,27 @@ export const SparklesCore: React.FC<SparklesCoreProps> = ({
             }
           }
         },
-        { rootMargin: '100px 0px' }
+        { rootMargin: "100px 0px" }
       );
       intersectionObserver.observe(container);
     }
 
-    const handleGlobalPointerMove = (e: PointerEvent) => {
-      if (!interactive || e.pointerType === "touch") return;
-      const r = container.getBoundingClientRect();
-      mouseRef.current = {
-        x: e.clientX - r.left,
-        y: e.clientY - r.top,
-        active: true,
-      };
+    // Scroll updates container cached position without forced reflow
+    const handleScroll = () => {
+      updateCachedRect();
     };
-    const handleGlobalPointerLeave = () => {
-      mouseRef.current.active = false;
-    };
-    window.addEventListener("pointermove", handleGlobalPointerMove, { passive: true });
-    window.addEventListener("pointerleave", handleGlobalPointerLeave, { passive: true });
+    window.addEventListener("scroll", handleScroll, { passive: true });
 
     render();
 
     return () => {
-      window.removeEventListener("pointermove", handleGlobalPointerMove);
-      window.removeEventListener("pointerleave", handleGlobalPointerLeave);
+      window.removeEventListener("scroll", handleScroll);
       observer.disconnect();
       intersectionObserver?.disconnect();
-      if (rafId.current) cancelAnimationFrame(rafId.current);
+      if (rafId.current) {
+        cancelAnimationFrame(rafId.current);
+        rafId.current = null;
+      }
     };
   }, [
     clickPush,
@@ -444,13 +456,13 @@ export const SparklesCore: React.FC<SparklesCoreProps> = ({
     paused,
   ]);
 
+  // Use cached bounds for pointer events to avoid layout thrashing
   const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!interactive || e.pointerType === "touch") return;
-    const rect = containerRef.current?.getBoundingClientRect();
-    if (!rect) return;
+    const { left, top } = cachedRectRef.current;
     mouseRef.current = {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
+      x: e.clientX - left,
+      y: e.clientY - top,
       active: true,
     };
   };
@@ -461,14 +473,12 @@ export const SparklesCore: React.FC<SparklesCoreProps> = ({
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!interactive || clickPush <= 0) return;
-    const rect = containerRef.current?.getBoundingClientRect();
-    if (!rect) return;
-
-    const ox = e.clientX - rect.left;
-    const oy = e.clientY - rect.top;
+    const { left, top, width, height } = cachedRectRef.current;
+    const ox = e.clientX - left;
+    const oy = e.clientY - top;
 
     const burstParticles = Array.from({ length: clickPush }, () =>
-      createParticle(rect.width, rect.height, true, ox, oy)
+      createParticle(width, height, true, ox, oy)
     );
 
     particlesRef.current.push(...burstParticles);

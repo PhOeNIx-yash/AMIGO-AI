@@ -1,4 +1,22 @@
 import { AssistantResponse, BackendConfig, ActionCardItem, AttachmentItem } from "../types";
+import { runtimeConfig } from "../config/runtimeConfig";
+
+/**
+ * Fast non-blocking helper to convert Blob/File to base64 data URL string
+ */
+export async function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const res = reader.result as string;
+      // Strip off the "data:*/*;base64," prefix to keep raw base64 data
+      const commaIdx = res.indexOf(",");
+      resolve(commaIdx !== -1 ? res.slice(commaIdx + 1) : res);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
 
 /**
  * Service to transcribe recorded audio buffer using Amigo local speech or custom STT endpoint
@@ -8,15 +26,8 @@ export async function transcribeAudio(
   customTranscribeUrl?: string,
   apiKey?: string
 ): Promise<string> {
-  const arrayBuffer = await audioBlob.arrayBuffer();
-  const bytes = new Uint8Array(arrayBuffer);
-  let binary = "";
-  for (let i = 0; i < bytes.byteLength; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  const base64Data = btoa(binary);
-
-  const endpoint = customTranscribeUrl?.trim() || "/api/transcribe";
+  const base64Data = await blobToBase64(audioBlob);
+  const endpoint = customTranscribeUrl?.trim() || runtimeConfig.transcribeEndpoint;
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -25,22 +36,30 @@ export async function transcribeAudio(
     headers["Authorization"] = `Bearer ${apiKey}`;
   }
 
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      audioData: base64Data,
-      mimeType: audioBlob.type || "audio/webm",
-    }),
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), runtimeConfig.apiTimeoutMs);
 
-  if (!response.ok) {
-    const errData = await response.json().catch(() => ({}));
-    throw new Error(errData.error || `Failed transcribing audio (HTTP ${response.status})`);
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        audioData: base64Data,
+        mimeType: audioBlob.type || "audio/webm",
+      }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      throw new Error(errData.error || `Failed transcribing audio (HTTP ${response.status})`);
+    }
+
+    const data = await response.json();
+    return data.transcription || data.text || data.transcript || "";
+  } finally {
+    clearTimeout(timeoutId);
   }
-
-  const data = await response.json();
-  return data.transcription || data.text || data.transcript || "";
 }
 
 export function stripReasoningTags(text: string): string {
@@ -278,16 +297,10 @@ export async function uploadFileToBackend(file: File): Promise<{
     console.warn("FormData upload failed, trying base64 fallback:", e);
   }
 
-  // Fallback: convert to base64 JSON payload
-  const arrayBuffer = await file.arrayBuffer();
-  const bytes = new Uint8Array(arrayBuffer);
-  let binary = "";
-  for (let i = 0; i < bytes.byteLength; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  const base64Data = btoa(binary);
+  // Fallback: convert to base64 JSON payload non-blockingly
+  const base64Data = await blobToBase64(file);
 
-  const res = await fetch("/api/upload", {
+  const res = await fetch(runtimeConfig.uploadEndpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({

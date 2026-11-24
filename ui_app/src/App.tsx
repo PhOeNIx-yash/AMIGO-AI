@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef, lazy, Suspense } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   AssistantState,
@@ -17,10 +17,6 @@ import { OrbVisualizer } from "./components/OrbVisualizer";
 import { TitleBar } from "./components/TitleBar";
 import { ContactPicker } from "./components/ContactPicker";
 import { VoiceControls } from "./components/VoiceControls";
-import { HistoryPanel } from "./components/HistoryPanel";
-import { BackendSettingsModal } from "./components/BackendSettingsModal";
-import { SettingsPage } from "./components/SettingsPage";
-import { GeneratedContentPanel } from "./components/GeneratedContentPanel";
 import { ChatWorkspace } from "./components/ChatWorkspace";
 import { KineticHeading, KineticStateBadge, TextAnimationStyle, normalizeAnimationStyle } from "./components/KineticText";
 import { IntentBridgeHUD, isActionIntent } from "./components/IntentBridgeHUD";
@@ -38,6 +34,20 @@ import {
 import { Sparkles, ChevronUp, Shuffle, Copy, Check, Volume2, X, ThumbsUp, ThumbsDown } from "lucide-react";
 import { ErrorState } from "@/components/ui/error-state";
 import { SparklesCore } from "./components/ui/sparkles-core";
+
+// Lazy load heavy panels and modals for optimal bundle splitting
+const HistoryPanel = lazy(() =>
+  import("./components/HistoryPanel").then((mod) => ({ default: mod.HistoryPanel }))
+);
+const BackendSettingsModal = lazy(() =>
+  import("./components/BackendSettingsModal").then((mod) => ({ default: mod.BackendSettingsModal }))
+);
+const SettingsPage = lazy(() =>
+  import("./components/SettingsPage").then((mod) => ({ default: mod.SettingsPage }))
+);
+const GeneratedContentPanel = lazy(() =>
+  import("./components/GeneratedContentPanel").then((mod) => ({ default: mod.GeneratedContentPanel }))
+);
 
 function cn(...classes: (string | undefined | null | false)[]) {
   return classes.filter(Boolean).join(" ");
@@ -1325,59 +1335,65 @@ export default function App() {
             <main className="relative flex-1 flex flex-col justify-between items-center z-10 w-full min-h-0 overflow-hidden">
 
               {/* Full Settings Page */}
-              <SettingsPage
-                isOpen={showSettings}
-                onClose={() => setShowSettings(false)}
-                isDark={isDark}
-                onToggleTheme={() => setIsDark(!isDark)}
-                colorTheme={colorTheme}
-                onChangeColorTheme={setColorTheme}
-                visualizerMode={visualizerMode}
-                onChangeVisualizerMode={setVisualizerMode}
-                thinkingOrbStyle={thinkingOrbStyle}
-                onChangeThinkingOrbStyle={setThinkingOrbStyle}
-                webSearchOrbStyle={webSearchOrbStyle}
-                onChangeWebSearchOrbStyle={setWebSearchOrbStyle}
-                textAnimationStyle={textAnimationStyle}
-                onChangeTextAnimationStyle={setTextAnimationStyle}
-                greetingText={greetingText}
-                onChangeGreetingText={setGreetingText}
-                autoCycleGreetings={autoCycleGreetings}
-                onToggleAutoCycleGreetings={() => setAutoCycleGreetings(!autoCycleGreetings)}
-                autoCycleInterval={autoCycleInterval}
-                onChangeAutoCycleInterval={setAutoCycleInterval}
-                pluginMode={pluginMode}
-                onChangePluginMode={setPluginMode}
-                soundEnabled={soundEnabled}
-                onToggleSound={handleToggleSound}
-                backendConfig={backendConfig}
-                onSaveBackendConfig={handleSaveBackendConfig}
-                historyCount={history.length}
-                onClearHistory={handleClearHistory}
-                onResetAssistant={handleReset}
-              />
+              <Suspense fallback={null}>
+                <SettingsPage
+                  isOpen={showSettings}
+                  onClose={() => setShowSettings(false)}
+                  isDark={isDark}
+                  onToggleTheme={() => setIsDark(!isDark)}
+                  colorTheme={colorTheme}
+                  onChangeColorTheme={setColorTheme}
+                  visualizerMode={visualizerMode}
+                  onChangeVisualizerMode={setVisualizerMode}
+                  thinkingOrbStyle={thinkingOrbStyle}
+                  onChangeThinkingOrbStyle={setThinkingOrbStyle}
+                  webSearchOrbStyle={webSearchOrbStyle}
+                  onChangeWebSearchOrbStyle={setWebSearchOrbStyle}
+                  textAnimationStyle={textAnimationStyle}
+                  onChangeTextAnimationStyle={setTextAnimationStyle}
+                  greetingText={greetingText}
+                  onChangeGreetingText={setGreetingText}
+                  autoCycleGreetings={autoCycleGreetings}
+                  onToggleAutoCycleGreetings={() => setAutoCycleGreetings(!autoCycleGreetings)}
+                  autoCycleInterval={autoCycleInterval}
+                  onChangeAutoCycleInterval={setAutoCycleInterval}
+                  pluginMode={pluginMode}
+                  onChangePluginMode={setPluginMode}
+                  soundEnabled={soundEnabled}
+                  onToggleSound={handleToggleSound}
+                  backendConfig={backendConfig}
+                  onSaveBackendConfig={handleSaveBackendConfig}
+                  historyCount={history.length}
+                  onClearHistory={handleClearHistory}
+                  onResetAssistant={handleReset}
+                />
+              </Suspense>
 
               {/* History Sidebar Panel */}
-              <HistoryPanel
-                isOpen={showHistory}
-                onClose={handleCloseHistory}
-                history={history}
-                onReRunCommand={handleReRunHistoryCommand}
-                onSelectHistoryEntry={handleSelectHistoryEntry}
-                onClearHistory={handleClearHistory}
-                isDark={isDark}
-                colorTheme={colorTheme}
-              />
+              <Suspense fallback={null}>
+                <HistoryPanel
+                  isOpen={showHistory}
+                  onClose={handleCloseHistory}
+                  history={history}
+                  onReRunCommand={handleReRunHistoryCommand}
+                  onSelectHistoryEntry={handleSelectHistoryEntry}
+                  onClearHistory={handleClearHistory}
+                  isDark={isDark}
+                  colorTheme={colorTheme}
+                />
+              </Suspense>
 
               {/* Backend Connection Modal */}
-              <BackendSettingsModal
-                isOpen={showBackendModal}
-                onClose={() => setShowBackendModal(false)}
-                config={backendConfig}
-                onSaveConfig={handleSaveBackendConfig}
-                isDark={isDark}
-                colorTheme={colorTheme}
-              />
+              <Suspense fallback={null}>
+                <BackendSettingsModal
+                  isOpen={showBackendModal}
+                  onClose={() => setShowBackendModal(false)}
+                  config={backendConfig}
+                  onSaveConfig={handleSaveBackendConfig}
+                  isDark={isDark}
+                  colorTheme={colorTheme}
+                />
+              </Suspense>
 
               {/* View Switcher: Assistant Mode (3D Orb & Voice) vs Chat Mode (ChatGPT Layout with Graphs & Tables) */}
               <AnimatePresence mode="wait">
@@ -1707,19 +1723,21 @@ export default function App() {
 
                                   {/* 4. Generated Content Panel (for reviewing generated content before inserting) */}
                                   {state === "generated_content" && generatedContent && (
-                                    <GeneratedContentPanel
-                                      key="generated-content-panel"
-                                      content={generatedContent.content}
-                                      contentType={generatedContent.contentType}
-                                      topic={generatedContent.topic}
-                                      onInsert={handleGeneratedContentInsert}
-                                      onCopy={handleGeneratedContentCopy}
-                                      onRegenerate={handleGeneratedContentRegenerate}
-                                      onSave={handleGeneratedContentSave}
-                                      onClose={handleGeneratedContentClose}
-                                      isDark={isDark}
-                                      colorTheme={colorTheme}
-                                    />
+                                    <Suspense fallback={null}>
+                                      <GeneratedContentPanel
+                                        key="generated-content-panel"
+                                        content={generatedContent.content}
+                                        contentType={generatedContent.contentType}
+                                        topic={generatedContent.topic}
+                                        onInsert={handleGeneratedContentInsert}
+                                        onCopy={handleGeneratedContentCopy}
+                                        onRegenerate={handleGeneratedContentRegenerate}
+                                        onSave={handleGeneratedContentSave}
+                                        onClose={handleGeneratedContentClose}
+                                        isDark={isDark}
+                                        colorTheme={colorTheme}
+                                      />
+                                    </Suspense>
                                   )}
                                 </AnimatePresence>
                               </div>

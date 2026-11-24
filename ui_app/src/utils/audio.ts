@@ -1,3 +1,5 @@
+import { runtimeConfig } from "../config/runtimeConfig";
+
 /**
  * Audio Utility Module for Amigo Voice Assistant.
  * Sound effects disabled for silent operation.
@@ -32,32 +34,29 @@ export async function speakText(text: string, onEnd?: () => void) {
   }
 
   const cleanText = text.trim();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), runtimeConfig.apiTimeoutMs);
 
   try {
-    const res = await fetch("/api/speak", {
+    const res = await fetch(runtimeConfig.speakEndpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text: cleanText }),
+      signal: controller.signal,
     });
     if (!res.ok) {
-      // Fallback if accessed from separate dev port
-      await fetch("http://127.0.0.1:5000/api/speak", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: cleanText }),
-      });
+      console.warn(`[Amigo TTS] Speak returned status ${res.status}`);
     }
-  } catch (err) {
-    try {
-      await fetch("http://127.0.0.1:5000/api/speak", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: cleanText }),
-      });
-    } catch (e2) {
-      console.warn("[Amigo TTS Error]:", e2);
+  } catch (err: unknown) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      console.warn("[Amigo TTS] Request timed out");
+    } else {
+      console.warn("[Amigo TTS Error]:", err);
     }
   } finally {
-    if (onEnd) setTimeout(onEnd, 1200);
+    clearTimeout(timeoutId);
+    if (onEnd) {
+      setTimeout(onEnd, 1200);
+    }
   }
 }
